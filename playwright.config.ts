@@ -22,8 +22,15 @@ export default defineConfig({
           ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
             ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
             : {}),
-          // Harmless without WebGPU; lets local runs with a GPU exercise it.
-          args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
+          // WebGPU everywhere: hardware where available, SwiftShader
+          // (software Vulkan) in headless/CI. Verified working in CI-like
+          // sandboxes; note WebGPU needs a secure context, so tests must
+          // navigate to the served page before touching navigator.gpu.
+          args: [
+            "--enable-unsafe-webgpu",
+            "--enable-features=Vulkan",
+            "--enable-unsafe-swiftshader",
+          ],
         },
       },
     },
