@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebVDB Examples</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 42rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+      code { background: rgba(128, 128, 128, 0.15); padding: 0.1em 0.3em; border-radius: 4px; }
+      li.pending { opacity: 0.55; }
+      #webgpu-report { padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid rgba(128,128,128,0.4); }
+    </style>
+  </head>
+  <body>
+    <h1>WebVDB Examples</h1>
+    <p>
+      OpenVDB/NanoVDB volumes on the web — WebGPU + three.js (TSL).
+      Demos land phase by phase (<code>docs/PLAN.md</code>):
+    </p>
+    <ol id="demo-list">
+      <li class="pending">01 · hello-nvdb — compute-shader voxel probe (Phase 1)</li>
+      <li class="pending">02 · cloud — WDAS cloud fragment raymarch (Phase 3)</li>
+      <li class="pending">03 · gpu-read — annotated educational example (Phase 3)</li>
+      <li class="pending">04 · atlas-fallback — compute → Data3DTexture (Phase 4)</li>
+      <li class="pending">05 · embergen-sequence — animated smoke (Phase 7)</li>
+      <li class="pending">06 · explorer — drag-drop VDB inspector (Phase 8)</li>
+      <li class="pending">07 · builder — in-browser grid authoring (Phase 5)</li>
+    </ol>
+    <div id="webgpu-report" data-testid="webgpu-report">Checking WebGPU…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

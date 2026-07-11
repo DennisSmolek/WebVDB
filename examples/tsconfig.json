@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist-types",
+    "emitDeclarationOnly": true
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../packages/nanovdb-wgsl" },
+    { "path": "../packages/three-nanovdb" },
+    { "path": "../packages/vdb-web-tools" }
+  ]
+}

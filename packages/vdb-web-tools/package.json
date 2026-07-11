@@ -1,0 +1,22 @@
+{
+  "name": "vdb-web-tools",
+  "version": "0.0.0",
+  "description": "Pure-TypeScript CPU tooling for OpenVDB/NanoVDB: parse, build, quantize, transform, inspect (WASM only as optional escalation)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

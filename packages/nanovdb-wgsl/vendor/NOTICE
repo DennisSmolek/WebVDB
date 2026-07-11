@@ -1,0 +1,19 @@
+NanoVDB WGSL traversal module (vendored fork)
+
+This directory contains pnanovdb.wgsl, a WGSL port of the PNanoVDB C API,
+vendored as a fork per WebVDB decision D2 (docs/DECISIONS.md).
+
+Original work:
+  PNanoVDB.h — Copyright Contributors to the OpenVDB Project
+  SPDX-License-Identifier: Apache-2.0
+  https://github.com/AcademySoftwareFoundation/openvdb
+
+Derivative work (the WGSL port vendored here):
+  pnanovdb.wgsl — Ported to WGSL by Edward McFarlane, 2025
+  SPDX-License-Identifier: Apache-2.0
+  https://github.com/emcfarlane/webgpu-nanovdb
+  Vendored at commit 265e8d825e4e4ab8752196a28cccad592d9b4262
+
+Modifications by the WebVDB project are recorded in VENDOR.md alongside
+this file and are likewise licensed under the Apache License, Version 2.0.
+A copy of the license is in the LICENSE file in this directory.

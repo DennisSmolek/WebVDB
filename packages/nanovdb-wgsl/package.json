@@ -1,0 +1,24 @@
+{
+  "name": "nanovdb-wgsl",
+  "version": "0.0.0",
+  "description": "Renderer-agnostic NanoVDB traversal/sampling WGSL module + TypeScript .nvdb loader",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pnanovdb.wgsl": "./vendor/pnanovdb.wgsl"
+  },
+  "files": [
+    "src",
+    "vendor",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

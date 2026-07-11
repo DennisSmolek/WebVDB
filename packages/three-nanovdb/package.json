@@ -1,0 +1,32 @@
+{
+  "name": "three-nanovdb",
+  "version": "0.0.0",
+  "description": "Three.js TSL layer for NanoVDB: grid wrapper, volume materials, compute utilities",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "nanovdb-wgsl": "workspace:*",
+    "three": ">=0.178.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "nanovdb-wgsl": "workspace:*",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

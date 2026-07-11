@@ -1,0 +1,34 @@
+{
+  "name": "webvdb",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVDB/NanoVDB volumes on the web: WGSL traversal, three.js TSL rendering, pure-TS CPU tooling",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "dev": "pnpm --filter @webvdb/examples dev",
+    "build": "pnpm -r --filter './packages/*' build",
+    "typecheck": "tsc --build",
+    "fixtures": "node scripts/fetch-wdas-cloud.mjs && node scripts/fetch-embergen-pack.mjs",
+    "fixtures:wdas": "node scripts/fetch-wdas-cloud.mjs",
+    "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "@webgpu/types": "^0.1.60",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0"
+  }
+}
