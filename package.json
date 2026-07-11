@@ -17,7 +17,8 @@
     "typecheck": "tsc --build",
     "fixtures": "node scripts/fetch-wdas-cloud.mjs && node scripts/fetch-embergen-pack.mjs",
     "fixtures:wdas": "node scripts/fetch-wdas-cloud.mjs",
-    "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs"
+    "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs",
+    "fixtures:bake": "node scripts/bake-fixtures.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
