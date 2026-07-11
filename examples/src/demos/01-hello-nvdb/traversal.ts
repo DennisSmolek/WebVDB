@@ -139,10 +139,11 @@ fn nvdb_probe_float( grid : ptr<storage, array<u32>, read>, ijk : vec3<i32> ) ->
     ( ( u32( ijk.y ) & 7u ) << 3u ) +
     ( u32( ijk.z ) & 7u );
   let lvm : u32 = (*grid)[ ( leaf_addr + 16u + 4u * ( leaf_n >> 5u ) ) >> 2u ]; // LEAF_OFF_VALUE_MASK = 16
-  let active : f32 = select( 0.0, 1.0, ( ( lvm >> ( leaf_n & 31u ) ) & 1u ) != 0u );
+  // NB: "active" is a reserved WGSL keyword, so this flag is named "act".
+  let act : f32 = select( 0.0, 1.0, ( ( lvm >> ( leaf_n & 31u ) ) & 1u ) != 0u );
   // FLOAT leaf value table: byte = leaf_off_table(96) + ((value_stride_bits(32) * n) >> 3)
   let val_addr : u32 = leaf_addr + 96u + ( ( 32u * leaf_n ) >> 3u );
   let v : f32 = bitcast<f32>( (*grid)[ val_addr >> 2u ] );
-  return vec2<f32>( v, active );
+  return vec2<f32>( v, act );
 }
 `;
