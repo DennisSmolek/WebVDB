@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { NanoVDBGrid, createVolumeRenderer } from "../src/index.js";
 
 describe("three-nanovdb stubs (Phase 0 gate)", () => {
-  it("NanoVDBGrid throws until Phase 1 lands", () => {
+  it("NanoVDBGrid throws until its Phase 3 wiring lands", () => {
     expect(() => new NanoVDBGrid(new Uint32Array(0))).toThrowError(/Phase 1/);
   });
 

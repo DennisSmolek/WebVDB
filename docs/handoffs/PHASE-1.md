@@ -39,6 +39,21 @@ headless SwiftShader; full suite 67 unit tests + 2 e2e + clean tsc.
 5. The hand-written WGSL subset matched the CPU reference on its first
    syntactically-valid compile — zero layout divergences to audit.
 
+## Verification (fresh-eyes agent, adversarial pass)
+
+Independent gate re-run: 67/67 unit, clean tsc, 2/2 e2e — **verdict:
+gate passes**. Cross-checks that came back clean: coord_to_key bit
+packing (CPU BigInt and WGSL split-32), root-tile scan termination, FpN
+bits-per-value derivation, leaf NEG offsets, every WGSL inlined offset
+vs the generated constants, D2–D5 compliance, loader truncation
+bounds-checking. Findings carried as debt (below): silent
+`FileMetaData.gridSize` vs internal `GridData.mGridSize` mismatch
+(truncated image, no error — silently wrong voxels downstream);
+unbounded `unzlibSync` (zip-bomb shape — pass `{out}` sized to
+gridSize); raw-grid-buffer (`NanoVDB1`) path has zero test coverage;
+WGSL demo reads only the low 32 bits of three 64-bit child offsets
+(fine at fixture scale, a CPU/GPU divergence risk on >4 GiB grids).
+
 ## Known debts
 
 - ZIP fixtures are synthetic (test-built); no real `nanovdb_convert --zip`
