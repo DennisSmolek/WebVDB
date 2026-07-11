@@ -195,6 +195,90 @@ describe("NanoVDBFile — error handling", () => {
     expect(() => file.gridImage(5)).toThrowError(/out of range/);
     expect(() => file.isGridImageZeroCopy(5)).toThrowError(/out of range/);
   });
+
+  // --- Finding 1: FileMetaData.gridSize must agree with the grid image's own
+  // internal GridData.mGridSize (u64 at grid-image byte offset 32) ---------
+
+  it("throws when FileMetaData.gridSize is smaller than the grid's internal mGridSize (truncation/corruption)", async () => {
+    if (!fixturesPresent) return;
+    const { buffer } = await loadFixture("box_fog_float");
+    const patched = buffer.slice(0);
+    const view = new DataView(patched);
+    const trueGridSize = view.getBigUint64(FILE_HEADER_SIZE + 0, true);
+    // Lie about gridSize: 1000 bytes smaller than what's actually there.
+    // Before Finding 1's fix this silently sliced a short grid image instead
+    // of throwing.
+    view.setBigUint64(FILE_HEADER_SIZE + 0, trueGridSize - 1000n, true);
+
+    expect(() => NanoVDBFile.fromArrayBuffer(patched)).toThrowError(
+      /FileMetaData\.gridSize \(\d+\) does not match its own internal GridData\.mGridSize \(\d+\)/,
+    );
+  });
+
+  it("throws when FileMetaData.gridSize is larger than the grid's internal mGridSize", async () => {
+    if (!fixturesPresent) return;
+    const { buffer } = await loadFixture("box_fog_float");
+    const patched = buffer.slice(0);
+    const view = new DataView(patched);
+    const trueGridSize = view.getBigUint64(FILE_HEADER_SIZE + 0, true);
+    view.setBigUint64(FILE_HEADER_SIZE + 0, trueGridSize + 1000n, true);
+
+    // Growing gridSize by 1000 also grows how many bytes parseSegments tries
+    // to slice out of the buffer, so this manifests as "truncated buffer"
+    // (there aren't 1000 more real bytes to read) rather than the internal
+    // mismatch error — both are refusals to silently load a wrong image, so
+    // assert on the truncation message here.
+    expect(() => NanoVDBFile.fromArrayBuffer(patched)).toThrowError(/truncated buffer/);
+  });
+
+  // --- Finding 2: bounded ZIP inflation --------------------------------
+
+  it("ZIP path throws a bounded size error for a payload that inflates past the declared gridSize (zip-bomb shape)", () => {
+    const declaredGridSize = 128;
+    // Highly compressible (all-zero) 2MB payload: compresses down to a tiny
+    // handful of bytes, but "decompresses" to far more than declaredGridSize
+    // — the zip-bomb shape the finding describes. If the fix regressed to
+    // unbounded unzlibSync(compressed), this would still throw eventually
+    // (byteLength check) but only after fully materializing 2MB; the point
+    // of this test is that it throws the *new* bounded-overflow message.
+    const bigPayload = new Uint8Array(2_000_000);
+    const buffer = buildZipSegmentBuffer(declaredGridSize, bigPayload);
+
+    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(
+      /exceeds its declared gridSize of 128 bytes/,
+    );
+  });
+
+  it("ZIP path still throws a clear error when the decompressed payload is smaller than declared gridSize", () => {
+    const declaredGridSize = 1000;
+    const smallPayload = new Uint8Array(10);
+    const buffer = buildZipSegmentBuffer(declaredGridSize, smallPayload);
+
+    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(
+      /ZIP-decompressed grid #0 \("g"\) is 10 bytes, expected 1000/,
+    );
+  });
+
+  it("throws a clear error for a gridSize u64 that doesn't fit in a safe JS integer", () => {
+    const name = "g\0";
+    const nameSize = name.length;
+    const total = FILE_HEADER_SIZE + FILE_METADATA_SIZE + nameSize;
+    const buffer = new ArrayBuffer(total);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+
+    bytes.set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
+    view.setUint32(8, (32 << 21) | (9 << 10) | 1, true); // version 32.9.1
+    view.setUint16(12, 1, true); // gridCount
+    view.setUint16(14, Codec.NONE, true); // codec
+
+    const meta = FILE_HEADER_SIZE;
+    view.setBigUint64(meta + 0, 2n ** 60n, true); // grossly unrepresentable gridSize
+    view.setUint32(meta + 136, nameSize, true); // nameSize
+    bytes.set([...name].map((c) => c.charCodeAt(0)), meta + FILE_METADATA_SIZE);
+
+    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/unrepresentable gridSize/);
+  });
 });
 
 /**
@@ -229,3 +313,137 @@ function rewriteAsZip(noneBuffer: ArrayBuffer): ArrayBuffer {
 
   return out.buffer;
 }
+
+/**
+ * Builds a minimal single-grid Codec-ZIP `.nvdb` segment buffer (FileHeader +
+ * FileMetaData + name "g\0" + ZIP framing) whose FileMetaData.gridSize is
+ * `declaredGridSize`, but whose ZIP payload actually decompresses to
+ * `decompressedPayload` (which may be a different length — that mismatch is
+ * exactly what Finding 2's tests exercise). The grid data itself is never
+ * required to look like a real GridData header here: the ZIP size checks
+ * throw before any of that content would be interpreted.
+ */
+function buildZipSegmentBuffer(declaredGridSize: number, decompressedPayload: Uint8Array): ArrayBuffer {
+  const name = "g\0";
+  const nameSize = name.length;
+  const compressed = zlibSync(decompressedPayload);
+
+  const headerAndMetaSize = FILE_HEADER_SIZE + FILE_METADATA_SIZE + nameSize;
+  const total = headerAndMetaSize + 8 + compressed.byteLength;
+  const buffer = new ArrayBuffer(total);
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+
+  bytes.set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
+  view.setUint32(8, (32 << 21) | (9 << 10) | 1, true); // version 32.9.1
+  view.setUint16(12, 1, true); // gridCount
+  view.setUint16(14, Codec.ZIP, true); // codec
+
+  const meta = FILE_HEADER_SIZE;
+  view.setBigUint64(meta + 0, BigInt(declaredGridSize), true); // gridSize
+  view.setBigUint64(meta + 24, 0n, true); // voxelCount
+  view.setUint32(meta + 32, 1, true); // gridType = Float
+  view.setUint32(meta + 36, 2, true); // gridClass = FogVolume
+  view.setUint32(meta + 136, nameSize, true); // nameSize
+  view.setUint16(meta + 168, Codec.ZIP, true); // codec (FileMetaData mirror)
+
+  bytes.set([...name].map((c) => c.charCodeAt(0)), meta + FILE_METADATA_SIZE);
+
+  const zipOffset = meta + FILE_METADATA_SIZE + nameSize;
+  view.setBigUint64(zipOffset, BigInt(compressed.byteLength), true);
+  bytes.set(compressed, zipOffset + 8);
+
+  return buffer;
+}
+
+/** Copies a typed array's view into a fresh, standalone zero-offset ArrayBuffer. */
+function standaloneImageBuffer(image: Uint32Array): ArrayBuffer {
+  return image.buffer.slice(image.byteOffset, image.byteOffset + image.byteLength);
+}
+
+function bufferOf(image: Uint32Array): Buffer {
+  return Buffer.from(image.buffer, image.byteOffset, image.byteLength);
+}
+
+/**
+ * Finding 3: `parseRawGridBuffer` (the magic-`NanoVDB1` raw-grid-image path,
+ * used when a buffer has no FileHeader) shipped with zero tests. These build
+ * raw-buffer inputs directly from the real fixtures — via `gridImage()` on a
+ * segment-parsed file, which is itself already the bare GridData image
+ * (confirmed: every fixture's grid image begins with the "NanoVDB1" magic,
+ * NanoVDB.h's `NANOVDB_MAGIC_GRID`) — so no magic rewriting is needed; the
+ * extracted bytes are fed to `fromArrayBuffer` as-is.
+ */
+describe.skipIf(!fixturesPresent)("NanoVDBFile — raw grid buffer (magic NanoVDB1, no FileHeader)", () => {
+  it("sniffs a bare grid image (no FileHeader) as the raw-buffer format via its own NanoVDB1 magic", async () => {
+    const { buffer } = await loadFixture("box_fog_float");
+    const segmentFile = NanoVDBFile.fromArrayBuffer(buffer);
+    const image = segmentFile.gridImage(0);
+    const magicBytes = new Uint8Array(image.buffer, image.byteOffset, 8);
+    expect(String.fromCharCode(...magicBytes)).toBe("NanoVDB1");
+  });
+
+  for (const name of ["box_fog_float", "sphere_fog_fp8", "torus_fog_fpn"]) {
+    it(`${name}: raw-buffer parse of the extracted grid image matches the segment-parsed metadata and gridImage bytes`, async () => {
+      const { buffer } = await loadFixture(name);
+      const segmentFile = NanoVDBFile.fromArrayBuffer(buffer);
+      const rawBuffer = standaloneImageBuffer(segmentFile.gridImage(0));
+
+      const rawFile = NanoVDBFile.fromArrayBuffer(rawBuffer);
+      expect(rawFile.grids).toHaveLength(1);
+
+      const segGrid = segmentFile.grids[0]!;
+      const rawGrid = rawFile.grids[0]!;
+
+      expect(rawGrid.name).toBe(segGrid.name);
+      expect(rawGrid.gridType).toBe(segGrid.gridType);
+      expect(rawGrid.gridClass).toBe(segGrid.gridClass);
+      expect(rawGrid.voxelCount).toBe(segGrid.voxelCount);
+      expect(rawGrid.gridByteSize).toBe(segGrid.gridByteSize);
+      expect(rawGrid.indexBBox).toEqual(segGrid.indexBBox);
+      expect(rawGrid.voxelSize).toEqual(segGrid.voxelSize);
+      for (let a = 0; a < 3; a++) {
+        expect(rawGrid.worldBBox.min[a]).toBeCloseTo(segGrid.worldBBox.min[a]!, 6);
+        expect(rawGrid.worldBBox.max[a]).toBeCloseTo(segGrid.worldBBox.max[a]!, 6);
+      }
+
+      // gridImage() round-trips byte-for-byte through the raw path.
+      expect(bufferOf(rawFile.gridImage(0)).equals(bufferOf(segmentFile.gridImage(0)))).toBe(true);
+    });
+  }
+
+  it("parses a concatenated two-grid raw buffer by walking mGridSize, once mGridCount/mGridIndex agree across grids", async () => {
+    const { buffer: bufferA } = await loadFixture("box_fog_float");
+    const { buffer: bufferB } = await loadFixture("box_fog_fp8");
+    const fileA = NanoVDBFile.fromArrayBuffer(bufferA);
+    const fileB = NanoVDBFile.fromArrayBuffer(bufferB);
+
+    // Each fixture is independently produced as a single-grid buffer, so its
+    // image's own mGridCount is 1 — concatenating two of those as-is would
+    // make parseRawGridBuffer stop after the first (it trusts grid #0's
+    // mGridCount as the total). A genuine N-grid NanoVDB1 buffer has every
+    // grid's mGridCount set to N and mGridIndex set to its position, so we
+    // patch those two fields (GridData offsets 28 and 24) to simulate one.
+    const patchedA = new Uint8Array(standaloneImageBuffer(fileA.gridImage(0)));
+    const patchedB = new Uint8Array(standaloneImageBuffer(fileB.gridImage(0)));
+    new DataView(patchedA.buffer).setUint32(24, 0, true); // mGridIndex = 0
+    new DataView(patchedA.buffer).setUint32(28, 2, true); // mGridCount = 2
+    new DataView(patchedB.buffer).setUint32(24, 1, true); // mGridIndex = 1
+    new DataView(patchedB.buffer).setUint32(28, 2, true); // mGridCount = 2
+
+    const combined = new Uint8Array(patchedA.byteLength + patchedB.byteLength);
+    combined.set(patchedA, 0);
+    combined.set(patchedB, patchedA.byteLength);
+
+    const rawFile = NanoVDBFile.fromArrayBuffer(combined.buffer);
+    expect(rawFile.grids).toHaveLength(2);
+
+    expect(rawFile.grids[0]!.gridType).toBe(fileA.grids[0]!.gridType);
+    expect(rawFile.grids[0]!.gridByteSize).toBe(patchedA.byteLength);
+    expect(rawFile.grids[1]!.gridType).toBe(fileB.grids[0]!.gridType);
+    expect(rawFile.grids[1]!.gridByteSize).toBe(patchedB.byteLength);
+
+    expect(bufferOf(rawFile.gridImage(0)).equals(Buffer.from(patchedA.buffer))).toBe(true);
+    expect(bufferOf(rawFile.gridImage(1)).equals(Buffer.from(patchedB.buffer))).toBe(true);
+  });
+});

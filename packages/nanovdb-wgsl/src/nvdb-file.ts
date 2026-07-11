@@ -168,6 +168,52 @@ function requireBytes(buffer: ArrayBuffer, minLength: number, what: string): voi
   }
 }
 
+/**
+ * `gridSize` is read off a u64 (FileMetaData.gridSize / mGridSize); most of
+ * the u64 range does not fit in a JS `number` without loss of precision. A
+ * corrupt or malicious file can set that u64 to something outside
+ * `Number.isSafeInteger` range, which would otherwise silently corrupt the
+ * arithmetic used to slice/allocate the grid image (Finding 2). Guard it
+ * before it's used for anything.
+ */
+function assertSafeGridSize(gridSize: number, context: string): void {
+  if (!Number.isSafeInteger(gridSize) || gridSize < 0) {
+    throw new Error(
+      `NanoVDBFile: ${context} has an unrepresentable gridSize (${gridSize}) — the on-disk u64 does not fit ` +
+        `in a safe JS integer, so the file is corrupt or malicious.`,
+    );
+  }
+}
+
+/**
+ * Cross-checks FileMetaData's declared `gridSize` (what the loader used to
+ * slice/decompress the grid image) against the grid image's own internal
+ * `GridData.mGridSize` (u64 at byte offset 32 of every grid image, see
+ * NanoVDB.h). A file whose metadata lies (truncation, corruption, or a
+ * malicious re-encode) would otherwise yield a silently short/long image and
+ * silently wrong voxels downstream — Finding 1 from the T2 verification
+ * pass. `gridBytes` must be at least `GRID_OFF_GRID_SIZE + 8` bytes for the
+ * field to be readable; anything shorter is itself proof of a mismatch.
+ */
+function checkInternalGridSize(gridBytes: Uint8Array, expectedGridSize: number, i: number, name: string): void {
+  if (gridBytes.byteLength < GRID_OFF_GRID_SIZE + 8) {
+    throw new Error(
+      `NanoVDBFile: grid #${i} ("${name}") image is only ${gridBytes.byteLength} bytes — too short to contain ` +
+        `a GridData header, so its internal mGridSize can't be verified against FileMetaData.gridSize ` +
+        `(${expectedGridSize}). The file is corrupt or truncated.`,
+    );
+  }
+  const view = new DataView(gridBytes.buffer, gridBytes.byteOffset, gridBytes.byteLength);
+  const internalGridSize = Number(view.getBigUint64(GRID_OFF_GRID_SIZE, true));
+  if (internalGridSize !== expectedGridSize) {
+    throw new Error(
+      `NanoVDBFile: grid #${i} ("${name}")'s FileMetaData.gridSize (${expectedGridSize}) does not match its ` +
+        `own internal GridData.mGridSize (${internalGridSize}) — the file's metadata is inconsistent with its ` +
+        `grid data (truncated or corrupted); refusing to load a possibly-wrong grid image.`,
+    );
+  }
+}
+
 function readMagic(buffer: ArrayBuffer, offset: number): string {
   const bytes = new Uint8Array(buffer, offset, 8);
   return String.fromCharCode(...bytes);
@@ -379,6 +425,8 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
     const name = decodeCString(new Uint8Array(buffer, offset, meta.nameSize));
     offset += meta.nameSize;
 
+    assertSafeGridSize(meta.gridSize, `grid #${i} ("${name}")'s FileMetaData.gridSize`);
+
     let gridBytes: Uint8Array;
     if (codec === Codec.NONE) {
       requireBytes(buffer, offset + meta.gridSize, `grid data for grid #${i} ("${name}")`);
@@ -392,12 +440,31 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
       offset += 8;
       requireBytes(buffer, offset + compressedSize, `ZIP payload for grid #${i} ("${name}")`);
       const compressed = new Uint8Array(buffer, offset, compressedSize);
+
+      // Bound the inflation output instead of calling unzlibSync(compressed)
+      // unbounded (Finding 2): a zip-bomb would otherwise inflate fully
+      // in memory before the size check below ever runs. fflate's `out`
+      // option makes inflate() write into a fixed buffer and *truncate*
+      // rather than grow past it (see node_modules/fflate's InflateOptions
+      // doc comment), so we allocate exactly one byte more than the
+      // declared gridSize: a well-formed payload lands at exactly
+      // meta.gridSize bytes, while an oversized/malicious one gets clamped
+      // to meta.gridSize + 1 and is caught below — no unbounded allocation
+      // ever happens.
+      const outBound = new Uint8Array(meta.gridSize + 1);
       let decompressed: Uint8Array;
       try {
-        decompressed = unzlibSync(compressed);
+        decompressed = unzlibSync(compressed, { out: outBound });
       } catch (err) {
         throw new Error(
           `NanoVDBFile: failed to inflate ZIP-compressed grid #${i} ("${name}"): ${(err as Error).message}`,
+        );
+      }
+      if (decompressed.byteLength === outBound.length) {
+        throw new Error(
+          `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") exceeds its declared gridSize of ` +
+            `${meta.gridSize} bytes (decompression is bounded to gridSize + 1 bytes to avoid unbounded memory ` +
+            `use on a corrupt or malicious file) — the file's metadata is untrustworthy.`,
         );
       }
       if (decompressed.byteLength !== meta.gridSize) {
@@ -409,6 +476,8 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
       gridBytes = decompressed;
       offset += compressedSize;
     }
+
+    checkInternalGridSize(gridBytes, meta.gridSize, i, name);
 
     const gridType = gridTypeName(meta.gridTypeId);
     const gridClass = gridClassName(meta.gridClassId);
