@@ -15,10 +15,12 @@ upstream fixes if the author engages.
 | Pinned commit | `265e8d825e4e4ab8752196a28cccad592d9b4262` |
 | Vendored | 2026-07-11 |
 | License | Apache-2.0 (see `LICENSE`; attribution in `NOTICE`) |
-| SHA-256 of vendored file | `34e95eced0f03133c3b90fea4bfc8b517c228fb9525eb397763277379e6d772c` |
+| SHA-256 of vendored file | `76021f6a76256cd009f22395af4430d9dbf538e4eb3b7eb32d62b6095054d7e6` |
 
-The SHA-256 above is of the file **as vendored** (identical to upstream at
-the pinned commit). It is asserted by `test/vendor.test.ts` so accidental
+The SHA-256 above is of the file **as vendored**. It started byte-identical
+to upstream at the pinned commit; the Phase 2 additions logged below (all
+appended after the upstream body — no upstream lines were modified) have
+since advanced it. It is asserted by `test/vendor.test.ts` so accidental
 edits fail CI; deliberate edits update the hash *and* the diff log below in
 the same commit.
 
@@ -55,4 +57,9 @@ Every in-tree change to `pnanovdb.wgsl` gets one row here, newest first.
 
 | Date | Change | Reason | Upstreamed? |
 |---|---|---|---|
-| — | *(none yet — file is byte-identical to upstream at the pinned commit)* | | |
+| 2026-07-11 | Phase 2 audit: line-by-line diff of the existing port against `upstream/PNanoVDB.h` (constants table, coord_to_key, readaccessor cache, child getters, HDDA, is_active). No functional deviations found; no edits to upstream lines. | Establish audited baseline before extending. | N/A (no change) |
+| 2026-07-11 | Add stats readers: `{root,lower,leaf}_get_{min,max,ave,stddev}_address` + `root_get_background_address` (upstream parity; `upper_*` already present), plus `{root,upper,lower,leaf}_get_{min,max,ave,stddev}_float` f32 convenience readers. | Renderer needs node min/max for shading/empty-space skipping. | Address getters yes; `_float` readers are WebVDB. |
+| 2026-07-11 | Add trilinear sampling (WebVDB extension): `pnanovdb_sample_trilinear_{float,fp8,fpn}` + shared `_typed` impl (8 accessor taps, lerp, background outside). | Continuous index-space sampling has no PNanoVDB.h counterpart (NanoVDB SampleFromVoxels is C++ only). | No (WebVDB). |
+| 2026-07-11 | Add world↔index map: `map_get_vecf`, `map_apply{,_inverse,_jacobi,_inverse_jacobi}`, `grid_{world_to_index,index_to_world}{,_dir}f`. Reuses the fork's mat3x3f getter via WGSL vector*matrix (`src * M`) since the vendored getter loads PNanoVDB row-major matf into mat columns. | Ray/gradient transforms between world and index space. | Yes (transliteration). |
+| 2026-07-11 | Add per-grid-type value dispatch (WebVDB extension): `read_float_typed` + `readaccessor_get_value_float` — single runtime `grid_type` switch feeding the FP decoders; the public sample API specializes as thin wrappers over it. | Decode FLOAT/Fp8/Fpn voxels to f32 in one accessor call. | No (WebVDB; wraps upstream). |
+| 2026-07-11 | Add Fp4/Fp8/Fp16/FpN leaf decoders: `leaf_fp_read_float` (shared) + `leaf_fp{4,8,16,n}_read_float` + `root_fp{4,8,16,n}_read_float` (level-aware), and helpers `address_offset_neg`, `uint32_to_float`. Transliterated from PNanoVDB.h §"Leaf FP Types"; cross-checked against `src/cpu/read-value.ts` (657/657 validated). | Quantized grid support required by the renderer. | Yes (transliteration). |

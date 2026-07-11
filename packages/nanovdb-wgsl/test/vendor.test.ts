@@ -9,7 +9,7 @@ import { pnanovdbWgslUrl } from "../src/index.js";
  */
 const PINNED_COMMIT = "265e8d825e4e4ab8752196a28cccad592d9b4262";
 const VENDORED_SHA256 =
-  "34e95eced0f03133c3b90fea4bfc8b517c228fb9525eb397763277379e6d772c";
+  "76021f6a76256cd009f22395af4430d9dbf538e4eb3b7eb32d62b6095054d7e6";
 
 describe("vendored pnanovdb.wgsl", () => {
   it("exists and carries the Apache-2.0 / attribution header", async () => {

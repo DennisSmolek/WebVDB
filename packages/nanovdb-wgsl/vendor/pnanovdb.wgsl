@@ -1212,3 +1212,290 @@ fn pnanovdb_trilinear_gradient(
 
     return vec3f(grad_x, grad_y, grad_z);
 }
+
+// ==========================================================================
+// WebVDB Phase 2 extensions to the vendored PNanoVDB WGSL port.
+//
+// Everything below this banner is added in-tree under the D2 fork policy.
+// Each block is a faithful transliteration of vendor/upstream/PNanoVDB.h
+// UNLESS explicitly marked "WebVDB extension" (trilinear sampling and the
+// per-grid-type get-value float dispatch, which have no upstream WGSL
+// counterpart — NanoVDB's SampleFromVoxels lives in C++ NanoVDB.h, not the
+// portable PNanoVDB.h reference).
+// ==========================================================================
+
+// --- Shared helpers (PNanoVDB.h: pnanovdb_address_offset_neg, pnanovdb_uint32_to_float) ---
+
+fn pnanovdb_address_offset_neg(addr: pnanovdb_address_t, offset: u32) -> pnanovdb_address_t {
+    return addr - offset;
+}
+
+// pnanovdb_uint32_to_float is a numeric cast, NOT a bit-reinterpret (contrast
+// pnanovdb_read_float, which bitcasts). Used by the FP quantized decode.
+fn pnanovdb_uint32_to_float(v: u32) -> f32 {
+    return f32(v);
+}
+
+// --- Leaf FP Types Specialization (PNanoVDB.h §"Leaf FP Types") ---
+// Fp4/Fp8/Fp16/FpN pack quantized voxels into the leaf value table. `address`
+// is the leaf value-table base (n-independent — value_stride_bits is 0 for
+// these grid types, so pnanovdb_leaf_get_table_address returns a constant).
+// minimum/quantum are plain f32 at the fixed NEG offsets relative to it.
+
+fn pnanovdb_leaf_fp_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, value_log_bits: u32) -> f32 {
+    //  value_log_bits                                           //   2     3       4
+    let value_bits = 1u << value_log_bits;                       //   4     8      16
+    let value_mask = (1u << value_bits) - 1u;                    // 0xF  0xFF  0xFFFF
+    let values_per_word_bits = 5u - value_log_bits;              //   3     2       1
+    let values_per_word_mask = (1u << values_per_word_bits) - 1u;//   7     3       1
+
+    let n = pnanovdb_leaf_coord_to_offset(ijk);
+    let minimum = pnanovdb_read_float(buf, pnanovdb_address_offset_neg(address, PNANOVDB_LEAF_TABLE_NEG_OFF_MINIMUM));
+    let quantum = pnanovdb_read_float(buf, pnanovdb_address_offset_neg(address, PNANOVDB_LEAF_TABLE_NEG_OFF_QUANTUM));
+    let raw = pnanovdb_read_uint32(buf, pnanovdb_address_offset(address, (n >> values_per_word_bits) << 2u));
+    let value_compressed = (raw >> ((n & values_per_word_mask) << value_log_bits)) & value_mask;
+    return pnanovdb_uint32_to_float(value_compressed) * quantum + minimum;
+}
+
+fn pnanovdb_leaf_fp4_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i) -> f32 {
+    return pnanovdb_leaf_fp_read_float(buf, address, ijk, 2u);
+}
+fn pnanovdb_leaf_fp8_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i) -> f32 {
+    return pnanovdb_leaf_fp_read_float(buf, address, ijk, 3u);
+}
+fn pnanovdb_leaf_fp16_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i) -> f32 {
+    return pnanovdb_leaf_fp_read_float(buf, address, ijk, 4u);
+}
+fn pnanovdb_leaf_fpn_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i) -> f32 {
+    // Bits-per-value is dynamic, stored in the top 3 bits of the leaf flags byte.
+    let bbox_dif_and_flags = pnanovdb_read_uint32(buf, pnanovdb_address_offset_neg(address, PNANOVDB_LEAF_TABLE_NEG_OFF_BBOX_DIF_AND_FLAGS));
+    let flags = bbox_dif_and_flags >> 24u;
+    let value_log_bits = flags >> 5u; // b = 0..4 -> 1,2,4,8,16 bits
+    return pnanovdb_leaf_fp_read_float(buf, address, ijk, value_log_bits);
+}
+
+// Root-level FP dispatch (PNanoVDB.h §"Root"): at level 0 the address is a
+// leaf value table (quantized); at any tile/background level the FP grids
+// store the constant as a plain f32.
+fn pnanovdb_root_fp4_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, level: u32) -> f32 {
+    if level == 0u { return pnanovdb_leaf_fp4_read_float(buf, address, ijk); }
+    return pnanovdb_read_float(buf, address);
+}
+fn pnanovdb_root_fp8_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, level: u32) -> f32 {
+    if level == 0u { return pnanovdb_leaf_fp8_read_float(buf, address, ijk); }
+    return pnanovdb_read_float(buf, address);
+}
+fn pnanovdb_root_fp16_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, level: u32) -> f32 {
+    if level == 0u { return pnanovdb_leaf_fp16_read_float(buf, address, ijk); }
+    return pnanovdb_read_float(buf, address);
+}
+fn pnanovdb_root_fpn_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, level: u32) -> f32 {
+    if level == 0u { return pnanovdb_leaf_fpn_read_float(buf, address, ijk); }
+    return pnanovdb_read_float(buf, address);
+}
+
+// --- Typed value read (WebVDB extension) ---
+// Resolve a voxel to a decoded f32. This is the ONE runtime grid_type switch:
+// it wraps the upstream address+level lookup and applies the per-grid-type
+// leaf decode (plain f32 for FLOAT/HALF and all tile/background levels;
+// quantized decode for Fp4/Fp8/Fp16/FpN leaves). Per-type public entry points
+// (the sample_trilinear_* family) are thin wrappers over this — the fork
+// specializes at the public API boundary rather than duplicating traversal.
+fn pnanovdb_read_float_typed(grid_type: u32, buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, level: u32) -> f32 {
+    if grid_type == PNANOVDB_GRID_TYPE_FP4 {
+        return pnanovdb_root_fp4_read_float(buf, address, ijk, level);
+    } else if grid_type == PNANOVDB_GRID_TYPE_FP8 {
+        return pnanovdb_root_fp8_read_float(buf, address, ijk, level);
+    } else if grid_type == PNANOVDB_GRID_TYPE_FP16 {
+        return pnanovdb_root_fp16_read_float(buf, address, ijk, level);
+    } else if grid_type == PNANOVDB_GRID_TYPE_FPN {
+        return pnanovdb_root_fpn_read_float(buf, address, ijk, level);
+    }
+    // FLOAT (and HALF stored as f32 in these fixtures) read verbatim.
+    return pnanovdb_read_float(buf, address);
+}
+
+// pnanovdb_readaccessor_get_value_float (WebVDB extension): cached descent +
+// per-type decode in one call. This is the renderer's primary voxel read.
+fn pnanovdb_readaccessor_get_value_float(grid_type: u32, buf: pnanovdb_buf_t, acc: ptr<function, pnanovdb_readaccessor_t>, ijk: vec3i) -> f32 {
+    let al = pnanovdb_readaccessor_get_value_address_and_level(grid_type, buf, acc, ijk);
+    return pnanovdb_read_float_typed(grid_type, buf, al.address, ijk, al.level);
+}
+
+// --- Map Transforms (PNanoVDB.h §"Map Transforms") ---
+// The vendored pnanovdb_map_get_matf returns the affine 3x3 as a WGSL
+// mat3x3f whose COLUMNS are PNanoVDB's row-major matf rows [0..2],[3..5],
+// [6..8]. Upstream computes dst.row = matf(row) . src, i.e. a row-vector *
+// matrix product, which in WGSL is the built-in `src * M` (vector*matrix).
+
+fn pnanovdb_map_get_vecf(buf: pnanovdb_buf_t, map: pnanovdb_map_handle_t) -> vec3f {
+    return vec3f(
+        pnanovdb_read_float(buf, pnanovdb_address_offset(map.address, PNANOVDB_MAP_OFF_VECF + 0u)),
+        pnanovdb_read_float(buf, pnanovdb_address_offset(map.address, PNANOVDB_MAP_OFF_VECF + 4u)),
+        pnanovdb_read_float(buf, pnanovdb_address_offset(map.address, PNANOVDB_MAP_OFF_VECF + 8u)),
+    );
+}
+
+fn pnanovdb_map_apply(buf: pnanovdb_buf_t, map: pnanovdb_map_handle_t, src: vec3f) -> vec3f {
+    return src * pnanovdb_map_get_matf(buf, map) + pnanovdb_map_get_vecf(buf, map);
+}
+fn pnanovdb_map_apply_inverse(buf: pnanovdb_buf_t, map: pnanovdb_map_handle_t, src: vec3f) -> vec3f {
+    return (src - pnanovdb_map_get_vecf(buf, map)) * pnanovdb_map_get_invmatf(buf, map);
+}
+fn pnanovdb_map_apply_jacobi(buf: pnanovdb_buf_t, map: pnanovdb_map_handle_t, src: vec3f) -> vec3f {
+    return src * pnanovdb_map_get_matf(buf, map);
+}
+fn pnanovdb_map_apply_inverse_jacobi(buf: pnanovdb_buf_t, map: pnanovdb_map_handle_t, src: vec3f) -> vec3f {
+    return src * pnanovdb_map_get_invmatf(buf, map);
+}
+
+fn pnanovdb_grid_world_to_indexf(buf: pnanovdb_buf_t, grid: pnanovdb_grid_handle_t, src: vec3f) -> vec3f {
+    return pnanovdb_map_apply_inverse(buf, pnanovdb_grid_get_map(grid), src);
+}
+fn pnanovdb_grid_index_to_worldf(buf: pnanovdb_buf_t, grid: pnanovdb_grid_handle_t, src: vec3f) -> vec3f {
+    return pnanovdb_map_apply(buf, pnanovdb_grid_get_map(grid), src);
+}
+fn pnanovdb_grid_world_to_index_dirf(buf: pnanovdb_buf_t, grid: pnanovdb_grid_handle_t, src: vec3f) -> vec3f {
+    return pnanovdb_map_apply_inverse_jacobi(buf, pnanovdb_grid_get_map(grid), src);
+}
+fn pnanovdb_grid_index_to_world_dirf(buf: pnanovdb_buf_t, grid: pnanovdb_grid_handle_t, src: vec3f) -> vec3f {
+    return pnanovdb_map_apply_jacobi(buf, pnanovdb_grid_get_map(grid), src);
+}
+
+// --- Trilinear sampling (WebVDB extension) ---
+// Continuous index-space sampling: floor to the base voxel, take 8 accessor
+// taps at the cell corners, and lerp. Points outside active topology resolve
+// to the grid background via the accessor descent, so no explicit clamp is
+// needed. Public per-type wrappers select the leaf decode; the shared impl
+// holds the 8-tap lerp.
+fn pnanovdb_sample_trilinear_typed(grid_type: u32, buf: pnanovdb_buf_t, acc: ptr<function, pnanovdb_readaccessor_t>, xyz: vec3f) -> f32 {
+    let ijk = vec3i(floor(xyz));
+    let uvw = xyz - vec3f(ijk);
+
+    let c000 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(0, 0, 0));
+    let c100 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(1, 0, 0));
+    let c010 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(0, 1, 0));
+    let c110 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(1, 1, 0));
+    let c001 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(0, 0, 1));
+    let c101 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(1, 0, 1));
+    let c011 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(0, 1, 1));
+    let c111 = pnanovdb_readaccessor_get_value_float(grid_type, buf, acc, ijk + vec3i(1, 1, 1));
+
+    let x00 = mix(c000, c100, uvw.x);
+    let x10 = mix(c010, c110, uvw.x);
+    let x01 = mix(c001, c101, uvw.x);
+    let x11 = mix(c011, c111, uvw.x);
+    let y0 = mix(x00, x10, uvw.y);
+    let y1 = mix(x01, x11, uvw.y);
+    return mix(y0, y1, uvw.z);
+}
+
+fn pnanovdb_sample_trilinear_float(buf: pnanovdb_buf_t, acc: ptr<function, pnanovdb_readaccessor_t>, xyz: vec3f) -> f32 {
+    return pnanovdb_sample_trilinear_typed(PNANOVDB_GRID_TYPE_FLOAT, buf, acc, xyz);
+}
+fn pnanovdb_sample_trilinear_fp8(buf: pnanovdb_buf_t, acc: ptr<function, pnanovdb_readaccessor_t>, xyz: vec3f) -> f32 {
+    return pnanovdb_sample_trilinear_typed(PNANOVDB_GRID_TYPE_FP8, buf, acc, xyz);
+}
+fn pnanovdb_sample_trilinear_fpn(buf: pnanovdb_buf_t, acc: ptr<function, pnanovdb_readaccessor_t>, xyz: vec3f) -> f32 {
+    return pnanovdb_sample_trilinear_typed(PNANOVDB_GRID_TYPE_FPN, buf, acc, xyz);
+}
+
+// --- Node stats addresses (PNanoVDB.h: {leaf,lower,upper,root}_get_{min,max,ave,stddev}_address) ---
+// upper_get_{min,max,ave,stddev}_address already exist earlier in the file;
+// leaf/lower/root variants + root background are added here for parity. For
+// quantized (Fp*) grids these slots hold plain f32, so the *_float readers
+// below decode uniformly with pnanovdb_read_float.
+
+fn pnanovdb_root_get_background_address(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(root.address, pnanovdb_grid_type_constants[grid_type].root_off_background);
+}
+fn pnanovdb_root_get_min_address(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(root.address, pnanovdb_grid_type_constants[grid_type].root_off_min);
+}
+fn pnanovdb_root_get_max_address(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(root.address, pnanovdb_grid_type_constants[grid_type].root_off_max);
+}
+fn pnanovdb_root_get_ave_address(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(root.address, pnanovdb_grid_type_constants[grid_type].root_off_ave);
+}
+fn pnanovdb_root_get_stddev_address(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(root.address, pnanovdb_grid_type_constants[grid_type].root_off_stddev);
+}
+
+fn pnanovdb_lower_get_min_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].lower_off_min);
+}
+fn pnanovdb_lower_get_max_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].lower_off_max);
+}
+fn pnanovdb_lower_get_ave_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].lower_off_ave);
+}
+fn pnanovdb_lower_get_stddev_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].lower_off_stddev);
+}
+
+fn pnanovdb_leaf_get_min_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].leaf_off_min);
+}
+fn pnanovdb_leaf_get_max_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].leaf_off_max);
+}
+fn pnanovdb_leaf_get_ave_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].leaf_off_ave);
+}
+fn pnanovdb_leaf_get_stddev_address(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> pnanovdb_address_t {
+    return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].leaf_off_stddev);
+}
+
+// f32 convenience readers over the stats slots (WebVDB — upstream returns the
+// address and lets the caller read a typed value; ours read f32 directly,
+// which is correct for FLOAT and the Fp* grids' float-encoded stats).
+fn pnanovdb_root_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_root_get_min_address(grid_type, buf, root));
+}
+fn pnanovdb_root_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_root_get_max_address(grid_type, buf, root));
+}
+fn pnanovdb_root_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_root_get_ave_address(grid_type, buf, root));
+}
+fn pnanovdb_root_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_root_get_stddev_address(grid_type, buf, root));
+}
+fn pnanovdb_upper_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_upper_get_min_address(grid_type, buf, node));
+}
+fn pnanovdb_upper_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_upper_get_max_address(grid_type, buf, node));
+}
+fn pnanovdb_upper_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_upper_get_ave_address(grid_type, buf, node));
+}
+fn pnanovdb_upper_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_upper_get_stddev_address(grid_type, buf, node));
+}
+fn pnanovdb_lower_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_lower_get_min_address(grid_type, buf, node));
+}
+fn pnanovdb_lower_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_lower_get_max_address(grid_type, buf, node));
+}
+fn pnanovdb_lower_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_lower_get_ave_address(grid_type, buf, node));
+}
+fn pnanovdb_lower_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_lower_get_stddev_address(grid_type, buf, node));
+}
+fn pnanovdb_leaf_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_leaf_get_min_address(grid_type, buf, node));
+}
+fn pnanovdb_leaf_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_leaf_get_max_address(grid_type, buf, node));
+}
+fn pnanovdb_leaf_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_leaf_get_ave_address(grid_type, buf, node));
+}
+fn pnanovdb_leaf_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
+    return pnanovdb_read_float(buf, pnanovdb_leaf_get_stddev_address(grid_type, buf, node));
+}
