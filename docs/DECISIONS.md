@@ -1,0 +1,66 @@
+# Decisions Log
+
+Resolved 2026-07-11 (review round 1). These supersede the corresponding
+open questions in [FEASIBILITY.md](./FEASIBILITY.md) §10.
+
+## D1 — Repo
+Build proceeds in a **new dedicated repository**: **WebVDB — this repo**,
+created at Phase 0 kickoff. The study docs were migrated here (as `docs/`)
+from the original working branch and this is their permanent home.
+
+## D2 — GPU traversal base
+**Adopt the existing Apache-2.0 `pnanovdb.wgsl` port** (emcfarlane/
+webgpu-nanovdb). Treat it as experimental: we **vendor it as a fork from
+day one** (pinned commit, NOTICE preserved, our fixes applied in-tree with
+a diff log) rather than depending on the upstream repo — prepared to
+diverge permanently, happy to upstream fixes if the author engages.
+
+## D3 — CPU half: pure TypeScript first, WASM as targeted escalation
+Native-OpenVDB-in-WASM is **not** a hard requirement. Since the hard part
+(building a valid NanoVDB tree from parsed voxels) must be hand-written in
+every realistic option anyway, we write the v1 CPU path in **pure
+TypeScript**: `.vdb` parsing (zlib; blosc via optional third-party codec),
+NanoVDB serialization, Fp8/FpN quantization, affine transforms
+(metadata-only Map edits), `.nvdb` read/write. Validated byte/value-wise
+against official `nanovdb_convert` output on fixtures.
+WASM becomes escalation rungs, adopted only on demonstrated need:
+- **NanoVDB-only WASM** — official `createNanoGrid` as a correctness/perf
+  backstop for the TS builder.
+- **OpenVDB WASM** — only if resample/filter/CSG/`.vdb`-export become
+  priorities; timeboxed, never a foundation.
+
+## D4 — Targets and device creation
+**Desktop-only v1**, modest asset sizes (EmberGen/Houdini-scale grids, WDAS
+quarter cloud as the stretch fixture — no full Disney-scale assets).
+Device pattern per Dennis's prior success: **create the `GPUDevice`
+ourselves** (adapter query → our `requiredLimits`/features) **and pass it
+to `WebGPURenderer` at construction**, rather than relying on renderer
+option plumbing. The mobile atlas fallback stays designed-in but untargeted.
+
+## D5 — Package names (working titles, Claude's pick)
+- `nanovdb-wgsl` — renderer-agnostic WGSL traversal module + TS `.nvdb` loader
+- `three-nanovdb` — TSL/three.js layer (grid wrapper, materials, compute utils)
+- `vdb-web-tools` — TS-first CPU tooling (parse/build/quantize/transform), with optional WASM add-ons
+
+## D6 — Browser-first; companion service is an interim crutch to eliminate
+*(added review round 2, reframed round 3)* **The mission is these tools on
+the web.** Every operation should run in the browser; the native OpenVDB
+companion service (Docker image + thin CLI/HTTP wrapper, grown from the
+Phase 0 fixture-bake image) exists only as an **interim crutch** for the
+rare ops the browser stack can't do yet, and each of its endpoints carries
+an explicit browser-successor plan:
+
+| Server op (interim) | Browser successor (future effort) |
+|---|---|
+| `.vdb` export (full-fidelity) | TS `.vdb` writer — float/none/zlib first, validated by Houdini/Blender round-trip, fidelity grown until the server path is redundant |
+| blosc-compressed `.vdb` input | third-party blosc-wasm codec plugged into the TS parser |
+| resample / mixed-transform merge | **GPU compute resample** (WGSL sampling of the source grid at the new transform — machinery Phase 2 already builds) → TS tree rebuild |
+| CSG / composites | same-transform composites are TS v2 already; general case rides the GPU-resample path |
+| batch sequence conversion | Web Workers + File System Access API once single-file conversion is browser-native |
+
+Success criterion: the service's op list shrinks release over release;
+"needs the server" is treated as a bug with a roadmap entry, not a
+feature. Background facts unchanged: `.vdb` writing is full-OpenVDB
+territory in the native ecosystem (standalone NanoVDB writes only
+`.nvdb`; picovdb is read-oriented), and OpenVDB-WASM (W2) stays
+paper-only — the browser successors above are TS/WGSL, not Emscripten.
