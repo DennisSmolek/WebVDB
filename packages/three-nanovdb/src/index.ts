@@ -1,41 +1,15 @@
 /**
  * three-nanovdb — TSL/three.js layer over the nanovdb-wgsl core.
  *
- * Phase 0 stub: API surface only, no three.js import yet. `NanoVDBGrid`
- * and the compute utilities land in Phases 1–4; `NanoVDBVolumeMaterial`
- * is the Phase 3 main goal (docs/PLAN.md, docs/SPEC.md §3).
+ * `NanoVDBGrid` (grid image -> StorageBufferAttribute + metadata -> Box3/
+ * Matrix4/proxy geometry, SPEC §3.1) and `createVolumeRenderer` (device-first
+ * WebGPURenderer bootstrap, decision D4, SPEC §3.4) are the Phase 3 core.
+ * `NanoVDBVolumeMaterial` (the fragment-raymarch cloud material, SPEC §3.2)
+ * is a separate, later piece of work built on top of this surface.
  */
 
-export interface VolumeRendererOptions {
-  /** Grid bytes the device must be able to bind; raises `maxStorageBufferBindingSize`. */
-  gridBytes?: number;
-  canvas?: HTMLCanvasElement;
-}
+export { NanoVDBGrid } from "./grid.js";
+export type { NanoVDBGridOptions } from "./grid.js";
 
-export interface CapabilityReport {
-  adapterLimits: Record<string, number>;
-  requestedLimits: Record<string, number>;
-  features: string[];
-}
-
-/**
- * Device-first renderer bootstrap (decision D4): requests the adapter,
- * creates the `GPUDevice` ourselves with `requiredLimits` raised to
- * `min(adapter.limits, needed(gridBytes))`, then constructs
- * `WebGPURenderer({ device })` with the shared device. Three.js will NOT
- * raise limits for us — documented trap (docs/FEASIBILITY.md §5).
- *
- * Phase 3 deliverable — currently throws.
- */
-export async function createVolumeRenderer(
-  _opts: VolumeRendererOptions = {},
-): Promise<{ renderer: unknown; report: CapabilityReport }> {
-  throw new Error("createVolumeRenderer: not implemented (Phase 3)");
-}
-
-/** Wraps one NanoVDB grid image for GPU use. Phase 1+ deliverable. */
-export class NanoVDBGrid {
-  constructor(_gridImage: Uint32Array) {
-    throw new Error("NanoVDBGrid: not implemented (Phase 1)");
-  }
-}
+export { createVolumeRenderer, computeRequiredLimits, nextPow2 } from "./renderer.js";
+export type { VolumeRendererOptions, CapabilityReport, RequiredLimits } from "./renderer.js";
