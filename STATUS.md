@@ -1,8 +1,8 @@
 # STATUS
 
-- **Current phase:** 2 — traversal core (docs/PLAN.md); Phase 1 **complete** (see docs/handoffs/PHASE-1.md)
-- **Phase 1 gate:** PASSED + independently verified — demo 01 GPU probe 73/73 vs native sidecar; 67 unit tests, 2 e2e, clean tsc
-- **Headline findings:** feasibility risk #1 retired (`wgslFn` + `ptr<storage,array<u32>,read>` binds cleanly in three r185); D4 external-GPUDevice pattern confirmed; SwiftShader gives CI a real WebGPU adapter
-- **Phase 2 in flight:** WGSL fork extension (Fp decoders, trilinear, HDDA, stats — T3), CPU trilinear reference + probe generator (T2), loader hardening from verification findings (T2); GPU probe harness next
-- **Blockers:** none
-- **Read first:** docs/handoffs/PHASE-1.md for entry points and carried debts
+- **Current phase:** 3 — cloud material (docs/PLAN.md); Phases 0–2 **complete** (docs/handoffs/)
+- **Phase 2 gate:** PASSED — 18k GPU probes + 4.5k trilinear samples across 9 fixtures × Float/Fp8/FpN vs CPU reference, 0 failures, max Δ 6e-8; suite 89 unit + 3 e2e, clean tsc
+- **Traversal core:** vendored fork extended (FP decoders, typed dispatch, map, trilinear, stats) with zero audit deviations; compile-checked on-device; VENDOR.md diff log current
+- **Blockers:** none for CI-path work; WDAS/EmberGen downloads blocked in the authoring sandbox (proxy) — hero-asset demos need a network-open machine
+- **Next:** Phase 3 — three-nanovdb (`NanoVDBGrid`, `createVolumeRenderer`, `NanoVDBVolumeMaterial`), demos 02/03, golden-image SSIM gate
+- **Read first:** docs/handoffs/PHASE-2.md
