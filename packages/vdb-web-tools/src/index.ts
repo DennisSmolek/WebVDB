@@ -16,10 +16,15 @@ export interface InspectReport {
   memoryBreakdown: Record<string, number>;
 }
 
-/** Parse a `.vdb` container (zlib via fflate; blosc via optional codec). Phase 5. */
-export function parseVdb(_buffer: ArrayBuffer): never {
-  throw new Error("parseVdb: not implemented (Phase 5)");
-}
+export type { VdbBBox, VdbFile, VdbGrid, VdbLeaf, VdbTransformInfo } from "./vdb/index.js";
+export { VdbFormatError, VdbUnsupportedError } from "./vdb/index.js";
+
+/**
+ * Parse a `.vdb` container: FloatGrid, 5-4-3 tree, uncompressed/zlib
+ * (blosc raises a clear "not supported" error, per SPEC §4). Phase 5 —
+ * see `src/vdb/` for the reader implementation.
+ */
+export { parseVdb } from "./vdb/index.js";
 
 /** Build a NanoVDB grid image from a parsed `.vdb` grid. Phase 5. */
 export function buildFromVdb(_grid: unknown): never {
