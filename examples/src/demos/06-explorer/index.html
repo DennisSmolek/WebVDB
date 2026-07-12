@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebVDB · 06 explorer</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #0b1020; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+      #app canvas { width: 100%; height: 100%; }
+      #panel {
+        position: fixed; top: 0; left: 0; bottom: 0; margin: 0.75rem; padding: 0.75rem 0.9rem;
+        width: 23rem; max-width: calc(100vw - 1.5rem);
+        background: rgba(12, 16, 32, 0.82); color: #e6ebff; border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(6px);
+        font-size: 0.78rem; line-height: 1.35; overflow-y: auto;
+      }
+      #panel h1 { font-size: 0.95rem; margin: 0 0 0.25rem; }
+      #panel h2 { font-size: 0.8rem; margin: 0.9rem 0 0.3rem; opacity: 0.85; }
+      #panel a { color: #9db4ff; }
+      #dropzone {
+        margin-top: 0.5rem; padding: 0.75rem; border: 2px dashed rgba(255,255,255,0.3); border-radius: 8px;
+        text-align: center; font-size: 0.75rem; opacity: 0.85; transition: background 0.15s, border-color 0.15s;
+      }
+      #dropzone.drag-over { background: rgba(157, 180, 255, 0.15); border-color: #9db4ff; }
+      #dropzone .samples { margin-top: 0.5rem; display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: center; }
+      button { font: inherit; background: rgba(255,255,255,0.1); color: inherit; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 0.25rem 0.5rem; cursor: pointer; }
+      button:hover { background: rgba(255,255,255,0.18); }
+      input[type="file"] { font-size: 0.7rem; max-width: 100%; }
+      table { border-collapse: collapse; width: 100%; font-size: 0.72rem; }
+      th, td { text-align: left; padding: 0.1rem 0.3rem; border-bottom: 1px solid rgba(255,255,255,0.08); }
+      th { opacity: 0.7; font-weight: 500; white-space: nowrap; }
+      td { text-align: right; word-break: break-word; }
+      .bar-title { font-size: 0.72rem; opacity: 0.7; margin: 0.4rem 0 0.15rem; }
+      .bar-row { display: grid; grid-template-columns: 1fr; gap: 0.1rem; margin: 0.2rem 0; font-size: 0.7rem; }
+      .bar-row .bar { height: 0.55rem; background: linear-gradient(90deg, #5ee6c9, #9db4ff); border-radius: 3px; min-width: 2px; }
+      .bar-row span { opacity: 0.85; }
+      #hist-canvas { width: 100%; height: 64px; background: rgba(255,255,255,0.05); border-radius: 6px; }
+      #slice-canvas { width: 100%; image-rendering: pixelated; background: #000; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); }
+      #slice input[type="range"] { width: 100%; margin-top: 0.35rem; }
+      #leaf-note { font-size: 0.7rem; opacity: 0.75; margin-top: 0.25rem; }
+      #stats { font-variant-numeric: tabular-nums; opacity: 0.85; margin: 0.35rem 0; white-space: pre-line; }
+      #err { color: #ff9b9b; white-space: pre-wrap; margin-top: 0.5rem; }
+      #panel.test-hidden #dropzone { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="panel">
+      <h1>06 · explorer</h1>
+      <div><a href="/">&larr; all demos</a> · drag-drop .vdb/.nvdb inspector</div>
+      <div id="dropzone">
+        Drop a <code>.vdb</code> or <code>.nvdb</code> file here
+        <div><input type="file" id="file-input" accept=".vdb,.nvdb" /></div>
+        <div class="samples">
+          <button id="sample-vdb" type="button">sample: smoke.vdb</button>
+          <button id="sample-nvdb" type="button">sample: sphere_fog_fp8.nvdb</button>
+        </div>
+      </div>
+      <div id="stats">no grid loaded</div>
+      <h2>metadata</h2>
+      <div id="meta"></div>
+      <h2>inspect</h2>
+      <div id="inspect-bars"></div>
+      <h2>histogram</h2>
+      <canvas id="hist-canvas" width="256" height="64"></canvas>
+      <h2>axial slice (Z)</h2>
+      <div id="slice">
+        <canvas id="slice-canvas"></canvas>
+        <input type="range" id="slice-z" min="0" max="0" step="1" value="0" disabled />
+      </div>
+      <div id="leaf-note"></div>
+      <div id="err"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
