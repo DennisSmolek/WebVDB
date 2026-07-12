@@ -15,6 +15,7 @@
     "dev": "pnpm --filter @webvdb/examples dev",
     "build": "pnpm -r --filter './packages/*' build",
     "typecheck": "tsc --build",
+    "pack:dry": "pnpm -r --filter './packages/*' exec npm pack --dry-run",
     "fixtures": "node scripts/fetch-wdas-cloud.mjs && node scripts/fetch-embergen-pack.mjs && node scripts/fetch-vdb-samples.mjs",
     "fixtures:wdas": "node scripts/fetch-wdas-cloud.mjs",
     "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs",

@@ -3,6 +3,14 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // Workspace packages export conditional entries — `"development"` ->
+    // `./src/index.ts` (source, for the monorepo) vs. `"import"`/`"default"`
+    // -> `./dist/*.js` (build output, for a published consumer). Declaring
+    // this condition here (inherited by every package + examples tsconfig)
+    // makes in-repo typecheck resolve cross-package imports straight to
+    // source, matching Vite/Vitest's own default `development|production`
+    // condition (see each package's README "packaging" note).
+    "customConditions": ["development"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["@webgpu/types"],
     "strict": true,

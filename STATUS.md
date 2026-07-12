@@ -1,9 +1,8 @@
 # STATUS
 
-- **Phases 0–5 complete (CI scope)** — see docs/handoffs/PHASE-{1..5}.md. Demos 01–04, 06, 07 shipping and e2e-gated.
-- **Suite:** 206 unit / 10 e2e (goldens byte-stable) / clean tsc — pushed to `claude/vdb-docs-phase-0-setup-pviw1b` AND `main` (flip default branch to main in GitHub settings)
-- **Browser-first milestone (D6):** parse .vdb → build → quantize fp8/fpn → write .nvdb → render, all pure TS + WGSL, no server. TS fp8 encode is native-exact at every tested coord.
-- **Needs a native/hardware machine:** WDAS 60fps + perf table (PHASE-3.md); nanovdb_convert value-parity sweep (PHASE-5.md checklist); Docker bake/companion image; Data3DTexture + canvas-present retests (PHASE-4.md)
-- **Next candidates:** Phase 7 sequences (needs EmberGen download + material grid-rebind API); Phase 8 polish (docs site, npm dry-run, explorer extras); isomorphic CPU-reference refactor (top code-health debt); Phase 6b service (Docker)
-- **Blockers:** none in-sandbox; remaining phases need assets/hardware this environment can't reach
-- **Read first on resume:** this file → docs/handoffs/PHASE-5.md
+- **Sandbox-scope work COMPLETE: Phases 0–7 + Phase 8's packaging slice.** All remaining items need Dennis's machine — see **docs/ON-DEVICE.md** (dependency-ordered checklist).
+- **Suite:** 234 unit / 11 e2e (demos 01–07 + gpu-parity + smoke; goldens byte-stable) / clean tsc / `pnpm build` + `npm pack --dry-run` green for all three packages — pushed to `claude/vdb-docs-phase-0-setup-pviw1b` and `main`
+- **Shipped:** `.nvdb` loader (hardened) + CPU reference (isomorphic, single source of truth); extended audited WGSL fork (decoders/map/trilinear/HDDA/stats) with GPU parity proven at 22.5k evaluations; `NanoVDBGrid`/`createVolumeRenderer`/`NanoVDBVolumeMaterial` (sample-budgeted, grid-rebind + `maxGridBytes`); compute utilities (stats/transform/atlas); pure-TS `.vdb` parser + NanoVDB serializer + native-exact Fp8/FpN quantization + transform/inspect/writeNvdb; `NanoVDBSequence` player; demos 01–07; package READMEs + publishable exports maps
+- **Key facts for future sessions:** TS fp8 encode is native-exact at every tested coord; r185 storage buffers are fixed-size (rebind via maxGridBytes padding); `"development"` export condition resolves workspace source (customConditions in tsconfig.base); sandbox Dawn quirks documented in PHASE-4.md/ON-DEVICE.md §6
+- **Blockers:** none — sandbox work is done; next actions are all in docs/ON-DEVICE.md
+- **Read first on resume:** this file → docs/ON-DEVICE.md → docs/handoffs/PHASE-5.md

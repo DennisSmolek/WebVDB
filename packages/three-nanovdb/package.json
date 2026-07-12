@@ -4,15 +4,21 @@
   "description": "Three.js TSL layer for NanoVDB: grid wrapper, volume materials, compute utilities",
   "license": "Apache-2.0",
   "type": "module",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
-    "src",
     "dist"
   ],
   "scripts": {
     "build": "tsc --build",
+    "prepack": "tsc --build",
     "test": "vitest run"
   },
   "peerDependencies": {
