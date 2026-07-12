@@ -36,6 +36,8 @@ export const PATCH_VERSION = 1;
 export const VERSION_PACKED = (MAJOR_VERSION << 21) | (MINOR_VERSION << 10) | PATCH_VERSION;
 
 export const GRID_TYPE_FLOAT = 1;
+export const GRID_TYPE_FP8 = 14;
+export const GRID_TYPE_FPN = 16;
 export const GRID_CLASS_UNKNOWN = 0;
 export const GRID_CLASS_FOG_VOLUME = 2;
 
@@ -159,6 +161,28 @@ export const LEAF_OFF_VALUE_MASK = 16; // 512-bit array (64 bytes)
 export const LEAF_TABLE_COUNT = 512; // 8^3
 
 // ---------------------------------------------------------------------------
+// Quantized-leaf (Fp8/FpN) header layout — `LeafFnBase` (NanoVDB.h). The 96-byte
+// header is common to Fp4/Fp8/Fp16/FpN; the compressed code array follows at 96.
+// Unlike FLOAT (which stores f32 stats), quantized leaves store the affine
+// (mMinimum, mQuantum) pair as f32 and the min/max/ave/dev *statistics* as
+// uint16 codes quantized against that same (min, quantum). Verified against the
+// native box/sphere fp8+fpn fixtures.
+// ---------------------------------------------------------------------------
+
+export const LEAF_OFF_FP_MINIMUM = 80; // f32  mMinimum  (== value at code 0)
+export const LEAF_OFF_FP_QUANTUM = 84; // f32  mQuantum  (== (max-min)/((1<<bits)-1))
+export const LEAF_OFF_FP_STAT_MIN = 88; // u16  quantized min of active values
+export const LEAF_OFF_FP_STAT_MAX = 90; // u16
+export const LEAF_OFF_FP_STAT_AVG = 92; // u16
+export const LEAF_OFF_FP_STAT_DEV = 94; // u16
+export const LEAF_OFF_FP_CODES = 96; // start of the packed code array
+export const FP_LEAF_HEADER_SIZE = 96;
+
+/** FpN leaf `mFlags` (high byte of bbox_dif_and_flags): logBitWidth in bits 5-7,
+ *  plus the has-bbox bit the native encoder always sets (0x02). Fp8 uses 0x02. */
+export const LEAF_FLAG_HAS_BBOX = 2;
+
+// ---------------------------------------------------------------------------
 // Per-grid-type layout (FLOAT). Fp8/FpN add sibling blocks in the next wave.
 // ---------------------------------------------------------------------------
 
@@ -227,6 +251,33 @@ export const FLOAT_LAYOUT: GridTypeLayout = {
   leafOffStdDev: 92,
 };
 
+/**
+ * Quantized (Fp8/FpN) grid layout. Root/upper/lower blocks are byte-for-byte
+ * identical to FLOAT (their tiles/stats stay f32); only the leaf differs. For
+ * Fp8 `leafSize` is a fixed 608 (96 header + 512 one-byte codes). For FpN the
+ * leaf is variable-sized (96 + bitWidth*64), so `leafSize` here is the 96-byte
+ * base — the real per-leaf size comes from the codec. The `leafOff*` stat
+ * offsets are the u16 statistic slots (the codec writes them directly).
+ */
+function quantizedLayout(gridType: number, leafSize: number): GridTypeLayout {
+  return {
+    ...FLOAT_LAYOUT,
+    gridType,
+    valueStrideBits: 0, // not a uniform stride for quantized leaves
+    leafSize,
+    leafOffTable: LEAF_OFF_FP_CODES,
+    leafOffMin: LEAF_OFF_FP_STAT_MIN,
+    leafOffMax: LEAF_OFF_FP_STAT_MAX,
+    leafOffAve: LEAF_OFF_FP_STAT_AVG,
+    leafOffStdDev: LEAF_OFF_FP_STAT_DEV,
+  };
+}
+
+/** Fp8: fixed 8-bit codes. Leaf = 96-byte header + 512 bytes = 608. */
+export const FP8_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP8, 608);
+/** FpN: variable bit-width. `leafSize` is the 96-byte base (see codec). */
+export const FPN_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FPN, FP_LEAF_HEADER_SIZE);
+
 // ---------------------------------------------------------------------------
 // coord -> key / coord -> offset (structural bit math, identical for all types)
 // ---------------------------------------------------------------------------
@@ -279,6 +330,9 @@ export class GridImageWriter {
     this.view = new DataView(buffer);
   }
 
+  setU16(off: number, v: number): void {
+    this.view.setUint16(off, v & 0xffff, true);
+  }
   setU32(off: number, v: number): void {
     this.view.setUint32(off, v >>> 0, true);
   }

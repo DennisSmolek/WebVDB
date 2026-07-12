@@ -13,9 +13,21 @@
  * write-nvdb.ts (file framing).
  */
 
-export { buildFromDense, buildFromDenseDetailed } from "./serialize.js";
-export type { BuildFromDenseOptions, BuiltGrid } from "./serialize.js";
+export {
+  buildFromDense,
+  buildFromDenseDetailed,
+  buildFromLeavesDetailed,
+} from "./serialize.js";
+export type { BuildFromDenseOptions, BuildFromLeavesOptions, BuiltGrid } from "./serialize.js";
 export { writeNvdb } from "./write-nvdb.js";
 export type { WriteNvdbOptions } from "./write-nvdb.js";
 export type { LeafCodec } from "./leaf-codec.js";
-export { FLOAT_LEAF_CODEC } from "./leaf-codec.js";
+export { FLOAT_LEAF_CODEC, FP8_LEAF_CODEC, makeFpNLeafCodec, FPN_DEFAULT_TOLERANCE } from "./leaf-codec.js";
+export { buildFromVdb, buildFromVdbDetailed } from "./build-from-vdb.js";
+export type { BuildFromVdbOptions } from "./build-from-vdb.js";
+export { quantize, quantizeDetailed } from "./quantize.js";
+export type { QuantizeMode } from "./quantize.js";
+export { transform } from "./transform.js";
+export type { TransformInput, TransformSpec } from "./transform.js";
+export { inspect } from "./inspect.js";
+export type { InspectReport } from "./inspect.js";

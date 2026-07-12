@@ -93,6 +93,11 @@ function floorDiv(a: number, b: number): number {
   return Math.floor(a / b);
 }
 
+/** Deterministic `"x,y,z"` origin key used to dedupe/lookup nodes by coord. */
+function leafKey(lx: number, ly: number, lz: number): string {
+  return `${lx},${ly},${lz}`;
+}
+
 /** Aligns coord down to a power-of-two block size (handles negatives). */
 function alignDown(v: number, block: number): number {
   return floorDiv(v, block) * block;
@@ -121,7 +126,6 @@ export function buildTree(
 
   // -- Pass 1: discover leaves (blocks with >=1 active voxel) ---------------
   const leafMap = new Map<string, Leaf>();
-  const leafKey = (lx: number, ly: number, lz: number): string => `${lx},${ly},${lz}`;
 
   for (let x = 0; x < nx; x++) {
     for (let y = 0; y < ny; y++) {
@@ -173,12 +177,62 @@ export function buildTree(
     }
   }
 
+  return assembleTree([...leafMap.values()]);
+}
+
+/**
+ * Builds the sparse hierarchy directly from a set of already-materialised leaves
+ * (each carrying its 8-aligned origin, all 512 values, and a 512-bit value mask).
+ * This is the memory-frugal path used by `buildFromVdb` and `quantize`: it never
+ * allocates a dense array, so a 7M-voxel grid streams leaf-by-leaf. Per-leaf
+ * stats/bbox are (re)computed from the mask + values here.
+ */
+export function buildTreeFromLeaves(source: Iterable<LeafInput>): BuiltTree {
+  const leaves: Leaf[] = [];
+  for (const src of source) {
+    const [lx, ly, lz] = src.origin;
+    const stats = new StatsAccumulator();
+    for (let n = 0; n < LEAF_TABLE_COUNT; n++) {
+      const active = (src.valueMask[n >>> 5]! >>> (n & 31)) & 1;
+      if (active) {
+        const x = lx + ((n >> 6) & 7);
+        const y = ly + ((n >> 3) & 7);
+        const z = lz + (n & 7);
+        stats.addVoxel(src.values[n]!, x, y, z);
+      }
+    }
+    leaves.push({
+      origin: [lx, ly, lz],
+      values: src.values,
+      valueMask: src.valueMask,
+      stats,
+      memIndex: -1,
+    });
+  }
+  return assembleTree(leaves);
+}
+
+/** Minimal shape a leaf source must provide to `buildTreeFromLeaves`. */
+export interface LeafInput {
+  origin: [number, number, number];
+  /** All 512 voxel values in leaf-offset order (active and inactive). */
+  values: Float32Array;
+  /** 512-bit active mask as 16 u32 words. */
+  valueMask: Uint32Array;
+}
+
+/**
+ * Assembles lower/upper/root nodes (topology, ordering, stats aggregation) from
+ * a flat list of leaves. Shared by the dense (`buildTree`) and leaf-iterator
+ * (`buildTreeFromLeaves`) build paths.
+ */
+function assembleTree(leafList: Leaf[]): BuiltTree {
   // -- Assemble lower/upper nodes from leaves ------------------------------
   const upperMap = new Map<string, UpperNode>();
   const lowerMap = new Map<string, LowerNode>();
   const nodeKey = leafKey;
 
-  for (const leaf of leafMap.values()) {
+  for (const leaf of leafList) {
     const [lx, ly, lz] = leaf.origin;
     const ux = alignDown(lx, 4096);
     const uy = alignDown(ly, 4096);

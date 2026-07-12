@@ -61,9 +61,6 @@ import {
   GRID_OFF_WORLD_BBOX,
   GRID_SIZE,
   GridImageWriter,
-  LEAF_OFF_BBOX_DIF_AND_FLAGS,
-  LEAF_OFF_BBOX_MIN,
-  LEAF_OFF_VALUE_MASK,
   LOWER_OFF_CHILD_MASK,
   LOWER_TABLE_COUNT,
   MAGIC_GRID,
@@ -103,7 +100,14 @@ import {
 } from "./bytes.js";
 import { FLOAT_LEAF_CODEC, type LeafCodec } from "./leaf-codec.js";
 import { StatsAccumulator } from "./stats.js";
-import { buildTree, type BuiltTree, type LowerNode, type UpperNode } from "./tree.js";
+import {
+  buildTree,
+  buildTreeFromLeaves,
+  type BuiltTree,
+  type LeafInput,
+  type LowerNode,
+  type UpperNode,
+} from "./tree.js";
 
 export interface BuildFromDenseOptions {
   /** Index-space min corner of the dense block. Default [0,0,0]. */
@@ -212,6 +216,70 @@ export function buildFromDenseDetailed(
   };
 }
 
+export interface BuildFromLeavesOptions {
+  /** Uniform voxel size in world units. Default 1. */
+  voxelSize?: number;
+  /** World-space translation (the NanoVDB Map's vec / index-origin world pos). Default [0,0,0]. */
+  worldOrigin?: [number, number, number];
+  /** Background (inactive) value. Default 0. */
+  background?: number;
+  /** Grid name (<256 bytes incl. NUL). Default "grid". */
+  gridName?: string;
+  /** Grid class. Default "FogVolume". */
+  gridClass?: "FogVolume" | "Unknown";
+}
+
+/**
+ * Builds a complete NanoVDB grid image from an iterator of already-materialised
+ * leaves (each carrying its 8-aligned origin, all 512 values and a 512-bit value
+ * mask), using the given {@link LeafCodec}. This is the memory-frugal path —
+ * leaves stream in, no dense array is ever allocated — that backs `buildFromVdb`
+ * (parser leaves -> FLOAT) and `quantize` (an existing grid's leaves -> Fp8/FpN).
+ */
+export function buildFromLeavesDetailed(
+  leaves: Iterable<LeafInput>,
+  codec: LeafCodec,
+  opts: BuildFromLeavesOptions = {},
+): BuiltGrid {
+  const voxelSize = opts.voxelSize ?? 1;
+  const background = opts.background ?? 0;
+  const gridName = opts.gridName ?? "grid";
+  const gridClassId = GRID_CLASS_ID[opts.gridClass ?? "FogVolume"];
+  const worldOrigin = opts.worldOrigin ?? [0, 0, 0];
+
+  const nameBytes = new TextEncoder().encode(gridName);
+  if (nameBytes.length + 1 > GRID_NAME_MAX) {
+    throw new Error(
+      `buildFromLeaves: gridName is ${nameBytes.length} bytes; must be < ${GRID_NAME_MAX} (incl. NUL). ` +
+        `Long grid names (HasLongGridName + blind metadata) are not supported in v1.`,
+    );
+  }
+
+  const tree = buildTreeFromLeaves(leaves);
+  const image = layoutGrid(tree, codec, {
+    gridName,
+    nameBytes,
+    gridClassId,
+    voxelSize,
+    worldOrigin,
+    origin: [0, 0, 0],
+    background,
+  });
+
+  const indexBBox = bboxOrEmpty(tree.root);
+  const worldBBox = worldBBoxFromIndex(indexBBox, voxelSize, worldOrigin, [0, 0, 0]);
+
+  return {
+    image,
+    gridName,
+    voxelCount: tree.activeVoxelCount,
+    indexBBox,
+    worldBBox,
+    voxelSize,
+    nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
+  };
+}
+
 interface LayoutParams {
   gridName: string;
   nameBytes: Uint8Array;
@@ -236,13 +304,23 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
   const upperOff = rootOff + rootBlockSize;
   const lowerOff = upperOff + nUpper * L.upperSize;
   const leafOff = lowerOff + nLower * L.lowerSize;
-  const total = leafOff + nLeaf * L.leafSize;
+
+  // Per-leaf plans + cumulative offsets. FLOAT/Fp8 leaves are fixed-size; FpN
+  // leaves vary (96 + bitWidth*64), so the block is not a uniform stride.
+  const leafPlans = tree.leaves.map((leaf) => codec.planLeaf(leaf.values));
+  const leafByteOffset = new Array<number>(nLeaf);
+  let leafAcc = 0;
+  for (let i = 0; i < nLeaf; i++) {
+    leafByteOffset[i] = leafAcc;
+    leafAcc += leafPlans[i]!.byteSize;
+  }
+  const total = leafOff + leafAcc;
 
   const w = new GridImageWriter(total);
 
   const upperAbs = (i: number): number => upperOff + i * L.upperSize;
   const lowerAbs = (i: number): number => lowerOff + i * L.lowerSize;
-  const leafAbs = (i: number): number => leafOff + i * L.leafSize;
+  const leafAbs = (i: number): number => leafOff + leafByteOffset[i]!;
 
   // ---- GridData ----------------------------------------------------------
   writeGridData(w, tree, codec, p, total);
@@ -314,20 +392,7 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
 
   // ---- Leaf nodes --------------------------------------------------------
   for (const leaf of tree.leaves) {
-    const off = leafAbs(leaf.memIndex);
-    const s = leaf.stats;
-    const bmin = s.isEmpty ? leaf.origin : s.bboxMin;
-    const bmax = s.isEmpty ? leaf.origin : s.bboxMax;
-    writeCoord(w, off + LEAF_OFF_BBOX_MIN, bmin);
-    const difX = clampByte(bmax[0] - bmin[0]);
-    const difY = clampByte(bmax[1] - bmin[1]);
-    const difZ = clampByte(bmax[2] - bmin[2]);
-    w.setU32(
-      off + LEAF_OFF_BBOX_DIF_AND_FLAGS,
-      (difX | (difY << 8) | (difZ << 16) | (NODE_FLAG_STATS << 24)) >>> 0,
-    );
-    w.setMaskWords(off + LEAF_OFF_VALUE_MASK, leaf.valueMask);
-    codec.encodeLeafValues(w, off, leaf.values, leaf.stats);
+    codec.encodeLeaf(w, leafAbs(leaf.memIndex), leaf, leafPlans[leaf.memIndex]!);
   }
 
   return w.u32;
@@ -467,10 +532,6 @@ function writeCoord(w: GridImageWriter, off: number, c: readonly [number, number
   w.setI32(off, c[0]);
   w.setI32(off + 4, c[1]);
   w.setI32(off + 8, c[2]);
-}
-
-function clampByte(v: number): number {
-  return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
 function bboxOrEmpty(s: StatsAccumulator): {

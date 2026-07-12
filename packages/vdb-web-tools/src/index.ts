@@ -8,14 +8,6 @@
  * WASM is an optional escalation rung (W1), never the foundation.
  */
 
-export interface InspectReport {
-  gridType: string;
-  gridClass: string;
-  voxelCount: number;
-  nodeCounts: { upper: number; lower: number; leaf: number };
-  memoryBreakdown: Record<string, number>;
-}
-
 export type { VdbBBox, VdbFile, VdbGrid, VdbLeaf, VdbTransformInfo } from "./vdb/index.js";
 export { VdbFormatError, VdbUnsupportedError } from "./vdb/index.js";
 
@@ -26,34 +18,45 @@ export { VdbFormatError, VdbUnsupportedError } from "./vdb/index.js";
  */
 export { parseVdb } from "./vdb/index.js";
 
-/** Build a NanoVDB grid image from a parsed `.vdb` grid. Phase 5. */
-export function buildFromVdb(_grid: unknown): never {
-  throw new Error("buildFromVdb: not implemented (Phase 5)");
-}
+/**
+ * Build a NanoVDB FLOAT grid image from a parsed `.vdb` grid — streams the
+ * parser's leaves into the serializer (no dense array), carrying the `.vdb`
+ * uniform scale+translate transform into the NanoVDB Map.
+ */
+export { buildFromVdb, buildFromVdbDetailed } from "./nanovdb/index.js";
+export type { BuildFromVdbOptions } from "./nanovdb/index.js";
 
 /**
  * NanoVDB serializer (Phase 5b): build FLOAT grid images from dense
  * arrays and write `.nvdb` segment files — see `src/nanovdb/` for the
- * layout/stats/validation details and the LeafCodec seam Fp8/FpN slot
- * into next.
+ * layout/stats/validation details and the LeafCodec seam Fp8/FpN slot into.
  */
-export { buildFromDense, buildFromDenseDetailed, FLOAT_LEAF_CODEC } from "./nanovdb/index.js";
-export type { BuildFromDenseOptions, BuiltGrid, LeafCodec } from "./nanovdb/index.js";
+export {
+  buildFromDense,
+  buildFromDenseDetailed,
+  buildFromLeavesDetailed,
+  FLOAT_LEAF_CODEC,
+  FP8_LEAF_CODEC,
+  makeFpNLeafCodec,
+} from "./nanovdb/index.js";
+export type {
+  BuildFromDenseOptions,
+  BuildFromLeavesOptions,
+  BuiltGrid,
+  LeafCodec,
+} from "./nanovdb/index.js";
 
-/** Quantize a grid to Fp8/FpN. Phase 5. */
-export function quantize(_grid: unknown, _mode: "fp8" | "fpn", _tolerance?: number): never {
-  throw new Error("quantize: not implemented (Phase 5)");
-}
+/** Quantize a FLOAT grid image to Fp8/FpN (per-leaf min/quantum + packed codes). */
+export { quantize, quantizeDetailed } from "./nanovdb/index.js";
+export type { QuantizeMode } from "./nanovdb/index.js";
 
-/** Affine transform — a metadata-only Map edit, no voxel churn. Phase 5. */
-export function transform(_grid: unknown, _matrix: Float32Array): never {
-  throw new Error("transform: not implemented (Phase 5)");
-}
+/** Affine transform — a metadata-only Map edit, no voxel churn (uniform scale+translate). */
+export { transform } from "./nanovdb/index.js";
+export type { TransformInput, TransformSpec } from "./nanovdb/index.js";
 
-/** Tree stats, per-level counts, memory breakdown. Phase 5 (explorer). */
-export function inspect(_grid: unknown): InspectReport {
-  throw new Error("inspect: not implemented (Phase 5)");
-}
+/** Tree stats, per-level counts, memory breakdown. */
+export { inspect } from "./nanovdb/index.js";
+export type { InspectReport } from "./nanovdb/index.js";
 
 export { writeNvdb } from "./nanovdb/index.js";
 export type { WriteNvdbOptions } from "./nanovdb/index.js";
