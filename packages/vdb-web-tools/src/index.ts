@@ -31,13 +31,14 @@ export function buildFromVdb(_grid: unknown): never {
   throw new Error("buildFromVdb: not implemented (Phase 5)");
 }
 
-/** Build a NanoVDB grid image from a dense array. Phase 5 (demo 07). */
-export function buildFromDense(
-  _values: Float32Array,
-  _dims: [number, number, number],
-): never {
-  throw new Error("buildFromDense: not implemented (Phase 5)");
-}
+/**
+ * NanoVDB serializer (Phase 5b): build FLOAT grid images from dense
+ * arrays and write `.nvdb` segment files — see `src/nanovdb/` for the
+ * layout/stats/validation details and the LeafCodec seam Fp8/FpN slot
+ * into next.
+ */
+export { buildFromDense, buildFromDenseDetailed, FLOAT_LEAF_CODEC } from "./nanovdb/index.js";
+export type { BuildFromDenseOptions, BuiltGrid, LeafCodec } from "./nanovdb/index.js";
 
 /** Quantize a grid to Fp8/FpN. Phase 5. */
 export function quantize(_grid: unknown, _mode: "fp8" | "fpn", _tolerance?: number): never {
@@ -54,10 +55,10 @@ export function inspect(_grid: unknown): InspectReport {
   throw new Error("inspect: not implemented (Phase 5)");
 }
 
-/** Read/write `.nvdb` files. Phase 5. */
+export { writeNvdb } from "./nanovdb/index.js";
+export type { WriteNvdbOptions } from "./nanovdb/index.js";
+
+/** Read `.nvdb` files. Phase 5 follow-up (the `nanovdb-wgsl` package's NanoVDBFile covers reading today). */
 export function readNvdb(_buffer: ArrayBuffer): never {
   throw new Error("readNvdb: not implemented (Phase 5)");
-}
-export function writeNvdb(_grid: unknown): never {
-  throw new Error("writeNvdb: not implemented (Phase 5)");
 }
