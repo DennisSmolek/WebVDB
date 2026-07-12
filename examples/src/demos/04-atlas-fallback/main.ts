@@ -27,15 +27,14 @@
  * exercises both `gridStats` (full CPU cross-check, cheap at this size) and
  * `valueTransform` (sidecar-sample cross-check) instead.
  *
- * ## CPU truth: reusing the harness's browser-safe reference
+ * ## CPU truth: `nanovdb-wgsl`'s package-exported CPU reference
  *
- * `packages/nanovdb-wgsl/src/cpu/*` pulls its layout constants from
+ * `packages/nanovdb-wgsl/src/cpu/*` used to pull its layout constants from
  * `vendor/stride-tables.json` via `node:fs`, which has no browser
- * equivalent (a documented Phase 2 debt — see docs/handoffs/PHASE-2.md).
- * `examples/src/harness/{wgsl-constants,cpu-reference}.ts` (Phase 2) already
- * solved this by parsing the same constants out of the fetched WGSL text at
- * runtime; this demo reuses those two modules verbatim rather than
- * duplicating a third copy of the descent logic.
+ * equivalent (a documented debt — see docs/handoffs/PHASE-5.md's "Known
+ * debts"). It now reads a baked, browser-safe generated module instead, so
+ * this demo imports the package's own `readValue` directly rather than
+ * duplicating the descent logic.
  *
  * ## Presentation & determinism
  *
@@ -51,12 +50,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Fn, storage, uniform, wgslFn } from "three/tsl";
 import { StorageBufferAttribute, VolumeNodeMaterial } from "three/webgpu";
 import type { Node, WebGPURenderer } from "three/webgpu";
-import { NanoVDBFile } from "nanovdb-wgsl";
+import { NanoVDBFile, readValue } from "nanovdb-wgsl";
 import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
 import { NanoVDBGrid, buildComputeShaderSource, createVolumeRenderer, decodeToAtlas, gridStats, valueTransform } from "three-nanovdb";
-
-import { readValueCpu } from "../../harness/cpu-reference";
-import { parseWgslConstants } from "../../harness/wgsl-constants";
 
 /**
  * Hand-rolled trilinear sample over the `decodeToAtlas` output, packed 4
@@ -193,7 +189,6 @@ async function fetchOk(url: string): Promise<ArrayBuffer | null> {
  */
 function cpuGridStats(
   grid: NanoVDBGrid,
-  wc: ReturnType<typeof parseWgslConstants>,
 ): { min: number; max: number; mean: number; activeVoxelCount: number } {
   const [minX, minY, minZ] = grid.metadata.indexBBox.min;
   const [maxX, maxY, maxZ] = grid.metadata.indexBBox.max;
@@ -204,7 +199,7 @@ function cpuGridStats(
   for (let x = minX; x <= maxX; x++) {
     for (let y = minY; y <= maxY; y++) {
       for (let z = minZ; z <= maxZ; z++) {
-        const r = readValueCpu(grid.image, [x, y, z], grid.gridTypeId, wc);
+        const r = readValue(grid.image, [x, y, z]);
         if (!r.active) continue;
         activeVoxelCount++;
         sum += r.value;
@@ -383,7 +378,6 @@ async function run(): Promise<void> {
 
   const atlasGrid = NanoVDBGrid.fromFile(NanoVDBFile.fromArrayBuffer(atlasBuf), 0);
   const statsGrid = NanoVDBGrid.fromFile(NanoVDBFile.fromArrayBuffer(statsBuf), 0);
-  const wc = parseWgslConstants(pnanovdbSource);
 
   const { renderer, device } = await createVolumeRenderer({
     gridBytes: Math.max(atlasGrid.byteLength, statsGrid.byteLength),
@@ -393,7 +387,7 @@ async function run(): Promise<void> {
   // gridStats: GPU result vs. full CPU pass over box_fog_float.
   // -------------------------------------------------------------------------
   const gpuStats = await gridStats(device, statsGrid, pnanovdbSource);
-  const cpuStats = cpuGridStats(statsGrid, wc);
+  const cpuStats = cpuGridStats(statsGrid);
   const statsOk =
     gpuStats.activeVoxelCount === sidecar.grid.activeVoxelCount &&
     gpuStats.activeVoxelCount === cpuStats.activeVoxelCount &&
@@ -428,7 +422,7 @@ async function run(): Promise<void> {
   let sawTile = false;
   let transformOk = activeSamples.length > 0;
   activeSamples.forEach((s, i) => {
-    const got = readValueCpu(transformedGrid.image, s.ijk, transformedGrid.gridTypeId, wc);
+    const got = readValue(transformedGrid.image, s.ijk);
     const isLeaf = levels[i]!.level === 0;
     if (isLeaf) {
       sawLeaf = true;

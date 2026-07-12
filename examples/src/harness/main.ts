@@ -2,26 +2,25 @@
  * GPU parity harness — the Phase 2 gate (docs/PLAN.md): replay thousands of
  * deterministic voxel probes and trilinear samples across all nine fixtures
  * through the extended vendored WGSL module (`nanovdb-wgsl/pnanovdb.wgsl`),
- * comparing against the CPU reference (`cpu-reference.ts`, a transliteration
- * of the Phase 1-proven `packages/nanovdb-wgsl/src/cpu/*` descent).
+ * comparing against the CPU reference (`nanovdb-wgsl`'s own `readValue`/
+ * `sampleTrilinear` — Phase 1-proven `packages/nanovdb-wgsl/src/cpu/*`
+ * descent, package-exported since Phase 5's dedup, see
+ * docs/handoffs/PHASE-5.md's "Known debts").
  *
  * Architecture (deliberately raw WebGPU, no three.js/TSL — see the T2 brief):
  * the TSL binding pattern was already proven by demo 01; this harness's job
  * is validating the WGSL module itself with minimal machinery.
  *
  * Pipeline, once per page load:
- *   1. Fetch the vendored WGSL as text (`?raw`), parse its own layout
- *      constants at runtime (`wgsl-constants.ts`) — no separate JSON fetch,
- *      no risk of drifting from what's actually compiled.
- *   2. Device-first bootstrap (adapter -> device with a raised
+ *   1. Device-first bootstrap (adapter -> device with a raised
  *      `maxStorageBufferBindingSize`, matching demo 01's D4 pattern).
- *   3. Compile ONE shader module = vendored WGSL + a small harness footer
+ *   2. Compile ONE shader module = vendored WGSL + a small harness footer
  *      (`shader-footer.ts`) declaring `nanovdb_buffer` and two `@compute`
  *      entry points (`harness_main_probe`, `harness_main_trilinear`).
  *      `getCompilationInfo()` is checked immediately — WGSL errors are
  *      surfaced verbatim into `window.__GPU_PARITY__.error`, the debugging
  *      channel.
- *   4. Build two explicit (non-'auto') pipelines once, so per-fixture work
+ *   3. Build two explicit (non-'auto') pipelines once, so per-fixture work
  *      is just buffers + bind groups + dispatch + readback.
  *
  * Per fixture (all nine under fixtures/primitives/, git-ignored — missing
@@ -30,7 +29,8 @@
  *     of the grid image (byte PNANOVDB_GRID_OFF_GRID_TYPE) rather than
  *     trusting a name string.
  *   - Generate 2000 deterministic integer probes + 500 continuous trilinear
- *     points (`probe-coords.ts`, seed = fixture index).
+ *     points (`nanovdb-wgsl`'s `probeCoords`/`probePoints`, seed = fixture
+ *     index).
  *   - Compute CPU-truth values/active flags in-page.
  *   - Dispatch both entry points, read back, compare
  *     (probes |Δ| ≤ 1e-5 + active exact; trilinear |Δ| ≤ 1e-3 — GPU is pure
@@ -39,13 +39,10 @@
  *     `window.__GPU_PARITY__` (the e2e gate's read channel) and an on-page
  *     table.
  */
-import { NanoVDBFile } from "nanovdb-wgsl";
+import { NanoVDBFile, defineNumber, probeCoords, probePoints, readValue, sampleTrilinear } from "nanovdb-wgsl";
 import pnanovdbWgsl from "nanovdb-wgsl/pnanovdb.wgsl?raw";
 
-import { readValueCpu, sampleTrilinearCpu } from "./cpu-reference";
-import { probeCoords, probePoints } from "./probe-coords";
 import { HARNESS_FOOTER_WGSL } from "./shader-footer";
-import { parseWgslConstants } from "./wgsl-constants";
 
 // ---------------------------------------------------------------------------
 // Types shared with the e2e gate (window.__GPU_PARITY__).
@@ -262,15 +259,14 @@ async function run(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
-  // 1. Parse the vendored WGSL's own layout constants (no separate fetch).
+  // 1. Layout constants for the byte this harness reads straight out of every
+  //    grid image (the numeric grid-type id, for logging + the GPU
+  //    `harness_grid_type` buffer). `nanovdb-wgsl`'s own `readValue`/
+  //    `sampleTrilinear` (used below as this harness's CPU truth) detect the
+  //    grid type themselves from the same bytes, so this is the only offset
+  //    this file needs directly.
   // -------------------------------------------------------------------------
-  const wc = parseWgslConstants(pnanovdbWgsl);
-  log(
-    `Parsed pnanovdb.wgsl constants: GRID_SIZE=${wc.scalars.PNANOVDB_GRID_SIZE}, ` +
-      `${wc.gridTypeConstants.length} grid_type_constants rows, ` +
-      `FLOAT=${wc.scalars.PNANOVDB_GRID_TYPE_FLOAT} FP8=${wc.scalars.PNANOVDB_GRID_TYPE_FP8} ` +
-      `FPN=${wc.scalars.PNANOVDB_GRID_TYPE_FPN}.`,
-  );
+  const gridOffGridType = defineNumber("PNANOVDB_GRID_OFF_GRID_TYPE");
 
   // -------------------------------------------------------------------------
   // 2. Fixtures (git-ignored; skip gracefully per-file).
@@ -370,7 +366,7 @@ async function run(): Promise<void> {
       const file = NanoVDBFile.fromArrayBuffer(buffer);
       const gridImage = file.gridImage(0);
       const gridMeta = file.grids[0]!;
-      const gridTypeId = gridImage[wc.scalars.PNANOVDB_GRID_OFF_GRID_TYPE >>> 2]!;
+      const gridTypeId = gridImage[gridOffGridType >>> 2]!;
 
       const bboxMin = gridMeta.indexBBox.min;
       const bboxMax = gridMeta.indexBBox.max;
@@ -383,13 +379,13 @@ async function run(): Promise<void> {
       const expectedValues = new Float32Array(PROBE_COUNT);
       const expectedActive = new Uint8Array(PROBE_COUNT);
       for (let i = 0; i < PROBE_COUNT; i++) {
-        const r = readValueCpu(gridImage, coords[i]!, gridTypeId, wc);
+        const r = readValue(gridImage, coords[i]!);
         expectedValues[i] = r.value;
         expectedActive[i] = r.active ? 1 : 0;
       }
       const expectedTri = new Float32Array(TRILINEAR_COUNT);
       for (let i = 0; i < TRILINEAR_COUNT; i++) {
-        expectedTri[i] = sampleTrilinearCpu(gridImage, points[i]!, gridTypeId, wc);
+        expectedTri[i] = sampleTrilinear(gridImage, points[i]!);
       }
 
       // ---- flat GPU inputs ----

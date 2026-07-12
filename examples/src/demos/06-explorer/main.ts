@@ -16,22 +16,21 @@
  *     WebGPU isn't available)
  *   - LEAF-node bbox wireframes (`./leaf-walk.ts`, capped at 5000, drawn over
  *     the rendered volume)
- *   - a CPU-only axial Z-slice view (`readValueCpu`, no GPU involved)
+ *   - a CPU-only axial Z-slice view (`readValue`, no GPU involved)
  *
  * ## Presentation & CPU reference: same decisions as demos 02/04
  *
  * Offscreen `RenderTarget` -> `readRenderTargetPixelsAsync` -> 2D-canvas blit
  * (canvas *presentation* drops the Dawn instance under this sandbox's
  * SwiftShader — see docs/handoffs/PHASE-3.md), the same r185 swizzle-string
- * shim + adapter keep-alive shim, and the harness's browser-clean
- * `cpu-reference.ts`/`wgsl-constants.ts` pair rather than `nanovdb-wgsl`'s own
- * `cpu/*` (which loads `stride-tables.json` via `node:fs` — not importable
- * into a Vite page; see docs/handoffs/PHASE-4.md and `cpu-reference.ts`'s own
- * module doc). `NodeMaterial` still needs >=1 light in the scene for its
- * lighting codepath to run at all (see docs/handoffs/PHASE-4.md) — moot here
- * since `NanoVDBVolumeMaterial` is a from-scratch fragment raymarch, not a
- * stock `NodeMaterial` lighting model, but noted for anyone extending this
- * demo toward `VolumeNodeMaterial`.
+ * shim + adapter keep-alive shim, and `nanovdb-wgsl`'s own package-exported
+ * `readValue` (its `cpu/*` used to load `stride-tables.json` via `node:fs` —
+ * not importable into a Vite page; see docs/handoffs/PHASE-5.md's "Known
+ * debts" for the dedup that fixed this). `NodeMaterial` still needs >=1
+ * light in the scene for its lighting codepath to run at all (see
+ * docs/handoffs/PHASE-4.md) — moot here since `NanoVDBVolumeMaterial` is a
+ * from-scratch fragment raymarch, not a stock `NodeMaterial` lighting model,
+ * but noted for anyone extending this demo toward `VolumeNodeMaterial`.
  *
  * ## Deterministic test mode (`?test=1&sample=vdb|nvdb`)
  *
@@ -41,7 +40,7 @@
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile } from "nanovdb-wgsl";
+import { NanoVDBFile, readValue } from "nanovdb-wgsl";
 import type { GridMetadata } from "nanovdb-wgsl";
 import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
 import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer, gridStats } from "three-nanovdb";
@@ -49,9 +48,6 @@ import type { WebGPURenderer } from "three/webgpu";
 import { buildFromVdbDetailed, inspect, parseVdb } from "vdb-web-tools";
 import type { InspectReport } from "vdb-web-tools";
 
-import { readValueCpu } from "../../harness/cpu-reference";
-import { parseWgslConstants } from "../../harness/wgsl-constants";
-import type { ParsedWgslConstants } from "../../harness/wgsl-constants";
 import { walkLeafOrigins } from "./leaf-walk";
 
 interface Demo06State {
@@ -280,7 +276,7 @@ function renderHistogram(histogram: Uint32Array): void {
 }
 
 /** ~100k-sample CPU scan, used when WebGPU (or `gridStats` itself) is unavailable. */
-function cpuHistogramFallback(grid: NanoVDBGrid, wc: ParsedWgslConstants): Uint32Array {
+function cpuHistogramFallback(grid: NanoVDBGrid): Uint32Array {
   const [minX, minY, minZ] = grid.metadata.indexBBox.min;
   const [maxX, maxY, maxZ] = grid.metadata.indexBBox.max;
   const sizeX = maxX - minX + 1;
@@ -294,7 +290,7 @@ function cpuHistogramFallback(grid: NanoVDBGrid, wc: ParsedWgslConstants): Uint3
     const x = minX + Math.floor(Math.random() * sizeX);
     const y = minY + Math.floor(Math.random() * sizeY);
     const z = minZ + Math.floor(Math.random() * sizeZ);
-    const r = readValueCpu(grid.image, [x, y, z], grid.gridTypeId, wc);
+    const r = readValue(grid.image, [x, y, z]);
     if (!r.active) continue;
     values.push(r.value);
     if (r.value < vmin) vmin = r.value;
@@ -311,11 +307,7 @@ function cpuHistogramFallback(grid: NanoVDBGrid, wc: ParsedWgslConstants): Uint3
   return histogram;
 }
 
-async function computeHistogram(
-  device: GPUDevice | undefined,
-  grid: NanoVDBGrid,
-  wc: ParsedWgslConstants,
-): Promise<Uint32Array> {
+async function computeHistogram(device: GPUDevice | undefined, grid: NanoVDBGrid): Promise<Uint32Array> {
   if (device) {
     try {
       const result = await gridStats(device, grid, pnanovdbSource, { histogramBins: HISTOGRAM_BINS });
@@ -325,14 +317,14 @@ async function computeHistogram(
       // to succeed whenever `device` exists).
     }
   }
-  return cpuHistogramFallback(grid, wc);
+  return cpuHistogramFallback(grid);
 }
 
 // ---------------------------------------------------------------------------
 // Panel: axial Z-slice (pure CPU, no GPU involved)
 // ---------------------------------------------------------------------------
 
-function renderSlice(grid: NanoVDBGrid, wc: ParsedWgslConstants, z: number): boolean {
+function renderSlice(grid: NanoVDBGrid, z: number): boolean {
   const [minX, minY] = grid.metadata.indexBBox.min;
   const [maxX, maxY] = grid.metadata.indexBBox.max;
   const w = maxX - minX + 1;
@@ -357,7 +349,7 @@ function renderSlice(grid: NanoVDBGrid, wc: ParsedWgslConstants, z: number): boo
     const y = minY + oy * strideY;
     for (let ox = 0; ox < outW; ox++) {
       const x = minX + ox * strideX;
-      const r = readValueCpu(grid.image, [x, y, z], grid.gridTypeId, wc);
+      const r = readValue(grid.image, [x, y, z]);
       const idx = oy * outW + ox;
       values[idx] = r.value;
       if (r.active) {
@@ -406,10 +398,9 @@ const WIREFRAME_EDGES: ReadonlyArray<readonly [number, number]> = [
 
 function buildLeafWireframe(
   grid: NanoVDBGrid,
-  wc: ParsedWgslConstants,
   cap: number,
 ): { lines: THREE.LineSegments; material: THREE.LineBasicMaterial; shown: number; total: number } {
-  const { origins, total } = walkLeafOrigins(grid.image, grid.gridTypeId, wc, cap);
+  const { origins, total } = walkLeafOrigins(grid.image, grid.gridTypeId, cap);
   const LEAF_DIM = 8;
   const positions = new Float32Array(origins.length * WIREFRAME_EDGES.length * 2 * 3);
   const m = grid.indexToWorld();
@@ -467,7 +458,6 @@ let currentMeshMaterial: NanoVDBVolumeMaterial | undefined;
 let currentWireframe: THREE.LineSegments | undefined;
 let currentWireframeMaterial: THREE.LineBasicMaterial | undefined;
 let currentGrid: NanoVDBGrid | undefined;
-let currentWc: ParsedWgslConstants | undefined;
 
 async function initRenderer(): Promise<void> {
   ({ renderer, device } = await createVolumeRenderer({}));
@@ -545,17 +535,16 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
 
   const format = detectFormat(buffer, filename);
   const { grid, source } = loadFromArrayBuffer(buffer, format);
-  const wc = parseWgslConstants(pnanovdbSource);
   const report = inspect(grid.image);
 
   renderMeta(grid, buffer.byteLength);
   renderInspect(report);
 
-  const histogram = await computeHistogram(device, grid, wc);
+  const histogram = await computeHistogram(device, grid);
   renderHistogram(histogram);
   const histogramNonEmpty = histogram.some((v) => v > 0);
 
-  const { lines, material: wireframeMaterial, shown, total } = buildLeafWireframe(grid, wc, LEAF_CAP);
+  const { lines, material: wireframeMaterial, shown, total } = buildLeafWireframe(grid, LEAF_CAP);
   leafNoteEl.textContent =
     total > shown
       ? `leaf bboxes: showing ${shown.toLocaleString()} of ${total.toLocaleString()} (capped at ${LEAF_CAP.toLocaleString()})`
@@ -581,7 +570,6 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
   currentWireframe = lines;
   currentWireframeMaterial = wireframeMaterial;
   currentGrid = grid;
-  currentWc = wc;
 
   const worldBox = grid.worldBBox();
   const center = worldBox.getCenter(new THREE.Vector3());
@@ -596,7 +584,7 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
   const midZ = Math.round((minZ + maxZ) / 2);
   sliceZInput.value = String(midZ);
   sliceZInput.disabled = false;
-  const sliceNonEmpty = renderSlice(grid, wc, midZ);
+  const sliceNonEmpty = renderSlice(grid, midZ);
 
   statsEl.textContent =
     `${filename} (${source})\n` +
@@ -676,8 +664,8 @@ function wireInteractiveControls(): void {
   sampleVdbBtn.addEventListener("click", () => void handleSample(SAMPLE_URLS.vdb));
   sampleNvdbBtn.addEventListener("click", () => void handleSample(SAMPLE_URLS.nvdb));
   sliceZInput.addEventListener("input", () => {
-    if (!currentGrid || !currentWc) return;
-    renderSlice(currentGrid, currentWc, Number(sliceZInput.value));
+    if (!currentGrid) return;
+    renderSlice(currentGrid, Number(sliceZInput.value));
   });
 }
 

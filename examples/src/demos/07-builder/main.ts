@@ -28,10 +28,9 @@
  *       toggle exercises that path too, just not under the strict test-mode
  *       assertions.
  *   (b) `probesOk` — 20 deterministic, active (`value !== background`)
- *       coordinates, read back from the re-parsed image via the harness's
- *       browser-clean `readValueCpu` (see `cpu-reference.ts`'s module doc for
- *       why not `nanovdb-wgsl`'s own `cpu/*`), match the SOURCE dense array's
- *       f32 values exactly (`===`) — FLOAT is a lossless bit-for-bit
+ *       coordinates, read back from the re-parsed image via `nanovdb-wgsl`'s
+ *       package-exported `readValue`, match the SOURCE dense array's f32
+ *       values exactly (`===`) — FLOAT is a lossless bit-for-bit
  *       representation through this entire pipeline, so exact equality (not
  *       a tolerance) is the correct bar.
  *
@@ -43,16 +42,12 @@
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile } from "nanovdb-wgsl";
+import { NanoVDBFile, readValue } from "nanovdb-wgsl";
 import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
 import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "three-nanovdb";
 import type { WebGPURenderer } from "three/webgpu";
 import { buildFromDenseDetailed, quantize, writeNvdb } from "vdb-web-tools";
 import type { BuiltGrid } from "vdb-web-tools";
-
-import { readValueCpu } from "../../harness/cpu-reference";
-import { parseWgslConstants } from "../../harness/wgsl-constants";
-import type { ParsedWgslConstants } from "../../harness/wgsl-constants";
 
 interface Demo07State {
   ready: boolean;
@@ -210,12 +205,11 @@ function checkRoundTrip(built: BuiltGrid, reparsedGrid: NanoVDBGrid): boolean {
 /** 20 CPU probes on the re-parsed image must match the source dense values exactly. */
 function checkProbes(
   reparsedGrid: NanoVDBGrid,
-  wc: ParsedWgslConstants,
   probes: ReadonlyArray<{ ijk: [number, number, number]; value: number }>,
 ): boolean {
   if (probes.length === 0) return false;
   for (const p of probes) {
-    const r = readValueCpu(reparsedGrid.image, p.ijk, reparsedGrid.gridTypeId, wc);
+    const r = readValue(reparsedGrid.image, p.ijk);
     if (!r.active || r.value !== p.value) return false;
   }
   return true;
@@ -338,10 +332,9 @@ async function rebuildAndRender(opts: { seed: number; quantizeToFp8: boolean; ve
   let roundTripOk: boolean | undefined;
   let probesOk: boolean | undefined;
   if (opts.verify) {
-    const wc = parseWgslConstants(pnanovdbSource);
     roundTripOk = checkRoundTrip(built, reparsedGrid);
     const probes = pickProbes(values, DIM, 20);
-    probesOk = checkProbes(reparsedGrid, wc, probes);
+    probesOk = checkProbes(reparsedGrid, probes);
     verifyEl.innerHTML =
       `<div class="${roundTripOk ? "ok" : "bad"}">round trip: ${roundTripOk ? "OK" : "MISMATCH"}</div>` +
       `<div class="${probesOk ? "ok" : "bad"}">${probes.length} probes: ${probesOk ? "OK" : "MISMATCH"}</div>`;

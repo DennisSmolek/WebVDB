@@ -7,17 +7,15 @@
  * field position, table strides, child-mask bit offsets) is shared across
  * FLOAT/Fp8/FpN — `packages/vdb-web-tools/src/nanovdb/inspect.ts` relies on
  * the same fact ("root/tile/upper/lower strides are shared across grid
- * types") — so this walk needs only the `ParsedWgslConstants` already
- * extracted from the vendored WGSL text by
- * `examples/src/harness/wgsl-constants.ts` (the same browser-clean source
- * `cpu-reference.ts` uses — see its module doc for why `nanovdb-wgsl`'s own
- * `cpu/*` can't be imported into a Vite page: it pulls constants via
- * `node:fs.readFileSync`).
+ * types") — so this walk only needs `nanovdb-wgsl`'s package-exported
+ * `defineNumber`/`gridTypeConstantsForId` (the same layout-constant
+ * accessors `readValue` is built on — `gridTypeConstantsForId` is the
+ * "any grid type, not just FLOAT/FP8/FPN" variant this generic walk needs,
+ * see its doc comment in `packages/nanovdb-wgsl/src/cpu/stride-tables.ts`).
  *
- * Three numbers below are NOT in `ParsedWgslConstants` because they are
- * structural (identical for every grid type, never parsed out of the WGSL
- * text) — the same convention `cpu-reference.ts` uses for its own
- * `MASK_WORD_BITS` literal:
+ * Three numbers below are structural (identical for every grid type, not
+ * looked up from the layout tables) — the same convention `read-value.ts`
+ * uses for its own `MASK_WORD_BITS` literal:
  *   - `NODE_OFF_BBOX_MIN = 0`: the first field of every internal node.
  *   - `UPPER_TABLE_COUNT = 32768` (32^3), `LOWER_TABLE_COUNT = 4096` (16^3):
  *     fixed by NanoVDB's 5-4-3 tree configuration.
@@ -37,13 +35,21 @@
  * docs/handoffs/PHASE-4.md's demo 04 notes on `box_fog_float`) — those
  * regions are simply absent from the wireframe, a documented, minor gap.
  */
-import type { ParsedWgslConstants } from "../../harness/wgsl-constants";
+import { defineNumber, gridTypeConstantsForId } from "nanovdb-wgsl";
 
 export type IndexCoord = readonly [number, number, number];
 
 const NODE_OFF_BBOX_MIN = 0;
 const UPPER_TABLE_COUNT = 32768;
 const LOWER_TABLE_COUNT = 4096;
+
+// ------------------------- layout constants (via nanovdb-wgsl) -------------
+const GRID_SIZE = defineNumber("PNANOVDB_GRID_SIZE");
+const TREE_OFF_NODE_OFFSET_ROOT = defineNumber("PNANOVDB_TREE_OFF_NODE_OFFSET_ROOT");
+const ROOT_OFF_TABLE_SIZE = defineNumber("PNANOVDB_ROOT_OFF_TABLE_SIZE");
+const ROOT_TILE_OFF_CHILD = defineNumber("PNANOVDB_ROOT_TILE_OFF_CHILD");
+const UPPER_OFF_CHILD_MASK = defineNumber("PNANOVDB_UPPER_OFF_CHILD_MASK");
+const LOWER_OFF_CHILD_MASK = defineNumber("PNANOVDB_LOWER_OFF_CHILD_MASK");
 
 function readU32(words: Uint32Array, address: number): number {
   return words[address >>> 2]!;
@@ -73,30 +79,21 @@ export interface LeafWalkResult {
 }
 
 /** Enumerates real LEAF node origins (index space), capped at `cap` entries. */
-export function walkLeafOrigins(
-  image: Uint32Array,
-  gridTypeId: number,
-  wc: ParsedWgslConstants,
-  cap: number,
-): LeafWalkResult {
-  const s = wc.scalars;
-  const gt = wc.gridTypeConstants[gridTypeId];
-  if (!gt) {
-    throw new Error(`walkLeafOrigins: no grid type constants row for grid type id ${gridTypeId}`);
-  }
+export function walkLeafOrigins(image: Uint32Array, gridTypeId: number, cap: number): LeafWalkResult {
+  const gt = gridTypeConstantsForId(gridTypeId);
   const i32 = new Int32Array(image.buffer, image.byteOffset, image.length);
   const readI32 = (address: number): number => i32[address >>> 2]!;
 
-  const treeOff = s.PNANOVDB_GRID_SIZE;
-  const rootOff = treeOff + Number(readI64(image, treeOff + s.PNANOVDB_TREE_OFF_NODE_OFFSET_ROOT));
-  const nTiles = readU32(image, rootOff + s.PNANOVDB_ROOT_OFF_TABLE_SIZE);
+  const treeOff = GRID_SIZE;
+  const rootOff = treeOff + Number(readI64(image, treeOff + TREE_OFF_NODE_OFFSET_ROOT));
+  const nTiles = readU32(image, rootOff + ROOT_OFF_TABLE_SIZE);
 
   const origins: IndexCoord[] = [];
   let total = 0;
 
   for (let t = 0; t < nTiles; t++) {
     const tileOff = rootOff + gt.root_size + t * gt.root_tile_size;
-    const child = readI64(image, tileOff + s.PNANOVDB_ROOT_TILE_OFF_CHILD);
+    const child = readI64(image, tileOff + ROOT_TILE_OFF_CHILD);
     if (child === 0n) continue; // background tile, or an (unhandled) active root-level tile
 
     const upperOff = rootOff + Number(child);
@@ -107,7 +104,7 @@ export function walkLeafOrigins(
     ];
 
     for (let n = 0; n < UPPER_TABLE_COUNT; n++) {
-      if (!getMaskBit(image, upperOff + s.PNANOVDB_UPPER_OFF_CHILD_MASK, n)) continue;
+      if (!getMaskBit(image, upperOff + UPPER_OFF_CHILD_MASK, n)) continue;
       const slotOff = upperOff + gt.upper_off_table + gt.table_stride * n;
       const lowerOff = upperOff + Number(readI64(image, slotOff));
       const lowerOrigin: IndexCoord = [
@@ -117,7 +114,7 @@ export function walkLeafOrigins(
       ];
 
       for (let m = 0; m < LOWER_TABLE_COUNT; m++) {
-        if (!getMaskBit(image, lowerOff + s.PNANOVDB_LOWER_OFF_CHILD_MASK, m)) continue;
+        if (!getMaskBit(image, lowerOff + LOWER_OFF_CHILD_MASK, m)) continue;
         total++;
         if (origins.length < cap) {
           origins.push([
