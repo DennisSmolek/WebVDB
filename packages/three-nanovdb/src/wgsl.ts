@@ -155,6 +155,26 @@ export function rewriteBufferGlobal(pnanovdbSource: string, bufferName: string):
 }
 
 /**
+ * Guards against an empty/wrong `pnanovdbSource` string up front, rather than
+ * letting it surface as an opaque WGSL compile error (or, worse, a silently
+ * unrewritten/undeclared global) later. Shared by `assembleVolumeWgsl` (the
+ * TSL integration, which rewrites this identifier — see the module header)
+ * and `compute.ts`'s raw-WebGPU compute passes (which declare
+ * `nanovdb_buffer` directly, unrewritten, exactly like the Phase 2 harness
+ * footer) — both need the real vendored `pnanovdb.wgsl` text, not an
+ * empty/wrong string, and this is the one check both care about.
+ */
+export function assertHasBufferGlobal(pnanovdbSource: string): void {
+  if (!/\bnanovdb_buffer\b/.test(pnanovdbSource)) {
+    throw new Error(
+      "assertHasBufferGlobal: `pnanovdbSource` does not contain the `nanovdb_buffer` read site every " +
+        "consumer of the vendored library must satisfy — pass the real vendored pnanovdb.wgsl text " +
+        "(packages/nanovdb-wgsl/vendor/pnanovdb.wgsl), not an empty/wrong string.",
+    );
+  }
+}
+
+/**
  * Small WGSL helpers appended to the (rewritten) library so they live at module
  * scope alongside it — the entry `wgslFn` can only itself be a single parsed
  * function, so shared helpers can't live in the entry source. Prefixed
@@ -338,13 +358,7 @@ export function assembleVolumeWgsl(
   assertPositiveIntCap("shadowStepsCap", shadowStepsCap);
   assertPositiveIntCap("sampleBudgetCap", sampleBudgetCap);
 
-  if (!/\bnanovdb_buffer\b/.test(pnanovdbSource)) {
-    throw new Error(
-      "assembleVolumeWgsl: `pnanovdbSource` does not contain the `nanovdb_buffer` read site " +
-        "rewriteBufferGlobal is supposed to rewrite — pass the real vendored pnanovdb.wgsl text " +
-        "(packages/nanovdb-wgsl/vendor/pnanovdb.wgsl), not an empty/wrong string.",
-    );
-  }
+  assertHasBufferGlobal(pnanovdbSource);
 
   const samplerFn = samplerForGridType(opts.gridTypeId);
 

@@ -21,6 +21,7 @@ export {
   assembleVolumeWgsl,
   rewriteBufferGlobal,
   samplerForGridType,
+  assertHasBufferGlobal,
   GRID_TYPE_FLOAT,
   GRID_TYPE_FP8,
   GRID_TYPE_FPN,
@@ -28,3 +29,25 @@ export {
   DEFAULT_ENTRY_NAME,
 } from "./wgsl.js";
 export type { VolumeWgslOptions, AssembledVolumeWgsl } from "./wgsl.js";
+
+export {
+  gridStats,
+  valueTransform,
+  decodeToAtlas,
+  buildComputeShaderSource,
+  buildValueTransformShaderSource,
+  resolveTransformBody,
+  computeAtlasDims,
+  bboxSize,
+  VALUE_TRANSFORM_PRESETS,
+} from "./compute.js";
+export type {
+  GridStatsOptions,
+  GridStatsResult,
+  ValueTransformResult,
+  DecodeToAtlasOptions,
+  DecodeToAtlasResult,
+  AtlasFilter,
+  AtlasFormat,
+  IndexBBox,
+} from "./compute.js";

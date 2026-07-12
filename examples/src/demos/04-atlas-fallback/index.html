@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebVDB · 04 atlas-fallback</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #0b1020; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #panel {
+        position: fixed; top: 0; left: 0; margin: 0.75rem; padding: 0.75rem 0.9rem;
+        width: 20rem; max-width: calc(100vw - 1.5rem);
+        background: rgba(12, 16, 32, 0.72); color: #e6ebff; border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(6px);
+        font-size: 0.8rem; line-height: 1.35;
+      }
+      #panel h1 { font-size: 0.95rem; margin: 0 0 0.25rem; }
+      #panel a { color: #9db4ff; }
+      #stats { font-variant-numeric: tabular-nums; opacity: 0.85; margin: 0.35rem 0 0.6rem; white-space: pre-line; }
+      #err { color: #ff9b9b; white-space: pre-wrap; margin-top: 0.5rem; }
+      #panel.test-hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="panel">
+      <h1>04 · atlas-fallback</h1>
+      <div><a href="/">&larr; all demos</a> · compute &rarr; Data3DTexture &rarr; VolumeNodeMaterial</div>
+      <div id="stats">booting…</div>
+      <div id="err"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
