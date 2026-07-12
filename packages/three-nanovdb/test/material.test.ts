@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { NodeMaterial } from "three/webgpu";
+import { NodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { NanoVDBFile } from "nanovdb-wgsl";
+import type { GridMetadata } from "nanovdb-wgsl";
 import { NanoVDBGrid } from "../src/grid.js";
 import { NanoVDBVolumeMaterial } from "../src/material.js";
 import {
@@ -227,6 +228,109 @@ describe.skipIf(!wgslPresent || !fixturesPresent)("NanoVDBVolumeMaterial (fixtur
     const grid = await loadGrid("sphere_fog_fp8");
     // @ts-expect-error deliberately omitting the required source
     expect(() => new NanoVDBVolumeMaterial({ grid })).toThrow(/pnanovdbSource/);
+  });
+});
+
+/**
+ * Grid-rebind API (the Phase 7 flag from docs/handoffs/PHASE-3.md). Pure CPU:
+ * `rebindGrid` copies the new image into the bound storage attribute and bumps
+ * its version — no device needed, so these run without fixtures (only the real
+ * vendored WGSL, for material construction). Synthetic grids are hand-built so
+ * we can vary size/type freely; content is irrelevant to the rebind mechanics.
+ */
+function fakeGrid(words: number, gridType = "Float", fill = 1): NanoVDBGrid {
+  const image = new Uint32Array(words);
+  for (let i = 0; i < words; i++) image[i] = fill + i;
+  const metadata: GridMetadata = {
+    name: "fake",
+    gridType,
+    gridClass: "FogVolume",
+    worldBBox: { min: [0, 0, 0], max: [1, 1, 1] },
+    indexBBox: { min: [0, 0, 0], max: [1, 1, 1] },
+    voxelSize: [1, 1, 1],
+    voxelCount: 0,
+    gridByteSize: words * 4,
+  };
+  return new NanoVDBGrid({ image, metadata });
+}
+
+/** The material's bound backing array (private seam, reached only in tests). */
+function boundArray(mat: NanoVDBVolumeMaterial): Uint32Array {
+  return (mat as unknown as { _gridAttribute: StorageBufferAttribute })._gridAttribute.array as Uint32Array;
+}
+
+describe.skipIf(!wgslPresent)("NanoVDBVolumeMaterial.rebindGrid", () => {
+  it("same-size rebind copies the new image and bumps the attribute version", async () => {
+    const src = await loadSource();
+    const a = fakeGrid(64, "Float", 100);
+    const boundAttr = a.storageAttribute; // the instance the material will bind (default path)
+    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src });
+    expect(mat.grid).toBe(a);
+    expect(mat.capacityBytes).toBe(64 * 4);
+    const versionBefore = boundAttr.version;
+
+    const b = fakeGrid(64, "Float", 500);
+    mat.rebindGrid(b);
+
+    expect(mat.grid).toBe(b);
+    expect(Array.from(boundArray(mat))).toEqual(Array.from(b.image));
+    expect(boundAttr.version).toBeGreaterThan(versionBefore);
+  });
+
+  it("rebinds a SMALLER grid in place (fits under the initial capacity)", async () => {
+    const src = await loadSource();
+    const a = fakeGrid(64, "Float");
+    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src });
+    const smaller = fakeGrid(32, "Float", 900);
+    expect(() => mat.rebindGrid(smaller)).not.toThrow();
+    expect(mat.grid).toBe(smaller);
+    // The first 32 words hold the new image; the tail is stale-but-inert.
+    expect(Array.from(boundArray(mat).subarray(0, 32))).toEqual(Array.from(smaller.image));
+  });
+
+  it("throws when the new grid exceeds capacity, pointing at maxGridBytes", async () => {
+    const src = await loadSource();
+    const a = fakeGrid(16, "Float");
+    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src });
+    const bigger = fakeGrid(20, "Float");
+    expect(() => mat.rebindGrid(bigger)).toThrow(/capacity/i);
+    expect(() => mat.rebindGrid(bigger)).toThrow(/maxGridBytes/);
+    // The bound grid is unchanged after a failed rebind.
+    expect(mat.grid).toBe(a);
+  });
+
+  it("maxGridBytes pre-sizes a padded buffer so a bigger grid rebinds in place", async () => {
+    const src = await loadSource();
+    const a = fakeGrid(16, "Float", 10);
+    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src, maxGridBytes: 64 * 4 });
+    expect(mat.capacityBytes).toBe(64 * 4);
+    // Constructor copied frame 0 into the padded backing.
+    expect(Array.from(boundArray(mat).subarray(0, 16))).toEqual(Array.from(a.image));
+
+    const bigger = fakeGrid(48, "Float", 700);
+    expect(() => mat.rebindGrid(bigger)).not.toThrow();
+    expect(mat.grid).toBe(bigger);
+    expect(Array.from(boundArray(mat).subarray(0, 48))).toEqual(Array.from(bigger.image));
+  });
+
+  it("rounds maxGridBytes up to a whole u32 and never shrinks below the grid", async () => {
+    const src = await loadSource();
+    const a = fakeGrid(16, "Float");
+    // 65 bytes -> 17 words, but the grid already needs 16; capacity = max(16,17) = 17.
+    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src, maxGridBytes: 65 });
+    expect(mat.capacityBytes).toBe(17 * 4);
+    // A maxGridBytes smaller than the grid is ignored (capacity stays at the grid size).
+    const mat2 = new NanoVDBVolumeMaterial({ grid: fakeGrid(32, "Float"), pnanovdbSource: src, maxGridBytes: 8 });
+    expect(mat2.capacityBytes).toBe(32 * 4);
+  });
+
+  it("refuses a grid-type change (the sampler is baked at construction)", async () => {
+    const src = await loadSource();
+    const floatGrid = fakeGrid(64, "Float");
+    const mat = new NanoVDBVolumeMaterial({ grid: floatGrid, pnanovdbSource: src });
+    const fp8Grid = fakeGrid(64, "Fp8");
+    expect(() => mat.rebindGrid(fp8Grid)).toThrow(/grid type changed/i);
+    expect(mat.grid).toBe(floatGrid);
   });
 });
 

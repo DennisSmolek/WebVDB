@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebVDB · 05 embergen-sequence</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #0b1020; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #panel {
+        position: fixed; top: 0; left: 0; margin: 0.75rem; padding: 0.75rem 0.9rem;
+        width: 18rem; max-width: calc(100vw - 1.5rem);
+        background: rgba(12, 16, 32, 0.72); color: #e6ebff; border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(6px);
+        font-size: 0.8rem; line-height: 1.35;
+      }
+      #panel h1 { font-size: 0.95rem; margin: 0 0 0.25rem; }
+      #panel a { color: #9db4ff; }
+      #stats { font-variant-numeric: tabular-nums; opacity: 0.9; margin: 0.35rem 0 0.5rem; white-space: pre-line; }
+      #note {
+        margin: 0.4rem 0 0.2rem; padding: 0.4rem 0.55rem; border-radius: 7px;
+        background: rgba(255, 214, 120, 0.12); border: 1px solid rgba(255, 214, 120, 0.35);
+        color: #ffe3a3; font-size: 0.72rem;
+      }
+      #note code { background: rgba(0,0,0,0.25); padding: 0.05em 0.3em; border-radius: 4px; }
+      .row { display: flex; gap: 0.4rem; margin: 0.3rem 0; }
+      button { flex: 1; background: #26304d; color: #e6ebff; border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 6px; padding: 0.3rem; cursor: pointer; font-size: 0.75rem; }
+      button:hover { background: #313d63; }
+      #err { color: #ff9b9b; white-space: pre-wrap; margin-top: 0.5rem; }
+      #panel.test-hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="panel">
+      <h1>05 · embergen-sequence</h1>
+      <div><a href="/">&larr; all demos</a> · animated NanoVDB playback</div>
+      <div id="stats">booting…</div>
+      <div class="row">
+        <button id="playpause">pause</button>
+        <button id="restart">restart</button>
+      </div>
+      <div id="note"></div>
+      <div id="err"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

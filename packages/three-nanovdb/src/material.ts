@@ -33,7 +33,7 @@
  */
 
 import * as THREE from "three";
-import { NodeMaterial } from "three/webgpu";
+import { NodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import {
   cameraPosition,
   code,
@@ -73,6 +73,26 @@ export interface NanoVDBVolumeMaterialParameters {
   ambient?: number;
   /** Per-pixel jitter toggle: 1 = on, 0 = off. */
   jitter?: boolean;
+
+  /**
+   * Pre-allocate the grid storage buffer at this many BYTES so the grid can be
+   * swapped for a DIFFERENT-SIZED one later via `rebindGrid()` without a
+   * material/node rebuild (the paddable-buffer strategy — see `rebindGrid`).
+   *
+   * WHY THIS EXISTS: three's WebGPU backend allocates the storage GPUBuffer
+   * once, sized to the attribute array's byteLength at first upload, and never
+   * resizes it; subsequent updates are `device.queue.writeBuffer` into that
+   * fixed buffer. So a same-size grid swap is free, but a bigger grid would
+   * overflow the buffer. Sizing the buffer up front to the largest frame you
+   * will ever bind (e.g. `max(frame.image.byteLength)` across a sequence) makes
+   * every rebind an in-place sub-fill. Rounded up to a multiple of 4 bytes.
+   *
+   * Omit for a single static grid (the buffer is sized exactly to `grid`, and
+   * `rebindGrid` then only accepts a grid of the same-or-smaller byte length).
+   * The vendored traversal never bounds-checks reads against the buffer length,
+   * so the trailing padding is inert.
+   */
+  maxGridBytes?: number;
 
   /** Hard compile-time caps (uniforms clamp under these). */
   maxStepsCap?: number;
@@ -114,11 +134,29 @@ type ColorUniform = ReturnType<typeof uniform> & { value: THREE.Color };
 export class NanoVDBVolumeMaterial extends NodeMaterial {
   readonly isNanoVDBVolumeMaterial = true;
 
-  readonly grid: NanoVDBGrid;
   /** The assembled WGSL (library + entry) — exposed for inspection/testing. */
   readonly assembled: AssembledVolumeWgsl;
   /** The build-time-selected trilinear sampler function name. */
   readonly samplerFn: string;
+
+  /** Currently-bound grid (mutated by `rebindGrid`). */
+  private _grid: NanoVDBGrid;
+  /** The bound storage attribute — owns the (possibly padded) backing array. */
+  private readonly _gridAttribute: StorageBufferAttribute;
+  /** Capacity of the storage buffer in u32 words (>= any grid we can rebind to). */
+  private readonly _capacityWords: number;
+  /** True when we allocated our own padded backing (vs. binding `grid`'s own attribute zero-copy). */
+  private readonly _ownsBacking: boolean;
+
+  /** The grid currently bound for raymarching. Swap it with `rebindGrid`. */
+  get grid(): NanoVDBGrid {
+    return this._grid;
+  }
+
+  /** Storage-buffer capacity in bytes (the largest grid image this material can rebind to). */
+  get capacityBytes(): number {
+    return this._capacityWords * 4;
+  }
 
   // Live uniforms (SPEC §3.2 param list). Public for live tweaking.
   readonly densityScale: ScalarUniform;
@@ -144,7 +182,24 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
           "`pnanovdbWgslUrl` in node.",
       );
     }
-    this.grid = grid;
+    this._grid = grid;
+
+    // Storage-buffer capacity. Default: exactly the grid's image (zero-copy —
+    // bind the grid's own attribute, no copy). If `maxGridBytes` asks for
+    // headroom, allocate our own padded backing so a larger grid can be
+    // sub-filled in later without a rebuild (see `maxGridBytes` / `rebindGrid`).
+    const gridWords = grid.image.length;
+    const requestedWords = Math.ceil((params.maxGridBytes ?? 0) / 4);
+    this._capacityWords = Math.max(gridWords, requestedWords);
+    this._ownsBacking = this._capacityWords > gridWords;
+
+    if (this._ownsBacking) {
+      const backing = new Uint32Array(this._capacityWords);
+      backing.set(grid.image);
+      this._gridAttribute = new StorageBufferAttribute(backing, 1);
+    } else {
+      this._gridAttribute = grid.storageAttribute;
+    }
 
     // Build-time WGSL assembly (throws upstream for unsupported grid types via
     // samplerForGridType; NanoVDBGrid already gates the type at construction).
@@ -176,7 +231,7 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
     // it (strategy B in wgsl.ts). toReadOnly() + passing it as the entry's
     // pointer param is what makes TSL emit + bind it. Same `storage(attr,'uint',
     // count)` incantation demo 01 proved.
-    const gridStorage = storage(grid.storageAttribute, "uint", grid.image.length)
+    const gridStorage = storage(this._gridAttribute, "uint", this._capacityWords)
       .toReadOnly()
       .setName(this.assembled.bufferName);
 
@@ -211,5 +266,67 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
     this.side = THREE.BackSide;
     this.premultipliedAlpha = true;
     this.toneMapped = false;
+  }
+
+  /**
+   * Swap the grid this material raymarches WITHOUT rebuilding the material or
+   * its node graph — the Phase 7 sequence-playback primitive (docs/SPEC §3.5,
+   * the grid-rebind flag from docs/handoffs/PHASE-3.md).
+   *
+   * ## The mechanism (three r185, verified against source)
+   *
+   * The `fragmentNode`/`storage()` node — and the trilinear sampler baked into
+   * the WGSL at construction — are fixed. What actually changes on the GPU is
+   * only the contents of the storage buffer. three's WebGPU backend allocates
+   * that GPUBuffer exactly once (sized to the attribute array's byteLength at
+   * first upload, `WebGPUAttributeUtils.createBuffer`) and thereafter re-uploads
+   * on any attribute version bump via `device.queue.writeBuffer(buffer, 0,
+   * array, 0)` into that SAME fixed buffer (`WebGPUAttributeUtils.updateAttribute`,
+   * gated by `Attributes.update`'s `version <` check). Consequences:
+   *
+   * - **Same or smaller byteLength**: copy the new image into the bound array
+   *   and bump `needsUpdate` — the cheapest path, no reallocation. (A smaller
+   *   image leaves a stale tail; the vendored traversal reads only via internal
+   *   grid offsets and never bounds-checks against the buffer length, so the
+   *   tail is inert.)
+   * - **Larger byteLength**: the fixed GPUBuffer can't grow, and a longer
+   *   `writeBuffer` would overflow it. This throws UNLESS the material was
+   *   constructed with `maxGridBytes` headroom covering the new image, in which
+   *   case the pre-sized buffer absorbs it as an in-place sub-fill.
+   *
+   * The grid TYPE cannot change: the sampler (`pnanovdb_sample_trilinear_*`) is
+   * selected at build time, so rebinding a different-typed grid throws — build a
+   * new material for a different grid type.
+   *
+   * @param grid The grid to bind. Must be the same grid TYPE and fit the
+   *   storage capacity (`capacityBytes`).
+   */
+  rebindGrid(grid: NanoVDBGrid): void {
+    if (grid.gridTypeId !== this._grid.gridTypeId) {
+      throw new Error(
+        `NanoVDBVolumeMaterial.rebindGrid: grid type changed ` +
+          `(${this._grid.metadata.gridType} -> ${grid.metadata.gridType}). The trilinear sampler is baked ` +
+          `into the shader at construction, so a different grid type needs a new material, not a rebind.`,
+      );
+    }
+
+    const needWords = grid.image.length;
+    if (needWords > this._capacityWords) {
+      throw new Error(
+        `NanoVDBVolumeMaterial.rebindGrid: new grid image is ${needWords * 4} bytes but the storage buffer ` +
+          `capacity is ${this._capacityWords * 4} bytes. three's WebGPU backend fixes the GPUBuffer size at ` +
+          `first upload and cannot grow it. Construct the material with ` +
+          `\`maxGridBytes >= ${needWords * 4}\` (e.g. the largest frame in your sequence) to enable in-place ` +
+          `rebinds, or rebuild the material for this frame.`,
+      );
+    }
+
+    // In-place sub-fill of the bound backing array, then flag a re-upload. When
+    // we don't own the backing (no headroom requested) this writes into the
+    // grid's own attribute array — fine, we're replacing that grid anyway.
+    const backing = this._gridAttribute.array as Uint32Array;
+    backing.set(grid.image);
+    this._gridAttribute.needsUpdate = true;
+    this._grid = grid;
   }
 }

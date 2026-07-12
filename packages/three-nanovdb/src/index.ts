@@ -17,6 +17,14 @@ export type { VolumeRendererOptions, CapabilityReport, RequiredLimits } from "./
 export { NanoVDBVolumeMaterial } from "./material.js";
 export type { NanoVDBVolumeMaterialParameters } from "./material.js";
 
+export { NanoVDBSequence } from "./sequence.js";
+export type {
+  NanoVDBSequenceOptions,
+  NanoVDBSequenceStats,
+  SequenceTarget,
+  FrameLoader,
+} from "./sequence.js";
+
 export {
   assembleVolumeWgsl,
   rewriteBufferGlobal,
