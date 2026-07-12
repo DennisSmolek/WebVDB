@@ -79,6 +79,19 @@ export const DEFAULT_ENTRY_NAME = "nvdb_volume_march";
 export const DEFAULT_MAX_STEPS_CAP = 1024;
 export const DEFAULT_SHADOW_STEPS_CAP = 128;
 
+/**
+ * Hard compile-time cap on the TOTAL trilinear taps (primary + shadow) a
+ * single fragment may perform. `max_steps` (cap 1024) and `shadow_steps` (cap
+ * 128) are independently-clamped LIVE uniforms — a user can drive them to
+ * ~65k taps/fragment (1024 * 128), which risks a driver TDR on real hardware.
+ * This budget is enforced INSIDE the generated WGSL (see `buildEntrySource`):
+ * a counter increments on every trilinear tap, and once the budget is
+ * exhausted the shadow loop breaks first, then the main march loop — a
+ * graceful early-out on the partial march accumulated so far, not a hard
+ * black pixel.
+ */
+export const DEFAULT_SAMPLE_BUDGET_CAP = 16384;
+
 export interface VolumeWgslOptions {
   /** PNanoVDB `GridType` id (selects the trilinear sampler at build time). */
   gridTypeId: number;
@@ -90,6 +103,11 @@ export interface VolumeWgslOptions {
   maxStepsCap?: number;
   /** Hard cap on the sun shadow-march loop. Default 128. */
   shadowStepsCap?: number;
+  /**
+   * Hard cap on the TOTAL trilinear taps (primary + shadow) per fragment.
+   * Default 16384. See `DEFAULT_SAMPLE_BUDGET_CAP`.
+   */
+  sampleBudgetCap?: number;
 }
 
 export interface AssembledVolumeWgsl {
@@ -177,6 +195,7 @@ function buildEntrySource(
   samplerFn: string,
   maxStepsCap: number,
   shadowStepsCap: number,
+  sampleBudgetCap: number,
 ): string {
   return /* wgsl */ `
 fn ${entryName}(
@@ -237,12 +256,21 @@ fn ${entryName}(
   let max_i = i32(clamp(max_steps, 1.0, ${maxStepsCap}.0));
   let shadow_n = i32(clamp(shadow_steps, 0.0, ${shadowStepsCap}.0));
 
+  // Per-fragment total-sample budget (unbounded maxSteps x shadowSteps product
+  // guard — see wgsl.ts DEFAULT_SAMPLE_BUDGET_CAP doc). Counts every trilinear
+  // tap (primary + shadow); when exhausted the shadow loop breaks first, then
+  // the main loop, returning the partial march accumulated so far rather than
+  // a hard black pixel.
+  const nvdbx_sample_budget : i32 = ${sampleBudgetCap};
+  var nvdbx_sample_count : i32 = 0;
+
   for (var i = 0; i < max_i; i = i + 1) {
-    if (t > t1 || transmittance < 0.003) {
+    if (t > t1 || transmittance < 0.003 || nvdbx_sample_count >= nvdbx_sample_budget) {
       break;
     }
     let pos = o_idx + d_idx * t;
     let density = max(${samplerFn}(buf, &acc, pos), 0.0) * density_scale;
+    nvdbx_sample_count = nvdbx_sample_count + 1;
     if (density > 0.0) {
       let a = 1.0 - exp(-density * step_size);
 
@@ -250,8 +278,12 @@ fn ${entryName}(
       var tau = 0.0;
       var st = step_size;
       for (var s = 0; s < shadow_n; s = s + 1) {
+        if (nvdbx_sample_count >= nvdbx_sample_budget) {
+          break;
+        }
         let spos = pos + sun_idx * st;
         let sd = max(${samplerFn}(buf, &sacc, spos), 0.0) * density_scale * shadow_density;
+        nvdbx_sample_count = nvdbx_sample_count + 1;
         tau = tau + sd * step_size;
         st = st + step_size;
       }
@@ -271,9 +303,26 @@ fn ${entryName}(
 `;
 }
 
+/** Throws unless `value` is a positive (>= 1) integer. */
+function assertPositiveIntCap(name: string, value: number): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `assembleVolumeWgsl: \`${name}\` must be an integer >= 1 (got ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
 /**
  * Assemble the WGSL for a `NanoVDBVolumeMaterial` fragment raymarch. See the
  * module header for the integration strategy this encapsulates.
+ *
+ * Validates its inputs at construction time rather than letting a bad input
+ * surface as an opaque WGSL compile error at render time:
+ * - `pnanovdbSource` must contain the `nanovdb_buffer` read site that
+ *   `rewriteBufferGlobal` is supposed to rewrite (an empty/wrong string would
+ *   otherwise silently produce a library with no rewritten buffer global).
+ * - `maxStepsCap`, `shadowStepsCap`, and `sampleBudgetCap` must each be
+ *   integers >= 1.
  */
 export function assembleVolumeWgsl(
   pnanovdbSource: string,
@@ -283,10 +332,24 @@ export function assembleVolumeWgsl(
   const entryName = opts.entryName ?? DEFAULT_ENTRY_NAME;
   const maxStepsCap = opts.maxStepsCap ?? DEFAULT_MAX_STEPS_CAP;
   const shadowStepsCap = opts.shadowStepsCap ?? DEFAULT_SHADOW_STEPS_CAP;
+  const sampleBudgetCap = opts.sampleBudgetCap ?? DEFAULT_SAMPLE_BUDGET_CAP;
+
+  assertPositiveIntCap("maxStepsCap", maxStepsCap);
+  assertPositiveIntCap("shadowStepsCap", shadowStepsCap);
+  assertPositiveIntCap("sampleBudgetCap", sampleBudgetCap);
+
+  if (!/\bnanovdb_buffer\b/.test(pnanovdbSource)) {
+    throw new Error(
+      "assembleVolumeWgsl: `pnanovdbSource` does not contain the `nanovdb_buffer` read site " +
+        "rewriteBufferGlobal is supposed to rewrite — pass the real vendored pnanovdb.wgsl text " +
+        "(packages/nanovdb-wgsl/vendor/pnanovdb.wgsl), not an empty/wrong string.",
+    );
+  }
+
   const samplerFn = samplerForGridType(opts.gridTypeId);
 
   const librarySource = rewriteBufferGlobal(pnanovdbSource, bufferName) + "\n" + VOLUME_HELPERS_WGSL;
-  const entrySource = buildEntrySource(entryName, samplerFn, maxStepsCap, shadowStepsCap);
+  const entrySource = buildEntrySource(entryName, samplerFn, maxStepsCap, shadowStepsCap, sampleBudgetCap);
 
   return {
     librarySource,

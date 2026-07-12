@@ -4,8 +4,8 @@
  * `NanoVDBGrid` (grid image -> StorageBufferAttribute + metadata -> Box3/
  * Matrix4/proxy geometry, SPEC §3.1) and `createVolumeRenderer` (device-first
  * WebGPURenderer bootstrap, decision D4, SPEC §3.4) are the Phase 3 core.
- * `NanoVDBVolumeMaterial` (the fragment-raymarch cloud material, SPEC §3.2)
- * is a separate, later piece of work built on top of this surface.
+ * `NanoVDBVolumeMaterial` (the fragment-raymarch cloud material, SPEC §3.2),
+ * exported below, is built on top of this surface.
  */
 
 export { NanoVDBGrid } from "./grid.js";

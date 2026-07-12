@@ -77,6 +77,17 @@ export interface NanoVDBVolumeMaterialParameters {
   /** Hard compile-time caps (uniforms clamp under these). */
   maxStepsCap?: number;
   shadowStepsCap?: number;
+  /**
+   * Hard cap on the TOTAL trilinear taps (primary + shadow) a single fragment
+   * may perform per frame. `maxSteps`/`shadowSteps` are independently-clamped
+   * LIVE uniforms, so their product can otherwise reach `maxStepsCap *
+   * shadowStepsCap` (~65k at the defaults) — a TDR risk on real hardware. This
+   * budget is enforced inside the generated WGSL with a per-fragment counter:
+   * once exhausted, the shadow loop breaks first, then the main march loop,
+   * so the fragment returns its partial march instead of a hard black pixel.
+   * Default 16384 (see `DEFAULT_SAMPLE_BUDGET_CAP` in `./wgsl.js`).
+   */
+  sampleBudgetCap?: number;
 }
 
 const DEFAULTS = {
@@ -141,6 +152,7 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
       gridTypeId: grid.gridTypeId,
       ...(params.maxStepsCap !== undefined ? { maxStepsCap: params.maxStepsCap } : {}),
       ...(params.shadowStepsCap !== undefined ? { shadowStepsCap: params.shadowStepsCap } : {}),
+      ...(params.sampleBudgetCap !== undefined ? { sampleBudgetCap: params.sampleBudgetCap } : {}),
     });
     this.samplerFn = this.assembled.samplerFn;
 

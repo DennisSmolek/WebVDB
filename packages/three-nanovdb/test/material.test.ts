@@ -12,6 +12,7 @@ import {
   GRID_TYPE_FLOAT,
   GRID_TYPE_FP8,
   GRID_TYPE_FPN,
+  DEFAULT_SAMPLE_BUDGET_CAP,
 } from "../src/wgsl.js";
 
 /**
@@ -71,6 +72,21 @@ describe("rewriteBufferGlobal", () => {
     const out = rewriteBufferGlobal("let nanovdb_buffer_size = 1u;", "nvdbGrid");
     expect(out).toContain("nanovdb_buffer_size");
   });
+
+  // Rewrite-site count guard (verification finding 4): rewriteBufferGlobal
+  // assumes the vendored source has exactly ONE live read site (plus the
+  // header comment) for `nanovdb_buffer` — that's the whole B+C strategy in
+  // wgsl.ts's module header. If a future vendor bump changes how many times
+  // that identifier appears (e.g. a second buffer global, or the comment
+  // rewritten away), the rewrite strategy needs re-review rather than
+  // silently under- or over-rewriting. Pin the exact count against the REAL
+  // vendored file so a vendor bump that changes it fails loudly here instead
+  // of surfacing as a mystery WGSL bug later.
+  it.skipIf(!wgslPresent)("the real vendored source has exactly 2 occurrences of nanovdb_buffer", async () => {
+    const src = await loadSource();
+    const occurrences = src.match(/\bnanovdb_buffer\b/g) ?? [];
+    expect(occurrences.length).toBe(2);
+  });
 });
 
 describe.skipIf(!wgslPresent)("assembleVolumeWgsl", () => {
@@ -101,6 +117,66 @@ describe.skipIf(!wgslPresent)("assembleVolumeWgsl", () => {
     const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: 256, shadowStepsCap: 32 });
     expect(a.entrySource).toContain("clamp(max_steps, 1.0, 256.0)");
     expect(a.entrySource).toContain("clamp(shadow_steps, 0.0, 32.0)");
+  });
+
+  // Finding 1: unbounded maxSteps x shadowSteps product. max_steps/shadow_steps
+  // are independently-clamped LIVE uniforms, so a user can drive ~65k trilinear
+  // taps/fragment at the caps (TDR risk on real hardware). The generated WGSL
+  // must enforce its own per-fragment total-sample budget: a compile-time
+  // const plus a counter incremented on every trilinear tap (primary + shadow),
+  // breaking the shadow loop first and then the main loop once exhausted.
+  it("emits a per-fragment sample-budget const and counter that gates both loops", async () => {
+    const src = await loadSource();
+    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT });
+
+    // The default budget is baked in as a compile-time literal.
+    expect(a.entrySource).toContain(`nvdbx_sample_budget : i32 = ${DEFAULT_SAMPLE_BUDGET_CAP}`);
+    // A counter variable is declared and incremented at least twice (once per
+    // primary tap, once per shadow tap).
+    expect(a.entrySource).toContain("var nvdbx_sample_count : i32 = 0");
+    const increments = a.entrySource.match(/nvdbx_sample_count = nvdbx_sample_count \+ 1/g) ?? [];
+    expect(increments.length).toBe(2);
+    // Both the main march loop and the shadow loop check the budget.
+    const budgetChecks = a.entrySource.match(/nvdbx_sample_count >= nvdbx_sample_budget/g) ?? [];
+    expect(budgetChecks.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("honors a custom sampleBudgetCap", async () => {
+    const src = await loadSource();
+    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, sampleBudgetCap: 4096 });
+    expect(a.entrySource).toContain("nvdbx_sample_budget : i32 = 4096");
+    expect(a.entrySource).not.toContain(`nvdbx_sample_budget : i32 = ${DEFAULT_SAMPLE_BUDGET_CAP}`);
+  });
+
+  // Finding 3: input validation. An empty/wrong pnanovdbSource should fail
+  // loudly at construction time, not as an opaque WGSL compile error later.
+  it("throws if pnanovdbSource has no nanovdb_buffer read site to rewrite", () => {
+    expect(() => assembleVolumeWgsl("", { gridTypeId: GRID_TYPE_FLOAT })).toThrow(/nanovdb_buffer/);
+    expect(() =>
+      assembleVolumeWgsl("fn totally_unrelated() -> u32 { return 0u; }", { gridTypeId: GRID_TYPE_FLOAT }),
+    ).toThrow(/nanovdb_buffer/);
+  });
+
+  it("range-checks the numeric caps (integers >= 1)", async () => {
+    const src = await loadSource();
+    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: 0 })).toThrow(
+      /maxStepsCap/,
+    );
+    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: -5 })).toThrow(
+      /maxStepsCap/,
+    );
+    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: 1.5 })).toThrow(
+      /maxStepsCap/,
+    );
+    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, shadowStepsCap: 0 })).toThrow(
+      /shadowStepsCap/,
+    );
+    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, sampleBudgetCap: 0 })).toThrow(
+      /sampleBudgetCap/,
+    );
+    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, sampleBudgetCap: -1 })).toThrow(
+      /sampleBudgetCap/,
+    );
   });
 });
 
