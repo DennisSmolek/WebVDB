@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck · unit · build · e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Runners have a live Docker daemon, which bake-fixtures.mjs would
+      # otherwise prefer — that path builds full OpenVDB (30-60 min). The
+      # local path compiles the header-only NanoVDB bake program with g++.
+      BAKE_MODE: local
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Pack dry-run (publishable tarballs)
+        run: pnpm pack:dry
+
+      # Fixtures are git-ignored. The bake is deterministic (re-bakes
+      # reproduce the committed sidecars byte-identically), so cache by
+      # the inputs that define them.
+      - name: Cache fixtures
+        id: fixtures-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            fixtures/primitives/*.nvdb
+            fixtures/vdb-samples
+            fixtures/downloads/openvdb-sparse
+          key: fixtures-${{ runner.os }}-${{ hashFiles('docker/fixture-bake/bake_primitives.cpp', 'scripts/bake-fixtures.mjs', 'scripts/fetch-vdb-samples.mjs') }}
+
+      - name: Bake primitive fixtures + fetch .vdb samples
+        if: steps.fixtures-cache.outputs.cache-hit != 'true'
+        run: |
+          pnpm fixtures:bake
+          pnpm fixtures:vdb-samples
+
+      - name: Committed sidecars still match a fresh bake
+        run: git diff --exit-code -- fixtures/
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      # WebGPU runs on SwiftShader (software Vulkan) via the flags in
+      # playwright.config.ts, so the GPU demos and parity harness are real.
+      - name: E2E tests
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
