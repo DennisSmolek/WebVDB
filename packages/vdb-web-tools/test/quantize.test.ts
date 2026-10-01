@@ -15,7 +15,7 @@
  * `processLeafs`. Rounding is `floor(x + 0.5)` (native's dithering-off constant).
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -26,6 +26,10 @@ import { NanoVDBFile } from "../../nanovdb-wgsl/src/nvdb-file.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+
+// Native fixtures are git-ignored (`pnpm fixtures:bake`); synthetic tests below run regardless.
+const nativeFixtures = existsSync(fileURLToPath(new URL("../../../fixtures/primitives/sphere_fog_float.nvdb", import.meta.url)));
 
 function loadPrimitive(name: string): Uint32Array {
   const p = fileURLToPath(new URL(`../../../fixtures/primitives/${name}`, import.meta.url));
@@ -112,7 +116,7 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     expect(255 * quantum + min).toBeGreaterThanOrEqual(min);
   });
 
-  it("re-encodes native sphere_fog_float -> fp8, exact vs native at all 73 sidecar coords", () => {
+  it.skipIf(!nativeFixtures)("re-encodes native sphere_fog_float -> fp8, exact vs native at all 73 sidecar coords", () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFp8 = loadPrimitive("sphere_fog_fp8.nvdb");
     const myFp8 = quantize(floatImg, "fp8");
@@ -134,7 +138,7 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     expect(inspect(myFp8).voxelCount).toBe(inspect(floatImg).voxelCount);
   });
 
-  it("FpN per-leaf bit-width distribution matches native for the real (non-tile) leaves", () => {
+  it.skipIf(!nativeFixtures)("FpN per-leaf bit-width distribution matches native for the real (non-tile) leaves", () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFpn = loadPrimitive("sphere_fog_fpn.nvdb");
     const myFpn = quantizeDetailed(floatImg, "fpn").image;
@@ -168,7 +172,7 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     expect(inspect(myFpn).memoryBreakdown.total).toBe(Number(v.getBigUint64(32, true)));
   });
 
-  it("throws clearly when the source grid is not FLOAT", () => {
+  it.skipIf(!nativeFixtures)("throws clearly when the source grid is not FLOAT", () => {
     const fp8 = loadPrimitive("sphere_fog_fp8.nvdb");
     expect(() => quantize(fp8, "fp8")).toThrowError(/not FLOAT|float grids only/i);
   });

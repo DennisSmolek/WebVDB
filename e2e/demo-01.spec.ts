@@ -6,12 +6,13 @@ import { expect, test } from "@playwright/test";
 //
 // SwiftShader (software WebGPU) compiles + runs slowly, so we wait generously.
 const DEMO_URL = "/src/demos/01-hello-nvdb/index.html";
-const SIDECAR_URL = "/fixtures/primitives/sphere_fog_float.sidecar.json";
+const GRID_URL = "/fixtures/primitives/sphere_fog_float.nvdb";
 
 test("demo 01 GPU probe matches native ground truth (73/73)", async ({ page }) => {
-  // Fixtures are git-ignored; skip cleanly if this machine doesn't have them.
-  const sidecar = await page.request.get(SIDECAR_URL);
-  test.skip(!sidecar.ok(), `fixtures missing (${SIDECAR_URL} -> ${sidecar.status()})`);
+  // The .nvdb is git-ignored (sidecars are committed, so probing the sidecar
+  // would never skip) — gate on the grid itself (`pnpm fixtures:bake`).
+  const grid = await page.request.get(GRID_URL);
+  test.skip(!grid.ok(), `fixtures missing (${GRID_URL} -> ${grid.status()}) — run pnpm fixtures:bake`);
 
   const consoleErrors: string[] = [];
   page.on("console", (msg) => {

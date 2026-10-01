@@ -29,7 +29,8 @@ const wgslUrl = new URL("../../nanovdb-wgsl/vendor/pnanovdb.wgsl", import.meta.u
 const fixturesDir = new URL("../../../fixtures/primitives/", import.meta.url);
 
 const wgslPresent = existsSync(wgslUrl);
-const fixturesPresent = existsSync(fixturesDir);
+// Sidecars are committed, so the dir always exists — gate on the git-ignored .nvdb files (`pnpm fixtures:bake`).
+const fixturesPresent = ["sphere", "torus", "box"].flatMap((p) => ["float", "fp8", "fpn"].map((v) => `${p}_fog_${v}.nvdb`)).every((n) => existsSync(new URL(n, fixturesDir)));
 
 async function loadSource(): Promise<string> {
   return readFile(wgslUrl, "utf8");

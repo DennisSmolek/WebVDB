@@ -11,13 +11,17 @@
  * unchanged, and rotation/shear throws.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { buildFromDense, inspect, transform } from "../src/index.js";
 import { readValue } from "../../nanovdb-wgsl/src/cpu/read-value.js";
 import { NanoVDBFile } from "../../nanovdb-wgsl/src/nvdb-file.js";
+
+
+// Native fixtures are git-ignored (`pnpm fixtures:bake`); synthetic tests below run regardless.
+const nativeFixtures = existsSync(fileURLToPath(new URL("../../../fixtures/primitives/sphere_fog_float.nvdb", import.meta.url)));
 
 function loadPrimitive(name: string): Uint32Array {
   const p = fileURLToPath(new URL(`../../../fixtures/primitives/${name}`, import.meta.url));
@@ -49,7 +53,7 @@ const FIXTURES = [
   { nvdb: "sphere_fog_fp8.nvdb", sidecar: "sphere_fog_fp8.sidecar.json", type: "Fp8" },
 ] as const;
 
-describe("inspect — against native fixtures", () => {
+describe.skipIf(!nativeFixtures)("inspect — against native fixtures", () => {
   it.each(FIXTURES)("$nvdb: type/class/voxelCount/nodeCounts + memory sums to mGridSize", (f) => {
     const image = loadPrimitive(f.nvdb);
     const sc = loadSidecar(f.sidecar);
