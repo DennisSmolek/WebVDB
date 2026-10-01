@@ -1,0 +1,16 @@
+{
+  // Standalone typecheck for the spike's browser-safe modules. It is NOT
+  // referenced from the root tsconfig.json, so `pnpm typecheck` never sees it:
+  //   pnpm tsc -p experiments/picovdb-spike
+  // Node-only files (src/fixtures.ts, test/*, scripts/*) are left out: the
+  // workspace has no @types/node, and the spike adds no dependencies.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/convert.ts", "src/reader.ts", "src/compare.ts", "vendor/picovdb.ts"]
+}

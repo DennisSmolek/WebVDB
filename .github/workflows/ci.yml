@@ -66,6 +66,11 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      # Evaluation spike (docs/spikes/PICOVDB.md) — kept green so its size and
+      # correctness findings stay reproducible; not a shipping package.
+      - name: PicoVDB spike suite
+        run: pnpm vitest run --root experiments/picovdb-spike
+
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 

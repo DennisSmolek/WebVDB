@@ -1,0 +1,77 @@
+{
+  "$meta": {
+    "native": "emcfarlane/picovdb@f5d22e5602a7fc7f206d33ec35328f58e8667c83 `picovdb convert`, Zig 0.16.0, OpenVDB v13.0.0 headers",
+    "recorded": "2026-10-01"
+  },
+  "primitives/sphere_fog": {
+    "inputSha256": "452364f81b9ae31239b2eedaa9f61de673e43485080b545e7d6fb4c4febbf048",
+    "f32": {
+      "sha256": "e26acad9dd7615b029949b5c394be28236101fb469a7b3039e296a7b3a4688a6",
+      "bytes": 1154016,
+      "nativeMs": 30
+    }
+  },
+  "primitives/torus_fog": {
+    "inputSha256": "76c46a2f02c92d3d056b25a5bcd9eb2791ce06361e7067e1c196976aae5263a0",
+    "f32": {
+      "sha256": "60053676f91246fc4aeee195bbf0ccd9b8f4c72a9b14573cdc0826aaa462af99",
+      "bytes": 1982080,
+      "nativeMs": 39
+    }
+  },
+  "primitives/box_fog": {
+    "inputSha256": "7a1e70c42918b7f4c668f262d4809bb0308eb0621a27f9ea3548478726acaaae",
+    "f32": {
+      "sha256": "3a3825fa5d2023d59389cc7acfab405db94e57c27ff5b0da34ee8766eb21adbe",
+      "bytes": 598784,
+      "nativeMs": 22
+    }
+  },
+  "vdb-samples/sphere": {
+    "inputSha256": "b1c6e113abc5c848eb2ae94a5b3fbac2c13208abed4d8e62153bb40ce328c1a5",
+    "f32": {
+      "sha256": "51a734a38a79f528ce44cb02609707eb875cbf065db7fa2fb71864688f2e6f37",
+      "bytes": 1495376,
+      "nativeMs": 41
+    },
+    "u8": {
+      "sha256": "9e364ca6c1da86d220602efbae008aed3bdac0d618d60f6152cb236700a42d20",
+      "bytes": 683456,
+      "nativeMs": 39
+    }
+  },
+  "vdb-samples/cube": {
+    "inputSha256": "669f3385fc0f09c00457c3f9a835116196b487ed085c84fd15ee69de7837cc4b",
+    "f32": {
+      "sha256": "28ef47e1efc969c9c66031588bc9122473882f953457e4a2026708c3ec236de0",
+      "bytes": 7336784,
+      "nativeMs": 181
+    },
+    "u8": {
+      "sha256": "cc0b627b75c80885eacafb3a9dfed4b6aef6ea700b46093a4a5aa4cfe5837fc9",
+      "bytes": 2980128,
+      "nativeMs": 111
+    }
+  },
+  "vdb-samples/smoke": {
+    "inputSha256": "ddca24e1c83ada872eaa70db5c3dacdc7f39fecee2d5d3f4636706b1d2e98601",
+    "f32": {
+      "sha256": "366b677afda86924007fcd55f368620b5aa1cf85fa16a068ce4aa38c166294db",
+      "bytes": 4860976,
+      "nativeMs": 59
+    }
+  },
+  "vdb-samples/utahteapot": {
+    "inputSha256": "e58ee2460bc4def01dad8918c776d24c7bc7fa0bfac7284899a1de46fb712dc6",
+    "f32": {
+      "sha256": "e561d41f38e1021107e8c408345856a0e7e8a15e54a977bb855e028d5b9ad9ad",
+      "bytes": 35400800,
+      "nativeMs": 1227
+    },
+    "u8": {
+      "sha256": "993cef9e21ec9a84998f715c1cbcf1a6bebae452e6d84014a268da32495e5cb4",
+      "bytes": 14520656,
+      "nativeMs": 539
+    }
+  }
+}

@@ -1,0 +1,19 @@
+PicoVDB WGSL library + TypeScript loader (vendored for an evaluation spike)
+
+This directory contains picovdb.wgsl and picovdb.ts from the PicoVDB project,
+vendored unmodified for evaluation (see VENDOR.md).
+
+Original work:
+  PicoVDB — Copyright 2026 Edward McFarlane
+  SPDX-License-Identifier: Apache-2.0
+  https://github.com/emcfarlane/picovdb
+  Vendored at commit f5d22e5602a7fc7f206d33ec35328f58e8667c83
+
+PicoVDB's format is derived from NanoVDB:
+  NanoVDB / PNanoVDB.h — Copyright Contributors to the OpenVDB Project
+  SPDX-License-Identifier: Apache-2.0
+  https://github.com/AcademySoftwareFoundation/openvdb
+
+Any modifications by the WebVDB project would be recorded in VENDOR.md
+alongside this file and licensed under the Apache License, Version 2.0.
+A copy of the license is in the LICENSE file in this directory.
