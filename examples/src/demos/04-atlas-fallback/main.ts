@@ -279,7 +279,11 @@ async function run(): Promise<void> {
   // proxy geometry sits exactly on worldBox with no extra mesh transform
   // (the proxy box below), so this is a plain
   // translate + per-axis inverse-scale, no matrix inverse needed.
-  const boxMin = uniform(worldBox.min.clone());
+  // K2.6: atlas texel i is voxel min + i, so the texture spans the voxel-centred
+  // box [min - 0.5, max + 0.5] (index space): the world cell box shifted by
+  // half a voxel. The proxy sits on the same box.
+  const halfVoxel = new THREE.Vector3(...atlasInfo.voxelSize).multiplyScalar(0.5);
+  const boxMin = uniform(worldBox.min.clone().sub(halfVoxel));
   const boxSizeInv = uniform(new THREE.Vector3(1 / size.x, 1 / size.y, 1 / size.z));
   const tintColor = uniform(new THREE.Vector3(0.85, 0.9, 1.0));
   const densityGain = uniform(0.9);
@@ -303,7 +307,7 @@ async function run(): Promise<void> {
   );
 
   const proxy = new THREE.BoxGeometry(size.x, size.y, size.z);
-  proxy.translate(center.x, center.y, center.z);
+  proxy.translate(center.x - halfVoxel.x, center.y - halfVoxel.y, center.z - halfVoxel.z);
   const mesh = new THREE.Mesh(proxy, material);
   scene.add(mesh);
 

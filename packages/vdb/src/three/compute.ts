@@ -63,17 +63,18 @@ export interface VDBDecodeToAtlasResult extends VDBAtlas {
    * Linear filtering of a `float32` atlas needs the `float32-filterable`
    * feature; use `uint8` (the default) otherwise. Dispose it yourself.
    *
-   * Texel `i` holds the grid at index `min + (i + 0.5) / dims * size`, half
-   * a voxel past the voxel centres (v1's convention; see the core
-   * `decodeToAtlas`): map `uvw` over the cell box `[min, max + 1]` of the
-   * index bbox, not over voxel centres `[min, max]`.
+   * Texel `i` of an axis with `n` texels holds the grid at index
+   * `min + (i + 0.5) * (max - min + 1) / n - 0.5`: voxel `min + i` at full
+   * resolution (K2.6). The texture spans the voxel-centred box
+   * `[min - 0.5, max + 0.5]` of the index bbox (world: that box times the
+   * voxel size, through the grid transform).
    */
   texture: Data3DTexture;
 }
 
 /**
  * Dense decode of grid `gridId`'s index bbox (see the core `decodeToAtlas`,
- * including its half-voxel sample convention), read back and wrapped in a
+ * including its voxel-centre sample convention), read back and wrapped in a
  * `Data3DTexture`. Records into its own encoder and submits it.
  */
 export async function vdbDecodeToAtlas(

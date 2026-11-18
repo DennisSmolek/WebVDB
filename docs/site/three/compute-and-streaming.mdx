@@ -24,7 +24,7 @@ const atlas = await vdbDecodeToAtlas(renderer, pool, id, { maxDim: 128, format: 
 console.log(atlas.dims, atlas.texture);
 ```
 
-`vdbDecodeToAtlas` returns the core's atlas plus a `Data3DTexture`. The value transform is the core's
+`vdbDecodeToAtlas` returns the core's atlas plus a `Data3DTexture`. Texel `i` samples voxel `min + i` at full resolution (index position `min + (i + 0.5) * (max - min + 1) / n - 0.5` in general), so the texture spans the voxel-centred box `[min - 0.5, max + 0.5]` of the index bbox. The value transform is the core's
 `vdbApplyValueTransform` (a CPU edit that stages `pool.replace`).
 
 ## Coarse-first streaming

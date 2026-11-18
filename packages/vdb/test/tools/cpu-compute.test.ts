@@ -105,17 +105,32 @@ describe.skipIf(FIXTURES.length === 0)("vdbGridStatsCpu", () => {
 });
 
 describe.skipIf(FIXTURES.length === 0)("vdbDecodeToAtlasCpu", () => {
-  it.each(FIXTURES)("%s: nearest reads voxel floor(min + i + 1) at full resolution (v1's cell-centre convention)", (name) => {
+  it.each(FIXTURES)("%s: full-resolution nearest cell i is voxel min + i for every cell, the last is max (K2.6)", (name) => {
     const image = load(name);
     const { raw, dims } = vdbDecodeToAtlasCpu(image, { filter: "nearest", maxDim: 1 << 20 });
-    const { min } = indexBBox(image);
+    const { min, max } = indexBBox(image);
     expect(dims).toEqual(bboxSize(indexBBox(image)));
-    // pos = min + (i + 0.5) / n * n = min + i + 0.5, so floor(pos + 0.5) = min + i + 1.
-    for (const i of [0, 7, 1000, raw.length - 1]) {
+    let i = 0;
+    for (let z = 0; z < dims[2]; z++)
+      for (let y = 0; y < dims[1]; y++)
+        for (let x = 0; x < dims[0]; x++) {
+          if (raw[i] !== vdbReadValueF32(image, [min[0] + x, min[1] + y, min[2] + z])) throw new Error(`cell ${x},${y},${z} is not voxel min + i`);
+          i++;
+        }
+    // The last cell is voxel max, not the background past it.
+    expect(raw[raw.length - 1]).toBe(vdbReadValueF32(image, [max[0], max[1], max[2]]));
+  });
+
+  it.each(FIXTURES)("%s: full-resolution trilinear cell i equals voxel min + i (no blending)", (name) => {
+    const image = load(name);
+    const { raw, dims } = vdbDecodeToAtlasCpu(image, { maxDim: 1 << 20 });
+    const { min } = indexBBox(image);
+    for (let i = 0; i < raw.length; i += 11) {
       const x = i % dims[0];
       const y = Math.floor(i / dims[0]) % dims[1];
       const z = Math.floor(i / (dims[0] * dims[1]));
-      expect(raw[i]).toBe(vdbReadValueF32(image, [min[0] + x + 1, min[1] + y + 1, min[2] + z + 1]));
+      // `+ 0` folds -0 (a lerp of equal zeros) into +0.
+      expect(raw[i]! + 0).toBe(vdbReadValueF32(image, [min[0] + x, min[1] + y, min[2] + z]) + 0);
     }
   });
 
@@ -127,7 +142,7 @@ describe.skipIf(FIXTURES.length === 0)("vdbDecodeToAtlasCpu", () => {
     let maxAbs = 0;
     for (let i = 0; i < raw.length; i += 7) {
       const g = [i % dims[0], Math.floor(i / dims[0]) % dims[1], Math.floor(i / (dims[0] * dims[1]))];
-      const p = [0, 1, 2].map((a) => bbox.min[a]! + ((g[a]! + 0.5) / dims[a]!) * size[a]!) as [number, number, number];
+      const p = [0, 1, 2].map((a) => bbox.min[a]! + ((g[a]! + 0.5) * size[a]!) / dims[a]! - 0.5) as [number, number, number];
       maxAbs = Math.max(maxAbs, Math.abs(raw[i]! - vdbSampleTrilinear(image, p)));
     }
     expect(maxAbs).toBeLessThan(1e-4);
