@@ -41,6 +41,7 @@ import type { VdbBBox, VdbFile, VdbGrid, VdbValueType } from "./types.js";
 
 const MAGIC_LOW = 0x56444220; // 'V','D','B',' ' read little-endian, low 32 bits
 const MIN_SUPPORTED_VERSION = 213; // OPENVDB_FILE_VERSION_ROOTNODE_MAP
+const MAX_SUPPORTED_VERSION = 225; // OPENVDB_FILE_VERSION: OpenVDB rejects anything newer
 const VERSION_GRID_INSTANCING = 216;
 const VERSION_BOOST_UUID = 218;
 const VERSION_SELECTIVE_COMPRESSION = 220;
@@ -106,6 +107,12 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
   if (fileVersion < MIN_SUPPORTED_VERSION) {
     throw new VdbUnsupportedError(
       `file version ${fileVersion} is older than the minimum supported version ${MIN_SUPPORTED_VERSION}`,
+    );
+  }
+
+  if (fileVersion > MAX_SUPPORTED_VERSION) {
+    throw new VdbUnsupportedError(
+      `file version ${fileVersion} is newer than the maximum supported version ${MAX_SUPPORTED_VERSION}`,
     );
   }
 

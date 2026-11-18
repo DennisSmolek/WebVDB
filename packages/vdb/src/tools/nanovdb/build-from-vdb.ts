@@ -21,6 +21,7 @@
 
 import { VdbUnsupportedError } from "../vdb/errors.js";
 import type { VdbGrid, VdbTransformInfo } from "../vdb/types.js";
+import type { TileInput } from "./tree.js";
 import { FLOAT_LEAF_CODEC, VEC3F_LEAF_CODEC } from "./leaf-codec.js";
 import {
   buildFromLeavesDetailed,
@@ -55,11 +56,19 @@ export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = 
     background: grid.background,
     gridName: opts.gridName ?? grid.name ?? "grid",
     gridClass: opts.gridClass ?? sourceGridClass(grid),
-    tiles: grid.iterTiles(),
+    tiles: allTiles(grid),
   };
   const isVector = grid.valueType === "vec3s" || grid.valueType === "vec3d" || grid.valueType === "vec3i";
   const codec = isVector ? VEC3F_LEAF_CODEC : FLOAT_LEAF_CODEC;
   return buildFromLeavesDetailed(grid.iterLeaves(), codec, buildOpts);
+}
+
+/** Active tiles, then inactive tiles with a stored value (K4.9). */
+function* allTiles(grid: VdbGrid): Generator<TileInput> {
+  for (const t of grid.iterTiles() as Iterable<TileInput>) yield { origin: t.origin, dim: t.dim, value: t.value, active: true };
+  for (const t of (grid.iterInactiveTiles?.() ?? []) as Iterable<TileInput>) {
+    yield { origin: t.origin, dim: t.dim, value: t.value, active: false };
+  }
 }
 
 /** OpenVDB `GridClass` metadata -> NanoVDB class (CreateNanoGrid's `mapToGridClass`). */

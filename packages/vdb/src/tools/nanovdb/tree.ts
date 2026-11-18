@@ -73,6 +73,8 @@ export interface LowerNode {
   children: Map<number, Leaf>;
   /** slot (0..4095) -> value of an active 8^3 tile. Other slots are background tiles. */
   tiles: Map<number, TileValue>;
+  /** slot (0..4095) -> value of an inactive 8^3 tile with a non-background value (K4.9). */
+  inactiveTiles: Map<number, TileValue>;
   stats: StatsAccumulator;
   memIndex: number;
 }
@@ -84,20 +86,22 @@ export interface UpperNode {
   children: Map<number, LowerNode>;
   /** slot (0..32767) -> value of an active 128^3 tile. Other slots are background tiles. */
   tiles: Map<number, TileValue>;
+  /** slot (0..32767) -> value of an inactive 128^3 tile with a non-background value (K4.9). */
+  inactiveTiles: Map<number, TileValue>;
   stats: StatsAccumulator;
   memIndex: number;
 }
 
-/** One root-table entry: a child upper node, or an active 4096^3 tile. */
+/** One root-table entry: a child upper node, or a 4096^3 tile (active or inactive). */
 export type RootTile =
   | { key: bigint; origin: [number, number, number]; child: UpperNode }
-  | { key: bigint; origin: [number, number, number]; child: null; value: TileValue };
+  | { key: bigint; origin: [number, number, number]; child: null; value: TileValue; active: boolean };
 
 export interface BuiltTree {
   uppers: UpperNode[];
   lowers: LowerNode[];
   leaves: Leaf[];
-  /** Root table, sorted by origin (x, then y, then z), children and tiles interleaved. */
+  /** Root table, sorted by NanoVDB key (unsigned 64-bit), children and tiles interleaved. */
   rootTiles: RootTile[];
   /** Active tile counts per level (TreeData `mTileCount`). */
   tileCounts: { lower: number; upper: number; root: number };
@@ -269,6 +273,13 @@ export interface TileInput {
   origin: [number, number, number];
   dim: number;
   value: TileValue;
+  /**
+   * False for an inactive tile that keeps a stored value (e.g. a level set's
+   * interior `-background`, K4.9): written with its value but no value-mask bit
+   * (root: state 0), excluded from stats, tile counts and the active-voxel count.
+   * Default true.
+   */
+  active?: boolean;
 }
 
 /** NanoVDB GridStats weight for a tile of edge `dim`: the child node type's slot count. */
@@ -297,6 +308,7 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
         origin: [ux, uy, uz],
         children: new Map(),
         tiles: new Map(),
+        inactiveTiles: new Map(),
         stats: newStats(),
         memIndex: -1,
       };
@@ -316,6 +328,7 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
         origin: [wx, wy, wz],
         children: new Map(),
         tiles: new Map(),
+        inactiveTiles: new Map(),
         stats: newStats(),
         memIndex: -1,
       };
@@ -331,12 +344,13 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
   }
 
   // -- Place active tiles --------------------------------------------------
-  const rootTileMap = new Map<string, { origin: [number, number, number]; value: TileValue }>();
+  const rootTileMap = new Map<string, { origin: [number, number, number]; value: TileValue; active: boolean }>();
   const tileCounts = { lower: 0, upper: 0, root: 0 };
   let tileVoxels = 0;
   for (const tile of tileList) {
     const [tx, ty, tz] = tile.origin;
     const { dim, value } = tile;
+    const active = tile.active !== false;
     if ((typeof value === "number") !== (components === 1)) {
       throw new Error(`buildFromLeaves: tile value ${JSON.stringify(value)} does not have ${components} component(s)`);
     }
@@ -352,22 +366,30 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
     if (dim === 8) {
       const lower = lowerAt(tx, ty, tz);
       const slot = lowerCoordToOffset(tx, ty, tz);
-      if (lower.tiles.has(slot)) duplicate();
-      lower.tiles.set(slot, value);
-      tileCounts.lower++;
+      if (lower.tiles.has(slot) || lower.inactiveTiles.has(slot)) duplicate();
+      if (active) {
+        lower.tiles.set(slot, value);
+        tileCounts.lower++;
+      } else {
+        lower.inactiveTiles.set(slot, value);
+      }
     } else if (dim === 128) {
       const upper = upperAt(tx, ty, tz);
       const slot = upperCoordToOffset(tx, ty, tz);
-      if (upper.tiles.has(slot)) duplicate();
-      upper.tiles.set(slot, value);
-      tileCounts.upper++;
+      if (upper.tiles.has(slot) || upper.inactiveTiles.has(slot)) duplicate();
+      if (active) {
+        upper.tiles.set(slot, value);
+        tileCounts.upper++;
+      } else {
+        upper.inactiveTiles.set(slot, value);
+      }
     } else {
       const k = nodeKey(tx, ty, tz);
       if (rootTileMap.has(k)) duplicate();
-      rootTileMap.set(k, { origin: [tx, ty, tz], value });
-      tileCounts.root++;
+      rootTileMap.set(k, { origin: [tx, ty, tz], value, active });
+      if (active) tileCounts.root++;
     }
-    tileVoxels += dim * dim * dim;
+    if (active) tileVoxels += dim * dim * dim;
   }
 
   // A slot holds a child or a tile, never both.
@@ -375,10 +397,14 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
     throw new Error(`buildFromLeaves: active tile overlaps child data in ${where} at [${origin.join(", ")}]`);
   };
   for (const lower of lowerMap.values()) {
-    for (const slot of lower.tiles.keys()) if (lower.children.has(slot)) overlap("a lower node", lower.origin);
+    for (const slot of [...lower.tiles.keys(), ...lower.inactiveTiles.keys()]) {
+      if (lower.children.has(slot)) overlap("a lower node", lower.origin);
+    }
   }
   for (const upper of upperMap.values()) {
-    for (const slot of upper.tiles.keys()) if (upper.children.has(slot)) overlap("an upper node", upper.origin);
+    for (const slot of [...upper.tiles.keys(), ...upper.inactiveTiles.keys()]) {
+      if (upper.children.has(slot)) overlap("an upper node", upper.origin);
+    }
   }
   for (const [key, tile] of rootTileMap) if (upperMap.has(key)) overlap("the root", tile.origin);
 
@@ -416,20 +442,21 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
     for (const lower of upper.children.values()) upper.stats.merge(lower.stats);
   }
 
-  // -- Root table: children and tiles, sorted by origin --------------------
-  // (The order OpenVDB's root map iterates in, which CreateNanoGrid copies.)
+  // -- Root table: children and tiles, sorted by NanoVDB key ----------------
+  // Unsigned 64-bit key order (K4.12): negative coordinates sort after the
+  // non-negative ones, not before them as a signed origin sort would put them.
   const rootTiles: RootTile[] = [
     ...uppers.map((u): RootTile => ({ key: keyForOrigin(u.origin), origin: u.origin, child: u })),
     ...[...rootTileMap.values()].map(
-      (t): RootTile => ({ key: keyForOrigin(t.origin), origin: t.origin, child: null, value: t.value }),
+      (t): RootTile => ({ key: keyForOrigin(t.origin), origin: t.origin, child: null, value: t.value, active: t.active }),
     ),
-  ].sort(byOrigin);
+  ].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
   const root = newStats();
   for (const entry of rootTiles) {
     if (entry.child) {
       root.merge(entry.child.stats);
-    } else {
+    } else if (entry.active) {
       const [x, y, z] = entry.origin;
       addTileValue(root, entry.value, TILE_STATS_WEIGHT[4096]!, entry.origin, [x + 4095, y + 4095, z + 4095]);
     }

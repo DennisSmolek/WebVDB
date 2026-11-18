@@ -62,10 +62,17 @@ function readMetadataValue(reader: ByteReader, type: string, byteLength: number)
   return value;
 }
 
-/** Reads a `count`-prefixed `(name, type, len, value)*` metadata map. */
+/**
+ * Reads a `count`-prefixed `(name, type, len, value)*` metadata map.
+ *
+ * The result has a null prototype (K4.14): metadata names come from the file, and a
+ * name like `__proto__` must become an ordinary own key, never write through to a
+ * prototype. Use `Object.hasOwn` / `in` / `Object.keys`; `.hasOwnProperty` and
+ * `.toString` are not available on it.
+ */
 export function readMetadataMap(reader: ByteReader): Record<string, MetadataValue> {
   const count = reader.u32();
-  const map: Record<string, MetadataValue> = {};
+  const map: Record<string, MetadataValue> = Object.create(null) as Record<string, MetadataValue>;
   for (let i = 0; i < count; i++) {
     const name = reader.string();
     const type = reader.string();

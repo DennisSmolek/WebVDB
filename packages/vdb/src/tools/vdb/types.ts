@@ -69,6 +69,11 @@ interface VdbGridBase<V> {
   iterLeaves(): Iterable<VdbLeaf>;
   /** Active tiles at root, upper and lower level. Empty for fully leaf-resolved grids. */
   iterTiles(): Iterable<VdbTile<V>>;
+  /**
+   * Inactive tiles with a stored value (K4.9), e.g. a level set's interior
+   * `-background`. Internal-node inactive tiles equal to the background are omitted.
+   */
+  iterInactiveTiles(): Iterable<VdbTile<V>>;
 }
 
 /** A scalar `FloatGrid`. */

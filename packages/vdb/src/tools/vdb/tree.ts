@@ -32,8 +32,9 @@
  * own topology fields (OpenVDB `RootNode::readTopology` /
  * `InternalNode::readTopology`) and returned as {@link TileData}, so
  * `buildFromVdb` can emit them as NanoVDB tiles rather than expanding them.
- * Inactive tiles are still dropped (they read back as the grid background),
- * as before.
+ * Inactive tiles are kept too (K4.9): `active: false`, with their stored value
+ * (a level set's interior reads `-background`). Internal-node inactive tiles
+ * equal to the background are skipped, as they read identically to no tile.
  *
  * ## Value types and point data (K4.2)
  *
@@ -77,7 +78,12 @@ export interface LeafData {
   valueMask: Uint32Array; // 16 x u32 = 512 bits
 }
 
-/** One active tile above leaf level: `dim^3` voxels, all active, all `value`. */
+/**
+ * One tile above leaf level: `dim^3` voxels, all `value`. Active tiles have their
+ * value-mask bit set. Inactive tiles (K4.9) keep a stored value, e.g. a level
+ * set's interior `-background`; internal-node inactive tiles whose value equals
+ * the background are not kept (they read the same as no tile).
+ */
 export interface TileData {
   /** Index-space min corner, a multiple of `dim`. */
   origin: [number, number, number];
@@ -85,6 +91,8 @@ export interface TileData {
   dim: 8 | 128 | 4096;
   /** The tile value, `components` scalars. */
   value: number[];
+  /** True for an active tile, false for an inactive tile with a stored value. */
+  active: boolean;
 }
 
 export interface TreeReadResult {
@@ -95,7 +103,7 @@ export interface TreeReadResult {
   pointLeaves?: PointLeafData[];
   /** Point data grids only: the most `points()` may allocate (a multiple of the file size). */
   pointOutputBudget?: number;
-  /** Active tiles at root, upper and lower level (inactive tiles are dropped). */
+  /** Tiles at root, upper and lower level: active ones and inactive ones with a non-background value (root: all). */
   tiles: TileData[];
   /** Active voxels in leaves plus `dim^3` per active tile. */
   activeVoxelCount: number;
@@ -165,9 +173,11 @@ function readInternalNodeTopology(
   for (let i = 0; i < fullNumValues; i++) {
     if (testBit(childMask, i)) continue;
     const at = (packed ? packedIdx++ : i) * comps;
-    if (!testBit(valueMask, i)) continue;
+    const active = testBit(valueMask, i);
     const value = Array.from(values.subarray(at, at + comps));
-    ctx.tiles.push({ origin: offsetToGlobalCoord(i, log2dim, childTotal, origin), dim, value });
+    // An inactive tile holding the background reads exactly like no tile.
+    if (!active && value.every((v, c) => v === ctx.background[c])) continue;
+    ctx.tiles.push({ origin: offsetToGlobalCoord(i, log2dim, childTotal, origin), dim, value, active });
   }
   return { childMask, valueMask };
 }
@@ -272,16 +282,15 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
   const numRootChildren = reader.u32();
 
   // Root tiles: origin, value (always full-width ValueType, never half — see
-  // OpenVDB `RootNode::readTopology`), active flag. Inactive tiles are dropped.
+  // OpenVDB `RootNode::readTopology`), active flag. Inactive tiles are kept (K4.9).
   for (let i = 0; i < numTiles; i++) {
     const origin = reader.vec3i();
     const value = readFullValue(reader, format);
     const active = reader.bool();
-    if (!active) continue;
     if (origin.some((c) => c % ROOT_TILE_DIM !== 0)) {
       throw new VdbFormatError(`root tile origin [${origin.join(", ")}] is not ${ROOT_TILE_DIM}-aligned`);
     }
-    tiles.push({ origin, dim: ROOT_TILE_DIM, value });
+    tiles.push({ origin, dim: ROOT_TILE_DIM, value, active });
   }
 
   const uppers: UpperNode[] = [];
@@ -309,7 +318,7 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
 
   let activeVoxelCount = 0;
   for (const leaf of leaves) activeVoxelCount += countBits(leaf.valueMask);
-  for (const tile of tiles) activeVoxelCount += tile.dim ** 3;
+  for (const tile of tiles) if (tile.active) activeVoxelCount += tile.dim ** 3;
 
   return {
     background,
