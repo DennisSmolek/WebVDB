@@ -96,6 +96,7 @@ console.log(atlas.dims, atlas.data.length);
 ```
 
 `vdbGridStatsGpu` bins its histogram over the grid's root min and max statistics, so a grid without stats (or with stale
-ones after a value transform) bins against whatever they hold. `vdbDecodeToAtlasGpu` samples half a voxel past voxel
-centres (the v1 convention, kept for parity): sample its output as a texture over the cell box `[min, max + 1]`.
+ones after a value transform) bins against whatever they hold. `vdbDecodeToAtlasGpu` samples voxel centres: cell `i` of an axis with `n` cells over the index range `[min, max]` reads
+index position `min + (i + 0.5) * (max - min + 1) / n - 0.5`, so at full resolution cell `i` is voxel `min + i` and the
+last cell is voxel `max`. Treat the output as a texture over the voxel-centred box `[min - 0.5, max + 0.5]`.
 The CPU twins are `vdbGridStatsCpu` and `vdbDecodeToAtlasCpu` in `@pmndrs/vdb/tools`.

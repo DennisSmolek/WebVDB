@@ -327,10 +327,10 @@ Each tool frees only the buffers it allocated (in `read()` or `dispose()`).
 `vdbGridStatsGpu` bins over the grid's root min/max statistics (a grid with a
 negative root min takes the dump path, 8 B per bbox voxel, and is refused up
 front when that exceeds the device's buffer limits); `vdbDecodeToAtlasGpu`
-normalizes to them by default. The atlas keeps v1's sample positions,
-`min + (i + 0.5) / dims * size` in index space, which is half a voxel past the
-voxel centres (texel `i` at full resolution sits between voxels `min + i` and
-`min + i + 1`): sample it over the cell box `[min, max + 1]`. `vdbApplyValueTransform` rewrites leaf values
+normalizes to them by default. Atlas cell `i` of an axis with `n` cells over `[min, max]` samples index position
+`min + (i + 0.5) * (max - min + 1) / n - 0.5`, so at full resolution cell `i` is
+voxel `min + i` (the last cell is `max`); the texture spans the voxel-centred box
+`[min - 0.5, max + 0.5]`. `vdbApplyValueTransform` rewrites leaf values
 (not tiles) and does not recompute the image's statistics. CPU versions live in
 `@pmndrs/vdb/tools` (`vdbGridStatsCpu`, `vdbDecodeToAtlasCpu`). See
 [`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback)

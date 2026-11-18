@@ -4,23 +4,28 @@
  * `three/compute.ts`). CPU twin: `vdbDecodeToAtlasCpu` + `atlasFromRaw` in
  * `@pmndrs/vdb/tools`.
  *
- * One thread per output voxel samples the index bbox at
- * `p = min + (i + 0.5) / dims * size` with `vdbReadValue(floor(p + 0.5))`
+ * One thread per output voxel samples the index bbox at the voxel-centre
+ * position of its cell (below) with `vdbReadValue(floor(p + 0.5))`
  * (`'nearest'`) or `vdbSample` (`'trilinear'`, the vendored trilinear,
  * `outside: 'background'`).
  *
- * **Half-voxel convention (v1's, kept for parity).** NanoVDB voxel centres
- * sit at integer index coordinates, but `p` treats the bbox as cells
- * `[min, max + 1)` with centres at `+ 0.5`, so every sample is half a voxel
- * past a voxel centre: at full resolution (`dims == size`), `p = min + i +
- * 0.5`, `'nearest'` reads voxel `min + i + 1` (rounding up) and
- * `'trilinear'` averages voxels `min + i` and `min + i + 1` on each axis. The
- * atlas is therefore shifted by +0.5 voxel against a voxel-centred one;
- * sample it as a texture over the cell box `[min, max + 1]` and it lines up
- * with v1. Moving to voxel centres (`min - 0.5 + ...`) is TASKS K2.6. The GPU
- * writes raw f32; normalizing and
- * quantizing to `uint8` happen on the CPU after readback, exactly as in v1,
- * so `read()` returns v1's bytes.
+ * **Sampling convention (K2.6; voxel centres).** NanoVDB voxel centres sit at
+ * integer index coordinates, and the bbox `[min, max]` (inclusive) holds
+ * `size = max - min + 1` voxels, i.e. the cells `[min - 0.5, max + 0.5]`.
+ * Cell `i` of an axis with `n` cells over `[min, max]` samples the index-space
+ * position
+ *
+ *     p = min + (i + 0.5) * (max - min + 1) / n - 0.5
+ *
+ * (the centre of the i-th of `n` equal slices of `[min - 0.5, max + 0.5]`).
+ * At full resolution (`n == size`) that is `p = min + i`: `'nearest'` reads
+ * exactly voxel `min + i` (the last cell is voxel `max`) and `'trilinear'`
+ * reads that voxel's value unblended. Downsampled, each cell samples the
+ * centre of its slice. The atlas is a texture over the voxel-centred box
+ * `[min - 0.5, max + 0.5]`: texel `i`'s centre `(i + 0.5) / n` maps to `p`
+ * above. (Before K2.6 this was v1's `min + (i + 0.5) / n * size`, half a voxel
+ * past the centres.) The GPU writes raw f32; normalizing and quantizing to
+ * `uint8` happen on the CPU after readback, as in v1.
  *
  * The raw buffer is also the GPU-side output: with `readback: false` the
  * host keeps `buffer` (`STORAGE | COPY_SRC`, `dims` product f32s) for its own
@@ -60,9 +65,10 @@ fn csAtlas(@builtin(global_invocation_id) gid: vec3u) {
     if any(gid >= dims) {
         return;
     }
-    // Cell-centred position in the source index bbox.
-    let t = (vec3f(gid) + vec3f(0.5)) / vec3f(dims);
-    let pos = vec3f(csParams.regionMin) + t * vec3f(csParams.regionSize);
+    // Voxel-centre position: min + (i + 0.5) * size / dims - 0.5. Multiply
+    // before dividing and subtract the half voxel before adding min, so at
+    // full resolution the offset is exactly i (the CPU twin does the same).
+    let pos = vec3f(csParams.regionMin) + ((vec3f(gid) + vec3f(0.5)) * vec3f(csParams.regionSize) / vec3f(dims) - vec3f(0.5));
     var acc = vdbAccessorInit(csParams.grid);
     var value: f32;
     if csParams.filterMode == 1u {
@@ -133,7 +139,8 @@ function checkAtlasOptions(o: VDBDecodeToAtlasOptions): void {
  * Records the decode of grid `gridId` of `pool` and returns a
  * {@link VDBAtlasReadback}: `const { data, dims } = await decodeToAtlas(device, pool, id).read()`
  * (with a host encoder: submit it, then `await job.submitted().read()`).
- * Samples sit half a voxel past the voxel centres (see the file comment).
+ * Cell `i` samples index position `min + (i + 0.5) * size / n - 0.5`, voxel
+ * centres at full resolution (see the file comment).
  *
  * The grid must be resident and the pool must live on `device` (as for
  * `gridStats`). The tool frees only its own parameter, output and readback

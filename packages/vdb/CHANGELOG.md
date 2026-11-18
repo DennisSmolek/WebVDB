@@ -9,6 +9,14 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 First public release (0.1.0). The earlier v1 unscoped packages (`webvdb` and
 siblings) were never published to npm; `@pmndrs/vdb` is the first published name.
 
+### Changed
+
+- `vdbDecodeToAtlasGpu` / `vdbDecodeToAtlas` / `vdbDecodeToAtlasCpu` sample voxel
+  centres: cell `i` reads index position `min + (i + 0.5) * (max - min + 1) / n - 0.5`,
+  so at full resolution it is voxel `min + i` (v1 sampled half a voxel past, and the
+  last cell read the background). Atlases span the box `[min - 0.5, max + 0.5]`
+  instead of `[min, max + 1]`.
+
 ### Added
 
 - One package with three entry points: `@pmndrs/vdb` (engine-free WebGPU core),

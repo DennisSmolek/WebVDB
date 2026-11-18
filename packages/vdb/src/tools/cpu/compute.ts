@@ -175,8 +175,9 @@ export interface VDBDecodeToAtlasCpuOptions {
 
 /**
  * Twin of the `decodeToAtlas` pass before normalization: one f32 per output
- * voxel (x fastest), sampled at the cell centre `min + (i + 0.5) / dims *
- * size` of the index bbox with `vdbReadValue(floor(p + 0.5))` (`'nearest'`) or
+ * voxel (x fastest), sampled at index position `min + (i + 0.5) * size / dims
+ * - 0.5` (cell `i` of `dims` over `[min, max]`, `size = max - min + 1`; voxel
+ * centres at full resolution, K2.6) with `vdbReadValue(floor(p + 0.5))` (`'nearest'`) or
  * the vendored trilinear (`'trilinear'`, the default). Feed the result to
  * {@link atlasFromRaw} for the formatted atlas.
  */
@@ -195,7 +196,7 @@ export function vdbDecodeToAtlasCpu(
     for (let y = 0; y < dims[1]; y++) {
       for (let x = 0; x < dims[0]; x++) {
         const g: Vec3 = [x, y, z];
-        for (let a = 0; a < 3; a++) pos[a] = f(bbox.min[a]! + f(f(f(g[a]! + 0.5) / dims[a]!) * size[a]!));
+        for (let a = 0; a < 3; a++) pos[a] = f(bbox.min[a]! + f(f(f(f(g[a]! + 0.5) * size[a]!) / dims[a]!) - 0.5));
         raw[i++] = trilinear ? trilinearF32(gridWords, pos) : vdbReadValueF32(gridWords, [Math.floor(f(pos[0] + 0.5)), Math.floor(f(pos[1] + 0.5)), Math.floor(f(pos[2] + 0.5))]);
       }
     }
