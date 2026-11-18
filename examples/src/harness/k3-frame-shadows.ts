@@ -14,7 +14,8 @@
  * `?source=sparse` (the same texels as a NanoVDB grid), `?lighting=frame`, `?cascades=N`, `?mapSize=`, `?steps=`.
  *
  * `?case=emission`: the committed CC0 ground explosion frame 10 (EmberGen; his explosion settings: Z-up, 100 units,
- * flames ÷ 6 as emission, 0–3000 K, his 'planck' spectrum through `vdbFrameBlackbodyEmission`, intensity 15) over a
+ * flames ÷ 6 as emission, 0–3000 K, his 'planck' spectrum through `vdbFrameBlackbodyEmission` on the
+ * package's analytic CIE fit (D33; the twins use the same table), intensity 15) over a
  * white `MeshLambertMaterial` ground lit only by a `VDBFrameEmissionLight` (intensity 25). Checks, `?twins=1`: the
  * direction pass vs `vdbFrameEmissionDirectionTexel` (CPU samplers on the dense texels), the reduce pass, the probe pass
  * vs `vdbFrameEmissionProbe`, and every ground pixel vs `vdbFrameEmissionLookup` → E(n) × colour / π (Lambert);

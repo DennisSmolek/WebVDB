@@ -12,6 +12,7 @@ pnpm fixtures              # everything below
 pnpm fixtures:wdas         # WDAS cloud, quarter res → fixtures/wdas/
 pnpm fixtures:embergen     # EmberGen free packs     → fixtures/embergen/
 pnpm fixtures:vdb-samples  # classic openvdb.org samples → fixtures/vdb-samples/
+pnpm fixtures:cie          # (not in `pnpm fixtures`) CIE 1931 2° CMF table, test-only → fixtures/cie/
 ```
 
 | Corpus | Source | License | Role |
@@ -19,6 +20,7 @@ pnpm fixtures:vdb-samples  # classic openvdb.org samples → fixtures/vdb-sample
 | WDAS cloud (quarter; other variants via `WDAS_VARIANTS=`) | [disneyanimation.com/data-sets](https://disneyanimation.com/data-sets/) | CC-BY-SA 3.0, © Walt Disney Animation Studios | Stretch fixture: demo 02 hero cloud, perf gates (D4) |
 | JangaFX EmberGen free VDB packs | [jangafx.com — free VDB downloads](https://jangafx.com/software/embergen/download/free-vdb-animations) | CC0 1.0; tracked terms and credit in [ATTRIBUTION.md](./ATTRIBUTION.md) | Fire temporal playback corpus; Cloud files are independent variants, not animation |
 | Procedural primitives (`sphere/torus/box` fog volumes × Float/Fp8/FpN) | `pnpm fixtures:bake`, see below | Apache-2.0 (ours) | Exact-ground-truth unit fixtures for the traversal suite |
+| CIE 1931 2° colour matching functions (`CIE_xyz_1931_2deg.csv`, MD5 `17cca777db64b17170f06f67ce9d3ab7`) | [files.cie.co.at](https://files.cie.co.at/Publications-datasets/CIE_xyz_1931_2deg.csv) | CC BY-SA 4.0 (CIE, DOI 10.25039/CIE.DS.xvudnb9b) | Test-only (D33): measures the package's analytic CMF fit (`packages/vdb/test/tools/cmf.test.ts`) and lets the K3 harness render the explosion parity scenes with his exact colours; never shipped. Absent: those tests skip and those scenes report INFO; `WEBVDB_REQUIRE_FIXTURES` does not require it |
 | Classic openvdb.org sample models (`sphere`, `cube`, `smoke`, `utahteapot`) | Pinned commit of [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) | Assets: CC BY-SA 4.0; hosting repo: MIT | Phase 5 parser/parity corpus; exact sizes and SHA-256 values are enforced |
 
 Stanford `bunny.vdb`/`bunny_cloud.vdb` derivatives have separate

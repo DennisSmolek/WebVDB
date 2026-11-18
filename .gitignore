@@ -35,3 +35,6 @@ fixtures/parity/
 fixtures/k3-reference/
 # K3.1 parity inputs copied from his clone (bunny_cloud.wvdb, smoke.wvdb: CC BY-SA sources), never committed
 fixtures/k3/
+
+# D33: the exact CIE 1931 2° colour matching functions (CC BY-SA 4.0), test-only (scripts/fetch-cie-cmf.mjs), never committed
+fixtures/cie/

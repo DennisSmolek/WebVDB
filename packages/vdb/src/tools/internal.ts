@@ -316,6 +316,9 @@ export {
   vdbFrameBlackbodyRgb,
   vdbFrameBlackbodyTable,
   vdbFrameEmissionSpectrum,
+  frameBlackbodyWavelengthStart as vdbFrameBlackbodyWavelengthStart,
+  frameBlackbodyWavelengthStep as vdbFrameBlackbodyWavelengthStep,
+  frameBlackbodyWavelengthCount as vdbFrameBlackbodyWavelengthCount,
   frameBlackbodyTableSize as vdbFrameBlackbodyTableSize,
   frameBlackbodyTableRows as vdbFrameBlackbodyTableRows,
 } from "./frame/blackbody.js";

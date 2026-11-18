@@ -41,7 +41,7 @@ export { frameSpectrumWavelengths, frameAngstromExponents, getFrameAngstromExpon
 export { FrameVolumeCollector, getFroxelSlice, getFroxelSliceRange, getFroxelRect, getFroxelArea, getFrameFadeRadius } from "./view.js";
 export type { FrameVolumeRecord, FroxelArea } from "./view.js";
 export * as vdbFrameChunks from "./chunks.js";
-// K3.6: volume shadows on meshes, the emission light, the CIE blackbody emission colour
+// K3.6: volume shadows on meshes, the emission light, the blackbody emission colour (analytic CIE fit, D33)
 export { VDBFrameVolumeShadows, VDBFrameVolumeShadowNode, frameMaxShadowMapCascades } from "./volume-shadows.js";
 export type { VDBFrameShadowEntry } from "./volume-shadows.js";
 export { VDBFrameVolumeShadowMaterial, createShadowRayUniforms, frameShadowDepth, frameMaxCastShadowSteps } from "./volume-shadow-material.js";

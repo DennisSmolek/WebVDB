@@ -278,7 +278,7 @@ describe("emission light: direction, reduce and probe passes", () => {
   });
 });
 
-describe("emission colour: the CIE 1931 'planck' / 'soot' table", () => {
+describe("emission colour: the 'planck' / 'soot' table (CIE 1931 analytic fit, D33)", () => {
   // XYZ from linear sRGB (IEC 61966-2-1 inverse); the table's colours are scaled, so only the chromaticity is compared
   const chromaticity = ([r, g, b]: Vec3) => {
     const X = 0.4124 * r + 0.3576 * g + 0.1805 * b;
