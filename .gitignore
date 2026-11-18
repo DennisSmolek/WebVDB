@@ -27,3 +27,6 @@ fixtures/parity/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Agent worktrees
+.claude/worktrees/
