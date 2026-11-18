@@ -17,7 +17,7 @@ import { nvdbLodName } from "../nvdb-stream.js";
 import type { VdbFile, VdbGrid } from "../vdb/types.js";
 import { GRID_NAME_MAX, GRID_OFF_GRID_NAME } from "./bytes.js";
 import { buildFromVdb } from "./build-from-vdb.js";
-import { quantize, type QuantizeMode } from "./quantize.js";
+import { collapseGrid, quantize, type QuantizeMode } from "./quantize.js";
 import { resampleGrid, type ResampleFilter } from "./resample.js";
 import { writeNvdb } from "./write-nvdb.js";
 
@@ -50,6 +50,13 @@ export interface BakeCoarseFirstOptions {
   zipLevel?: number;
   /** Which float grid of a `VdbFile` to bake. Default: the first float grid. */
   sourceGridName?: string;
+  /**
+   * Collapse uniform regions into tiles (K4.6). Default: on for the previews
+   * (`resampleGrid`'s default) and off for the full grid (an image keeps its
+   * topology; a `.vdb` grid is built as `nanovdb_convert` builds it). A value
+   * given applies to every grid.
+   */
+  collapse?: boolean;
 }
 
 function imageName(image: Uint32Array): string {
@@ -90,11 +97,12 @@ export function bakeCoarseFirst(source: Uint32Array | VdbGrid | VdbFile, options
     full = source;
     resampleSource = source;
     const q = options.fullQuantize ?? "none";
-    if (q !== "none") full = quantize(source, q, options.tolerance);
+    if (q !== "none") full = quantize(source, q, options.tolerance, { collapse: options.collapse === true });
+    else if (options.collapse === true) full = collapseGrid(source).image;
   } else {
     const grid = "grids" in source ? pickGrid(source, options.sourceGridName) : source;
     resampleSource = grid;
-    full = buildFromVdb(grid);
+    full = buildFromVdb(grid, { collapse: options.collapse === true });
     const q = options.fullQuantize ?? previewQuantize;
     if (q !== "none") full = quantize(full, q, options.tolerance);
   }
@@ -108,6 +116,7 @@ export function bakeCoarseFirst(source: Uint32Array | VdbGrid | VdbFile, options
         ...(previewQuantize === "none" ? {} : { quantize: previewQuantize }),
         ...(options.tolerance === undefined ? {} : { tolerance: options.tolerance }),
         gridName: nvdbLodName(name, resolution),
+        ...(options.collapse === undefined ? {} : { collapse: options.collapse }),
       }).image,
   );
 

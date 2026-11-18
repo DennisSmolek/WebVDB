@@ -35,6 +35,14 @@ export interface BuildFromVdbOptions {
   gridName?: string;
   /** Grid class. Default: mapped from source metadata. */
   gridClass?: GridClassName;
+  /**
+   * Collapse uniform leaves and nodes into tiles (OpenVDB `prune`, tolerance 0;
+   * K4.6). Default false: `nanovdb_convert` (CreateNanoGrid) copies the OpenVDB
+   * tree as it is, and so do we, so our image of a `.vdb` keeps native's
+   * topology (the parity fixtures). Files written by OpenVDB tools are usually
+   * pruned already.
+   */
+  collapse?: boolean;
 }
 
 /** Builds a NanoVDB grid image (FLOAT, or Vec3f for vector grids) from a parsed `.vdb` grid. */
@@ -57,6 +65,7 @@ export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = 
     gridName: opts.gridName ?? grid.name ?? "grid",
     gridClass: opts.gridClass ?? sourceGridClass(grid),
     tiles: allTiles(grid),
+    collapse: opts.collapse === true,
   };
   const isVector = grid.valueType === "vec3s" || grid.valueType === "vec3d" || grid.valueType === "vec3i";
   const codec = isVector ? VEC3F_LEAF_CODEC : FLOAT_LEAF_CODEC;

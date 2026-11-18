@@ -8,6 +8,9 @@
  * per-LOD layout rule (a LOD is sparse iff it has a `mask`) mirrors
  * `WVDBReader.getKernelGrid` in `src/three-openvdb/wvdb/WVDBReader.js`.
  *
+ * The stream reader decodes chunk by chunk (K4.13), so it holds one chunk's
+ * compressed bytes at a time and can show a LOD before all its pages arrive.
+ *
  * Decoded volume LODs are dense `Float32Array`s: channel planes one after the
  * other (`values[c * X*Y*Z + x + y*X + z*X*Y]`), x fastest. Voxels of bricks a
  * sparse LOD does not store hold the background (§12.2.3); voxels of a brick
@@ -343,6 +346,8 @@ export interface WvdbVolumeLevel {
   maxs: Float32Array;
   /** Dense decoded values: channel planes, x fastest; background where no brick is stored. */
   values: Float32Array;
+  /** Bricks decoded so far (equals the LOD's brick count once complete; less in a partial stream event). */
+  bricksDecoded: number;
 }
 
 export interface WvdbPointsLevel {
@@ -355,6 +360,8 @@ export interface WvdbPointsLevel {
   positions: Float32Array;
   /** rgb per point in [0, 1], or null when the grid has no colours. */
   colors: Float32Array | null;
+  /** Points decoded so far (equals `count` once complete; less in a partial stream event). */
+  pointsDecoded: number;
 }
 
 export type WvdbLevel = WvdbVolumeLevel | WvdbPointsLevel;
@@ -441,31 +448,32 @@ function sliceChunk(bytes: Uint8Array, byteOffset: number, info: WvdbHeaderInfo,
  */
 export function decodeWvdbLod(info: WvdbHeaderInfo, lod: number, bytes: Uint8Array, byteOffset = 0): WvdbLevel[] {
   checkLodIndex(info.header, lod);
-  const { header } = info;
-  const bits = header.bake.bits as WvdbBits;
-  const chunks = wvdbChunks(header).filter((c) => c.lod === lod);
-  return header.grids.map((grid, gridIndex) => {
-    const own = chunks.filter((c) => c.gridIndex === gridIndex);
-    return isPointsGridHeader(grid)
-      ? decodePointsLod(info, grid, lod, own, bytes, byteOffset)
-      : decodeVolumeLod(info, grid, lod, own, bits, bytes, byteOffset);
-  });
+  const chunks = wvdbChunks(info.header).filter((c) => c.lod === lod);
+  const decoders = lodDecoders(info, lod);
+  for (const c of chunks) decoders[c.gridIndex]!.add(c, sliceChunk(bytes, byteOffset, info, c));
+  return decoders.map((d) => d.finish());
 }
 
-function decodeVolumeLod(
-  info: WvdbHeaderInfo,
-  grid: WvdbVolumeGridHeader,
-  lod: number,
-  chunks: WvdbChunkInfo[],
-  bits: WvdbBits,
-  bytes: Uint8Array,
-  byteOffset: number,
-): WvdbVolumeLevel {
+/** Incremental decoder of one grid's LOD: chunks in any order, then `finish`. */
+interface LodDecoder {
+  readonly level: WvdbLevel;
+  add(c: WvdbChunkInfo, raw: Uint8Array): void;
+  /** Checks the LOD is consistent (the mask matches the stored bricks) and returns it. */
+  finish(): WvdbLevel;
+}
+
+function lodDecoders(info: WvdbHeaderInfo, lod: number): LodDecoder[] {
+  const bits = info.header.bake.bits as WvdbBits;
+  return info.header.grids.map((grid) =>
+    isPointsGridHeader(grid) ? pointsLodDecoder(grid, lod) : volumeLodDecoder(grid, lod, bits),
+  );
+}
+
+function volumeLodDecoder(grid: WvdbVolumeGridHeader, lod: number, bits: WvdbBits): LodDecoder {
   const entry = grid.lods[lod]!;
   const channels = (grid.channels ?? 1) as 1 | 3;
   const dimensions = [...entry.dimensions] as WvdbVec3;
   const [X, Y, Z] = dimensions;
-  const counts = brickCounts(dimensions);
   const total = brickTotal(dimensions);
   const layout: WvdbLayout = entry.mask ? "sparse" : "dense";
   const sparse = layout === "sparse";
@@ -473,106 +481,111 @@ function decodeVolumeLod(
   const plane = X * Y * Z;
   const values = new Float32Array(plane * channels);
   for (let c = 0; c < channels; c++) values.fill(background[c]!, c * plane, (c + 1) * plane);
-
-  let mask: Uint32Array | null = null;
-  const brickIndices = new Uint32Array(entry.bricks);
-  const mins = new Float32Array(entry.bricks * channels);
-  const maxs = new Float32Array(entry.bricks * channels);
-  const seen = sparse ? new Uint32Array(Math.ceil(total / 32)) : null;
-  let stored = 0;
-
-  for (const c of chunks) {
-    const raw = sliceChunk(bytes, byteOffset, info, c);
-    if (c.kind === "mask") {
-      mask = decodeMask(inflateWvdbChunk(raw, maskByteSize(total)), total);
-      continue;
-    }
-    const maxSize = pageByteSize(c.count, channels, bits, sparse, c.count * channels);
-    const page = decodePage(inflateWvdbChunk(raw, maxSize), {
-      layout,
-      bits,
-      channels,
-      count: c.count,
-      firstIndex: c.first,
-      brickTotal: total,
-    });
-    brickIndices.set(page.indices, stored);
-    mins.set(page.mins, stored * channels);
-    maxs.set(page.maxs, stored * channels);
-    stored += c.count;
-    for (let b = 0; b < page.indices.length; b++) {
-      const index = page.indices[b]!;
-      if (seen) {
-        if (isMaskBitSet(seen, index)) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": brick ${index} is stored twice`);
-        seen[index >>> 5]! |= 1 << (index & 31);
-      }
-      const [ox, oy, oz] = brickOrigin(dimensions, index);
-      const nx = Math.min(WVDB_BRICK_DIM, X - ox);
-      const ny = Math.min(WVDB_BRICK_DIM, Y - oy);
-      const nz = Math.min(WVDB_BRICK_DIM, Z - oz);
-      for (let ch = 0; ch < channels; ch++) {
-        const src = (b * channels + ch) * WVDB_BRICK_VOXELS;
-        const dst = ch * plane;
-        for (let k = 0; k < nz; k++) {
-          for (let j = 0; j < ny; j++) {
-            const row = dst + ox + (oy + j) * X + (oz + k) * X * Y;
-            const from = src + WVDB_BRICK_DIM * j + 64 * k;
-            for (let i = 0; i < nx; i++) values[row + i] = page.values[from + i]!;
-          }
-        }
-      }
-    }
-  }
-
-  if (sparse) {
-    if (!mask) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": sparse LOD without a mask chunk`);
-    for (let w = 0; w < mask.length; w++) {
-      if (mask[w] !== seen![w]) {
-        throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": the mask does not match the stored brick indices (§6.3)`);
-      }
-    }
-  }
-
-  return {
+  const level: WvdbVolumeLevel = {
     kind: "volume",
     lod,
     dimensions,
     layout,
     channels,
-    brickCounts: counts,
+    brickCounts: brickCounts(dimensions),
     brickTotal: total,
-    mask,
-    brickIndices,
-    mins,
-    maxs,
+    mask: null,
+    brickIndices: new Uint32Array(entry.bricks),
+    mins: new Float32Array(entry.bricks * channels),
+    maxs: new Float32Array(entry.bricks * channels),
     values,
+    bricksDecoded: 0,
+  };
+  const seen = sparse ? new Uint32Array(Math.ceil(total / 32)) : null;
+  let masks = 0;
+
+  return {
+    level,
+    add(c, raw) {
+      if (c.kind === "mask") {
+        if (masks++ > 0) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": more than one mask chunk`);
+        level.mask = decodeMask(inflateWvdbChunk(raw, maskByteSize(total)), total);
+        return;
+      }
+      const maxSize = pageByteSize(c.count, channels, bits, sparse, c.count * channels);
+      const page = decodePage(inflateWvdbChunk(raw, maxSize), {
+        layout,
+        bits,
+        channels,
+        count: c.count,
+        firstIndex: c.first,
+        brickTotal: total,
+      });
+      // `c.first` is the page's position in the LOD's file order, whatever order pages decode in.
+      level.brickIndices.set(page.indices, c.first);
+      level.mins.set(page.mins, c.first * channels);
+      level.maxs.set(page.maxs, c.first * channels);
+      level.bricksDecoded += c.count;
+      for (let b = 0; b < page.indices.length; b++) {
+        const index = page.indices[b]!;
+        if (seen) {
+          if (isMaskBitSet(seen, index)) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": brick ${index} is stored twice`);
+          seen[index >>> 5]! |= 1 << (index & 31);
+        }
+        const [ox, oy, oz] = brickOrigin(dimensions, index);
+        const nx = Math.min(WVDB_BRICK_DIM, X - ox);
+        const ny = Math.min(WVDB_BRICK_DIM, Y - oy);
+        const nz = Math.min(WVDB_BRICK_DIM, Z - oz);
+        for (let ch = 0; ch < channels; ch++) {
+          const src = (b * channels + ch) * WVDB_BRICK_VOXELS;
+          const dst = ch * plane;
+          for (let k = 0; k < nz; k++) {
+            for (let j = 0; j < ny; j++) {
+              const row = dst + ox + (oy + j) * X + (oz + k) * X * Y;
+              const from = src + WVDB_BRICK_DIM * j + 64 * k;
+              for (let i = 0; i < nx; i++) values[row + i] = page.values[from + i]!;
+            }
+          }
+        }
+      }
+    },
+    finish() {
+      if (sparse) {
+        const mask = level.mask;
+        if (!mask) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": sparse LOD without a mask chunk`);
+        for (let w = 0; w < mask.length; w++) {
+          if (mask[w] !== seen![w]) {
+            throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": the mask does not match the stored brick indices (§6.3)`);
+          }
+        }
+      }
+      return level;
+    },
   };
 }
 
-function decodePointsLod(
-  info: WvdbHeaderInfo,
-  grid: WvdbPointsGridHeader,
-  lod: number,
-  chunks: WvdbChunkInfo[],
-  bytes: Uint8Array,
-  byteOffset: number,
-): WvdbPointsLevel {
+function pointsLodDecoder(grid: WvdbPointsGridHeader, lod: number): LodDecoder {
   const count = grid.lods[lod]!.points;
-  const positions = new Float32Array(count * 3);
-  const colors = grid.colors ? new Float32Array(count * 3) : null;
-  const firstPoint = chunks.length ? chunks[0]!.first : grid.lods.slice(0, lod).reduce((s, l) => s + l.points, 0);
-  let at = 0;
-  for (const c of chunks) {
-    const raw = sliceChunk(bytes, byteOffset, info, c);
-    const decoded = decodePoints(inflateWvdbChunk(raw, pointsChunkByteSize(c.count, grid.colors)), {
-      count: c.count,
-      colors: grid.colors,
-    });
-    positions.set(decoded.positions, at * 3);
-    if (colors && decoded.colors) colors.set(decoded.colors, at * 3);
-    at += c.count;
-  }
-  return { kind: "points", lod, firstPoint, count, positions, colors };
+  // Stored index of this LOD's first point: the points of the coarser LODs (§3.5; equals wvdbChunks' `first`).
+  const firstPoint = grid.lods.slice(0, lod).reduce((s, l) => s + l.points, 0);
+  const level: WvdbPointsLevel = {
+    kind: "points",
+    lod,
+    firstPoint,
+    count,
+    positions: new Float32Array(count * 3),
+    colors: grid.colors ? new Float32Array(count * 3) : null,
+    pointsDecoded: 0,
+  };
+  return {
+    level,
+    add(c, raw) {
+      const decoded = decodePoints(inflateWvdbChunk(raw, pointsChunkByteSize(c.count, grid.colors)), {
+        count: c.count,
+        colors: grid.colors,
+      });
+      const at = c.first - firstPoint;
+      level.positions.set(decoded.positions, at * 3);
+      if (level.colors && decoded.colors) level.colors.set(decoded.colors, at * 3);
+      level.pointsDecoded += c.count;
+    },
+    finish: () => level,
+  };
 }
 
 function makeGrids(header: WvdbHeader): WvdbGrid[] {
@@ -653,29 +666,87 @@ export function readWvdb(input: Uint8Array | ArrayBuffer, opts: ReadWvdbOptions 
 
 export interface WvdbLodEvent {
   lod: number;
-  /** One level per grid, in header order. */
+  /**
+   * One level per grid, in header order. For a partial event these are the
+   * LOD's levels in progress: later pages fill the same objects, and
+   * `bricksDecoded` / `pointsDecoded` say how much is in.
+   */
   levels: WvdbLevel[];
+  /** True once every chunk of the LOD is decoded (always, unless `partialLods`). */
+  complete: boolean;
+  /** Partial events: the chunk just decoded (a page's bricks are `brickIndices[first .. first + count)`). */
+  chunk?: WvdbChunkInfo;
+}
+
+export interface WvdbStreamReaderOptions extends Omit<ReadWvdbOptions, "partial"> {
+  /**
+   * Also emit an event (`complete: false`) after every chunk of a LOD decodes,
+   * so a LOD can be shown before all its pages arrive (§12.2). Default false:
+   * one event per finished LOD.
+   */
+  partialLods?: boolean;
+  /** Refuse a header longer than this many bytes before buffering it. Default 16 MiB. */
+  maxHeaderBytes?: number;
+}
+
+const DEFAULT_MAX_HEADER_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Largest compressed size accepted for a chunk that inflates to at most `n`
+ * bytes: zlib's `compressBound` is about `n + n/4096 + 13`; this allows
+ * `n + n/1024 + 1 KiB`, which any deflate encoder's output fits (stored blocks
+ * cost 5 bytes per 64 KiB). The stream reader holds one chunk's bytes at a
+ * time, so this is its memory bound.
+ */
+export function wvdbChunkByteLimit(inflatedBytes: number): number {
+  return inflatedBytes + Math.ceil(inflatedBytes / 1024) + 1024;
+}
+
+function inflatedLimit(header: WvdbHeader, c: WvdbChunkInfo): number {
+  const grid = header.grids[c.gridIndex]!;
+  if (isPointsGridHeader(grid)) return pointsChunkByteSize(c.count, grid.colors);
+  const entry = grid.lods[c.lod]!;
+  const total = brickTotal(entry.dimensions);
+  if (c.kind === "mask") return maskByteSize(total);
+  const channels = grid.channels ?? 1;
+  return pageByteSize(c.count, channels, header.bake.bits as WvdbBits, entry.mask !== undefined, c.count * channels);
 }
 
 /**
  * Push-style coarse-first decoder for a `.wvdb` download: feed it the bytes
- * as they arrive; each `push` returns the LODs that became complete.
+ * as they arrive; each `push` returns the LODs that became complete (and,
+ * with `partialLods`, the LODs that gained a page).
  *
- *     const reader = new WvdbStreamReader();
+ *     const reader = new WvdbStreamReader({ partialLods: true });
  *     for await (const chunk of response.body) for (const e of reader.push(chunk)) show(e);
+ *     reader.end();
  *
- * It keeps only the bytes up to the end of the last LOD it will decode.
+ * Chunks are decoded one at a time, in file order, as soon as their last byte
+ * arrives, so the reader holds at most one chunk's compressed bytes (plus the
+ * header until it parses) besides the decoded LODs: `peakBufferedBytes` is
+ * bounded by the largest chunk plus one pushed buffer. Each chunk's length is
+ * checked against {@link wvdbChunkByteLimit} when the header arrives. After an
+ * error, every later call throws the same error.
  */
 export class WvdbStreamReader {
-  private buffer = new Uint8Array(0);
+  private buf = new Uint8Array(0);
+  /** Absolute file offset of `buf[0]`, and one past the last byte held. */
+  private bufStart = 0;
+  private bufEnd = 0;
   private received = 0;
   private next = 0;
   private finalLod = 0;
+  private chunks: WvdbChunkInfo[] = [];
+  private ci = 0;
+  private remaining: number[] = [];
+  private decoders = new Map<number, LodDecoder[]>();
+  private failure: unknown = null;
+  private peak = 0;
   info: WvdbHeaderInfo | null = null;
   /** The decoded file so far (grids gain levels as LODs complete); null before the header. */
   file: WvdbFile | null = null;
 
-  constructor(private readonly opts: Omit<ReadWvdbOptions, "partial"> = {}) {}
+  constructor(private readonly opts: WvdbStreamReaderOptions = {}) {}
 
   get header(): WvdbHeader | null {
     return this.info?.header ?? null;
@@ -691,53 +762,173 @@ export class WvdbStreamReader {
     return this.info ? wvdbPrefixLength(this.info, this.finalLod) : null;
   }
 
-  push(chunk: Uint8Array): WvdbLodEvent[] {
-    if (this.done) return [];
-    const limit = this.info ? this.bytesTotal! : Infinity;
-    const take = Math.max(0, Math.min(chunk.byteLength, limit - this.received));
-    if (this.received + take > this.buffer.byteLength) {
-      const grown = new Uint8Array(this.info ? limit : Math.max(this.buffer.byteLength * 2, this.received + take, 4096));
-      grown.set(this.buffer.subarray(0, this.received));
-      this.buffer = grown;
-    }
-    this.buffer.set(chunk.subarray(0, take), this.received);
-    this.received += take;
-    const view = this.buffer.subarray(0, this.received);
+  /** File bytes pushed so far. */
+  get bytesReceived(): number {
+    return this.received;
+  }
 
-    if (!this.info) {
-      const { maxLod, ...headerOpts } = this.opts;
-      this.info = readWvdbHeader(view, headerOpts);
-      if (!this.info) return [];
-      const { header } = this.info;
-      this.finalLod = Math.min(header.bake.lods - 1, maxLod ?? Infinity);
-      this.file = {
-        version: this.info.version,
-        header,
-        dataStart: this.info.dataStart,
-        source: header.source,
-        bake: header.bake,
-        grids: makeGrids(header),
-        lodsDecoded: 0,
-        complete: false,
-      };
-      const total = this.bytesTotal!;
-      if (this.buffer.byteLength !== total) {
-        const sized = new Uint8Array(Math.max(total, this.received));
-        sized.set(view);
-        this.buffer = sized;
+  /** Compressed bytes held now, and the most ever held. */
+  get bufferedBytes(): number {
+    return this.bufEnd - this.bufStart;
+  }
+
+  get peakBufferedBytes(): number {
+    return this.peak;
+  }
+
+  push(chunk: Uint8Array): WvdbLodEvent[] {
+    if (this.failure !== null) throw this.failure;
+    if (this.done) return [];
+    try {
+      this.append(chunk);
+      const events: WvdbLodEvent[] = [];
+      if (!this.info && !this.readHeader()) return events;
+      this.completeLods(events);
+      this.decodeChunks(events);
+      if (this.done) {
+        this.buf = new Uint8Array(0);
+        this.bufStart = this.bufEnd = this.received;
+      }
+      return events;
+    } catch (err) {
+      this.failure = err;
+      this.buf = new Uint8Array(0);
+      throw err;
+    }
+  }
+
+  /** Call when the stream ends: throws `WvdbFormatError` if a LOD up to `maxLod` is still missing. */
+  end(): void {
+    if (this.failure !== null) throw this.failure;
+    if (this.done) return;
+    this.failure = new WvdbFormatError(
+      this.info
+        ? `stream ended at byte ${this.received} before LOD ${this.next} was complete (needs ${this.bytesTotal} bytes)`
+        : `stream ended at byte ${this.received} before the header was complete`,
+    );
+    throw this.failure;
+  }
+
+  /** Absolute offset below which no byte is needed any more. */
+  private keepFrom(): number {
+    if (!this.info) return 0;
+    const c = this.chunks[this.ci];
+    return c ? this.info.dataStart + c.offset : Infinity;
+  }
+
+  /** Drops held bytes before `keepFrom()`. */
+  private compact(): void {
+    const keep = this.keepFrom();
+    if (keep <= this.bufStart) return;
+    const drop = Math.min(keep, this.bufEnd) - this.bufStart;
+    if (drop > 0) {
+      this.buf.copyWithin(0, drop, this.bufEnd - this.bufStart);
+      this.bufStart += drop;
+    }
+  }
+
+  private append(chunk: Uint8Array): void {
+    const absStart = this.received;
+    const absEnd = absStart + chunk.byteLength;
+    this.received = absEnd;
+    this.compact();
+    // Before the header, everything is kept (readHeader caps its length); after it, only up to the last needed chunk.
+    const from = Math.max(absStart, this.keepFrom());
+    const to = Math.min(absEnd, this.info ? this.bytesTotal! : Infinity);
+    if (to <= from) return;
+    // Held bytes end at absStart, or are all before keepFrom (then none are held): restart the buffer at `from`.
+    if (this.bufEnd !== from) this.bufStart = this.bufEnd = from;
+    const held = this.bufEnd - this.bufStart;
+    const need = held + (to - from);
+    if (need > this.buf.byteLength) {
+      const grown = new Uint8Array(Math.max(need, Math.min(this.buf.byteLength * 2, need + (1 << 20))));
+      grown.set(this.buf.subarray(0, held));
+      this.buf = grown;
+    }
+    this.buf.set(chunk.subarray(from - absStart, to - absStart), held);
+    this.bufEnd = to;
+    this.peak = Math.max(this.peak, this.bufEnd - this.bufStart);
+  }
+
+  private readHeader(): boolean {
+    // Before the header nothing is dropped, so the buffer starts at file offset 0.
+    const held = this.buf.subarray(0, this.bufEnd - this.bufStart);
+    if (held.byteLength >= WVDB_PREAMBLE_SIZE) {
+      const headerLength = new DataView(held.buffer, held.byteOffset).getUint32(8, true);
+      const max = this.opts.maxHeaderBytes ?? DEFAULT_MAX_HEADER_BYTES;
+      if (headerLength > max) throw new WvdbFormatError(`headerLength ${headerLength} is more than maxHeaderBytes (${max})`);
+    }
+    const { maxLod, partialLods: _p, maxHeaderBytes: _m, ...headerOpts } = this.opts;
+    const info = readWvdbHeader(held, headerOpts);
+    if (!info) return false;
+    const { header } = info;
+    this.finalLod = Math.min(header.bake.lods - 1, maxLod ?? Infinity);
+    const chunks = wvdbChunks(header).filter((c) => c.lod <= this.finalLod);
+    for (const c of chunks) {
+      const limit = wvdbChunkByteLimit(inflatedLimit(header, c));
+      if (c.length > limit) {
+        throw new WvdbFormatError(
+          `chunk (${c.kind}, grid ${c.gridIndex}, LOD ${c.lod}) is ${c.length} bytes, more than a deflate of its ` +
+            `${inflatedLimit(header, c)}-byte content can be (${limit})`,
+        );
       }
     }
+    // File order; a stable sort keeps §9 order for equal offsets.
+    this.chunks = chunks.map((c, i) => ({ c, i })).sort((a, b) => a.c.offset - b.c.offset || a.i - b.i).map(({ c }) => c);
+    this.remaining = Array.from({ length: this.finalLod + 1 }, () => 0);
+    for (const c of this.chunks) this.remaining[c.lod]!++;
+    this.info = info;
+    this.file = {
+      version: info.version,
+      header,
+      dataStart: info.dataStart,
+      source: header.source,
+      bake: header.bake,
+      grids: makeGrids(header),
+      lodsDecoded: 0,
+      complete: false,
+    };
+    return true;
+  }
 
-    const events: WvdbLodEvent[] = [];
-    while (this.next <= this.finalLod && wvdbPrefixLength(this.info, this.next) <= this.received) {
-      const levels = decodeWvdbLod(this.info, this.next, this.buffer.subarray(0, this.received), 0);
+  private decodersFor(lod: number): LodDecoder[] {
+    let d = this.decoders.get(lod);
+    if (!d) {
+      d = lodDecoders(this.info!, lod);
+      this.decoders.set(lod, d);
+    }
+    return d;
+  }
+
+  private decodeChunks(events: WvdbLodEvent[]): void {
+    const info = this.info!;
+    while (this.ci < this.chunks.length) {
+      const c = this.chunks[this.ci]!;
+      const start = info.dataStart + c.offset;
+      const end = start + c.length;
+      if (end > this.bufEnd) break;
+      if (start < this.bufStart) throw new Error("WvdbStreamReader: internal error, chunk bytes were dropped");
+      const decoders = this.decodersFor(c.lod);
+      decoders[c.gridIndex]!.add(c, this.buf.subarray(start - this.bufStart, end - this.bufStart));
+      this.ci++;
+      this.remaining[c.lod]!--;
+      if (this.opts.partialLods) events.push({ lod: c.lod, levels: decoders.map((d) => d.level), complete: false, chunk: c });
+      this.completeLods(events);
+    }
+    // Release bytes before the next chunk now (the next push would too).
+    this.compact();
+  }
+
+  private completeLods(events: WvdbLodEvent[]): void {
+    while (this.next <= this.finalLod && this.remaining[this.next] === 0) {
+      const lod = this.next;
+      const levels = this.decodersFor(lod).map((d) => d.finish());
+      this.decoders.delete(lod);
       addLevels(this.file!.grids, levels);
-      this.file!.lodsDecoded = this.next + 1;
-      this.file!.complete = this.next + 1 === this.info.header.bake.lods;
-      events.push({ lod: this.next, levels });
+      this.file!.lodsDecoded = lod + 1;
+      this.file!.complete = lod + 1 === this.info!.header.bake.lods;
+      events.push({ lod, levels, complete: true });
       this.next++;
     }
-    if (this.done) this.buffer = new Uint8Array(0);
-    return events;
   }
 }

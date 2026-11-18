@@ -16,21 +16,28 @@
  *    map, rounded with `Math.round` (halves toward +infinity) and read with
  *    the grid's own value lookup (inactive values included). A source much
  *    finer than the target resolution aliases; that is his behaviour and the
- *    default here (and the only mode for now).
+ *    default here (`sampling: 'nearest'`).
+ *
+ * Options beyond his CLI (K4.13):
+ *  - `sampling: 'box'` prefilters: each texel is the area-weighted mean of the
+ *    source voxels its cell covers, on the same lattice (`resampleDense`, the
+ *    K4.4 `resampleGrid` box filter). Mass is conserved and thin features fade
+ *    instead of flickering in and out;
+ *  - `levelSetSampler: 'mjurczyk'` samples level sets with his CLI's
+ *    `sampleLevelSet` (`level-set.ts`), which reproduces his level-set files.
  *
  * Differences from his CLI (also in docs/handoffs/K4-3.md):
- *  - level sets are point-sampled and then encoded by the §8 rule (active:
- *    clamp to `±(b - 2b/maxCode)`; inactive: `±b` by sign). His CLI uses
- *    `sampleLevelSet` (a surface-aware mean) instead, so level-set bytes differ;
- *  - our `.vdb` parser keeps no internal-node tiles (it rejects active tiles),
- *    so lookups in inactive tile regions return the background where his
- *    reader returns the tile value (matters for level-set interiors);
+ *  - by default (`levelSetSampler: 'spec'`) level sets are point-sampled and
+ *    then encoded by the §8 rule (active: clamp to `±(b - 2b/maxCode)`;
+ *    inactive: `±b` by sign). His CLI uses `sampleLevelSet` (a surface-aware
+ *    mean) instead, so level-set bytes differ (DIVERGES V17);
  *  - `dimensions` can override the finest LOD size (his pre-0.11 bakes used
  *    `resolution`³ for every box, e.g. the committed `smoke.wvdb` and
  *    `bunny_cloud.wvdb`; this reproduces them).
  */
 
 import { readValue } from "../cpu/read-value.js";
+import { resampleDense } from "../nanovdb/resample.js";
 import { gridTypeConstantsForId } from "../cpu/stride-tables.js";
 import {
   GRID_NAME_MAX,
@@ -49,6 +56,7 @@ import {
 import { parseVdb } from "../vdb/parse.js";
 import type { VdbFile, VdbGrid } from "../vdb/types.js";
 import type { WvdbBits, WvdbBox, WvdbSource, WvdbVec3 } from "./format.js";
+import { sampleWvdbLevelSetMjurczyk, type WvdbIndexAccess } from "./level-set.js";
 import { sha256Hex } from "./sha256.js";
 import { writeWvdb, type WriteWvdbOptions, type WriteWvdbResult, type WvdbVolumeGridInput } from "./write.js";
 
@@ -62,6 +70,10 @@ export interface WvdbSampleSource {
   bbox: WvdbBox | null;
   /** The grid value (and active state) at the voxel nearest to a world position. */
   sample(world: WvdbVec3): { value: number; active: boolean };
+  /** Index-space access, for `levelSetSampler: 'mjurczyk'`. The built-in sources have it. */
+  index?: WvdbIndexAccess;
+  /** The sparse grid behind the source, for `sampling: 'box'`. The built-in sources have it. */
+  grid?: Uint32Array | VdbGrid;
 }
 
 export interface BakeWvdbOptions extends Omit<WriteWvdbOptions, "resolution" | "bakeBBox"> {
@@ -75,9 +87,24 @@ export interface BakeWvdbOptions extends Omit<WriteWvdbOptions, "resolution" | "
    * Grids to keep, by name; also recorded as `bake.grids`. Default null (all).
    */
   gridNames?: string[] | null;
-  /** Resampling filter. Only `"nearest"` (his point sampling) for now. */
-  sampling?: "nearest";
+  /**
+   * Resampling filter. `"nearest"` (default): his point sampling. `"box"`: the
+   * area-weighted mean over each texel's cell (K4.4's box filter; conserves
+   * mass, no aliasing when the source is finer than the texels). Needs a source
+   * with `grid` (the built-in sources).
+   */
+  sampling?: WvdbSampling;
+  /**
+   * How level sets are sampled. `"spec"` (default): `sampling`, then the spec
+   * §8 rule by active state. `"mjurczyk"`: his CLI's `sampleLevelSet`
+   * (trilinear near the surface, a 4x4x4 mean in texels that cross it), which
+   * reproduces his level-set `.wvdb` files; it ignores `sampling`.
+   */
+  levelSetSampler?: WvdbLevelSetSampler;
 }
+
+export type WvdbSampling = "nearest" | "box";
+export type WvdbLevelSetSampler = "spec" | "mjurczyk";
 
 function unionBox(boxes: WvdbBox[]): WvdbBox | null {
   if (!boxes.length) return null;
@@ -133,10 +160,50 @@ export function sampleWvdbDense(
   return values;
 }
 
+/**
+ * Box-filters one source over the box (`sampling: 'box'`): `resampleDense` on
+ * his lattice, then the level-set rule of {@link sampleWvdbDense} by the
+ * filtered active state.
+ */
+export function sampleWvdbDenseBox(
+  source: WvdbSampleSource,
+  bbox: WvdbBox | null,
+  dimensions: WvdbVec3,
+  bits: WvdbBits = 8,
+): Float32Array {
+  const background = source.background;
+  if (!source.bbox || !bbox) return new Float32Array(dimensions[0] * dimensions[1] * dimensions[2]).fill(background);
+  if (!source.grid) {
+    throw new Error(`bakeWvdb: sampling "box" needs the source grid; "${source.name}" has none (use wvdbSourceFromVdbGrid or wvdbSourceFromNanoVdb)`);
+  }
+  const { values, active } = resampleDense(source.grid, { bbox, dimensions, filter: "box" });
+  if (source.class === "level set") {
+    const band = background - (2 * background) / ((1 << bits) - 1);
+    for (let i = 0; i < values.length; i++) {
+      const v = Number.isFinite(values[i]!) ? values[i]! : background;
+      values[i] = active[i] ? Math.min(Math.max(v, -band), band) : v < 0 ? -background : background;
+    }
+  } else {
+    for (let i = 0; i < values.length; i++) if (!Number.isFinite(values[i]!)) values[i] = background;
+  }
+  return values;
+}
+
 /** Bakes sources to a `.wvdb` with his CLI defaults (128, 3 LODs, 8 bits, sparse, 1024 bricks per page). */
 export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdbOptions = {}): WriteWvdbResult {
-  const { resolution = 128, bbox: bakeBBox = null, dimensions, gridNames = null, sampling = "nearest", ...write } = options;
-  if (sampling !== "nearest") throw new Error(`bakeWvdb: unknown sampling "${String(sampling)}"`);
+  const {
+    resolution = 128,
+    bbox: bakeBBox = null,
+    dimensions,
+    gridNames = null,
+    sampling = "nearest",
+    levelSetSampler = "spec",
+    ...write
+  } = options;
+  if (sampling !== "nearest" && sampling !== "box") throw new Error(`bakeWvdb: unknown sampling "${String(sampling)}"`);
+  if (levelSetSampler !== "spec" && levelSetSampler !== "mjurczyk") {
+    throw new Error(`bakeWvdb: unknown levelSetSampler "${String(levelSetSampler)}"`);
+  }
   if (!Number.isInteger(resolution) || resolution < 1) throw new Error(`bakeWvdb: invalid resolution ${resolution}`);
   const selected = gridNames ? sources.filter((s) => gridNames.includes(s.name)) : [...sources];
   const box = bakeBBox ?? unionBox(selected.flatMap((s) => (s.bbox ? [s.bbox] : [])));
@@ -147,7 +214,15 @@ export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdb
     class: s.class,
     background: s.background,
     bbox: box,
-    finest: { dimensions: dims, values: sampleWvdbDense(s, box, dims, bits) },
+    finest: {
+      dimensions: dims,
+      values:
+        s.class === "level set" && levelSetSampler === "mjurczyk"
+          ? sampleWvdbLevelSetMjurczyk(s, box, dims, bits)
+          : sampling === "box"
+            ? sampleWvdbDenseBox(s, box, dims, bits)
+            : sampleWvdbDense(s, box, dims, bits),
+    },
   }));
   return writeWvdb(grids, { ...write, resolution, gridNames, bakeBBox });
 }
@@ -200,6 +275,19 @@ export function wvdbSourceFromVdbGrid(grid: VdbGrid): WvdbSampleSource {
       for (let a = 0; a < 3; a++) ijk[a] = Math.round((world[a]! - translation[a]!) * inverse[a]!);
       return grid.readValue(ijk);
     },
+    index: {
+      // His GridTransform scale-translate maps: (v - translation) * scaleInverse.
+      toIndex(world, out) {
+        for (let a = 0; a < 3; a++) out[a] = (world[a]! - translation[a]!) * inverse[a]!;
+        return out;
+      },
+      toIndexVector(v, out) {
+        for (let a = 0; a < 3; a++) out[a] = v[a]! * inverse[a]!;
+        return out;
+      },
+      voxel: (p) => grid.readValue(p),
+    },
+    grid,
   };
 }
 
@@ -247,6 +335,22 @@ export function wvdbSourceFromNanoVdb(gridWords: Uint32Array): WvdbSampleSource 
       for (let r = 0; r < 3; r++) ijk[r] = Math.round(inv[r * 3]! * p[0]! + inv[r * 3 + 1]! * p[1]! + inv[r * 3 + 2]! * p[2]!);
       return readValue(gridWords, ijk);
     },
+    index: {
+      toIndex(world, out) {
+        const p0 = world[0] - vec[0]!;
+        const p1 = world[1] - vec[1]!;
+        const p2 = world[2] - vec[2]!;
+        for (let r = 0; r < 3; r++) out[r] = inv[r * 3]! * p0 + inv[r * 3 + 1]! * p1 + inv[r * 3 + 2]! * p2;
+        return out;
+      },
+      toIndexVector(v, out) {
+        const [v0, v1, v2] = v;
+        for (let r = 0; r < 3; r++) out[r] = inv[r * 3]! * v0 + inv[r * 3 + 1]! * v1 + inv[r * 3 + 2]! * v2;
+        return out;
+      },
+      voxel: (p) => readValue(gridWords, p),
+    },
+    grid: gridWords,
   };
 }
 

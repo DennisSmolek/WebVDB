@@ -42,19 +42,29 @@ import {
   UPPER_OFF_CHILD_MASK,
   UPPER_TABLE_COUNT,
 } from "./bytes.js";
-import { FP8_LEAF_CODEC, makeFpNLeafCodec, type LeafCodec } from "./leaf-codec.js";
+import { FLOAT_LEAF_CODEC, FP8_LEAF_CODEC, makeFpNLeafCodec, type LeafCodec } from "./leaf-codec.js";
 import { buildFromLeavesDetailed, type BuiltGrid } from "./serialize.js";
 import type { LeafInput, TileInput } from "./tree.js";
 
 export type QuantizeMode = "fp8" | "fpn";
+
+export interface QuantizeOptions {
+  /**
+   * Also collapse uniform leaves and nodes of the source into tiles (OpenVDB
+   * `prune`, tolerance 0; K4.6). Default false: quantizing keeps the source
+   * topology, so a native FLOAT image quantizes to native's Fp8/FpN layout.
+   */
+  collapse?: boolean;
+}
 
 /** Quantizes a FLOAT grid image (or built grid) to Fp8/FpN. Returns a new image. */
 export function quantize(
   input: Uint32Array | BuiltGrid,
   mode: QuantizeMode,
   tolerance?: number,
+  options: QuantizeOptions = {},
 ): Uint32Array {
-  return quantizeDetailed(input, mode, tolerance).image;
+  return quantizeDetailed(input, mode, tolerance, options).image;
 }
 
 /** As {@link quantize}, but returns the computed metadata alongside the image. */
@@ -62,6 +72,7 @@ export function quantizeDetailed(
   input: Uint32Array | BuiltGrid,
   mode: QuantizeMode,
   tolerance?: number,
+  options: QuantizeOptions = {},
 ): BuiltGrid {
   const image = input instanceof Uint32Array ? input : input.image;
   const src = readFloatGrid(image);
@@ -74,6 +85,26 @@ export function quantizeDetailed(
     gridClass:
       src.gridClassId === 1 ? "LevelSet" : src.gridClassId === 2 ? "FogVolume" : "Unknown",
     tiles: src.tiles,
+    collapse: options.collapse === true,
+  });
+}
+
+/**
+ * Re-encodes a FLOAT grid image (still FLOAT) with uniform leaves and nodes
+ * collapsed into tiles (OpenVDB `prune`, tolerance 0; K4.6). Values read back
+ * identically; see `tree.ts` for the rules.
+ */
+export function collapseGrid(input: Uint32Array | BuiltGrid): BuiltGrid {
+  const image = input instanceof Uint32Array ? input : input.image;
+  const src = readFloatGrid(image, "collapseGrid");
+  return buildFromLeavesDetailed(src.leaves, FLOAT_LEAF_CODEC, {
+    voxelSize: src.voxelSize,
+    worldOrigin: src.translation,
+    background: src.background,
+    gridName: src.gridName,
+    gridClass: src.gridClassId === 1 ? "LevelSet" : src.gridClassId === 2 ? "FogVolume" : "Unknown",
+    tiles: src.tiles,
+    collapse: true,
   });
 }
 
@@ -100,13 +131,13 @@ function maskBit(view: DataView, maskBase: number, n: number): boolean {
 }
 
 /** Reads a FLOAT grid image's transform/background and yields its leaves. */
-function readFloatGrid(image: Uint32Array): FloatGridView {
+function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   const gridType = view.getUint32(GRID_OFF_GRID_TYPE, true);
   if (gridType !== GRID_TYPE_FLOAT) {
     throw new Error(
-      `quantize: source grid type ${gridType} is not FLOAT (${GRID_TYPE_FLOAT}); ` +
-        `v1 quantizes float grids only (float -> fp8/fpn).`,
+      `${caller}: source grid type ${gridType} is not FLOAT (${GRID_TYPE_FLOAT}); ` +
+        `v1 re-encodes float grids only (float -> float/fp8/fpn).`,
     );
   }
   // All three: a resampled grid can be anisotropic (K4.4), and the Map must survive quantization.
