@@ -74,3 +74,9 @@ From v1; details in docs/handoffs/.
   one shader redeclare everything. Generate the largest profile you need; several grids share one module by id.
 - Node stats bound ACTIVE values only. A trilinear sample reads one voxel past its cell, so the cell's own max
   doesn't bound it; use the 2x2x2 support (see `tools/cpu/march.ts`).
+- Build the bind group AFTER `pool.update(encoder)` in the same frame. A growth replaces `pool.buffer`; a bind
+  group made before it binds the old buffer, which stays alive (retired), so there is no validation error, only
+  a frame that misses the new grids.
+- `vdbModuleEntries` defaults `visibility` to COMPUTE. A render pipeline must pass `GPUShaderStage.FRAGMENT`.
+- A WebGPU canvas context fails on headless SwiftShader ("A valid external Instance reference no longer
+  exists"). Raw-WebGPU demos need a readback presentation for e2e (demo 08 `?presentation=readback`).

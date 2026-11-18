@@ -38,7 +38,8 @@ Spec: [docs/design/K1-core.md](docs/design/K1-core.md) (§8 has the acceptance p
 | K1.4b | `march` profile (HDDA, stats) + the Fp leaf-stats fix in the fork; `tools` twins (`hddaWalk`, `nodeStats`) | T3 | 🟨 | Majorant parts deferred (D22). |
 | K1.5 | Size snapshot + CI guard | T1 | ⬜ | Budgets in KiB (1024 B). |
 | K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | ⬜ | Fresh-eyes verification after (D11). |
-| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ⬜ | |
+| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ✅ | `examples/src/demos/08-webgpu-smoke`, `e2e/demo-08.spec.ts`. Goldens made on macOS SwiftShader: confirm on Linux CI. API feedback in docs/handoffs/K1-7.md. |
+| K1.7a | Core API follow-ups from K1.7 (vdbModuleEntries visibility default, a trilinear-safe cell bound helper, HDDA cell-exit helper, types-up-front guidance) | T3 | ⬜ | Owner decides; see docs/handoffs/K1-7.md "API friction". |
 | K1.8 | Optional `reader: 'lean'` (≤ 4 KB `read`/Float), A/B vs vendored accessor | T3 | ⬜ | Not gating (D21). |
 
 ## K2 — three.js adapter, v1 parity
