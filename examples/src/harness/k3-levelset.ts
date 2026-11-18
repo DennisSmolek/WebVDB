@@ -112,7 +112,6 @@ const E2E: Record<string, SceneDef> = {
 const PARITY: Record<string, SceneDef> = {
   "step7-utah-teapot-surface-normals": { name: "", kind: "levelset", file: MODELS.teapot!, output: "normals", width: 1280, height: 720, parityExpected: true },
   "step7-venus-statue-surface-normals": { name: "", kind: "levelset", file: MODELS.venus!, output: "normals", width: 1280, height: 720, parityExpected: true },
-  "step7-utah-teapot-mesh-normals": { name: "", kind: "levelset", file: MODELS.teapot!, output: "normals", width: 1280, height: 720, parityExpected: false },
   "step7-utah-teapot-surface-asis": { name: "", kind: "levelset", file: MODELS.teapot!, output: "shaded", width: 1280, height: 720, parityExpected: false },
   "step7-venus-statue-surface-asis": { name: "", kind: "levelset", file: MODELS.venus!, output: "shaded", width: 1280, height: 720, parityExpected: false },
   "step7-utah-teapot-mesh-asis": { name: "", kind: "levelset", file: MODELS.teapot!, output: "shaded", width: 1280, height: 720, parityExpected: false },

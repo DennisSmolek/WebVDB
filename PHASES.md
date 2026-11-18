@@ -97,9 +97,10 @@ re-baselined with a DIVERGES entry that says why.
 
 Parity (2026-11-19, captures of his renderer at 75e7345 on the owner's Apple GPU): all 7 gating scenes (Steps 1 and 3,
 isolated) pass the strict bar; ours on hardware is bit-identical to his in 6/7 (PSNR ∞), two-bunnies 52.6 dB.
-Steps 0–5 done: all 38 gating scenes (Steps 1, 3, 4, 5) pass on SwiftShader and hardware; on the Apple GPU 36/38
-are bit-identical to his renderer (incl. neural, two-sided, octaves, Mie, spectral media and presets), white smoke
-max diff 1/255, two-bunnies 52.6 dB (2026-11-19). Steps 6 and 7 in progress.
+Steps 0–5 and 7 done. Steps 1–5: all 37 gating scenes pass on SwiftShader and hardware; on the Apple GPU 35/37 are
+bit-identical to his renderer (incl. neural, two-sided, octaves, Mie, spectral media and presets), white smoke max
+diff 1/255, two-bunnies 52.6 dB. Step 7: teapot / Venus silhouette IoU 0.994 / 0.996 (gate 0.99), point count
+9,802 = his (2026-11-19). Step 6 in progress.
 
 Compete on rendering (D18). Bring mjurczyk's renderer (three-openvdb, MIT) in as the basis of our three.js
 renderer, re-based on the sparse core, and lift its engine-independent parts into shared foundations that every

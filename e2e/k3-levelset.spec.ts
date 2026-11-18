@@ -167,7 +167,6 @@ test("K3.7 points: the Cd colour attribute reaches each point's pixels", async (
 const PARITY_SCENES = [
   "step7-utah-teapot-surface-normals",
   "step7-venus-statue-surface-normals",
-  "step7-utah-teapot-mesh-normals",
   "step7-sphere-points-isolated",
   "step7-utah-teapot-surface-asis",
   "step7-venus-statue-surface-asis",

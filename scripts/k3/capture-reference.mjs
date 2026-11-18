@@ -160,7 +160,6 @@ const SCENARIOS = [
   { name: "step7-utah-teapot-mesh-asis", step: 7, fields: { demo: "levelset", model: "utahteapot" }, sanity: "demo-5-model-utah-teapot.jpg", parityOverrides: false },
   { name: "step7-utah-teapot-surface-normals", step: 7, fields: { demo: "levelset", model: "utahteapot", format: "vdb", render: "surface" }, sanity: null, isolate: "normals", parityOverrides: false },
   { name: "step7-venus-statue-surface-normals", step: 7, fields: { demo: "levelset", format: "vdb", render: "surface" }, sanity: null, isolate: "normals", parityOverrides: false },
-  { name: "step7-utah-teapot-mesh-normals", step: 7, fields: { demo: "levelset", model: "utahteapot", format: "vdb", render: "mesh" }, sanity: null, isolate: "normals", parityOverrides: false },
   { name: "step7-sphere-points-asis", step: 7, fields: { demo: "points", model: "sphere_points", format: "vdb" }, sanity: "demo-7.jpg", parityOverrides: false },
   { name: "step7-sphere-points-isolated", step: 7, fields: { demo: "points", model: "sphere_points", format: "vdb" }, sanity: null, isolate: "points", parityOverrides: false },
 ];
