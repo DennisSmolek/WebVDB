@@ -1,5 +1,8 @@
 // K1.4b GPU parity probe, run by scripts/check-wgsl-variants.mjs after the
-// compile pass. Small by design: full march parity is K1.6's harness.
+// compile pass. Small by design: the committed regression gate is K1.6's
+// e2e/core-parity.spec.ts (examples/src/harness/core-parity.ts), which covers
+// everything below (walk by covered intervals, nodeMax, dead ids, outside:'zero')
+// across the whole variant matrix. This script stays as a quick local check.
 //
 // One VDBGridPool (the real class, from packages/vdb/dist, in the page) holds:
 //   id 0 sphere_fog_float, id 1 removed (dead), id 2 torus_fog_fp8,
