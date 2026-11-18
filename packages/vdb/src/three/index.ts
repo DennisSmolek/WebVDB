@@ -120,6 +120,16 @@ export {
   getFrameExtinctionSpectrum as vdbFrameExtinctionSpectrumInto,
   getFrameAngstromExponent as vdbFrameAngstromExponent,
   frameAngstromExponents as vdbFrameAngstromExponents,
+  // K3.6: volume shadows on meshes (settings.castShadows), the emission light, the CIE blackbody colour hook
+  VDBFrameVolumeShadows,
+  VDBFrameVolumeShadowMaterial,
+  VDBFrameEmissionLight,
+  VDBFrameEmissionLightNode,
+  VDBFrameEmissionDirectionMaterial,
+  VDBFrameEmissionReduceMaterial,
+  VDBFrameEmissionProbeMaterial,
+  vdbFrameBlackbodyEmission,
+  vdbFrameCheckLightReset,
 } from "./frame/index.js";
 export type {
   VDBFrameVolumeProps,
@@ -133,4 +143,7 @@ export type {
   FrameVolumeRecord,
   FroxelArea,
   VDBFrameMediumVolumeProps,
+  VDBFrameEmissionLightProps,
+  VDBFrameBlackbodyHook,
+  VDBFrameShadowEntry,
 } from "./frame/index.js";

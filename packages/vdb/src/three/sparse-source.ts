@@ -117,6 +117,12 @@ export interface VDBSparseSourceOptions {
   stats?: { meanNonZero: number; max: number; activeVoxels: number };
   /** Density index box the unit box covers (default: the grid's index bbox). Aux grids use their own. */
   indexBox?: VDBIndexBox;
+  /**
+   * K3.6: index boxes the unit box covers in the aux grids (default: each grid's own index bbox). Grids converted
+   * from one dense `.wvdb` level (`wvdbDenseToNanoVdb`) share the texture's box (`textureIndexBox`); pass it so a
+   * sparse emission or mask channel lines up with the density (its active bbox is usually smaller).
+   */
+  auxIndexBoxes?: Partial<Record<"mask" | "albedo" | "emission", VDBIndexBox>>;
   /** World box (default: the density cell box through the grid's transform, as an AABB). */
   bbox?: [Vec3, Vec3];
   /**
@@ -438,8 +444,10 @@ class SparseSource implements VDBThreeSparseSource {
     this.normalize = normalize;
     this.indexBox = o.indexBox ? { min: [...o.indexBox.min], max: [...o.indexBox.max] } : { min: [...density.indexBBox.min], max: [...density.indexBBox.max] };
     const albedoId = Array.isArray(ids.albedo) ? ids.albedo[0] : (ids.albedo as number | undefined);
-    const box = (id: number | undefined) => (id === undefined ? null : { min: [...info(id).indexBBox.min] as Vec3, max: [...info(id).indexBBox.max] as Vec3 });
-    this.auxBoxes = { mask: box(ids.mask), albedo: box(albedoId), emission: box(ids.emission) };
+    const box = (id: number | undefined, given?: VDBIndexBox) =>
+      id === undefined ? null : given ? { min: [...given.min] as Vec3, max: [...given.max] as Vec3 } : { min: [...info(id).indexBBox.min] as Vec3, max: [...info(id).indexBBox.max] as Vec3 };
+    const aux = o.auxIndexBoxes ?? {};
+    this.auxBoxes = { mask: box(ids.mask, aux.mask), albedo: box(albedoId, aux.albedo), emission: box(ids.emission, aux.emission) };
     this.channels = { mask: ids.mask !== undefined, albedo: ids.albedo !== undefined, emission: ids.emission !== undefined };
     const b = this.indexBox;
     this.texels = [b.max[0] - b.min[0] + 1, b.max[1] - b.min[1] + 1, b.max[2] - b.min[2] + 1];

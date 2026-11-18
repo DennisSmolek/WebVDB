@@ -176,6 +176,14 @@ const PARITY_SCENES = [
   ].flatMap((name) => [`${name}-dir-isolated`, `${name}-asis`]),
   "step5-lighting-volume-sky-midday-env-isolated",
   "step5-lighting-volume-medium-cloud-sky-midday-env-isolated",
+  // K3.6 (R1 §6 Step 6): volume shadows on meshes (`*-dir-isolated`: his sun, his ShadowMaterial floor and props; the
+  // `*-shadow-only-*` variants hide the volume proxies: the shadow-only diff) and the explosion's emission light
+  // (`*-env-isolated`: no other light). The explosion frames come from fixtures/k3/ground_explosion/ (his CC0 sequence).
+  ...["step6-cast-shadow", "step6-cast-shadow-obstacle", "step6-cast-shadow-obstacle-cascades-4", "step6-cast-shadow-obstacle-coarse", "step6-cast-shadow-two-bunnies"].flatMap((name) => [`${name}-dir-isolated`, `${name}-asis`]),
+  "step6-cast-shadow-shadow-only-dir-isolated",
+  "step6-cast-shadow-obstacle-shadow-only-dir-isolated",
+  "step6-cast-shadow-obstacle-cascades-4-shadow-only-dir-isolated",
+  ...["step6-explosion-emission", "step6-explosion-emission-cascades-4", "step6-explosion-emission-probes-8"].flatMap((name) => [`${name}-env-isolated`, `${name}-asis`]),
 ];
 for (const scene of PARITY_SCENES) {
   test(`K3.1 parity render: ${scene}`, async ({ page }) => {
@@ -184,6 +192,10 @@ for (const scene of PARITY_SCENES) {
     test.skip(
       scene.includes("sky-midday") && !existsSync(path.join(repoRoot, "fixtures", "k3", "sky-midday-HDR.jpg")),
       "fixtures/k3/sky-midday-HDR.jpg missing (copy src/docs/examples/public/assets/sky-midday-HDR.jpg from his clone)",
+    );
+    test.skip(
+      scene.includes("explosion") && !existsSync(path.join(repoRoot, "fixtures", "k3", "ground_explosion")),
+      "fixtures/k3/ground_explosion/ missing (copy src/docs/examples/public/assets/ground_explosion/ from his clone; CC0 EmberGen)",
     );
     test.setTimeout(1_200_000);
     const r1 = await run(page, `?scene=${scene}`);

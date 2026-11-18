@@ -306,7 +306,7 @@ export interface VDBVolumeNodesOptions {
   /**
    * Emission colour from temperature (Kelvin node) → vec3 node. Default: white.
    * His `'approximate'` blackbody is from Shadertoy (CC BY-NC-SA unless stated) and is not
-   * ported (R1 §7); the CIE `'planck'`/`'soot'` table lands with emission in K3.6.
+   * ported (R1 §7); his CIE `'planck'`/`'soot'` table is the hook `vdbFrameBlackbodyEmission` (K3.6).
    */
   emissionColor?: (temperature: VDBTslNode) => VDBTslNode;
 }

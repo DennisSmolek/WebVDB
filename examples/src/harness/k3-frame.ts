@@ -58,7 +58,7 @@ import * as THREE from "three";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { densityTwin, environmentGridTwin, furnaceEnvironment, gridMipTwin, lightingTwin, probeGrid, probeScattering, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
 import {
@@ -114,6 +114,13 @@ interface SceneDef {
   spectral?: boolean;
   medium?: string;
   angstromExponent?: number;
+  /**
+   * K3.6: his Shadow Casting and Light Emission fields (capture-reference.mjs Step 6): `castShadow` (castShadows on, his
+   * sun and props cast and receive, the ShadowMaterial floor shown), `showObstacle` (the sphere, pillars and spheres),
+   * `explosion` (his ground explosion frame with its emission light, 'planck' spectrum), the emission light's probes /
+   * cascades, and the isolation of the capture (`shadow`: his sun only; `emission`: no scene light, no environment).
+   */
+  step6?: { castShadow?: boolean; showObstacle?: boolean; castShadowCascades?: number; castShadowCoarse?: boolean; explosion?: boolean; emissionResolution?: number; emissionCascades?: number; shadowOnly?: boolean };
 }
 
 // K3.3 (R1 §6 Step 3): his 'frame' lighting scenes. The as-is captures use his 'environment' light setup:
@@ -200,6 +207,33 @@ const STEP5_SCENES: Record<string, SceneDef> = Object.fromEntries(
   ].map((d) => [d.name, d]),
 );
 
+// K3.6 (R1 §6 Step 6): his demo-1 cast-shadow* and explosion-emission* scenes (capture-reference.mjs). `*-asis`: his
+// 'environment' light setup (INFO). `*-dir-isolated`: his sun only, the floor and props kept (`isolate: 'shadow'`): the
+// gate, with a shadow-only diff on his ShadowMaterial floor. `*-env-isolated`: the explosion lit by nothing, the props lit
+// by its emission light only (`isolate: 'emission'`). The explosion frame comes from fixtures/k3/ground_explosion/ (his
+// CC0 EmberGen sequence: copy the folder from his clone); the frame index from the capture's manifest (default 30).
+const STEP6_WHY_EXPLOSION_ASIS = "his 'environment' light setup (scene lights from the HDR map, the map as scene.environment, the grounded skybox; not rendered here)";
+const step6 = (name: string, step: NonNullable<SceneDef["step6"]>, extra: Partial<SceneDef> = {}): SceneDef[] => [
+  step3(`${name}-asis`, { lightSetup: "environment", multipleScattering: "neural", step6: step, ...extra }, false, step.explosion ? STEP6_WHY_EXPLOSION_ASIS : STEP3_WHY_ENV),
+  step3(step.explosion ? `${name}-env-isolated` : `${name}-dir-isolated`, { lightSetup: step.explosion ? "none" : "dir", multipleScattering: "neural", step6: step.explosion ? { ...step, showObstacle: true } : step, ...extra }, true),
+];
+const STEP6_SCENES: Record<string, SceneDef> = Object.fromEntries(
+  [
+    ...step6("step6-cast-shadow", { castShadow: true }),
+    ...step6("step6-cast-shadow-obstacle", { castShadow: true, showObstacle: true }),
+    ...step6("step6-cast-shadow-obstacle-cascades-4", { castShadow: true, showObstacle: true, castShadowCascades: 4 }),
+    ...step6("step6-cast-shadow-obstacle-coarse", { castShadow: true, showObstacle: true, castShadowCoarse: true }),
+    ...step6("step6-cast-shadow-two-bunnies", { castShadow: true }, { twoBunnies: true }),
+    ...step6("step6-explosion-emission", { castShadow: true, explosion: true, emissionResolution: 32 }),
+    ...step6("step6-explosion-emission-cascades-4", { castShadow: true, explosion: true, emissionResolution: 32, emissionCascades: 4 }),
+    ...step6("step6-explosion-emission-probes-8", { castShadow: true, explosion: true, emissionResolution: 8 }),
+    // The shadow-only diff on his ShadowMaterial floor: the volume proxies hidden for the captured frame (isolate 'shadow-only')
+    step3("step6-cast-shadow-shadow-only-dir-isolated", { multipleScattering: "neural", step6: { castShadow: true, shadowOnly: true } }, true),
+    step3("step6-cast-shadow-obstacle-shadow-only-dir-isolated", { multipleScattering: "neural", step6: { castShadow: true, showObstacle: true, shadowOnly: true } }, true),
+    step3("step6-cast-shadow-obstacle-cascades-4-shadow-only-dir-isolated", { multipleScattering: "neural", step6: { castShadow: true, showObstacle: true, castShadowCascades: 4, shadowOnly: true } }, true),
+  ].map((d) => [d.name, d]),
+);
+
 // His frame.js scene list (capture-reference.mjs SCENARIOS). `multipleScattering` 'neural' (his default) is the
 // same as true with 'volume' lighting (the network runs only in 'frame' lighting).
 const HIS_SCENES: Record<string, SceneDef> = {
@@ -241,6 +275,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
   ...STEP3_SCENES,
   ...STEP4_SCENES,
   ...STEP5_SCENES,
+  ...STEP6_SCENES,
 };
 
 interface ChunkProbe {
@@ -351,6 +386,8 @@ const LIGHT_SETUP = (params.get("lights") ?? (FURNACE ? "none" : def?.lightSetup
 const MEDIUM = params.get("medium") ?? def?.medium ?? null;
 const MEDIUM_PROPS = MEDIUM ? vdbFrameMedium(MEDIUM) : null;
 const SPECTRAL = params.has("spectral") ? params.get("spectral") === "1" : !!(def?.spectral || MEDIUM_PROPS);
+// K3.6
+const SHADOW_ONLY = !!def?.step6?.shadowOnly;
 const ANGSTROM = params.has("angstrom") ? Number(params.get("angstrom")) : (def?.angstromExponent ?? null);
 // K3.4: ?ms=0|1|two-sided|octaves|neural
 const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
@@ -430,10 +467,144 @@ interface ManifestScenario {
   name: string;
   metadata?: {
     camera?: { matrixWorld: number[]; projectionMatrix: number[]; near: number; far: number; fov: number; aspect: number };
-    volumes?: { matrixWorld: number[] }[];
+    volumes?: { matrixWorld: number[]; visible?: boolean }[];
     /** K3.3 captures: scene.environment intensity and rotation. */
     environment?: { intensity: number; rotation: [number, number, number, string] } | null;
+    /** K3.6 captures: the meshes outside the volumes, the lights' shadows and the emission light, his animation frame. */
+    meshes?: CapturedMesh[];
+    lights?: { type: string; intensity: number; color?: number[]; matrixWorld: number[]; castShadow?: boolean; shadow?: { mapSize: number[]; bias: number; normalBias: number; radius: number; camera: { left?: number; right?: number; top?: number; bottom?: number; near: number; far: number } }; resolution?: number; range?: number; cascades?: number; distance?: number; steps?: number }[];
+    animations?: { frame: number }[];
+    shadowMap?: { enabled: boolean; type: number };
   };
+}
+
+interface CapturedMesh {
+  geometry: { type: string; parameters: Record<string, number> | null };
+  matrixWorld: number[];
+  castShadow: boolean;
+  receiveShadow: boolean;
+  material: { type: string; color: number[] | null; opacity: number; transparent: boolean; roughness: number | null; metalness: number | null };
+}
+
+/** K3.6: a mesh of his scene from the capture (floor, obstacle sphere, pillars, spheres). */
+function meshFromCapture(m: CapturedMesh): THREE.Mesh {
+  const g = m.geometry.parameters ?? {};
+  const geometry =
+    m.geometry.type === "PlaneGeometry"
+      ? new THREE.PlaneGeometry(g.width, g.height, g.widthSegments, g.heightSegments)
+      : m.geometry.type === "BoxGeometry"
+        ? new THREE.BoxGeometry(g.width, g.height, g.depth, g.widthSegments, g.heightSegments, g.depthSegments)
+        : m.geometry.type === "SphereGeometry"
+          ? new THREE.SphereGeometry(g.radius, g.widthSegments, g.heightSegments, g.phiStart, g.phiLength, g.thetaStart, g.thetaLength)
+          : null;
+  if (!geometry) throw new Error(`K3.6 harness: captured geometry ${m.geometry.type} is not rebuilt`);
+  const color = m.material.color ? new THREE.Color().fromArray(m.material.color) : new THREE.Color(0x000000);
+  const material =
+    m.material.type === "ShadowMaterial"
+      ? new THREE.ShadowMaterial({ color, opacity: m.material.opacity })
+      : m.material.type === "MeshStandardMaterial"
+        ? new THREE.MeshStandardMaterial({ color, roughness: m.material.roughness ?? 1, metalness: m.material.metalness ?? 0, opacity: m.material.opacity, transparent: m.material.transparent })
+        : null;
+  if (!material) throw new Error(`K3.6 harness: captured material ${m.material.type} is not rebuilt`);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.matrixAutoUpdate = false;
+  mesh.matrix.fromArray(m.matrixWorld);
+  mesh.matrixWorld.copy(mesh.matrix);
+  mesh.castShadow = m.castShadow;
+  mesh.receiveShadow = m.receiveShadow;
+  return mesh;
+}
+
+/**
+ * K3.6: his Step 6 scene around the volumes: castShadows and its settings, the floor / obstacle / props (from the
+ * capture, else his frame.js and utils/emission.js values), the sun's shadow (his mapSize 2048, normalBias 0.5 and
+ * fitSunShadow camera) and the explosion's emission light (intensity 25, his probes and cascades).
+ */
+function setupStep6(o: { scene: THREE.Scene; renderer: WebGPURenderer; frameRenderer: VDBFrameRenderer; sun: THREE.DirectionalLight | null; manifest: ManifestScenario | null; worldSize: THREE.Vector3; zUp: boolean }): void {
+  const s6 = def.step6!;
+  const { scene, renderer, frameRenderer, sun, manifest } = o;
+  const captured = manifest?.metadata;
+  const groundLevel = -50.0;
+  renderer.shadowMap.enabled = captured?.shadowMap?.enabled ?? true;
+  if (captured?.shadowMap?.type !== undefined) renderer.shadowMap.type = captured.shadowMap.type as THREE.ShadowMapType;
+  Object.assign(frameRenderer.settings, { castShadows: !!s6.castShadow, castShadowCascades: s6.castShadowCascades ?? 1, castShadowCoarse: !!s6.castShadowCoarse });
+
+  // utils/emission.js placeMeshes: the stage scale is the box width (x and the horizontal of y / z)
+  const width = Math.max(o.worldSize.x, o.zUp ? o.worldSize.y : o.worldSize.z);
+  const floorBox = new THREE.Box3();
+  if (captured?.meshes?.length) {
+    for (const m of captured.meshes) {
+      const mesh = meshFromCapture(m);
+      scene.add(mesh);
+      if (m.material.type === "ShadowMaterial") floorBox.expandByObject(mesh);
+    }
+  } else if (s6.castShadow) {
+    // utils/emission.js: the floor (ShadowMaterial 0.5, 8 × 8 box widths) at groundLevel, scaled by the box width; frame.js:
+    // the obstacle sphere (r 20 at (0, 0, 40)) and the pillars / spheres on a 0.67-width circle. Cast Shadows makes all cast and receive.
+    const stage = new THREE.Group();
+    stage.position.y = groundLevel;
+    stage.scale.setScalar(width);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(8.0, 8.0), new THREE.ShadowMaterial({ opacity: 0.5 }));
+    floor.rotation.x = -Math.PI / 2.0;
+    stage.add(floor);
+    if (s6.showObstacle) {
+      const material = new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 0.8 });
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2.0;
+        const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), material);
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.15, 32, 16), material);
+        pillar.position.set(Math.cos(angle) * 0.67, 0.25, Math.sin(angle) * 0.67);
+        sphere.position.set(Math.cos(angle + Math.PI / 8.0) * 0.67, 0.15, Math.sin(angle + Math.PI / 8.0) * 0.67);
+        stage.add(pillar, sphere);
+      }
+      const obstacle = new THREE.Mesh(new THREE.SphereGeometry(20.0, 32, 32), new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.0, roughness: 0.5 }));
+      obstacle.position.set(0.0, 0.0, 40.0);
+      obstacle.castShadow = obstacle.receiveShadow = true;
+      scene.add(obstacle);
+    }
+    stage.traverse((m) => {
+      if ((m as THREE.Mesh).isMesh) m.castShadow = m.receiveShadow = true;
+    });
+    scene.add(stage);
+    stage.updateMatrixWorld(true);
+    floorBox.setFromObject(floor);
+  }
+
+  if (sun && s6.castShadow) {
+    const cl = captured?.lights?.find((l) => l.type === "DirectionalLight" && l.shadow);
+    sun.castShadow = true;
+    sun.shadow.mapSize.setScalar(cl?.shadow?.mapSize[0] ?? 2048);
+    sun.shadow.normalBias = cl?.shadow?.normalBias ?? 0.5;
+    sun.shadow.bias = cl?.shadow?.bias ?? 0;
+    const cam = sun.shadow.camera;
+    if (cl?.shadow?.camera.left !== undefined) {
+      Object.assign(cam, { left: cl.shadow.camera.left, right: cl.shadow.camera.right, top: cl.shadow.camera.top, bottom: cl.shadow.camera.bottom, near: cl.shadow.camera.near, far: cl.shadow.camera.far });
+    } else {
+      // frame.js fitSunShadow: the floor's box seen from the sun, near −1000, far 1000
+      sun.updateMatrixWorld();
+      sun.shadow.updateMatrices(sun);
+      const view = new THREE.Box3();
+      for (let i = 0; i < 8; i++) {
+        view.expandByPoint(new THREE.Vector3(i & 1 ? floorBox.max.x : floorBox.min.x, i & 2 ? floorBox.max.y : floorBox.min.y, i & 4 ? floorBox.max.z : floorBox.min.z).applyMatrix4(cam.matrixWorldInverse));
+      }
+      Object.assign(cam, { left: view.min.x, right: view.max.x, top: view.max.y, bottom: view.min.y, near: -1000.0, far: 1000.0 });
+    }
+    cam.updateProjectionMatrix();
+  }
+
+  if (s6.explosion) {
+    const cl = captured?.lights?.find((l) => l.type === "FrameEmissionLight");
+    const light = new VDBFrameEmissionLight({
+      intensity: cl?.intensity ?? 25,
+      resolution: cl?.resolution ?? s6.emissionResolution ?? 32,
+      cascades: cl?.cascades ?? s6.emissionCascades ?? 1,
+      range: cl?.range ?? 3,
+      distance: cl?.distance ?? 512,
+      steps: cl?.steps ?? 24,
+    });
+    if (cl?.color) light.color.fromArray(cl.color);
+    scene.add(light);
+  }
 }
 
 async function loadManifest(name: string): Promise<ManifestScenario | null> {
@@ -468,11 +639,15 @@ async function main(): Promise<void> {
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
 
   // --- the dense volume (his bytes) ----------------------------------------------------------
-  const file = params.get("file") ?? def.file;
+  // K3.6: the explosion's frame (the capture's manifest records the frame his sequence showed; else 30, his advanceFrames)
+  const manifest = def.smoke ? null : await loadManifest(def.name);
+  const explosionFrame = def.step6?.explosion ? Number(params.get("explosionFrame") ?? manifest?.metadata?.animations?.[0]?.frame ?? 30) : null;
+  const file = params.get("file") ?? (explosionFrame !== null ? `/fixtures/k3/ground_explosion/ground_explosion_${String(explosionFrame).padStart(4, "0")}.wvdb` : def.file);
   const response = await fetch(file);
   if (!response.ok) throw new Error(`fetch ${file}: ${response.status}${def.smoke ? "" : " (his .wvdb files are not committed: copy them from his clone into fixtures/k3/)"}`);
   const wvdb = readWvdb(new Uint8Array(await response.arrayBuffer()));
-  const dense = wvdbDenseVolume(wvdb, { mipmaps: MIPS });
+  // K3.6 explosion: his emissiveGrid "flames" ÷ emissiveScale 6 (frame.js L25–47)
+  const dense = wvdbDenseVolume(wvdb, explosionFrame !== null ? { mipmaps: MIPS, emission: "flames", scales: { flames: 6.0 } } : { mipmaps: MIPS });
   result.file = file;
   result.volume = {
     dimensions: [...dense.dimensions],
@@ -580,12 +755,14 @@ async function main(): Promise<void> {
     ...volumePhase,
     shadowSteps: SHADOW_STEPS,
     mipmaps: MIPS,
+    // K3.6 explosion (frame.js L25–47, his 'planck' values): base colour #555555, 0–3000 K, emissive intensity 15
+    ...(explosionFrame !== null ? { baseColor: "#555555", temperatureRange: [0, 3000] as [number, number], emissiveIntensity: 15, emissionColor: vdbFrameBlackbodyEmission("planck") } : {}),
   });
 
   const scene = new THREE.Scene();
   scene.background = BACKGROUND.clone();
   const camera = new THREE.PerspectiveCamera(60, W / H, 0.01, 10000.0);
-  const manifest = def.smoke ? null : await loadManifest(def.name);
+  // (manifest: loaded above)
 
   if (manifest?.metadata?.camera && manifest.metadata.volumes?.[0]) {
     result.source = "manifest";
@@ -599,7 +776,8 @@ async function main(): Promise<void> {
     camera.projectionMatrix.fromArray(c.projectionMatrix);
     camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
     volume.matrixAutoUpdate = false;
-    volume.matrix.fromArray(manifest.metadata.volumes[0].matrixWorld);
+    // K3.6: his explosion sequence has one FrameVolume per frame; the shown one is the visible one
+    volume.matrix.fromArray((manifest.metadata.volumes.find((v) => v.visible !== false) ?? manifest.metadata.volumes[0]).matrixWorld);
     volume.matrixWorld.copy(volume.matrix);
   } else if (def.smoke) {
     result.source = "frame.js";
@@ -619,6 +797,18 @@ async function main(): Promise<void> {
     volume.position.copy(center).negate().multiplyScalar(scale);
     volume.scale.setScalar(scale);
     volume.position.y += groundLevel + (size.y * scale) / 2.0;
+    if (explosionFrame !== null) {
+      // The explosion (frame.js L384–425, L141–165): Z-up (−90° about x), 100 units, the box centred on the stage at
+      // groundLevel + height / 2 (height: the z size)
+      const s = 100.0 / Math.max(size.x, size.y, size.z);
+      volume.matrixAutoUpdate = false;
+      volume.matrix
+        .makeTranslation(0, groundLevel + (size.z * s) / 2.0, 0)
+        .multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2.0))
+        .multiply(new THREE.Matrix4().makeScale(s, s, s))
+        .multiply(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
+      volume.matrixWorld.copy(volume.matrix);
+    }
     camera.position.set(-100.0, -11.0, 80.0);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
@@ -650,9 +840,10 @@ async function main(): Promise<void> {
     volumes.push(second);
   }
 
+  let sun: THREE.DirectionalLight | null = null;
   if (LIGHT_SETUP === "dir" || LIGHT_SETUP === "dir-hemi") {
     // His sun: DirectionalLight(0xffffff, 1.0) at (100, 200, 100), target at the origin (frame.js L191–194).
-    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+    sun = new THREE.DirectionalLight(0xffffff, 1.0);
     sun.position.set(100.0, 200.0, 100.0);
     scene.add(sun);
     scene.add(sun.target);
@@ -692,6 +883,13 @@ async function main(): Promise<void> {
     if (captured?.rotation) scene.environmentRotation.set(captured.rotation[0], captured.rotation[1], captured.rotation[2], captured.rotation[3] as THREE.EulerOrder);
   }
 
+  // K3.6: the floor, props, sun shadow and emission light of his Step 6 scenes
+  if (def.step6) {
+    scene.updateMatrixWorld(true);
+    const s = explosionFrame !== null ? 100.0 / Math.max(size.x, size.y, size.z) : 1.0;
+    setupStep6({ scene, renderer, frameRenderer, sun, manifest, worldSize: size.clone().multiplyScalar(s), zUp: explosionFrame !== null });
+    result.settings = { ...frameRenderer.settings };
+  }
   const volumeCenter = new THREE.Vector3();
   camera.updateMatrixWorld(true);
   scene.updateMatrixWorld(true);
@@ -728,6 +926,8 @@ async function main(): Promise<void> {
       y1 = Math.max(y1, sy);
     }
     result.volumeRect = [Math.max(0, Math.floor(x0)), Math.max(0, Math.floor(y0)), Math.min(W, Math.ceil(x1)), Math.min(H, Math.ceil(y1))];
+    // K3.6: the shadows and the lit props are outside the volume's rectangle: compare the whole frame
+    if (def.step6) result.volumeRect = [0, 0, W, H];
   }
 
   const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
@@ -757,6 +957,13 @@ async function main(): Promise<void> {
     if (!e) throw new Error("the environment lights did not arrive within 60 frames");
   }
 
+  // K3.6: the volume shadow filter goes on the lights in the first frame (the proxy's onBeforeRender, after the floor
+  // drew), the receivers build with it in the next, whose first receiver draws the maps; his captures run 6+ frames.
+  // shadow-only: the volume proxies hidden for the captured frames (the volumes still cast).
+  if (def.step6) {
+    for (let i = 0; i < 4; i++) await frame();
+    if (SHADOW_ONLY) for (const v of volumes) v.proxy.visible = false;
+  }
   const firstLinear = await frame();
   const first = toDisplay(firstLinear);
   const second = toDisplay(await frame());

@@ -25,6 +25,7 @@ import { vdbVolumeUniforms } from "../volume-source.js";
 import type { VDBFrameDensityMaterial } from "./density-material.js";
 import type { VDBFrameInjectMaterial } from "./inject-material.js";
 import type { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
+import type { VDBFrameEmissionDirectionMaterial } from "./emission-light.js";
 import { vdbFrameAllLights } from "./lights.js";
 import type { VDBFramePhase } from "./phase.js";
 import { vdbFrameRenderer, type VDBFrameRenderer } from "./renderer.js";
@@ -97,6 +98,8 @@ export class VDBFrameVolume extends THREE.Group {
   /** 'frame' lighting: the density and shadow density materials, built by the renderer on first use (K3.3). */
   densityMaterial: VDBFrameDensityMaterial | null = null;
   shadowDensityMaterial: VDBFrameShadowDensityMaterial | null = null;
+  /** K3.6: the emission light's direction-pass material of this volume (made by the light on first use). */
+  emissionDirectionMaterial: VDBFrameEmissionDirectionMaterial | null = null;
   readonly emissionColor: VDBVolumeNodesOptions["emissionColor"];
 
   baseColor: THREE.Color;
@@ -243,6 +246,8 @@ export class VDBFrameVolume extends THREE.Group {
     this.densityMaterial = null;
     this.shadowDensityMaterial?.dispose();
     this.shadowDensityMaterial = null;
+    this.emissionDirectionMaterial?.dispose();
+    this.emissionDirectionMaterial = null;
     this.proxy.geometry.dispose();
   }
 }
