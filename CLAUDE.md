@@ -188,3 +188,4 @@ From v1; details in docs/handoffs/.
 - Vite serves `packages/vdb/src` and `examples/src` live: editing them while `scripts/k3/time-hardware.mjs` runs mixes
   code versions across its page loads (and a reload can land mid-run). Two runs with the same `--port` share one Vite
   server, and the first to finish kills it. Use a distinct port per run and don't edit sources while timing.
+- three r187 `TextureNode` uniform hash is the texture's uuid: texture nodes holding the same texture when a shader is built share one binding. Never park placeholder/unused slots on another slot's texture if that slot may later get its own (K3.5, V53).

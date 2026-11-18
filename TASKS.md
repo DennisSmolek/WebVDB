@@ -79,7 +79,7 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 | K3.3a | Owner: capture the Step 3 scenarios (`step3-*` in `scripts/k3/capture-reference.mjs`; parity = the `*-dir-isolated` / `*-env-isolated` ones), copy `sky-midday-HDR.jpg` into `fixtures/k3/`, then `pnpm k3:parity` | owner | ✅ | His as-is Step 3 scenes use three-environment-shadows lights + a grounded skybox (INFO only). |
 | K3.3b | Hardware timing of the 'frame' passes (grid redraw vs cached, density on sparse vs dense) on a quiet machine (D25) | owner | ⬜ | `?timing=1` in `k3-frame` reports `froxelsMs` and `passes.gridRedrawMs`. |
 | K3.4 | Step 4: phase functions + multiple-scattering modes (two-sided, octaves, neural) | T3 | ✅ | Neural weights pending R10. |
-| K3.5 | Step 5: spectral media + presets | T2 | ⬜ | |
+| K3.5 | Step 5: spectral media + presets | T2 | 🟨 | |
 | K3.6 | Step 6: mesh shadows + emission (three internals, r187) | T3 | ⬜ | |
 | K3.7 | Step 7: level sets + points | T3 | ⬜ | Needs K4.2. |
 | K3.8 | Lift each green step's shading into `core` WGSL with CPU twins | T3 | ⬜ | Rolling, after each step. |
