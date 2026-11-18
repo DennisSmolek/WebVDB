@@ -39,7 +39,7 @@ Each demo is a phase gate (see [docs/SPEC.md §5](./docs/SPEC.md)); run
 | 02 | [`cloud`](./examples/src/demos/02-cloud) — Fp8 fog volume fragment-raymarched with sun lighting, orbit camera, live controls | **main goal** |
 | 03 | [`gpu-read`](./examples/src/demos/03-gpu-read) — minimal annotated "read VDBs on the GPU" example (one file, heavily commented, raw WebGPU) | **main goal (educational)** |
 | 04 | [`atlas-fallback`](./examples/src/demos/04-atlas-fallback) — same style of volume through compute → dense atlas → stock volume material | mobile/compat path |
-| 05 | [`embergen-sequence`](./examples/src/demos/05-embergen-sequence) — animated volume playback via `NanoVDBSequence`'s `rebindGrid` | animation |
+| 05 | [`embergen-sequence`](./examples/src/demos/05-embergen-sequence) — animated volume playback: `VDBSequence` swaps frames in place with `pool.replace` | animation |
 | 06 | [`explorer`](./examples/src/demos/06-explorer) — drag-drop `.nvdb`/`.vdb`: metadata panel, node-bbox wireframes, slice view, histogram, memory breakdown | technical tool |
 | 07 | [`builder`](./examples/src/demos/07-builder) — author a grid in-browser (procedural dense → `@pmndrs/vdb/tools` build → render, byte-verified round trip) | `@pmndrs/vdb/tools` v1 round-trip |
 
