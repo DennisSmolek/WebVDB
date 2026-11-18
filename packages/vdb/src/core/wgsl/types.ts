@@ -26,8 +26,14 @@ export type VDBModuleProfile = "read" | "sample" | "march" | "majorant";
  * - `'rayClipSupport'` (`sample`+): `vdbRayClipSupport(g, o, d, t) -> bool`,
  *   `vdbRayClip` against the sampler's support box: `[min - 1, max + 1)` for
  *   trilinear, `[min - 0.5, max + 0.5)` for nearest.
+ * - `'levelSet'` (`march`, K3.7): `vdbLevelSetHit(g, o, d, t, sdfToIndex, maxSamples) -> bool`,
+ *   the first zero crossing of a level set's trilinear SDF along an index-space
+ *   ray (HDDA skip of tile and background cells above 0, sphere trace, bisection
+ *   + secant), `vdbLevelSetGradient(acc, xyz, h) -> vec3f` (central differences,
+ *   index space) and `vdbLevelSetNormal(g, xyz, h) -> vec3f` (world unit normal).
+ *   CPU twins: `tools` `levelSetHit`, `levelSetGradient`, `levelSetNormal`.
  */
-export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "nodeAverage" | "rayClipSupport";
+export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "levelSet" | "nodeAverage" | "rayClipSupport";
 
 /** Options every binding mode shares. */
 export interface VDBModuleCommonOptions {

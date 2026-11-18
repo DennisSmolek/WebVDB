@@ -10,6 +10,10 @@
       "gz": 5749,
       "min": 32138
     },
+    "march/float+fp8+fpn/buffer/helpers=levelSet": {
+      "gz": 6463,
+      "min": 33930
+    },
     "march/float+fp8+fpn/buffer/isActive=false": {
       "gz": 5294,
       "min": 27931
@@ -33,6 +37,10 @@
     "march/float+fp8+fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5791,
       "min": 32188
+    },
+    "march/float+fp8+fpn/slot/helpers=levelSet": {
+      "gz": 6505,
+      "min": 33980
     },
     "march/float+fp8+fpn/slot/isActive=false": {
       "gz": 5335,
@@ -58,6 +66,10 @@
       "gz": 5240,
       "min": 29072
     },
+    "march/float/buffer/helpers=levelSet": {
+      "gz": 5956,
+      "min": 30864
+    },
     "march/float/buffer/isActive=false": {
       "gz": 4771,
       "min": 24865
@@ -81,6 +93,10 @@
     "march/float/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5281,
       "min": 29122
+    },
+    "march/float/slot/helpers=levelSet": {
+      "gz": 5996,
+      "min": 30914
     },
     "march/float/slot/isActive=false": {
       "gz": 4813,
@@ -106,6 +122,10 @@
       "gz": 5599,
       "min": 31041
     },
+    "march/fp16/buffer/helpers=levelSet": {
+      "gz": 6312,
+      "min": 32833
+    },
     "march/fp16/buffer/isActive=false": {
       "gz": 5137,
       "min": 26834
@@ -129,6 +149,10 @@
     "march/fp16/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5640,
       "min": 31091
+    },
+    "march/fp16/slot/helpers=levelSet": {
+      "gz": 6353,
+      "min": 32883
     },
     "march/fp16/slot/isActive=false": {
       "gz": 5179,
@@ -154,6 +178,10 @@
       "gz": 5596,
       "min": 31035
     },
+    "march/fp4/buffer/helpers=levelSet": {
+      "gz": 6309,
+      "min": 32827
+    },
     "march/fp4/buffer/isActive=false": {
       "gz": 5135,
       "min": 26828
@@ -177,6 +205,10 @@
     "march/fp4/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5637,
       "min": 31085
+    },
+    "march/fp4/slot/helpers=levelSet": {
+      "gz": 6351,
+      "min": 32877
     },
     "march/fp4/slot/isActive=false": {
       "gz": 5176,
@@ -202,6 +234,10 @@
       "gz": 5597,
       "min": 31035
     },
+    "march/fp8/buffer/helpers=levelSet": {
+      "gz": 6310,
+      "min": 32827
+    },
     "march/fp8/buffer/isActive=false": {
       "gz": 5136,
       "min": 26828
@@ -225,6 +261,10 @@
     "march/fp8/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5638,
       "min": 31085
+    },
+    "march/fp8/slot/helpers=levelSet": {
+      "gz": 6352,
+      "min": 32877
     },
     "march/fp8/slot/isActive=false": {
       "gz": 5177,
@@ -250,6 +290,10 @@
       "gz": 5656,
       "min": 31284
     },
+    "march/fpn/buffer/helpers=levelSet": {
+      "gz": 6369,
+      "min": 33076
+    },
     "march/fpn/buffer/isActive=false": {
       "gz": 5196,
       "min": 27077
@@ -273,6 +317,10 @@
     "march/fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5697,
       "min": 31334
+    },
+    "march/fpn/slot/helpers=levelSet": {
+      "gz": 6411,
+      "min": 33126
     },
     "march/fpn/slot/isActive=false": {
       "gz": 5238,

@@ -2,7 +2,7 @@
   "source": "docs/design/K1-core.md \u00a73.6 (proposed K1.1 budgets, min bytes). Decided unit: KiB = 1024 bytes (D21). Re-baselined 2026-11-18 after K1.4b's grid-liveness gate (+~110 B on read): oneFp columns raised 0.5 KiB (D21 amendment).",
   "unit": "KiB",
   "bytesPerUnit": 1024,
-  "rule": "Column by the Fp types in the variant's types: none -> float; one -> oneFp; two or more (Float+Fp8+FpN) -> floatFp8Fpn. Variants with slot or buffer share a budget. Options (sampler, outside) use their profile's budget. read with isActive: false uses read.isActive=false; sample and march with isActive: false use their profile budget. Variants with opt-in helpers (K1.7a) use '<profile>+helpers': the profile budget + 1 KiB. Variants with the 'nodeAverage' helper (K3.2, the sparse volume source's module) use 'march+nodeAverage': the march budget + 1.5 KiB (its leaf/lower average readers are ~1 KiB of vendored code).",
+  "rule": "Column by the Fp types in the variant's types: none -> float; one -> oneFp; two or more (Float+Fp8+FpN) -> floatFp8Fpn. Variants with slot or buffer share a budget. Options (sampler, outside) use their profile's budget. read with isActive: false uses read.isActive=false; sample and march with isActive: false use their profile budget. Variants with opt-in helpers (K1.7a) use '<profile>+helpers': the profile budget + 1 KiB. Variants with the 'nodeAverage' helper (K3.2, the sparse volume source's module) use 'march+nodeAverage': the march budget + 1.5 KiB (its leaf/lower average readers are ~1 KiB of vendored code). Variants with the 'levelSet' helper (K3.7, VDBLevelSetMaterial's module) use 'march+levelSet': the march budget + 2.5 KiB (the zero-crossing walk, refinement and normal add ~2.4 KiB min).",
   "columns": {
     "float": "Float",
     "oneFp": "+ one Fp type (Fp4, Fp8, Fp16 or FpN, with or without Float)",
@@ -43,6 +43,11 @@
       "float": 30.5,
       "oneFp": 32,
       "floatFp8Fpn": 32.5
+    },
+    "march+levelSet": {
+      "float": 31.5,
+      "oneFp": 33,
+      "floatFp8Fpn": 33.5
     }
   }
 }

@@ -179,6 +179,17 @@ export { probeCoords, probePoints } from "./cpu/probe-coords.js";
 export type { ProbeOpts } from "./cpu/probe-coords.js";
 
 /**
+ * K3.7: CPU twins of the opt-in `'levelSet'` WGSL helper (the level-set
+ * zero-crossing finder and its gradient normal), the brute-force oracle they
+ * are tested against, the marching-cubes mesh of a level set and the
+ * render-ready point list of a point data grid (his `createPointData`).
+ */
+export { levelSetGradient, levelSetHit, levelSetHitReference, levelSetNormal, sampleTrilinearF32 } from "./cpu/level-set.js";
+export type { LevelSetHit, LevelSetHitOptions } from "./cpu/level-set.js";
+export { vdbPointRenderData, VDB_POINTS_DEFAULT_MAX } from "./vdb/point-render-data.js";
+export type { VDBPointRenderData, VDBPointRenderDataOptions } from "./vdb/point-render-data.js";
+
+/**
  * CPU twins of the core compute tools (K2.3): `gridStatsCpu`,
  * `decodeToAtlasCpu` (+ `atlasFromRaw`, the shared post-readback step), and
  * `transformLeafValues`, the CPU value transform behind `applyValueTransform`.
