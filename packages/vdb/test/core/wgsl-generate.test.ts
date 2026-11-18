@@ -44,8 +44,8 @@ describe("wgslNameProblems (helper)", () => {
 });
 
 describe("vdbModuleWgsl: every variant", () => {
-  it("covers the K1.4a matrix (read/sample x 6 type sets x slot/buffer x isActive, + nearest / outside zero)", () => {
-    expect(VARIANTS).toHaveLength(72);
+  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero)", () => {
+    expect(VARIANTS).toHaveLength(132);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {
@@ -149,11 +149,77 @@ describe("vdbModuleWgsl: profiles and compile-out", () => {
     expect(code).not.toContain("vdb_sample_trilinear_typed");
   });
 
-  it("outside: 'zero' tests the index bbox carried in the accessor", () => {
+  it("outside: 'zero' zeroes the field outside the index bbox [min, max] carried in the accessor", () => {
     const zero = vdbModuleWgsl({ ...read, profile: "sample", outside: "zero" });
-    expect(zero).toContain("any(xyz < (*acc).lo) || any(xyz > (*acc).hi)");
-    expect(zero).toMatch(/lo: vec3f,\n {4}hi: vec3f,/);
+    expect(zero).toMatch(/lo: vec3i,\n {4}hi: vec3i,/);
+    // Trilinear: every tap outside [lo, hi] reads 0; no tap inside -> 0 early.
+    expect(zero).toContain("fn vdb_tap0(");
+    expect(zero).toContain("if any(ijk < (*acc).lo) || any(ijk > (*acc).hi) {");
+    expect(zero).toContain("any(b < (*acc).lo - vec3i(1)) || any(b > (*acc).hi)");
+    expect(zero).not.toContain("vdb_sample_trilinear_typed");
+    // Nearest: the rounded voxel must be inside [lo, hi].
+    const nearest = vdbModuleWgsl({ ...read, profile: "sample", outside: "zero", sampler: "nearest" });
+    expect(nearest).toContain("let ijk = vec3i(floor(xyz + vec3f(0.5)));\n    if !(*acc).ok || any(ijk < (*acc).lo) || any(ijk > (*acc).hi) {");
+    expect(nearest).not.toContain("vdb_tap0");
     expect(vdbModuleWgsl({ ...read, profile: "sample" })).not.toMatch(/\(\*acc\)\.(lo|hi)\b/);
+  });
+
+  it("every per-grid function checks the id is live and below vdbGridCount()", () => {
+    const code = vdbModuleWgsl({ ...read, profile: "march" });
+    expect(code).toContain("fn vdb_live(g: u32) -> bool {\n    return g < vdbGridCount() && (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_LIVE) != 0u;\n}");
+    for (const fn of ["vdbGridType", "vdbIndexMin", "vdbIndexMax", "vdb_affine", "vdbRayClip", "vdbValueMax"]) {
+      const body = new RegExp(`fn ${fn}\\([^)]*\\)[^{]*\\{\\n {4}if !vdb_live\\(g\\)`);
+      expect(code, fn).toMatch(body);
+    }
+    expect(code).toContain("return vdb_live(g) && (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_HAS_STATS) != 0u;");
+    // A dead id gives an empty box (max < min) and no ray hit.
+    expect(code).toMatch(/fn vdbIndexMax[^{]*\{\n {4}if !vdb_live\(g\) \{\n {8}return vec3i\(-1\);/);
+    expect(code).toMatch(/fn vdbRayClip[^{]*\{\n {4}if !vdb_live\(g\) \{\n {8}return false;/);
+  });
+
+  it("march adds the HDDA, vdbGetDim, node stats and the record's stats flag / valueMax", () => {
+    const options = { ...read, profile: "march" } as const;
+    const decls = vdbModuleDeclarations(options);
+    for (const root of [
+      "pnanovdb_hdda_init",
+      "pnanovdb_hdda_update",
+      "pnanovdb_hdda_step",
+      "pnanovdb_readaccessor_get_dim",
+      "pnanovdb_root_get_max_float",
+      "pnanovdb_upper_get_max_float",
+      "pnanovdb_lower_get_max_float",
+      "pnanovdb_leaf_get_max_float",
+      "pnanovdb_sample_trilinear_typed",
+    ]) {
+      expect(decls).toContain(root);
+    }
+    for (const absent of ["pnanovdb_hdda_zero_crossing", "pnanovdb_leaf_get_min_float", "pnanovdb_leaf_get_ave_float", "pnanovdb_hdda_pos_to_ijk"]) {
+      expect(decls).not.toContain(absent);
+    }
+    const code = vdbModuleWgsl(options);
+    const api = [...code.matchAll(/^fn (vdb[A-Z]\w*)/gm)].map((m) => m[1]);
+    expect(api.slice(13)).toEqual(["vdbHddaInit", "vdbHddaUpdate", "vdbHddaStep", "vdbGetDim", "vdbHasStats", "vdbValueMax", "vdbNodeMax"]);
+    expect(code).toContain("alias VdbHdda = vdb_hdda_t;");
+    expect(code).toMatch(/stats: bool,\n {4}vmax: f32,/);
+    expect(code).toContain("a.vmax = bitcast<f32>(vdb_rec(g, VDB_REC_VALUE_MAX));");
+    expect(code).toContain("const VDB_REC_VALUE_MAX: u32 = 35u;");
+    expect(code).toContain("const VDB_REC_FLAG_HAS_STATS: u32 = 0x2u;");
+  });
+
+  it("march leaf stats: Float only reads f32, Fp only decodes uint16 codes, mixed branches on the compiled Fp types", () => {
+    const march = { ...read, profile: "march" } as const;
+    const float = vdbModuleWgsl(march);
+    expect(float).toMatch(/fn vdb_leaf_get_stat_float\([^)]*\) -> f32 \{\n {4}return vdb_read_float\(buf, address\);\n\}/);
+    expect(float).not.toContain("vdb_read_uint16");
+    expect(float).not.toContain("vdb_leaf_fp_get_stat_float");
+
+    const fpn = vdbModuleWgsl({ ...march, types: ["fpn"] });
+    expect(fpn).toMatch(/fn vdb_leaf_get_stat_float\([^)]*\) -> f32 \{\n {4}return vdb_leaf_fp_get_stat_float\(grid_type, buf, node, address, with_minimum\);\n\}/);
+    expect(fpn).toContain("fn vdb_read_uint16(");
+    expect(fpn).toContain("return (raw >> ((address & 2u) << 3u)) & 65535u;");
+
+    const mixed = vdbModuleWgsl({ ...march, types: ["float", "fp8", "fpn"] });
+    expect(mixed).toContain("    if grid_type == VDB_GRID_TYPE_FP8 || grid_type == VDB_GRID_TYPE_FPN {\n        return vdb_leaf_fp_get_stat_float(");
   });
 
   it("sample-only options do not change a read module", () => {
@@ -230,8 +296,12 @@ describe("vdbModuleWgsl: options", () => {
       { ...base, types: [] },
       { ...base, types: "float" },
       { ...base, types: ["half"] },
-      { ...base, profile: "march" },
       { ...base, profile: "majorant" },
+      { ...base, slot: undefined, buffer: "__vdbPool.value" },
+      { ...base, slot: undefined, buffer: "vdbPool.__value" },
+      { ...base, slot: undefined, buffer: "loop.value" },
+      { ...base, slot: undefined, buffer: "vdbPool.active" },
+      { ...base, slot: undefined, buffer: "_" },
       { ...base, profile: "full" },
       { ...base, profile: "sample", sampler: "cubic" },
       { ...base, profile: "sample", outside: "clamp" },
@@ -241,8 +311,14 @@ describe("vdbModuleWgsl: options", () => {
     for (const options of cases) expectCode(() => vdbModuleWgsl(options as VDBModuleOptions), "VDB_BAD_OPTION");
   });
 
-  it("names K1.4b for the reserved profiles", () => {
-    expect(() => vdbModuleWgsl({ ...base, profile: "march" })).toThrow(/K1\.4b/);
+  it("says majorant is deferred past 0.1 (D22)", () => {
+    expect(() => vdbModuleWgsl({ ...base, profile: "majorant" })).toThrow(/deferred past 0\.1 \(D22\)/);
+  });
+
+  it("names the offending part of a reserved buffer expression", () => {
+    expect(() => vdbModuleWgsl({ ...base, slot: undefined, buffer: "vdbPool.set" })).toThrow(/'set', which WGSL reserves/);
+    expect(() => vdbModuleWgsl({ ...base, slot: undefined, buffer: "__pool" })).toThrow(/must not start with '__'/);
+    expect(vdbModuleWgsl({ ...base, slot: undefined, buffer: "pool_.value_" })).toContain("return pool_.value_[vdb_i];");
   });
 
   it("treats types as a set", () => {

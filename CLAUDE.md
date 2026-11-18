@@ -67,3 +67,10 @@ From v1; details in docs/handoffs/.
 - Native fog grids can store root background ≠ near-field inactive tile values (3 vs 0 on the sphere fixture).
 - The `.nvdb` grids under `fixtures/` are git-ignored. Run `pnpm fixtures:bake` before fixture tests;
   sidecars are committed.
+- Fp leaf stats are u16 codes; never read them as f32. Fp4/Fp8/Fp16/FpN leaves keep min/max/ave/dev as uint16
+  at bytes 88/90/92/94 (`code * quantum + minimum`; dev is `code * quantum`); 90 isn't word-aligned. Root, upper
+  and lower stats stay f32. Use the fork's `*_get_*_float` readers or `tools` `nodeStats`.
+- One VDB module per shader: generated symbols are declared once, so two modules (two profiles or two pools) in
+  one shader redeclare everything. Generate the largest profile you need; several grids share one module by id.
+- Node stats bound ACTIVE values only. A trilinear sample reads one voxel past its cell, so the cell's own max
+  doesn't bound it; use the 2x2x2 support (see `tools/cpu/march.ts`).

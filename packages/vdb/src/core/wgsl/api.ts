@@ -7,8 +7,17 @@
  * Every pool read goes through `vdb_load`, the module's one buffer access,
  * which the generator emits for the chosen binding mode.
  *
- * Layers stack: `sample` includes `read`. `march` and `majorant` (K1.4b) add
- * layers here; each layer is a function of the normalized options.
+ * Layers stack: `sample` includes `read`, `march` includes `sample`
+ * (`majorant` is deferred past 0.1, D22). Each layer is a function of the
+ * normalized options and the profile rank.
+ *
+ * Conventions every layer keeps:
+ * - A grid id is usable when it is below `vdbGridCount()` and its record is
+ *   live. Every per-grid function checks that first: a dead or out-of-range
+ *   id never reads a zeroed record or image bytes as a record.
+ * - Voxel centres sit at integer index coordinates (the vendored trilinear and
+ *   NanoVDB `SampleFromVoxels`); HDDA cells are floor-based, so voxel `i`
+ *   occupies `[i, i + 1)` for ray clipping and traversal.
  */
 
 import type { VDBGridTypeName } from "../types.js";
@@ -30,20 +39,32 @@ export const GRID_TYPE_CONSTANT: Readonly<Record<VDBGridTypeName, string>> = {
   fpn: "VDB_GRID_TYPE_FPN",
 };
 
-/** Whether the accessor carries the index bbox (only `sample` with `outside: 'zero'`). */
+/** Whether the accessor carries the index bbox (only `sample`+ with `outside: 'zero'`). */
 function carriesBBox(profileRank: number, o: ApiOptions): boolean {
   return profileRank >= 1 && o.outside === "zero";
 }
 
+/** Whether the accessor carries the stats flag and `valueMax` (`march`+). */
+function carriesStats(profileRank: number): boolean {
+  return profileRank >= 2;
+}
+
 function readLayer(o: ApiOptions, profileRank: number): string {
   const bbox = carriesBBox(profileRank, o);
+  const stats = carriesStats(profileRank);
   const typeOk = o.types.map((t) => `t == ${GRID_TYPE_CONSTANT[t]}`).join(" || ");
+  const extraFields = (bbox ? "\n    lo: vec3i,\n    hi: vec3i," : "") + (stats ? "\n    stats: bool,\n    vmax: f32," : "");
+  const extraInit =
+    (bbox ? "\n        a.lo = vdbIndexMin(g);\n        a.hi = vdbIndexMax(g);" : "") +
+    (stats
+      ? "\n        a.stats = (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_HAS_STATS) != 0u;\n        a.vmax = bitcast<f32>(vdb_rec(g, VDB_REC_VALUE_MAX));"
+      : "");
   const parts = [
     `struct VdbAccessor {
     buf: vdb_buf_t,
     gridType: u32,
     ok: bool,
-    inner: vdb_readaccessor_t,${bbox ? "\n    lo: vec3f,\n    hi: vec3f," : ""}
+    inner: vdb_readaccessor_t,${extraFields}
 }`,
     `fn vdb_rec(g: u32, w: u32) -> u32 {
     return vdb_load(VDB_POOL_TABLE_WORD + g * VDB_POOL_RECORD_WORDS + w);
@@ -54,16 +75,25 @@ function readLayer(o: ApiOptions, profileRank: number): string {
     `fn vdbGridCount() -> u32 {
     return vdb_load(VDB_HEADER_GRID_COUNT);
 }`,
+    `fn vdb_live(g: u32) -> bool {
+    return g < vdbGridCount() && (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_LIVE) != 0u;
+}`,
     `fn vdbGridType(g: u32) -> u32 {
-    if g >= vdbGridCount() || (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_LIVE) == 0u {
+    if !vdb_live(g) {
         return 0u;
     }
     return vdb_rec(g, VDB_REC_GRID_TYPE);
 }`,
     `fn vdbIndexMin(g: u32) -> vec3i {
+    if !vdb_live(g) {
+        return vec3i(0);
+    }
     return bitcast<vec3i>(vec3u(vdb_rec(g, VDB_REC_INDEX_BBOX_MIN), vdb_rec(g, VDB_REC_INDEX_BBOX_MIN + 1u), vdb_rec(g, VDB_REC_INDEX_BBOX_MIN + 2u)));
 }`,
     `fn vdbIndexMax(g: u32) -> vec3i {
+    if !vdb_live(g) {
+        return vec3i(-1);
+    }
     return bitcast<vec3i>(vec3u(vdb_rec(g, VDB_REC_INDEX_BBOX_MAX), vdb_rec(g, VDB_REC_INDEX_BBOX_MAX + 1u), vdb_rec(g, VDB_REC_INDEX_BBOX_MAX + 2u)));
 }`,
     `fn vdbAccessorInit(g: u32) -> VdbAccessor {
@@ -73,9 +103,7 @@ function readLayer(o: ApiOptions, profileRank: number): string {
     var root = vdb_root_handle_t(0u);
     if a.ok {
         a.buf = vdb_make_buffer(vdb_rec(g, VDB_REC_IMAGE_OFFSET), vdb_rec(g, VDB_REC_IMAGE_BYTES) >> 2u);
-        root = vdb_tree_get_root(a.buf, vdb_grid_get_tree(vdb_grid_handle_t(0u)));${
-          bbox ? "\n        a.lo = vec3f(vdbIndexMin(g));\n        a.hi = vec3f(vdbIndexMax(g) + vec3i(1));" : ""
-        }
+        root = vdb_tree_get_root(a.buf, vdb_grid_get_tree(vdb_grid_handle_t(0u)));${extraInit}
     }
     var inner: vdb_readaccessor_t;
     vdb_readaccessor_init(&inner, root);
@@ -106,18 +134,88 @@ function readLayer(o: ApiOptions, profileRank: number): string {
   return parts.join("\n");
 }
 
+/**
+ * `vdbSample` per sampler and `outside` mode.
+ *
+ * `outside: 'background'` reads the tree everywhere (NanoVDB: outside the
+ * tree the background value).
+ *
+ * `outside: 'zero'` samples the field that equals the tree inside the index
+ * bbox `[min, max]` (voxels, inclusive) and 0 outside it, so both samplers
+ * see the same box with voxel centres at integers:
+ * - trilinear: each of the 8 taps outside `[min, max]` reads 0. A point is
+ *   0 unless its base voxel `floor(xyz)` lies in `[min - 1, max]` (some tap
+ *   inside), i.e. `xyz` in `[min - 1, max + 1)`.
+ * - nearest: the voxel `floor(xyz + 0.5)` must lie in `[min, max]`, i.e.
+ *   `xyz` in `[min - 0.5, max + 0.5)`; else 0.
+ * CPU twins: `tools` `sampleTrilinear` / `sampleNearest` with `{ outside: 'zero' }`.
+ */
+function sampleFunction(o: ApiOptions, profileRank: number): string[] {
+  const read = (ijk: string) => `vdb_readaccessor_get_value_float((*acc).gridType, (*acc).buf, &inner, ${ijk})`;
+  if (!carriesBBox(profileRank, o)) {
+    const lookup =
+      o.sampler === "trilinear" ? "vdb_sample_trilinear_typed((*acc).gridType, (*acc).buf, &inner, xyz)" : read("vec3i(floor(xyz + vec3f(0.5)))");
+    return [
+      `fn vdbSample(acc: ptr<function, VdbAccessor>, xyz: vec3f) -> f32 {
+    if !(*acc).ok {
+        return 0.0;
+    }
+    var inner = (*acc).inner;
+    let v = ${lookup};
+    (*acc).inner = inner;
+    return v;
+}`,
+    ];
+  }
+  if (o.sampler === "nearest") {
+    return [
+      `fn vdbSample(acc: ptr<function, VdbAccessor>, xyz: vec3f) -> f32 {
+    let ijk = vec3i(floor(xyz + vec3f(0.5)));
+    if !(*acc).ok || any(ijk < (*acc).lo) || any(ijk > (*acc).hi) {
+        return 0.0;
+    }
+    var inner = (*acc).inner;
+    let v = ${read("ijk")};
+    (*acc).inner = inner;
+    return v;
+}`,
+    ];
+  }
+  // Same tap order and lerp structure as the vendored sample_trilinear_typed.
+  return [
+    `fn vdb_tap0(acc: ptr<function, VdbAccessor>, ijk: vec3i) -> f32 {
+    if any(ijk < (*acc).lo) || any(ijk > (*acc).hi) {
+        return 0.0;
+    }
+    var inner = (*acc).inner;
+    let v = ${read("ijk")};
+    (*acc).inner = inner;
+    return v;
+}`,
+    `fn vdbSample(acc: ptr<function, VdbAccessor>, xyz: vec3f) -> f32 {
+    let b = vec3i(floor(xyz));
+    if !(*acc).ok || any(b < (*acc).lo - vec3i(1)) || any(b > (*acc).hi) {
+        return 0.0;
+    }
+    let u = xyz - vec3f(b);
+    let x00 = mix(vdb_tap0(acc, b), vdb_tap0(acc, b + vec3i(1, 0, 0)), u.x);
+    let x10 = mix(vdb_tap0(acc, b + vec3i(0, 1, 0)), vdb_tap0(acc, b + vec3i(1, 1, 0)), u.x);
+    let x01 = mix(vdb_tap0(acc, b + vec3i(0, 0, 1)), vdb_tap0(acc, b + vec3i(1, 0, 1)), u.x);
+    let x11 = mix(vdb_tap0(acc, b + vec3i(0, 1, 1)), vdb_tap0(acc, b + vec3i(1, 1, 1)), u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}`,
+  ];
+}
+
 function sampleLayer(o: ApiOptions, profileRank: number): string {
-  const bbox = carriesBBox(profileRank, o);
-  const guard = bbox ? "!(*acc).ok || any(xyz < (*acc).lo) || any(xyz > (*acc).hi)" : "!(*acc).ok";
-  const lookup =
-    o.sampler === "trilinear"
-      ? "vdb_sample_trilinear_typed((*acc).gridType, (*acc).buf, &inner, xyz)"
-      : "vdb_readaccessor_get_value_float((*acc).gridType, (*acc).buf, &inner, vec3i(floor(xyz + vec3f(0.5))))";
   return [
     `fn vdb_row(b: u32) -> vec4f {
     return bitcast<vec4f>(vec4u(vdb_load(b), vdb_load(b + 1u), vdb_load(b + 2u), vdb_load(b + 3u)));
 }`,
     `fn vdb_affine(g: u32, w: u32, p: vec4f) -> vec3f {
+    if !vdb_live(g) {
+        return vec3f(0.0);
+    }
     let b = VDB_POOL_TABLE_WORD + g * VDB_POOL_RECORD_WORDS + w;
     return vec3f(dot(vdb_row(b), p), dot(vdb_row(b + 4u), p), dot(vdb_row(b + 8u), p));
 }`,
@@ -133,16 +231,11 @@ function sampleLayer(o: ApiOptions, profileRank: number): string {
     `fn vdbIndexToWorldDir(g: u32, d: vec3f) -> vec3f {
     return vdb_affine(g, VDB_REC_INDEX_TO_WORLD, vec4f(d, 0.0));
 }`,
-    `fn vdbSample(acc: ptr<function, VdbAccessor>, xyz: vec3f) -> f32 {
-    if ${guard} {
-        return 0.0;
-    }
-    var inner = (*acc).inner;
-    let v = ${lookup};
-    (*acc).inner = inner;
-    return v;
-}`,
+    ...sampleFunction(o, profileRank),
     `fn vdbRayClip(g: u32, o: vec3f, d: vec3f, t: ptr<function, vec2f>) -> bool {
+    if !vdb_live(g) {
+        return false;
+    }
     var t0 = (*t).x;
     var t1 = (*t).y;
     let hit = vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)), vec3f(vdbIndexMax(g) + vec3i(1)), o, &t0, d, &t1);
@@ -153,12 +246,95 @@ function sampleLayer(o: ApiOptions, profileRank: number): string {
 }
 
 /**
- * API layers in profile order. A profile's API is every layer up to and
- * including its own. K1.4b appends `march` (and `majorant`) here.
+ * `march` (design note §3.2): the vendored HDDA, the accessor's node size at a
+ * voxel, and node stats.
+ *
+ * `vdbGetDim(acc, ijk)` is the vendored `readaccessor_get_dim`: 1 inside a
+ * leaf, 8 in a lower-node tile, 128 in an upper-node tile, 4096 in a root tile
+ * or the background (and 4096 for a grid the accessor can't read, so a walk
+ * ends after one cell instead of stalling at dim 0).
+ *
+ * `vdbNodeMax(acc, ijk, dim)` bounds the aligned cell of size `dim` holding
+ * `ijk`. With `a = vdbGetDim(acc, ijk)`:
+ * - `a > 1` and `dim <= a`: the cell lies in one tile; returns its value
+ *   (exact, active or not).
+ * - otherwise the max statistic of the smallest node spanning the cell: the
+ *   leaf for `dim <= 8`, lower for `<= 128`, upper for `<= 4096`, else root.
+ *   NanoVDB stats cover ACTIVE values only: the result bounds the active
+ *   voxels and active tiles of that node, not inactive values, and not a
+ *   trilinear sample, whose taps reach one voxel into the neighbours.
+ * - without stats (record flag b1 clear) the stats branches return the
+ *   record's `valueMax`: the caller's bound from `pool.add`, else +Infinity
+ *   (the pool convention for "no bound"). Test `vdbHasStats(g)` rather than
+ *   relying on infinity arithmetic.
+ * The node handles come from the accessor cache that `vdbGetDim` just filled
+ * along `ijk`'s path (leaf, lower and upper are all valid whenever the level
+ * below them is, see the vendored `readaccessor_iscached*`).
  */
-export const API_LAYERS: readonly ((o: ApiOptions, profileRank: number) => string)[] = [readLayer, sampleLayer];
+function marchLayer(): string {
+  return [
+    `alias VdbHdda = vdb_hdda_t;`,
+    `fn vdbHddaInit(h: ptr<function, VdbHdda>, o: vec3f, tmin: f32, d: vec3f, tmax: f32, dim: u32) {
+    vdb_hdda_init(h, o, tmin, d, tmax, i32(dim));
+}`,
+    `fn vdbHddaUpdate(h: ptr<function, VdbHdda>, o: vec3f, d: vec3f, dim: u32) -> bool {
+    return vdb_hdda_update(h, o, d, i32(dim));
+}`,
+    `fn vdbHddaStep(h: ptr<function, VdbHdda>) -> bool {
+    return vdb_hdda_step(h);
+}`,
+    `fn vdbGetDim(acc: ptr<function, VdbAccessor>, ijk: vec3i) -> u32 {
+    if !(*acc).ok {
+        return 4096u;
+    }
+    var inner = (*acc).inner;
+    let v = vdb_readaccessor_get_dim((*acc).gridType, (*acc).buf, &inner, ijk);
+    (*acc).inner = inner;
+    return v;
+}`,
+    `fn vdbHasStats(g: u32) -> bool {
+    return vdb_live(g) && (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_HAS_STATS) != 0u;
+}`,
+    `fn vdbValueMax(g: u32) -> f32 {
+    if !vdb_live(g) {
+        return 0.0;
+    }
+    return bitcast<f32>(vdb_rec(g, VDB_REC_VALUE_MAX));
+}`,
+    `fn vdbNodeMax(acc: ptr<function, VdbAccessor>, ijk: vec3i, dim: u32) -> f32 {
+    if !(*acc).ok {
+        return 0.0;
+    }
+    let a = vdbGetDim(acc, ijk);
+    if a > 1u && dim <= a {
+        return vdbReadValue(acc, ijk);
+    }
+    if !(*acc).stats {
+        return (*acc).vmax;
+    }
+    let t = (*acc).gridType;
+    let b = (*acc).buf;
+    if dim <= 8u {
+        return vdb_leaf_get_max_float(t, b, (*acc).inner.leaf);
+    }
+    if dim <= 128u {
+        return vdb_lower_get_max_float(t, b, (*acc).inner.lower);
+    }
+    if dim <= 4096u {
+        return vdb_upper_get_max_float(t, b, (*acc).inner.upper);
+    }
+    return vdb_root_get_max_float(t, b, (*acc).inner.root);
+}`,
+  ].join("\n");
+}
 
-/** The public API text for the profile at `profileRank` (0 = read, 1 = sample, ...). */
+/**
+ * API layers in profile order. A profile's API is every layer up to and
+ * including its own (`majorant`, rank 3, is deferred past 0.1, D22).
+ */
+export const API_LAYERS: readonly ((o: ApiOptions, profileRank: number) => string)[] = [readLayer, sampleLayer, marchLayer];
+
+/** The public API text for the profile at `profileRank` (0 = read, 1 = sample, 2 = march). */
 export function apiWgsl(profileRank: number, o: ApiOptions): string {
   return API_LAYERS.slice(0, profileRank + 1)
     .map((layer) => layer(o, profileRank))

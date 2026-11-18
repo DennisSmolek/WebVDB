@@ -45,9 +45,42 @@
  *
  * where `lerp(a, b, t) = a + (b - a) * t`.
  */
+import { indexBBox } from "./march.js";
 import { readValue } from "./read-value.js";
 
 type Coord = readonly [number, number, number];
+
+/**
+ * CPU twins of the generator's `outside` option (K1-core §3.1).
+ * - `'background'` (default): read the tree everywhere (NanoVDB).
+ * - `'zero'`: sample the field that equals the tree inside the index bbox
+ *   `[min, max]` (voxels, inclusive, the root bbox = the pool record's
+ *   `indexBBoxMin/Max`) and 0 outside it. Trilinear: each tap outside the box
+ *   reads 0, so the sample is 0 unless `xyz` is in `[min - 1, max + 1)`.
+ *   Nearest: 0 unless `floor(xyz + 0.5)` is in the box, i.e. `xyz` in
+ *   `[min - 0.5, max + 0.5)`.
+ */
+export interface SampleOptions {
+  outside?: "background" | "zero";
+}
+
+function zeroOutside(gridWords: Uint32Array, options: SampleOptions | undefined): ((c: Coord) => boolean) | null {
+  if ((options?.outside ?? "background") === "background") return null;
+  if (options?.outside !== "zero") throw new Error(`sample: outside must be 'background' or 'zero', got ${String(options?.outside)}`);
+  const { min, max } = indexBBox(gridWords);
+  return (c) => c[0] < min[0] || c[1] < min[1] || c[2] < min[2] || c[0] > max[0] || c[1] > max[1] || c[2] > max[2];
+}
+
+/**
+ * Nearest-voxel sample (twin of `vdbSample` with `sampler: 'nearest'`):
+ * the voxel `floor(xyz + 0.5)` (NanoVDB `SampleFromVoxels` order 0 rounds).
+ */
+export function sampleNearest(gridWords: Uint32Array, xyz: [number, number, number], options?: SampleOptions): number {
+  const ijk: [number, number, number] = [Math.floor(xyz[0] + 0.5), Math.floor(xyz[1] + 0.5), Math.floor(xyz[2] + 0.5)];
+  const outside = zeroOutside(gridWords, options);
+  if (outside?.(ijk)) return 0;
+  return readValue(gridWords, ijk).value;
+}
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -58,7 +91,8 @@ function lerp(a: number, b: number, t: number): number {
  * as the integer coords passed to `readValue` (i.e. NOT world space — no
  * voxel-size or grid-transform scaling is applied here).
  */
-export function sampleTrilinear(gridWords: Uint32Array, xyz: [number, number, number]): number {
+export function sampleTrilinear(gridWords: Uint32Array, xyz: [number, number, number], options?: SampleOptions): number {
+  const outside = zeroOutside(gridWords, options);
   const bx = Math.floor(xyz[0]);
   const by = Math.floor(xyz[1]);
   const bz = Math.floor(xyz[2]);
@@ -68,6 +102,7 @@ export function sampleTrilinear(gridWords: Uint32Array, xyz: [number, number, nu
 
   const tap = (dx: 0 | 1, dy: 0 | 1, dz: 0 | 1): number => {
     const coord: Coord = [bx + dx, by + dy, bz + dz];
+    if (outside?.(coord)) return 0;
     return readValue(gridWords, coord as [number, number, number]).value;
   };
 

@@ -13,13 +13,20 @@
 // Env:  PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH (e.g. a chromium_headless_shell under
 //       ~/Library/Caches/ms-playwright).
 
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { checkModule, vdbModuleEntries, vdbModuleWgsl } from "../packages/vdb/dist/core/index.js";
+import { buildMarchProbe, compareMarchProbe, marchProbeAvailable, runMarchProbeInPage } from "./lib/march-probe.mjs";
 import { CHECK_SLOT, TYPE_SETS, checkKernel, variantMatrix, wgslSizes } from "./lib/wgsl-variants.mjs";
+
+const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../packages/vdb/dist");
 
 const CHROMIUM_EXECUTABLE = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ?? "/opt/pw-browsers/chromium";
 const SIZES_ONLY = process.argv.includes("--sizes-only");
+const NO_PROBE = process.argv.includes("--no-probe");
 
 function printSizes() {
   const kb = (n) => (n / 1024).toFixed(1);
@@ -29,6 +36,9 @@ function printSizes() {
     ["sample", { isActive: true }],
     ["sample", { isActive: false }],
     ["sample", { sampler: "nearest" }],
+    ["march", { isActive: true }],
+    ["march", { isActive: false }],
+    ["march", { outside: "zero" }],
   ];
   console.log("\nSizes (slot mode; KiB = 1024 B; min / gz per §3.5, gz = gzip -9 of min):\n");
   console.log(`| Variant | ${TYPE_SETS.map((t) => t.join("+")).join(" | ")} |`);
@@ -68,7 +78,28 @@ async function main() {
   printSizes();
   if (SIZES_ONLY) return 0;
 
-  const server = createServer((_req, res) => {
+  const probe = !NO_PROBE && marchProbeAvailable() ? await buildMarchProbe() : null;
+  if (!NO_PROBE && probe === null) console.log("\nmarch probe skipped: fixtures/primitives missing (pnpm fixtures:bake).");
+
+  const server = createServer(async (req, res) => {
+    const url = req.url ?? "/";
+    if (probe && url.startsWith("/probe-image/")) {
+      const bytes = probe.imageBytes[Number(url.slice("/probe-image/".length))];
+      res.writeHead(bytes ? 200 : 404, { "content-type": "application/octet-stream" });
+      res.end(bytes ?? "");
+      return;
+    }
+    if (url.startsWith("/dist/") && url.endsWith(".js") && !url.includes("..")) {
+      try {
+        const body = await readFile(path.join(DIST, url.slice("/dist/".length)));
+        res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+        res.end(body);
+      } catch {
+        res.writeHead(404);
+        res.end();
+      }
+      return;
+    }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end("<!doctype html><meta charset=utf-8><title>wgsl variants</title><body>ok</body>");
   });
@@ -147,6 +178,14 @@ async function main() {
       if (r.scopeError) console.log(`       validation: ${r.scopeError}`);
     }
     console.log(`\n${results.out.length - failed}/${results.out.length} variants compiled with zero errors.`);
+
+    if (probe) {
+      const got = await page.evaluate(runMarchProbeInPage, { probe: probe.page, dist: "/dist" });
+      const { fails, summary } = compareMarchProbe(probe, got);
+      console.log(`\n${summary}`);
+      for (const f of fails.slice(0, 20)) console.log(`  FAIL ${f}`);
+      if (fails.length > 0) failed++;
+    }
   } finally {
     await browser.close();
     server.close();

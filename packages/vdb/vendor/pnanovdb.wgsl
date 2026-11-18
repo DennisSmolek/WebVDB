@@ -1403,8 +1403,8 @@ fn pnanovdb_sample_trilinear_fpn(buf: pnanovdb_buf_t, acc: ptr<function, pnanovd
 // --- Node stats addresses (PNanoVDB.h: {leaf,lower,upper,root}_get_{min,max,ave,stddev}_address) ---
 // upper_get_{min,max,ave,stddev}_address already exist earlier in the file;
 // leaf/lower/root variants + root background are added here for parity. For
-// quantized (Fp*) grids these slots hold plain f32, so the *_float readers
-// below decode uniformly with pnanovdb_read_float.
+// quantized (Fp4/Fp8/Fp16/FpN) grids the root, upper and lower slots hold f32,
+// but the LEAF slots hold uint16 codes (see pnanovdb_leaf_get_stat_float).
 
 fn pnanovdb_root_get_background_address(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> pnanovdb_address_t {
     return pnanovdb_address_offset(root.address, pnanovdb_grid_type_constants[grid_type].root_off_background);
@@ -1448,9 +1448,10 @@ fn pnanovdb_leaf_get_stddev_address(grid_type: u32, buf: pnanovdb_buf_t, node: p
     return pnanovdb_address_offset(node.address, pnanovdb_grid_type_constants[grid_type].leaf_off_stddev);
 }
 
-// f32 convenience readers over the stats slots (WebVDB — upstream returns the
-// address and lets the caller read a typed value; ours read f32 directly,
-// which is correct for FLOAT and the Fp* grids' float-encoded stats).
+// f32 convenience readers over the stats slots (WebVDB: upstream returns the
+// address and lets the caller read a typed value). Root, upper and lower
+// stats are f32 for FLOAT and the Fp types; leaf stats of the Fp types are
+// uint16 codes and are decoded by pnanovdb_leaf_get_stat_float.
 fn pnanovdb_root_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
     return pnanovdb_read_float(buf, pnanovdb_root_get_min_address(grid_type, buf, root));
 }
@@ -1487,15 +1488,52 @@ fn pnanovdb_lower_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnano
 fn pnanovdb_lower_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
     return pnanovdb_read_float(buf, pnanovdb_lower_get_stddev_address(grid_type, buf, node));
 }
+// --- Fp leaf stats (WebVDB fix, K1.4b) ---
+// Fp4/Fp8/Fp16/FpN leaves (NanoVDB.h LeafFnBase) store mMin, mMax, mAvg and
+// mDev as uint16 codes at bytes 88, 90, 92 and 94, quantized against the
+// leaf's own mMinimum and mQuantum (bytes 80 and 84, the pair the voxel decode
+// reads through the NEG offsets). NanoVDB decodes them as getMin/getMax/getAvg
+// = code * quantum + minimum and getDev = code * quantum. Byte 90 is not word
+// aligned, so reading these slots as f32 returns two packed codes: never do it.
+// The earlier f32 readers did exactly that for every type.
+
+// pnanovdb_read_uint16 (PNanoVDB.h), masked to 16 bits: the C version leaves the
+// truncation to its uint16 caller, WGSL has no 16-bit integer to truncate into.
+fn pnanovdb_read_uint16(buf: pnanovdb_buf_t, address: pnanovdb_address_t) -> u32 {
+    let raw = pnanovdb_read_uint32(buf, address & ~3u);
+    return (raw >> ((address & 2u) << 3u)) & 65535u;
+}
+
+// Decodes one Fp leaf stats code at address. with_minimum is false for mDev.
+fn pnanovdb_leaf_fp_get_stat_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t, address: pnanovdb_address_t, with_minimum: bool) -> f32 {
+    let table = pnanovdb_leaf_get_table_address(grid_type, buf, node, 0u);
+    let minimum = pnanovdb_read_float(buf, pnanovdb_address_offset_neg(table, PNANOVDB_LEAF_TABLE_NEG_OFF_MINIMUM));
+    let quantum = pnanovdb_read_float(buf, pnanovdb_address_offset_neg(table, PNANOVDB_LEAF_TABLE_NEG_OFF_QUANTUM));
+    let scaled = pnanovdb_uint32_to_float(pnanovdb_read_uint16(buf, address)) * quantum;
+    if with_minimum {
+        return scaled + minimum;
+    }
+    return scaled;
+}
+
+// Reads the leaf stat at address for any grid type: uint16 code for the Fp
+// types, f32 otherwise.
+fn pnanovdb_leaf_get_stat_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t, address: pnanovdb_address_t, with_minimum: bool) -> f32 {
+    if grid_type == PNANOVDB_GRID_TYPE_FP4 || grid_type == PNANOVDB_GRID_TYPE_FP8 || grid_type == PNANOVDB_GRID_TYPE_FP16 || grid_type == PNANOVDB_GRID_TYPE_FPN {
+        return pnanovdb_leaf_fp_get_stat_float(grid_type, buf, node, address, with_minimum);
+    }
+    return pnanovdb_read_float(buf, address);
+}
+
 fn pnanovdb_leaf_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_leaf_get_min_address(grid_type, buf, node));
+    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_min_address(grid_type, buf, node), true);
 }
 fn pnanovdb_leaf_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_leaf_get_max_address(grid_type, buf, node));
+    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_max_address(grid_type, buf, node), true);
 }
 fn pnanovdb_leaf_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_leaf_get_ave_address(grid_type, buf, node));
+    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_ave_address(grid_type, buf, node), true);
 }
 fn pnanovdb_leaf_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_leaf_get_stddev_address(grid_type, buf, node));
+    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_stddev_address(grid_type, buf, node), false);
 }

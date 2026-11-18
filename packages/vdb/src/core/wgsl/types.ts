@@ -1,8 +1,8 @@
 import type { VDBGridTypeName, VDBSlot } from "../types.js";
 
 /**
- * Generator profiles; each includes the previous one. `march` and `majorant`
- * are reserved for K1.4b and throw `VDB_BAD_OPTION` until then.
+ * Generator profiles; each includes the previous one. `majorant` is deferred
+ * past 0.1 (D22) and throws `VDB_BAD_OPTION`.
  */
 export type VDBModuleProfile = "read" | "sample" | "march" | "majorant";
 
@@ -24,7 +24,9 @@ export interface VDBModuleOptions {
   readonly isActive?: boolean | undefined;
   /**
    * `sample`+: `'background'` (default, NanoVDB: the tree's background value)
-   * or `'zero'` (0 outside the index bbox `[min, max + 1]`, pathtracer convention).
+   * or `'zero'`: sample the field that is 0 outside the index bbox `[min, max]`
+   * (voxels). Trilinear is then 0 outside `[min - 1, max + 1)`, nearest outside
+   * `[min - 0.5, max + 0.5)` (voxel centres at integers).
    */
   readonly outside?: "background" | "zero" | undefined;
 }

@@ -15,12 +15,12 @@ upstream fixes if the author engages.
 | Pinned commit | `265e8d825e4e4ab8752196a28cccad592d9b4262` |
 | Vendored | 2026-07-11 |
 | License | Apache-2.0 (see `LICENSE`; attribution in `NOTICE`) |
-| SHA-256 of vendored file | `76021f6a76256cd009f22395af4430d9dbf538e4eb3b7eb32d62b6095054d7e6` |
+| SHA-256 of vendored file | `f28fe6927ea1eead9e4d4d619c9b2e1fe365ac75514e1d19738354ecaf56b4ca` |
 
 The SHA-256 above is of the file **as vendored**. It started byte-identical
 to upstream at the pinned commit; the Phase 2 additions logged below (all
 appended after the upstream body — no upstream lines were modified) have
-since advanced it. It is asserted by `test/vendor.test.ts` so accidental
+since advanced it, as has the K1.4b leaf-stats fix (which edits only WebVDB-added lines). It is asserted by `test/vendor.test.ts` so accidental
 edits fail CI; deliberate edits update the hash *and* the diff log below in
 the same commit.
 
@@ -57,6 +57,7 @@ Every in-tree change to `pnanovdb.wgsl` gets one row here, newest first.
 
 | Date | Change | Reason | Upstreamed? |
 |---|---|---|---|
+| 2026-11-18 (K1.4b) | **Fix:** `pnanovdb_leaf_get_{min,max,ave,stddev}_float` read the leaf stats slot as f32 for every type. For Fp4/Fp8/Fp16/FpN leaves the slots are uint16 codes at bytes 88/90/92/94 (NanoVDB.h `LeafFnBase::mMin/mMax/mAvg/mDev`), so the f32 read returned two packed codes (byte 90 is not word-aligned). Added `pnanovdb_read_uint16` (PNanoVDB.h, plus an explicit `& 65535u` mask), `pnanovdb_leaf_fp_get_stat_float` (`code * mQuantum + mMinimum`; `mDev` is `code * mQuantum`, as `LeafFnBase::getMin/getMax/getAvg/getDev` at OpenVDB `a532de55`) and the dispatcher `pnanovdb_leaf_get_stat_float`; the four leaf readers call it. Root/upper/lower readers unchanged (their Fp stats are f32). Only WebVDB-added lines changed. CPU twin: `tools/cpu/march.ts` `nodeStats`; parity: `test/tools/cpu-march.test.ts`. | Design note K1-core §5.3; `vdbNodeMax` (`march` profile) reads leaf max. v1 never called the leaf readers. | No (the `_float` readers are WebVDB). |
 | 2026-07-11 | Phase 2 audit: line-by-line diff of the existing port against `upstream/PNanoVDB.h` (constants table, coord_to_key, readaccessor cache, child getters, HDDA, is_active). No functional deviations found; no edits to upstream lines. | Establish audited baseline before extending. | N/A (no change) |
 | 2026-07-11 | Add stats readers: `{root,lower,leaf}_get_{min,max,ave,stddev}_address` + `root_get_background_address` (upstream parity; `upper_*` already present), plus `{root,upper,lower,leaf}_get_{min,max,ave,stddev}_float` f32 convenience readers. | Renderer needs node min/max for shading/empty-space skipping. | Address getters yes; `_float` readers are WebVDB. |
 | 2026-07-11 | Add trilinear sampling (WebVDB extension): `pnanovdb_sample_trilinear_{float,fp8,fpn}` + shared `_typed` impl (8 accessor taps, lerp, background outside). | Continuous index-space sampling has no PNanoVDB.h counterpart (NanoVDB SampleFromVoxels is C++ only). | No (WebVDB). |
@@ -80,4 +81,5 @@ above. One row per transform (design note `docs/design/K1-core.md` §3.3).
 | 2026-11-18 (K1.4a) | `pnanovdb_grid_type_constants` (27-row const array) and its `[grid_type]` call sites | `fn vdb_gtc(grid_type: u32)` returning only the compiled types' rows; fields no emitted declaration reads are written `0u`, and types whose rows are then equal share one branch (one distinct row: a constant, no branch). Call sites become `vdb_gtc(grid_type)`. | The array is 5.3 KB minified and dynamically indexed; FXC/DXC materialize dynamically indexed const arrays. Row values are copied from the vendored table at generation. |
 | 2026-11-18 (K1.4a) | `pnanovdb_read_float_typed` | only the compiled Fp types' branches; Float is the fallthrough, or, with no Float, the last compiled Fp type is | Decoders of types not compiled drop out of the closure. Reads of other types never get here (`VdbAccessor.ok`). |
 | 2026-11-18 (K1.4a) | `pnanovdb_sample_trilinear_{float,fp8,fpn}` | not emitted (unreachable) | The API layer's `vdbSample` calls `pnanovdb_sample_trilinear_typed` with the grid's runtime type. |
+| 2026-11-18 (K1.4b) | `pnanovdb_leaf_get_stat_float` (the leaf-stats dispatch added by the K1.4b fix) | only the compiled types' branch: no Fp type compiled, a plain `pnanovdb_read_float`; only Fp types, the uint16 decode unconditionally; both, one branch over the compiled Fp types | The uint16 decoder (`pnanovdb_read_uint16`, `pnanovdb_leaf_fp_get_stat_float`) drops out of Float-only `march` modules. |
 | 2026-11-18 (K1.4a) | every `pnanovdb_` / `PNANOVDB_` identifier | `vdb_` / `VDB_` | One prefix for the whole module (D10, D17). |

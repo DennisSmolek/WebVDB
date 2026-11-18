@@ -1,4 +1,4 @@
-// The K1.4a generator variant matrix, a check kernel per variant, and the
+// The K1.4a/K1.4b generator variant matrix, a check kernel per variant, and the
 // §3.5 size measure. Shared by scripts/check-wgsl-variants.mjs (browser
 // compile) and packages/vdb/test/core/wgsl-generate.test.ts (static checks),
 // so both cover the same variants.
@@ -13,18 +13,21 @@ export const CHECK_SLOT = { group: 1, firstBinding: 3 };
 export const CHECK_BUFFER_EXPRESSION = "vdbPool.value";
 
 /**
- * Every generator variant K1.4a must compile: read/sample × type set ×
+ * Every generator variant that must compile: read/sample/march × type set ×
  * slot/buffer × isActive on/off, plus sample with `sampler: 'nearest'` and
- * with `outside: 'zero'`. Returns `{ id, options }[]`.
+ * with `outside: 'zero'`, and march with `outside: 'zero'` (trilinear and
+ * nearest). Returns `{ id, options }[]`.
  */
 export function variantMatrix() {
   const out = [];
-  for (const profile of ["read", "sample"]) {
+  for (const profile of ["read", "sample", "march"]) {
     for (const types of TYPE_SETS) {
       for (const mode of ["slot", "buffer"]) {
         const binding = mode === "slot" ? { slot: CHECK_SLOT } : { buffer: CHECK_BUFFER_EXPRESSION };
         const extras = [{ isActive: true }, { isActive: false }];
         if (profile === "sample") extras.push({ sampler: "nearest" }, { outside: "zero" });
+        if (profile === "sample" || profile === "march") extras.push({ outside: "zero", sampler: "nearest" });
+        if (profile === "march") extras.push({ outside: "zero" });
         for (const extra of extras) {
           const options = { ...binding, types, profile, ...extra };
           const tag = Object.entries(extra)
@@ -54,6 +57,7 @@ export function checkKernel(module, options) {
       : "";
   const isActive = options.isActive ?? true;
   const sample = options.profile !== "read";
+  const march = options.profile === "march";
   return `${module}
 ${host}@group(0) @binding(0) var<storage, read_write> checkOut: array<f32>;
 
@@ -74,6 +78,25 @@ ${isActive ? "    if vdbIsActive(&a, ijk) {\n        s += 1.0;\n    }\n" : ""}${
     var t = vec2f(0.0, 1.0e30);
     if vdbRayClip(g, p, d, &t) {
         s += t.x;
+    }
+`
+      : ""
+  }${
+    march
+      ? `    var h: VdbHdda;
+    vdbHddaInit(&h, p, t.x, d, t.y, vdbGetDim(&a, ijk));
+    for (var i = 0u; i < 8u; i++) {
+        let dim = max(vdbGetDim(&a, h.voxel), 8u);
+        if vdbHddaUpdate(&h, p, d, dim) {
+            continue;
+        }
+        s += vdbNodeMax(&a, h.voxel, dim) + h.tmin;
+        if !vdbHddaStep(&h) {
+            break;
+        }
+    }
+    if vdbHasStats(g) {
+        s += vdbValueMax(g);
     }
 `
       : ""

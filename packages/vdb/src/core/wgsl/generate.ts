@@ -19,6 +19,9 @@
  *      `pnanovdb_sample_trilinear_{float,fp8,fpn}` wrappers among them).
  *   5. Every `pnanovdb_` / `PNANOVDB_` becomes `vdb_` / `VDB_`.
  *   6. Comments are dropped (done at extraction).
+ *   7. `pnanovdb_leaf_get_stat_float` keeps only the compiled types' branch
+ *      (the Fp leaf-stats decode, K1.4b), so a Float-only module has no
+ *      uint16 decoder.
  *
  * Output is deterministic: the same options give the same bytes, and `types`
  * is a set (order and duplicates do not matter).
@@ -28,6 +31,7 @@ import { VDBError } from "../errors.js";
 import { VDB_GPU_LAYOUT_VERSION, vdbPoolLayoutWgsl } from "../pool/layout.js";
 import { VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES, type VDBGridTypeName, type VDBSlot } from "../types.js";
 import { apiWgsl, type ApiOptions } from "./api.js";
+import { WGSL_KEYWORDS, WGSL_RESERVED_WORDS } from "./reserved.js";
 import { PNANOVDB_CHUNKS, type PnanovdbChunk } from "./pnanovdb.chunks.generated.js";
 import type { VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile } from "./types.js";
 
@@ -38,9 +42,9 @@ export const VDB_MODULE_BANNER =
 /** Name of the storage binding `slot` mode declares. */
 export const VDB_POOL_BINDING_NAME = "vdbPool";
 
-/** Profiles in inclusion order; only the first `IMPLEMENTED_PROFILES` generate today. */
+/** Profiles in inclusion order; only the first `IMPLEMENTED_PROFILES` generate (`majorant` is deferred, D22). */
 const PROFILES: readonly VDBModuleProfile[] = ["read", "sample", "march", "majorant"];
-const IMPLEMENTED_PROFILES = 2;
+const IMPLEMENTED_PROFILES = 3;
 
 /** `GPUShaderStage.COMPUTE`; the global does not exist in Node. */
 const SHADER_STAGE_COMPUTE = 0x4;
@@ -118,6 +122,14 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
     if (typeof expression !== "string" || !BUFFER_EXPRESSION.test(expression)) {
       throw bad(`${where}: buffer must be a WGSL identifier or member chain such as 'vdbPool.value', got ${JSON.stringify(expression)}.`);
     }
+    for (const part of expression.split(".")) {
+      if (part.startsWith("__")) {
+        throw bad(`${where}: buffer ${JSON.stringify(expression)} uses '${part}'; WGSL identifiers must not start with '__'. Rename the host binding.`);
+      }
+      if (part === "_" || WGSL_RESERVED_WORDS.has(part) || WGSL_KEYWORDS.has(part)) {
+        throw bad(`${where}: buffer ${JSON.stringify(expression)} uses '${part}', which WGSL reserves. Rename the host binding (e.g. 'vdbPool.value').`);
+      }
+    }
     binding = { kind: "buffer", expression };
   }
 
@@ -126,7 +138,7 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
     throw bad(`${where}: profile must be one of ${PROFILES.map((p) => `'${p}'`).join(", ")}, got ${JSON.stringify(options.profile)}.`);
   }
   if (profileRank >= IMPLEMENTED_PROFILES) {
-    throw bad(`${where}: profile '${options.profile}' lands in K1.4b. Use 'read' or 'sample' for now.`);
+    throw bad(`${where}: profile '${options.profile}' is deferred past 0.1 (D22). Use 'read', 'sample' or 'march'.`);
   }
 
   const sampler = options.sampler ?? "trilinear";
@@ -263,10 +275,37 @@ function readFloatTypedOverride({ o }: Context): string {
   return lines.join("\n");
 }
 
+/**
+ * Transform 7: the leaf-stat dispatch limited to the compiled types. No Fp type
+ * compiled: a plain f32 read (the code decoder drops out). Only Fp types: the
+ * decode, unconditionally. Both: one branch over the compiled Fp types.
+ */
+function leafStatOverride({ o }: Context): string {
+  const text = chunk("pnanovdb_leaf_get_stat_float").text;
+  const signature = text.slice(0, text.indexOf("{") + 1);
+  const fpTypes = o.types.filter((t) => t !== "float");
+  const decode = "return pnanovdb_leaf_fp_get_stat_float(grid_type, buf, node, address, with_minimum);";
+  const plain = "return pnanovdb_read_float(buf, address);";
+  const lines = [signature];
+  if (fpTypes.length === 0) {
+    lines.push(`    ${plain}`);
+  } else if (!o.types.includes("float")) {
+    lines.push(`    ${decode}`);
+  } else {
+    lines.push(`    if ${fpTypes.map((t) => `grid_type == ${GRID_TYPE_CONSTANT_PRE[t]}`).join(" || ")} {`);
+    lines.push(`        ${decode}`);
+    lines.push("    }");
+    lines.push(`    ${plain}`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
 const OVERRIDES = new Map<string, (ctx: Context) => string>([
   ["pnanovdb_buf_read_uint32", bufReadOverride],
   [TYPE_TABLE, typeTableOverride],
   ["pnanovdb_read_float_typed", readFloatTypedOverride],
+  ["pnanovdb_leaf_get_stat_float", leafStatOverride],
 ]);
 
 function effectiveText(c: PnanovdbChunk, ctx: Context): string {
