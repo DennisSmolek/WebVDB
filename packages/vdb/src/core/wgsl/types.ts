@@ -17,11 +17,17 @@ export type VDBModuleProfile = "read" | "sample" | "march" | "majorant";
  *   voxel `floor(p)` lies in that cell.
  * - `'hddaCellEnd'` (`march`): `vdbHddaCellEnd(h: ptr<function, VdbHdda>) -> f32`,
  *   the ray `t` where the HDDA's current cell ends (`min(next, tmax)`).
+ * - `'nodeAverage'` (`march`): `vdbNodeAverage(acc, ijk, dim) -> f32`, the box
+ *   mean of the aligned `dim`-cell (8: leaf, 128: lower) holding `ijk` from the
+ *   node's average statistic (K3.2, the `'node-average'` LOD of the sparse
+ *   volume source): a tile's value; a leaf's `ave * activeVoxels / 512`
+ *   (inactive voxels count as 0, the fog background); a lower node's `ave`
+ *   (the mean of its ACTIVE voxels; also for `dim > 128`). Without stats, the value at `ijk`.
  * - `'rayClipSupport'` (`sample`+): `vdbRayClipSupport(g, o, d, t) -> bool`,
  *   `vdbRayClip` against the sampler's support box: `[min - 1, max + 1)` for
  *   trilinear, `[min - 0.5, max + 0.5)` for nearest.
  */
-export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "rayClipSupport";
+export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "nodeAverage" | "rayClipSupport";
 
 /** Options every binding mode shares. */
 export interface VDBModuleCommonOptions {

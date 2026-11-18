@@ -178,6 +178,23 @@ export function vdbDenseTextures(volume: WvdbDenseVolume): VDBThreeDenseSource {
   return new ThreeDenseSource(volume);
 }
 
+/**
+ * The sparse source (`vdbSparseSource`, `./sparse-source.ts`) as far as this file needs it: it makes
+ * its own uniforms and nodes (the K3.1 brief's `nodes(uniforms, options)` factory), so the frame
+ * passes take either kind through {@link vdbVolumeUniforms} / {@link vdbVolumeNodes}.
+ */
+export interface VDBThreeSourceFactory extends VDBVolumeSourceInfo {
+  readonly kind: "sparse";
+  /** World box of the volume (`[min, max]`), the default `VDBFrameVolume` box. */
+  readonly bbox: [[number, number, number], [number, number, number]];
+  createUniforms(p: VDBVolumeUniformParameters): VDBVolumeUniforms;
+  createNodes(u: VDBVolumeUniforms, o: VDBVolumeNodesOptions): VDBVolumeNodes;
+  dispose(): void;
+}
+
+/** A volume source the three frame passes read: dense textures or the sparse pool. */
+export type VDBThreeVolumeSource = VDBThreeDenseSource | VDBThreeSourceFactory;
+
 /** Initial values of {@link vdbVolumeUniforms} (his `FrameVolume` props of the same names and defaults). */
 export interface VDBVolumeUniformParameters {
   /** Optical depth of the longest box side at the mean density, with `normalizeDensity` (default 100). */
@@ -213,15 +230,20 @@ export interface VDBVolumeUniforms {
   readonly offset3D: VDBTslNode;
   readonly wrap3D: VDBTslNode;
   /** Re-read textures, sizes and the normalized density scale after `source.replace` (setMipUniforms, L773–798). */
-  update(source: VDBThreeDenseSource, o?: { densityScale?: number; normalizeDensity?: boolean }): void;
+  update(source: VDBThreeVolumeSource, o?: { densityScale?: number; normalizeDensity?: boolean }): void;
 }
 
 /** FrameVolume.js L561–568 `getDensityScale`. */
-const densityScaleOf = (source: VDBThreeDenseSource, densityScale: number, normalize: boolean): number =>
+export const vdbDensityScaleOf = (source: VDBVolumeSourceInfo, densityScale: number, normalize: boolean): number =>
   normalize && source.stats.meanNonZero > 0 ? densityScale / source.stats.meanNonZero : densityScale;
+const densityScaleOf = vdbDensityScaleOf;
 
-/** Live uniforms for one dense source (his `createVolumeUniforms` + `setVolumeUniforms` + `setMipUniforms`). */
-export function vdbVolumeUniforms(source: VDBThreeDenseSource, p: VDBVolumeUniformParameters = {}): VDBVolumeUniforms {
+/**
+ * Live uniforms for one source (his `createVolumeUniforms` + `setVolumeUniforms` + `setMipUniforms`).
+ * A sparse source makes its own (`source.createUniforms`), with the same fields.
+ */
+export function vdbVolumeUniforms(source: VDBThreeVolumeSource, p: VDBVolumeUniformParameters = {}): VDBVolumeUniforms {
+  if (source.kind === "sparse") return source.createUniforms(p);
   const tex = source.textures;
   let densityScale = p.densityScale ?? 1.0;
   let normalize = p.normalizeDensity ?? true;
@@ -251,7 +273,9 @@ export function vdbVolumeUniforms(source: VDBThreeDenseSource, p: VDBVolumeUnifo
     temperatureRange: uniform(new THREE.Vector2(...(p.temperatureRange ?? [0.0, 6500.0]))),
     offset3D: uniform(new THREE.Vector3().copy((p.offset3D ?? { x: 0, y: 0, z: 0 }) as THREE.Vector3)),
     wrap3D: uniform(p.wrap3D ?? THREE.ClampToEdgeWrapping, "int"),
-    update(s, o = {}) {
+    update(s0, o = {}) {
+      if (s0.kind !== "dense") throw new VDBError("VDB_BAD_OPTION", "vdbVolumeUniforms: these uniforms belong to a dense source.");
+      const s = s0;
       if (o.densityScale !== undefined) densityScale = o.densityScale;
       if (o.normalizeDensity !== undefined) normalize = o.normalizeDensity;
       densityScaleU.value = densityScaleOf(s, densityScale, normalize);
@@ -296,6 +320,14 @@ export interface VDBVolumeNodes {
   insideBox(localPosition: VDBTslNode): VDBTslNode;
   boxExit(origin: VDBTslNode, direction: VDBTslNode): VDBTslNode;
   boxSegment(start: VDBTslNode, end: VDBTslNode): VDBTslNode;
+  /**
+   * Sparse sources only (K3.2): the empty-space query of a march along `origin + direction·t`
+   * (local units) whose samples are read at `lod`. Returns `vec2(ts, te)`: every sample with
+   * `t < ts` is exactly 0 (skip it), the samples in `[ts, te)` must be read, ask again from `te`.
+   * When no safe bound exists (a coarse level, wrapping, an offset) it returns `(t0, 1e30)`.
+   * Call in the Fn body. Absent for dense sources (no skipping).
+   */
+  skipEmpty?(origin: VDBTslNode, direction: VDBTslNode, t0: VDBTslNode, t1: VDBTslNode, lod: VDBTslNode): VDBTslNode;
 }
 
 /** frameShaderChunks.js L65–66. */
@@ -307,11 +339,16 @@ export const vdbMaxComponent = (v: VDBTslNode): VDBTslNode => max(v.x, max(v.y, 
  * sample functions inside a TSL `Fn` body. Absent channels give his fallbacks
  * (mask 1, albedo `baseColor`, emission 0) without sampling.
  */
-export function vdbVolumeNodes(source: VDBThreeDenseSource, u: VDBVolumeUniforms, o: VDBVolumeNodesOptions = {}): VDBVolumeNodes {
-  const useMipmaps = o.useMipmaps ?? source.lodLevels > 0;
-  const { gridTexels, mipAtlasSize } = u;
-  const T = THREE as unknown as Record<string, number>;
-
+/**
+ * His mip sampling (frameShaderChunks.js L838–872) over one texture and its box mip atlas:
+ * `sampleMipAtlas` (level 1 and up, frameMipmaps.js layout) and `sampleMipmapped` (linear between
+ * two levels). `gridTexels` is the size of `map` (level 0 of this chain), `mipAtlasSize` the atlas's.
+ * Shared by the dense source and the sparse source's coarse pyramid. Call in a TSL Fn body.
+ */
+export function vdbMipSampler(gridTexels: VDBTslNode, mipAtlasSize: VDBTslNode): {
+  sampleMipAtlas(mipMap: VDBTslNode, level: VDBTslNode, uvw: VDBTslNode): VDBTslNode;
+  sampleMipmapped(map: VDBTslNode, mipMap: VDBTslNode, levels: VDBTslNode, position: VDBTslNode, lod: VDBTslNode): VDBTslNode;
+} {
   // L838–846: level 1 and up of the mip atlas (layout of frameMipmaps.js).
   const sampleMipAtlas = (mipMap: VDBTslNode, level: VDBTslNode, uvw: VDBTslNode): VDBTslNode => {
     const size = max(vec3(1.0), ceil(gridTexels.div(exp2(level))));
@@ -340,6 +377,47 @@ export function vdbVolumeNodes(source: VDBThreeDenseSource, u: VDBVolumeUniforms
     });
     return result;
   };
+  return { sampleMipAtlas, sampleMipmapped };
+}
+
+/** His `wrapUv` / `gridUv` (frameShaderChunks.js L894–911): the local position as a wrapped, offset uvw. */
+export function vdbGridUv(u: Pick<VDBVolumeUniforms, "wrap3D" | "offset3D">): (localPosition: VDBTslNode) => VDBTslNode {
+  const T = THREE as unknown as Record<string, number>;
+  const mirrorAxis = (value: VDBTslNode) => {
+    const period = mod(value, 2.0);
+    return select(period.greaterThan(1.0), float(2.0).sub(period), period);
+  };
+  const wrapUv = (uvw: VDBTslNode) =>
+    select(
+      u.wrap3D.equal(T.RepeatWrapping!),
+      fract(uvw),
+      select(u.wrap3D.equal(T.MirroredRepeatWrapping!), vec3(mirrorAxis(uvw.x), mirrorAxis(uvw.y), mirrorAxis(uvw.z)), uvw),
+    );
+  return (localPosition: VDBTslNode) => wrapUv(localPosition.add(0.5).add(u.offset3D));
+}
+
+/** His box geometry (frameShaderChunks.js L938–958): `insideBox`, `boxExit`, `boxSegment` of the local unit box. */
+export const vdbBoxNodes = {
+  insideBox: (localPosition: VDBTslNode) => vdbMaxComponent(abs(localPosition)).lessThanEqual(0.5),
+  boxExit: (origin: VDBTslNode, direction: VDBTslNode) => {
+    const inverseDirection = vec3(1.0).div(direction);
+    const tMin = vec3(-0.5).sub(origin).mul(inverseDirection);
+    const tMax = vec3(0.5).sub(origin).mul(inverseDirection);
+    return max(0.0, vdbMinComponent(max(tMin, tMax)));
+  },
+  boxSegment: (start: VDBTslNode, end: VDBTslNode) => {
+    const inverseDirection = vec3(1.0).div(end.sub(start));
+    const tMin = vec3(-0.5).sub(start).mul(inverseDirection);
+    const tMax = vec3(0.5).sub(start).mul(inverseDirection);
+    return vec2(max(0.0, vdbMaxComponent(min(tMin, tMax))), min(1.0, vdbMinComponent(max(tMin, tMax))));
+  },
+};
+
+export function vdbVolumeNodes(source: VDBThreeVolumeSource, u: VDBVolumeUniforms, o: VDBVolumeNodesOptions = {}): VDBVolumeNodes {
+  if (source.kind === "sparse") return source.createNodes(u, o);
+  const useMipmaps = o.useMipmaps ?? source.lodLevels > 0;
+  const { gridTexels, mipAtlasSize } = u;
+  const { sampleMipmapped } = vdbMipSampler(gridTexels, mipAtlasSize);
 
   // L874–877 sample3D (a channel without a mip atlas samples level 0).
   const sample3D = (name: ChannelName, uvw: VDBTslNode, lod: VDBTslNode): VDBTslNode => {
@@ -352,17 +430,7 @@ export function vdbVolumeNodes(source: VDBThreeDenseSource, u: VDBVolumeUniforms
   const getLod = (localSize: VDBTslNode) => max(0.0, log2(localSize.mul(vdbMaxComponent(gridTexels))));
 
   // L894–911
-  const mirrorAxis = (value: VDBTslNode) => {
-    const period = mod(value, 2.0);
-    return select(period.greaterThan(1.0), float(2.0).sub(period), period);
-  };
-  const wrapUv = (uvw: VDBTslNode) =>
-    select(
-      u.wrap3D.equal(T.RepeatWrapping!),
-      fract(uvw),
-      select(u.wrap3D.equal(T.MirroredRepeatWrapping!), vec3(mirrorAxis(uvw.x), mirrorAxis(uvw.y), mirrorAxis(uvw.z)), uvw),
-    );
-  const gridUv = (localPosition: VDBTslNode) => wrapUv(localPosition.add(0.5).add(u.offset3D));
+  const gridUv = vdbGridUv(u);
 
   // L914–936: extinction per world unit. The mask is read at local + 0.5 (no offset or wrap), as his.
   const sampleExtinction = (localPosition: VDBTslNode, lod: VDBTslNode) => {
@@ -372,19 +440,7 @@ export function vdbVolumeNodes(source: VDBThreeDenseSource, u: VDBVolumeUniforms
   };
 
   // L938–958
-  const insideBox = (localPosition: VDBTslNode) => vdbMaxComponent(abs(localPosition)).lessThanEqual(0.5);
-  const boxExit = (origin: VDBTslNode, direction: VDBTslNode) => {
-    const inverseDirection = vec3(1.0).div(direction);
-    const tMin = vec3(-0.5).sub(origin).mul(inverseDirection);
-    const tMax = vec3(0.5).sub(origin).mul(inverseDirection);
-    return max(0.0, vdbMinComponent(max(tMin, tMax)));
-  };
-  const boxSegment = (start: VDBTslNode, end: VDBTslNode) => {
-    const inverseDirection = vec3(1.0).div(end.sub(start));
-    const tMin = vec3(-0.5).sub(start).mul(inverseDirection);
-    const tMax = vec3(0.5).sub(start).mul(inverseDirection);
-    return vec2(max(0.0, vdbMaxComponent(min(tMin, tMax))), min(1.0, vdbMinComponent(max(tMin, tMax))));
-  };
+  const { insideBox, boxExit, boxSegment } = vdbBoxNodes;
 
   // L960–971
   const sampleAlbedo = (localPosition: VDBTslNode, lod: VDBTslNode) =>

@@ -131,7 +131,7 @@ From v1; details in docs/handoffs/.
 - `VDBVolumeMaterial` integrates density per index voxel, so a coarse preview with k-times larger voxels looks
   k-times thinner at the same `densityScale`. `vdbStreamCoarseFirst` reports `voxelRatio`; scale by it.
 - three r187 WebGPU `readRenderTargetPixelsAsync` returns rows **top first** (row 0 = `screenCoordinate.y` 0),
-  padded to 256 bytes; don't flip them (the K3.0 `k3-dense` harness does, so its PNGs are upside down; K3.1b).
+  padded to 256 bytes; don't flip them (the K3.0 `k3-dense` harness did until K3.2 fixed it, K3.1b).
 - three r187's TSL typings narrow node types and reject most ported shader code; the K3 frame files take TSL
   through `const { … } = TSL as unknown as Record<string, VDBTslNode>` (untyped nodes, as `volume-source.ts`).
 - mjurczyk's examples page: every light setup keeps `scene.environment` (the HDR map), and a FrameVolume's
@@ -139,4 +139,14 @@ From v1; details in docs/handoffs/.
   Strict Step 1 parity uses the `*-isolated` capture scenarios (lights = 8, other meshes hidden).
 - The froxel integrate pass needs the scene depth: render into a target with a depth buffer
   (`viewportDepthTexture`); its `viewportTexture` read (sRGB blending) needs the colour target too.
-
+- `buildFromDense` reads its array **x-major** (`(x·ny + y)·nz + z`, z fastest); textures and `.wvdb` levels are
+  x fastest (`x + (y + z·h)·w`). Transpose when moving data between them (`wvdbDenseToNanoVdb` does).
+- TSL: an arrow callback that returns a node (`If(c, () => v.assign(x))`) is read as a `return` statement
+  ("Return statement used in an inline 'Fn()'" warning) and can end the shader early. Use a block body.
+- TSL `vec2.toUint()` gives a scalar `uint`, not a `uvec2`; build `uvec2(a, b)` explicitly.
+- The sparse source's HDDA skip is exact only where its bound covers every voxel a sample reads: level 0
+  (2x2x2 cell block) or coarse taps within 8 voxels of the cell (dilated 3x3x3 block). Wrapping or an
+  `offset3D` moves samples off the ray's cells, so it turns itself off then (K3.2).
+- `vdbSparseSource` needs a `VDBGridNode` with profile `'march'` and helpers `cellBoundTrilinear`,
+  `hddaCellEnd` (+ `nodeAverage` for that LOD); with other helpers in other shaders, make the one node with the
+  union (one module per shader).

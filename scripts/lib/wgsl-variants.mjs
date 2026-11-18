@@ -15,6 +15,8 @@ export const CHECK_BUFFER_EXPRESSION = "vdbPool.value";
 /** The opt-in helpers (K1.7a) each profile can take: all of them in the matrix's helper variants. */
 export const SAMPLE_HELPERS = ["rayClipSupport"];
 export const MARCH_HELPERS = ["cellBoundTrilinear", "hddaCellEnd", "rayClipSupport"];
+/** K3.2: the sparse volume source's module (`vdbSparseSource` with `lod: 'node-average'`). Its own variant, so the ids above keep their bytes. */
+export const MARCH_FRAME_HELPERS = ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage"];
 
 /**
  * Every generator variant that must compile: read/sample/march × type set ×
@@ -36,7 +38,7 @@ export function variantMatrix() {
         // K1.7a opt-in helpers: every helper the profile allows (appended, so the
         // ids above, and their snapshot entries, are unchanged).
         if (profile === "sample") extras.push({ helpers: SAMPLE_HELPERS });
-        if (profile === "march") extras.push({ helpers: MARCH_HELPERS });
+        if (profile === "march") extras.push({ helpers: MARCH_HELPERS }, { helpers: MARCH_FRAME_HELPERS });
         for (const extra of extras) {
           const options = { ...binding, types, profile, ...extra };
           const tag = Object.entries(extra)
@@ -78,6 +80,7 @@ export function checkKernel(module, options) {
       : "",
     helpers.has("cellBoundTrilinear") ? "    s += vdbCellBoundTrilinear(&a, ijk, 8u);\n" : "",
     helpers.has("hddaCellEnd") ? "    s += vdbHddaCellEnd(&h);\n" : "",
+    helpers.has("nodeAverage") ? "    s += vdbNodeAverage(&a, ijk, 8u) + vdbNodeAverage(&a, ijk, 128u);\n" : "",
   ].join("");
   return `${module}
 ${host}@group(0) @binding(0) var<storage, read_write> checkOut: array<f32>;

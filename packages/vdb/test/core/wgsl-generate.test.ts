@@ -47,9 +47,9 @@ describe("wgslNameProblems (helper)", () => {
 });
 
 describe("vdbModuleWgsl: every variant", () => {
-  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers", () => {
+  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage", () => {
     expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(132);
-    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(24);
+    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(36);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {

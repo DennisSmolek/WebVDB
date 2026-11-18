@@ -9,3 +9,4 @@ export * from "./write.js";
 export * from "./bake.js";
 export { sha256Hex } from "./sha256.js";
 export * from "./dense.js";
+export * from "./nanovdb.js";

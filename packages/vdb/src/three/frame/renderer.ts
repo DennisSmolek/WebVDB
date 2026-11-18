@@ -485,12 +485,14 @@ export class VDBFrameRenderer {
         source: frameVolume.source,
         sourceUniforms: frameVolume.sourceUniforms,
         mipmaps,
+        hdda: frameVolume.hdda,
         ...(frameVolume.emissionColor ? { emissionColor: frameVolume.emissionColor } : {}),
       });
       frameVolume.injectMaterial = material;
     }
 
     material.setMipmaps(mipmaps);
+    material.setHdda(frameVolume.hdda);
 
     return material;
   }

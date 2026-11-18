@@ -350,6 +350,18 @@ function marchLayer(): string {
  * `min(next.x, next.y, next.z, tmax)` of the vendored state, so a host
  * needn't name `VdbHdda`'s vendored fields. CPU twin: `tools` `hddaCellEnd`.
  *
+ * `vdbNodeAverage(acc, ijk, dim)` (K3.2): the box mean of the aligned
+ * `dim`-cell holding `ijk`, from node statistics instead of voxels (the
+ * sparse volume source's `'node-average'` LOD). A cell inside one tile (or the
+ * background) is that tile's value, exactly. Otherwise, for `dim <= 8`, the
+ * leaf's average times its active fraction (`countOneBits` of the value mask
+ * / 512): the exact mean when the leaf's inactive voxels are 0 (fog); for
+ * `dim <= 128`, the lower node's average, which is the mean of its ACTIVE
+ * voxels (NanoVDB stores no active count per lower node), so it overstates a
+ * partly empty lower node; larger cells read the lower node too (`dim` is
+ * meant to be 8 or 128; no upper level, to keep the module small). Without stats it is the value at `ijk` (no
+ * prefilter). CPU twin: `tools` `nodeAverage`.
+ *
  * `vdbRayClipSupport(g, o, d, t)`: `vdbRayClip` against the box where
  * `vdbSample` can read the grid's voxels: `[min - 1, max + 1]` for trilinear
  * (the taps of a point in `[min - 1, min)` reach voxel `min`) and
@@ -385,6 +397,28 @@ function helperFunctions(o: ApiOptions): string[] {
   if (o.helpers.includes("hddaCellEnd")) {
     out.push(`fn vdbHddaCellEnd(h: ptr<function, VdbHdda>) -> f32 {
     return min(min((*h).next.x, (*h).next.y), min((*h).next.z, (*h).tmax));
+}`);
+  }
+  if (o.helpers.includes("nodeAverage")) {
+    out.push(`fn vdbNodeAverage(acc: ptr<function, VdbAccessor>, ijk: vec3i, dim: u32) -> f32 {
+    if !(*acc).ok {
+        return 0.0;
+    }
+    let a = vdbGetDim(acc, ijk);
+    if (a > 1u && dim <= a) || !(*acc).stats || dim <= 1u {
+        return vdbReadValue(acc, ijk);
+    }
+    let t = (*acc).gridType;
+    let b = (*acc).buf;
+    if dim <= 8u {
+        let leaf = (*acc).inner.leaf;
+        var n = 0u;
+        for (var w = 0u; w < 16u; w++) {
+            n += countOneBits(vdb_read_uint32(b, vdb_address_offset(leaf.address, VDB_LEAF_OFF_VALUE_MASK + 4u * w)));
+        }
+        return vdb_leaf_get_ave_float(t, b, leaf) * (f32(n) / 512.0);
+    }
+    return vdb_lower_get_ave_float(t, b, (*acc).inner.lower);
 }`);
   }
   return out;
