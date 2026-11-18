@@ -145,7 +145,10 @@ export interface BuiltGrid {
   voxelCount: number;
   indexBBox: { min: [number, number, number]; max: [number, number, number] };
   worldBBox: { min: [number, number, number]; max: [number, number, number] };
+  /** Voxel size along x: the voxel size of a uniform grid. See {@link BuiltGrid.voxelSizeXYZ} for all three. */
   voxelSize: number;
+  /** Voxel size per axis (equal for a uniform grid; an anisotropic grid has a diagonal, non-uniform Map). */
+  voxelSizeXYZ: [number, number, number];
   nodeCounts: { leaf: number; lower: number; upper: number };
   /** Active tiles per level (all 0 unless the source had active tiles). */
   tileCounts: { lower: number; upper: number; root: number };
@@ -205,18 +208,19 @@ export function buildFromDenseDetailed(
   const codec = FLOAT_LEAF_CODEC;
   const tree = buildTree(values, dims, { origin, background, activeThreshold: opts.activeThreshold });
 
+  const voxelSizeXYZ: [number, number, number] = [voxelSize, voxelSize, voxelSize];
   const image = layoutGrid(tree, codec, {
     gridName,
     nameBytes,
     gridClassId,
-    voxelSize,
+    voxelSize: voxelSizeXYZ,
     worldOrigin,
     origin,
     background,
   });
 
   const indexBBox = bboxOrEmpty(tree.root);
-  const worldBBox = worldBBoxFromIndex(indexBBox, voxelSize, worldOrigin, origin);
+  const worldBBox = worldBBoxFromIndex(indexBBox, voxelSizeXYZ, worldOrigin, origin);
 
   return {
     image,
@@ -225,14 +229,18 @@ export function buildFromDenseDetailed(
     indexBBox,
     worldBBox,
     voxelSize,
+    voxelSizeXYZ,
     nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
     tileCounts: { ...tree.tileCounts },
   };
 }
 
 export interface BuildFromLeavesOptions {
-  /** Uniform voxel size in world units. Default 1. */
-  voxelSize?: number;
+  /**
+   * Voxel size in world units: a number (uniform), or `[x, y, z]` for an
+   * anisotropic, axis-aligned Map (diagonal scale). Default 1.
+   */
+  voxelSize?: number | [number, number, number];
   /** World-space translation (the NanoVDB Map's vec / index-origin world pos). Default [0,0,0]. */
   worldOrigin?: [number, number, number];
   /** Background (inactive) value: a number, or `[x, y, z]` for a Vec3f codec. Default 0. */
@@ -261,7 +269,11 @@ export function buildFromLeavesDetailed(
   codec: LeafCodec,
   opts: BuildFromLeavesOptions = {},
 ): BuiltGrid {
-  const voxelSize = opts.voxelSize ?? 1;
+  const vs = opts.voxelSize ?? 1;
+  const voxelSizeXYZ: [number, number, number] = typeof vs === "number" ? [vs, vs, vs] : [vs[0], vs[1], vs[2]];
+  if (!voxelSizeXYZ.every((v) => Number.isFinite(v) && v > 0)) {
+    throw new Error(`buildFromLeaves: voxelSize must be positive and finite, got ${JSON.stringify(vs)}`);
+  }
   const components = codec.components ?? 1;
   const background: TileValue = opts.background ?? (components === 3 ? [0, 0, 0] : 0);
   if ((typeof background === "number") !== (components === 1)) {
@@ -284,14 +296,14 @@ export function buildFromLeavesDetailed(
     gridName,
     nameBytes,
     gridClassId,
-    voxelSize,
+    voxelSize: voxelSizeXYZ,
     worldOrigin,
     origin: [0, 0, 0],
     background,
   });
 
   const indexBBox = bboxOrEmpty(tree.root);
-  const worldBBox = worldBBoxFromIndex(indexBBox, voxelSize, worldOrigin, [0, 0, 0]);
+  const worldBBox = worldBBoxFromIndex(indexBBox, voxelSizeXYZ, worldOrigin, [0, 0, 0]);
 
   return {
     image,
@@ -299,7 +311,8 @@ export function buildFromLeavesDetailed(
     voxelCount: tree.activeVoxelCount,
     indexBBox,
     worldBBox,
-    voxelSize,
+    voxelSize: voxelSizeXYZ[0],
+    voxelSizeXYZ,
     nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
     tileCounts: { ...tree.tileCounts },
   };
@@ -309,7 +322,7 @@ interface LayoutParams {
   gridName: string;
   nameBytes: Uint8Array;
   gridClassId: number;
-  voxelSize: number;
+  voxelSize: [number, number, number];
   worldOrigin: [number, number, number];
   origin: [number, number, number];
   background: TileValue;
@@ -521,9 +534,9 @@ function writeGridData(
   writeMap(w, p);
   writeWorldBBox(w, tree, p);
   const vs = p.voxelSize;
-  w.setF64(GRID_OFF_VOXEL_SIZE, vs);
-  w.setF64(GRID_OFF_VOXEL_SIZE + 8, vs);
-  w.setF64(GRID_OFF_VOXEL_SIZE + 16, vs);
+  w.setF64(GRID_OFF_VOXEL_SIZE, vs[0]);
+  w.setF64(GRID_OFF_VOXEL_SIZE + 8, vs[1]);
+  w.setF64(GRID_OFF_VOXEL_SIZE + 16, vs[2]);
   w.setU32(GRID_OFF_GRID_CLASS, p.gridClassId);
   w.setU32(GRID_OFF_GRID_TYPE, codec.layout.gridType);
   // No blind metadata: offset points at end-of-grid, count 0 (native
@@ -537,14 +550,13 @@ function writeGridData(
 
 function writeMap(w: GridImageWriter, p: LayoutParams): void {
   const s = p.voxelSize;
-  const inv = 1 / s;
   const t: [number, number, number] = [
-    p.worldOrigin[0] - p.origin[0] * s,
-    p.worldOrigin[1] - p.origin[1] * s,
-    p.worldOrigin[2] - p.origin[2] * s,
+    p.worldOrigin[0] - p.origin[0] * s[0],
+    p.worldOrigin[1] - p.origin[1] * s[1],
+    p.worldOrigin[2] - p.origin[2] * s[2],
   ];
-  const mat = [s, 0, 0, 0, s, 0, 0, 0, s];
-  const invMat = [inv, 0, 0, 0, inv, 0, 0, 0, inv];
+  const mat = [s[0], 0, 0, 0, s[1], 0, 0, 0, s[2]];
+  const invMat = [1 / s[0], 0, 0, 0, 1 / s[1], 0, 0, 0, 1 / s[2]];
   const mapBase = GRID_OFF_MAP;
   for (let i = 0; i < 9; i++) {
     w.setF32(mapBase + MAP_OFF_MATF + i * 4, mat[i]!);
@@ -587,21 +599,21 @@ function bboxOrEmpty(s: StatsAccumulator): {
 
 function worldBBoxFromIndex(
   ibox: { min: [number, number, number]; max: [number, number, number] },
-  voxelSize: number,
+  voxelSize: [number, number, number],
   worldOrigin: [number, number, number],
   origin: [number, number, number],
 ): { min: [number, number, number]; max: [number, number, number] } {
   const t = [
-    worldOrigin[0] - origin[0] * voxelSize,
-    worldOrigin[1] - origin[1] * voxelSize,
-    worldOrigin[2] - origin[2] * voxelSize,
+    worldOrigin[0] - origin[0] * voxelSize[0],
+    worldOrigin[1] - origin[1] * voxelSize[1],
+    worldOrigin[2] - origin[2] * voxelSize[2],
   ];
   const min: [number, number, number] = [0, 0, 0];
   const max: [number, number, number] = [0, 0, 0];
   for (let a = 0; a < 3; a++) {
-    min[a] = ibox.min[a]! * voxelSize + t[a]!;
+    min[a] = ibox.min[a]! * voxelSize[a]! + t[a]!;
     // "+ one voxel" convention: world max corner is (indexMax + 1) * voxelSize.
-    max[a] = (ibox.max[a]! + 1) * voxelSize + t[a]!;
+    max[a] = (ibox.max[a]! + 1) * voxelSize[a]! + t[a]!;
   }
   return { min, max };
 }

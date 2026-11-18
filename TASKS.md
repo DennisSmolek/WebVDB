@@ -78,8 +78,8 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 | K4.1 | Parse active tiles (`bunny_cloud.vdb`) | T3 | ✅ | Also added a pure-TS Blosc1 decoder (bunny_cloud is LZ4-compressed). 0 oracle mismatches over 19.2M voxels. Reviewed; Blosc/zlib hardened against hostile input (29 tests). mjurczyk's MIT reader is a reference; attribute anything ported. |
 | K4.2 | Vector grids, then point grids, then level-set specifics | T2 | 🟨 | Level-set inactive-value and tile work split out to K4.8 and K4.9. Vector and point grids still rejected by the parser. |
 | K4.3 | `.wvdb` read and write per his spec (v0.5, plus points from his v0.25.0) | T3 | ✅ | Prerequisite for K3.0. A decoder written from the spec already worked in the comparison report. Owner check: load our files in his `WVDBLoader` examples page; byte-identity vs his CLI under the same Node zlib. |
-| K4.4 | Resample-to-resolution bake | T2 | ⬜ | Measured: our FpN at his 128³ is 474 KiB against his 790 KiB. |
-| K4.5 | Coarse-first `.nvdb` delivery | T3 | ⬜ | Design first; his LOD0 is 14 KiB. |
+| K4.4 | Resample-to-resolution bake | T2 | ✅ | `resampleGrid` (point / box (default) / trilinear, sparse, anisotropic `dimensions`, optional Fp8/FpN) and `resampleError`. Smoke at his 128³ with FpN: box 477 KiB / 18.3%, point 456 KiB / 17.3% (report: 474 KiB / ~18%). [docs/handoffs/K4-4.md](docs/handoffs/K4-4.md). |
+| K4.5 | Coarse-first `.nvdb` delivery | T3 | 🟨 | Design done: [docs/design/K4-5-coarse-first.md](docs/design/K4-5-coarse-first.md). Recommends a preview grid first in the same `.nvdb` (smoke first paint 11.9 KiB vs his 14.8 KiB at equal error). Implementation is K4.14; native check K4.15. |
 | K4.6 | Quantize keeps uniform regions as tiles (the ~12% Fp8 gap) | T2 | ⬜ | K4.1 made quantize keep source tiles: Fp8 sizes now equal native on the primitives. What remains: collapse uniform leaves in our own builds. |
 | K4.7 | Parse OpenVDB 12.1 half-float grids that omit empty value arrays (`bunny.vdb`, `icosahedron.vdb`, `fire.vdb` fail) | T2 | ⬜ | Found in K4.1. |
 | K4.8 | Level sets: inactive leaf values are ±background, not 0 (`compression.ts`) | T2 | ⬜ | Changes leaf bytes; check demo goldens. |
@@ -88,6 +88,10 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 | K4.11 | Document FpN size vs native (ours ~1.85× smaller: different tolerance) and decide | T2 | ⬜ | |
 | K4.12 | Root-tile key order: sort unsigned like NanoVDB keys | T1 | ⬜ | |
 | K4.13 | `.wvdb` follow-ups: prefiltered resample option (box/area; his bake is point-sampled, A/B per CLAUDE.md), port `sampleLevelSet`, page-by-page decode within a LOD (show a LOD before all its pages arrive, §12.2) | T2 | ⬜ | Wording from [docs/handoffs/K4-3.md](docs/handoffs/K4-3.md) (Follow-ups). |
+| K4.14 | Implement coarse-first (K4.5 option a): `NvdbStreamReader` (push bytes, emit each grid when complete), a bake helper writing `[<name>.lod48, <name>]`, an example on `pool.add(preview, { capacity })` → `pool.replace`, and an e2e that counts compressed bytes at preview emission (gate: ≤ 14.8 KiB on smoke) | T2 | ⬜ | Design: [docs/design/K4-5-coarse-first.md](docs/design/K4-5-coarse-first.md). |
+| K4.15 | Native check of a multi-grid preview `.nvdb`: `nanovdb_print`, `nanovdb_convert`, a name-based `io::readGrid`, and EmberGen; record which grid grid-0 readers show | owner | ⬜ | Needs Docker (parity image). Fallback if a grid-0 reader matters: K4.5 option (b), separate preview file. |
+| K4.16 | `writeNvdb` with `Codec.ZIP` per grid segment (our reader decodes it), so first paint doesn't depend on host compression | T2 | ⬜ | A raw preview is ~300 KiB (the 270 KB upper node); gzipped ~12 KiB. |
+| K4.17 | Preview filter A/B: render box vs point (vs trilinear) previews against the full-res render (PSNR) and under a half-voxel box shift | T3 | ⬜ | Pointwise error favours point at small ratios (smoke 128³: 17.3% vs 18.3%); box conserves mass. Decide the preview default from this. |
 
 ## K5 — Release
 

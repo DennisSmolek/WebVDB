@@ -97,3 +97,8 @@ From v1; details in docs/handoffs/.
   `VDBVolumeMaterial` anchors the lattice at the voxel-box entry (`vdbRayClip`) and steps back over the shell.
 - `pool.replace` holds the frame array by reference until the update that writes it, and until `settled()`
   while a growth is unconfirmed. A sequence loader that recycles frame buffers must wait for `settled()`.
+- A NanoVDB upper node is 270,400 bytes even for a tiny grid, so a raw `.nvdb` is never small: a 24×48×25 preview
+  is ~320 KiB uncompressed and ~12 KiB gzipped. Size claims for delivery assume HTTP compression (or `Codec.ZIP`).
+- Grid images can be anisotropic since K4.4 (`resampleGrid({ dimensions })`): `BuiltGrid.voxelSize` is the x
+  component; read `voxelSizeXYZ` (or the three GridData doubles) for all three.
+- Check scripts that import `packages/vdb/dist` ran after `pnpm build`: a stale dist silently measures old code.

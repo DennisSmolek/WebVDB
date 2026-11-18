@@ -33,6 +33,15 @@ export { buildFromVdb, buildFromVdbDetailed } from "./build-from-vdb.js";
 export type { BuildFromVdbOptions } from "./build-from-vdb.js";
 export { quantize, quantizeDetailed } from "./quantize.js";
 export type { QuantizeMode } from "./quantize.js";
+export { resampleGrid, resampleError } from "./resample.js";
+export type {
+  ResampleErrorOptions,
+  ResampleErrorResult,
+  ResampledGrid,
+  ResampleFilter,
+  ResampleOptions,
+  ResampleSource,
+} from "./resample.js";
 export { transform } from "./transform.js";
 export type { TransformInput, TransformSpec } from "./transform.js";
 export { inspect } from "./inspect.js";
