@@ -22,6 +22,8 @@
 import { VdbFormatError } from "./errors.js";
 
 const MAX_BITS = 15;
+/** Default output cap (1 GiB) for callers that do not know the expected size. */
+const DEFAULT_MAX_OUT = 1 << 30;
 
 class BitReader {
   private pos = 0;
@@ -138,6 +140,7 @@ function readDynamicTables(br: BitReader): { litLen: HuffTable; dist: HuffTable 
   const hlit = br.bits(5) + 257;
   const hdist = br.bits(5) + 1;
   const hclen = br.bits(4) + 4;
+  if (hlit > 286 || hdist > 30) throw new VdbFormatError(`inflate: too many length/distance codes (${hlit}/${hdist})`);
 
   const clLengths = new Uint8Array(19);
   for (let i = 0; i < hclen; i++) clLengths[CL_ORDER[i]!] = br.bits(3);
@@ -153,12 +156,15 @@ function readDynamicTables(br: BitReader): { litLen: HuffTable; dist: HuffTable 
       if (i === 0) throw new VdbFormatError("inflate: repeat code with no previous length");
       const repeat = br.bits(2) + 3;
       const prev = lengths[i - 1]!;
+      if (i + repeat > lengths.length) throw new VdbFormatError("inflate: code-length repeat overruns the table");
       for (let r = 0; r < repeat; r++) lengths[i++] = prev;
     } else if (sym === 17) {
       const repeat = br.bits(3) + 3;
+      if (i + repeat > lengths.length) throw new VdbFormatError("inflate: code-length repeat overruns the table");
       for (let r = 0; r < repeat; r++) lengths[i++] = 0;
     } else if (sym === 18) {
       const repeat = br.bits(7) + 11;
+      if (i + repeat > lengths.length) throw new VdbFormatError("inflate: code-length repeat overruns the table");
       for (let r = 0; r < repeat; r++) lengths[i++] = 0;
     } else {
       throw new VdbFormatError(`inflate: invalid code-length symbol ${sym}`);
@@ -191,14 +197,21 @@ class ByteSink {
   private buf: Uint8Array;
   len = 0;
 
-  constructor(initialCapacity = 1 << 16) {
-    this.buf = new Uint8Array(initialCapacity);
+  constructor(
+    initialCapacity: number,
+    private readonly maxOut: number,
+  ) {
+    this.buf = new Uint8Array(Math.min(initialCapacity, maxOut));
   }
 
   private ensure(extra: number): void {
+    if (this.len + extra > this.maxOut) {
+      throw new VdbFormatError(`inflate: output exceeds the expected ${this.maxOut} bytes`);
+    }
     if (this.len + extra <= this.buf.length) return;
-    let cap = this.buf.length * 2;
+    let cap = Math.max(this.buf.length * 2, 16);
     while (cap < this.len + extra) cap *= 2;
+    cap = Math.min(cap, this.maxOut);
     const next = new Uint8Array(cap);
     next.set(this.buf.subarray(0, this.len));
     this.buf = next;
@@ -253,9 +266,9 @@ function inflateBlockData(br: BitReader, sink: ByteSink, litLen: HuffTable, dist
 }
 
 /** Raw DEFLATE (RFC 1951) decompression, no zlib/gzip framing. */
-export function inflateRaw(data: Uint8Array): Uint8Array {
+export function inflateRaw(data: Uint8Array, maxOut: number = DEFAULT_MAX_OUT): Uint8Array {
   const br = new BitReader(data);
-  const sink = new ByteSink(Math.max(1 << 16, data.length * 3));
+  const sink = new ByteSink(Math.max(1 << 16, data.length * 3), maxOut);
 
   let final = false;
   while (!final) {
@@ -306,7 +319,7 @@ function adler32(data: Uint8Array): number {
 }
 
 /** zlib (RFC 1950) decompression: 2-byte header + DEFLATE stream + Adler-32. */
-export function inflateZlib(data: Uint8Array): Uint8Array {
+export function inflateZlib(data: Uint8Array, maxOut: number = DEFAULT_MAX_OUT): Uint8Array {
   if (data.length < 6) throw new VdbFormatError("zlib: stream too short to contain a header/trailer");
   const cmf = data[0]!;
   const flg = data[1]!;
@@ -320,7 +333,7 @@ export function inflateZlib(data: Uint8Array): Uint8Array {
   if (flg & 0x20) {
     throw new VdbFormatError("zlib: preset dictionaries (FDICT) are not supported");
   }
-  const raw = inflateRaw(data.subarray(offset, data.length - 4));
+  const raw = inflateRaw(data.subarray(offset, data.length - 4), maxOut);
   const expected =
     (data[data.length - 4]! << 24) |
     (data[data.length - 3]! << 16) |
