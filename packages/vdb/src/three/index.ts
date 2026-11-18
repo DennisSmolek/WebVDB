@@ -8,6 +8,13 @@
  * exported below, is built on top of this surface.
  */
 
+// K2.1/K2.2: the adapter over the engine-free core (docs/design/K1-core.md §6).
+export { getDevice, getGPUTexture } from "./device.js";
+export type { ThreeBackendLike, ThreeRendererLike } from "./device.js";
+export { VDBGridNode, vdbReadValue, vdbSample } from "./grid-node.js";
+export type { VDBGridNodeOptions, VDBGridNodePoolLike, VDBSampleOptions, VDBTslNode } from "./grid-node.js";
+
+// v1 (ported onto VDBGridNode in K2.3).
 export { NanoVDBGrid } from "./grid.js";
 export type { NanoVDBGridOptions } from "./grid.js";
 
