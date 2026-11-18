@@ -416,7 +416,7 @@ This package is MIT (see [LICENSE](./LICENSE)). The vendored `pnanovdb.wgsl` and
 The published package ships `vendor/NOTICE` and `vendor/LICENSE` (Apache-2.0) alongside the vendored WGSL, and
 they must stay in the package and any redistribution. The `.wvdb` reader and writer port logic from
 mjurczyk/openvdb (MIT). Test fixtures are CC0, and `fflate` is an MIT runtime dependency. The full list, with
-licences and file locations, is in [THIRD_PARTY.md](https://github.com/DennisSmolek/WebVDB/blob/main/THIRD_PARTY.md).
+licences and file locations, is in [THIRD_PARTY.md](https://github.com/pmndrs/vdb/blob/main/THIRD_PARTY.md).
 
 ## Packaging note (for contributors)
 

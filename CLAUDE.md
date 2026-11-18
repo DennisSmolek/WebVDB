@@ -39,7 +39,7 @@ in DIVERGES.md with the reason.
 
 ## Licences
 
-- Our code is MIT, Copyright (c) 2026 Dennis Smolek (D13). Root and `packages/vdb` `LICENSE` are MIT.
+- Our code is MIT, Copyright (c) 2026 Dennis Smolek and Poimandres contributors (D13). Root and `packages/vdb` `LICENSE` are MIT.
 - The vendored `pnanovdb.wgsl` (emcfarlane, Apache-2.0) and `PNanoVDB.h` (OpenVDB, Apache-2.0) keep their
   headers and NOTICE (D2).
 - mjurczyk/openvdb is MIT (the repo has no LICENSE file yet; its npm packages declare MIT). Port with a header
