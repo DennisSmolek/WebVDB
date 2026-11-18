@@ -32,6 +32,17 @@ describe("@pmndrs/vdb/three K3.1 exports", () => {
   });
 });
 
+describe("vdbFrameRenderer sharing (K5.4d)", () => {
+  it("is one default instance, and one per three renderer when given one", async () => {
+    const { vdbFrameRenderer } = await import("../../src/three/index.js");
+    const a = {}, b = {};
+    expect(vdbFrameRenderer()).toBe(vdbFrameRenderer());
+    expect(vdbFrameRenderer(a)).toBe(vdbFrameRenderer(a));
+    expect(vdbFrameRenderer(a)).not.toBe(vdbFrameRenderer(b));
+    expect(vdbFrameRenderer(a)).not.toBe(vdbFrameRenderer());
+  });
+});
+
 describe("frame layout and phase packing", () => {
   it("atlas layout: his 512x512x24 grid is 5 x 5 tiles", () => {
     expect(getAtlasLayout(512, 512, 24)).toEqual({ columns: 5, width: 2560, height: 2560 });

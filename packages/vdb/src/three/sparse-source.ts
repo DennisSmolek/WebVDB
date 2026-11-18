@@ -37,7 +37,7 @@
  *   their active voxels); lod in (0, 3) blends level 0 → 3, (3, 7) blends 3 → 7. Needs stats.
  *
  * HDDA: `skipEmpty` lets a march jump samples that are provably 0 (`VDBFrameVolume` `hdda`, default
- * on since D29 / K3.2c; the image is the same either way).
+ * off since D30 / D31: it slowed the shadow march on Apple GPUs; the image is the same either way).
  *
  * Mask, albedo and emission grids (optional, scalar; albedo may be three grids for RGB) are read at
  * level 0 only. One VDB module per shader: every grid goes through the one `VDBGridNode`.

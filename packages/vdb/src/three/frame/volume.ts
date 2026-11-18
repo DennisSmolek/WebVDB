@@ -36,7 +36,11 @@ const frameRenderOrder = 1000000;
 
 /** Props of {@link VDBFrameVolume}: his `FrameVolume` props (names and defaults) for the ported subset. */
 export interface VDBFrameVolumeProps {
-  /** The froxel renderer (default: the shared {@link vdbFrameRenderer}). */
+  /**
+   * The froxel renderer (default: the shared {@link vdbFrameRenderer}). Its `settings` apply to every
+   * volume that uses it; pass your own `new VDBFrameRenderer()` (or `vdbFrameRenderer(threeRenderer)`)
+   * for separate settings.
+   */
   frameRenderer?: VDBFrameRenderer;
   /** World box of the volume (default: the source's box: the `.wvdb` bbox or the sparse grid's world box; else the unit box at the origin). */
   bbox?: THREE.Box3 | [[number, number, number], [number, number, number]];
