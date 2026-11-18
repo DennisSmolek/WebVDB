@@ -25,7 +25,7 @@
  * State for e2e/demo-08.spec.ts: `window.__DEMO08__`.
  */
 import { VDBGridPool, checkModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
-import type { VDBModuleOptions } from "@pmndrs/vdb";
+import type { VDBSlotModuleOptions } from "@pmndrs/vdb";
 import { NanoVDBFile, buildFromVdb, parseVdb } from "@pmndrs/vdb/tools";
 import { FRAME_FLOATS, HOST_WGSL } from "./shader.js";
 
@@ -115,11 +115,13 @@ async function main(): Promise<void> {
 
   //* 4. One generated module for the shader. Several grids share it by id, so
   //     compile every type the app will add (the torus is Fp8), and check the
-  //     pool against it whenever grids are added.
-  const moduleOptions: VDBModuleOptions = {
+  //     pool against it whenever grids are added. The two opt-in helpers give
+  //     the march its trilinear-safe skip bound and the HDDA cell's exit t.
+  const moduleOptions: VDBSlotModuleOptions = {
     slot: { group: 0, firstBinding: 0 },
     types: ["float", "fp8"],
     profile: "march",
+    helpers: ["cellBoundTrilinear", "hddaCellEnd"],
   };
   checkModule(pool, moduleOptions);
   const vdbWgsl = vdbModuleWgsl(moduleOptions);
@@ -132,7 +134,7 @@ async function main(): Promise<void> {
   const bindGroupLayout = device.createBindGroupLayout({
     label: "demo-08",
     entries: [
-      ...vdbModuleEntries({ slot: moduleOptions.slot!, visibility: GPUShaderStage.FRAGMENT }),
+      ...vdbModuleEntries(moduleOptions.slot), // default visibility: COMPUTE | FRAGMENT
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
     ],
   });
@@ -156,7 +158,7 @@ async function main(): Promise<void> {
       bindGroup = device.createBindGroup({
         label: `demo-08 v${p.version}`,
         layout: bindGroupLayout,
-        entries: [p.bindGroupEntry(moduleOptions.slot!), { binding: 1, resource: { buffer: frameBuffer } }],
+        entries: [p.bindGroupEntry(moduleOptions.slot), { binding: 1, resource: { buffer: frameBuffer } }],
       });
       boundVersion = p.version;
       state.bindGroupBuilds++;

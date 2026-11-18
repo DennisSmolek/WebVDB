@@ -96,12 +96,16 @@ export type { SampleOptions } from "./cpu/sample-trilinear.js";
 /**
  * CPU twins of the `march` WGSL profile (K1.4b, D11): the vendored HDDA, the
  * node size at a voxel, node stats (with the Fp leaf-stats fix), the
- * `vdbNodeMax` bound, the ray clip and the canonical HDDA walk.
+ * `vdbNodeMax` bound, the ray clip and the canonical HDDA walk, plus the
+ * opt-in helpers (K1.7a): `cellBoundTrilinear`, `hddaCellEnd`,
+ * `rayClipSupport`.
  */
 export {
+  cellBoundTrilinear,
   defaultValueMax,
   getDim,
   gridHasStats,
+  hddaCellEnd,
   hddaInit,
   hddaStep,
   hddaUpdate,
@@ -112,10 +116,21 @@ export {
   nodeMax,
   nodeStats,
   rayClip,
+  rayClipSupport,
   readValueF32,
   treeNodes,
 } from "./cpu/march.js";
-export type { Hdda, HddaSegment, HddaWalkOptions, NodeLevel, NodeMaxOptions, NodeStats, TreeNode, Vec3 } from "./cpu/march.js";
+export type {
+  Hdda,
+  HddaSegment,
+  HddaWalkOptions,
+  NodeLevel,
+  NodeMaxOptions,
+  NodeStats,
+  RayClipSupportOptions,
+  TreeNode,
+  Vec3,
+} from "./cpu/march.js";
 export { probeCoords, probePoints } from "./cpu/probe-coords.js";
 export type { ProbeOpts } from "./cpu/probe-coords.js";
 

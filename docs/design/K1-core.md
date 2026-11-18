@@ -174,11 +174,24 @@ vdbModuleWgsl({
   isActive: true,                         // read+: false drops vdbIsActive (−3.4 KB)
   outside: 'background',                  // sample+: 'background' (NanoVDB) | 'zero' (bbox test, pathtracer convention)
   majorant: 'brick',                      // majorant: 'brick' | 'nodeMax' | 'global'
+  helpers: ['cellBoundTrilinear'],        // K1.7a, opt-in, not emitted unless listed (see below)
 }): string;                               // deterministic: same options, same bytes (shader caches hit)
 
-vdbModuleEntries({ slot, visibility }): GPUBindGroupLayoutEntry[]; // one read-only-storage entry at firstBinding
+vdbModuleEntries(slot | { slot, visibility }): GPUBindGroupLayoutEntry[]; // one read-only-storage entry at firstBinding;
+                                                                         // visibility defaults to COMPUTE | FRAGMENT (K1.7a)
 pool.bindGroupEntry(slot): GPUBindGroupEntry;                         // { binding, resource: { buffer: pool.buffer } }
+checkModule(pool, options | { types, layoutVersion? }): void;       // K1.7a: type/layout-only form for adapters
 ```
+
+K1.7a (first consumer, demo 08): the options type is the union `VDBSlotModuleOptions | VDBBufferModuleOptions`,
+so a host that annotates `VDBSlotModuleOptions` reads `options.slot` without `!`, and the same `VDBSlot` goes to
+all three calls. Opt-in `helpers` (each emitted only when listed, so default modules keep their bytes):
+`cellBoundTrilinear` (`march`: `vdbCellBoundTrilinear(acc, ijk, dim)`, max of `vdbNodeMax` over the 2x2x2 cell
+block, the trilinear-safe skip bound), `hddaCellEnd` (`march`: `vdbHddaCellEnd(&h)`, the current cell's exit `t`)
+and `rayClipSupport` (`sample`+: `vdbRayClipSupport(g, o, d, &t)`, clips to `[min - 1, max + 1]` for trilinear,
+`[min - 0.5, max + 0.5]` for nearest; `vdbRayClip` keeps the voxel-cell box `[min, max + 1]`). CPU twins in
+`tools`: `cellBoundTrilinear`, `hddaCellEnd`, `rayClipSupport`. A module must be generated for every type the host
+may add (`VDB_ALL_SCALAR_TYPES` for all of them), or regenerated with its pipeline rebuilt; `checkModule` says so.
 
 `firstBinding` keeps bvh's name; layout 1 uses one binding (D10), and a later layout could add one without
 renaming. Exactly one of `slot` / `buffer` is required (`VDB_BAD_OPTION` otherwise, bvh's positional-call guard
@@ -338,6 +351,7 @@ Errors: `class VDBError extends Error { code }`; every message says what to do n
 | `VDB_TYPE_NOT_COMPILED` / `VDB_LAYOUT_MISMATCH` | `checkModule(pool, options)` |
 | `VDB_BAD_OPTION` | invalid generator or pool options |
 | `VDB_DISPOSED` | any call after `dispose` |
+| `VDB_ENGINE_MISMATCH` | an engine adapter finds the engine's internals don't behave as it expects (K1.7a, for K2) |
 
 ## 5. Majorants
 

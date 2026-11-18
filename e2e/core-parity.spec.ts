@@ -82,13 +82,16 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
     r.variants.map((v) => v.id),
     detail,
   ).toEqual(r.expected!.variants);
-  expect(r.variants.length).toBe(19);
+  expect(r.variants.length).toBe(21);
 
   for (const v of r.variants) {
     expect(v.compileErrors, `${v.id} compile`).toEqual([]);
     const profile = v.id.split("/")[0];
     const required = [...READ_CATS, ...(profile !== "read" ? SAMPLE_CATS : []), ...(profile === "march" ? MARCH_CATS : [])];
     if (["sample/all", "march/all", "march/all/buffer"].includes(v.id)) required.push(...XFORM_CATS);
+    // K1.7a opt-in helpers (vdbHddaCellEnd feeds the walk categories above).
+    if (v.id === "march/all/helpers") required.push("cellbound", "clip-support-hit", "clip-support-t", "clip-hit");
+    if (v.id === "sample/all/nearest,helpers") required.push("clip-support-hit", "clip-support-t");
     for (const cat of required) {
       expect(v.cats[cat]?.total ?? 0, `${v.id}: category ${cat} ran`).toBeGreaterThan(0);
     }

@@ -21,6 +21,7 @@
  */
 
 import type { VDBGridTypeName } from "../types.js";
+import type { VDBModuleHelper } from "./types.js";
 
 /** Options the API layer depends on (normalized by the generator). */
 export interface ApiOptions {
@@ -28,6 +29,8 @@ export interface ApiOptions {
   readonly isActive: boolean;
   readonly sampler: "trilinear" | "nearest";
   readonly outside: "background" | "zero";
+  /** Opt-in helpers, canonical order; the generator has checked each one's profile. */
+  readonly helpers: readonly VDBModuleHelper[];
 }
 
 /** Vendored grid-type constant names (after the rename) per compiled type. */
@@ -329,14 +332,71 @@ function marchLayer(): string {
 }
 
 /**
+ * Opt-in helpers (K1.7a, the `helpers` option). Each is emitted only when
+ * asked for, so modules without helpers keep their bytes (the size snapshot).
+ *
+ * `vdbCellBoundTrilinear(acc, ijk, dim)`: the max of `vdbNodeMax` over the
+ * 2x2x2 block of aligned `dim`-cells whose min corner is the cell holding
+ * `ijk` (that cell and its +x/+y/+z neighbours). A trilinear sample at `p`
+ * reads voxels `floor(p) + {0,1}^3`, so when `floor(p)` lies in the cell every
+ * tap lies in the block and the result bounds the sample, with `vdbNodeMax`'s
+ * caveat: stats bound ACTIVE values, so inactive leaf voxels must be <= their
+ * leaf's max (true of fog volumes). With `outside: 'zero'` and a negative
+ * field, also take max(result, 0). This is the skip test a march needs; the
+ * cell's own `vdbNodeMax` is not one (CLAUDE.md Traps). CPU twin: `tools`
+ * `cellBoundTrilinear`.
+ *
+ * `vdbHddaCellEnd(h)`: the ray `t` where the HDDA's current cell ends,
+ * `min(next.x, next.y, next.z, tmax)` of the vendored state, so a host
+ * needn't name `VdbHdda`'s vendored fields. CPU twin: `tools` `hddaCellEnd`.
+ *
+ * `vdbRayClipSupport(g, o, d, t)`: `vdbRayClip` against the box where
+ * `vdbSample` can read the grid's voxels: `[min - 1, max + 1]` for trilinear
+ * (the taps of a point in `[min - 1, min)` reach voxel `min`) and
+ * `[min - 0.5, max + 0.5]` for nearest. `vdbRayClip`'s box, `[min, max + 1]`,
+ * is the voxel-cell box the HDDA walks; it cuts the min-side half voxel of the
+ * trilinear support. CPU twin: `tools` `rayClipSupport`.
+ */
+function helperFunctions(o: ApiOptions): string[] {
+  const out: string[] = [];
+  if (o.helpers.includes("rayClipSupport")) {
+    const pad = o.sampler === "nearest" ? "0.5" : "1.0";
+    out.push(`fn vdbRayClipSupport(g: u32, o: vec3f, d: vec3f, t: ptr<function, vec2f>) -> bool {
+    if !vdb_live(g) {
+        return false;
+    }
+    var t0 = (*t).x;
+    var t1 = (*t).y;
+    let hit = vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)) - vec3f(${pad}), vec3f(vdbIndexMax(g)) + vec3f(${pad}), o, &t0, d, &t1);
+    *t = vec2f(t0, t1);
+    return hit && t0 <= t1;
+}`);
+  }
+  if (o.helpers.includes("cellBoundTrilinear")) {
+    out.push(`fn vdbCellBoundTrilinear(acc: ptr<function, VdbAccessor>, ijk: vec3i, dim: u32) -> f32 {
+    var m = vdbNodeMax(acc, ijk, dim);
+    for (var k = 1u; k < 8u; k++) {
+        let c = vec3i(vec3u(k & 1u, (k >> 1u) & 1u, (k >> 2u) & 1u)) * i32(dim);
+        m = max(m, vdbNodeMax(acc, ijk + c, dim));
+    }
+    return m;
+}`);
+  }
+  if (o.helpers.includes("hddaCellEnd")) {
+    out.push(`fn vdbHddaCellEnd(h: ptr<function, VdbHdda>) -> f32 {
+    return min(min((*h).next.x, (*h).next.y), min((*h).next.z, (*h).tmax));
+}`);
+  }
+  return out;
+}
+
+/**
  * API layers in profile order. A profile's API is every layer up to and
  * including its own (`majorant`, rank 3, is deferred past 0.1, D22).
  */
 export const API_LAYERS: readonly ((o: ApiOptions, profileRank: number) => string)[] = [readLayer, sampleLayer, marchLayer];
 
-/** The public API text for the profile at `profileRank` (0 = read, 1 = sample, 2 = march). */
+/** The public API text for the profile at `profileRank` (0 = read, 1 = sample, 2 = march), then the requested helpers. */
 export function apiWgsl(profileRank: number, o: ApiOptions): string {
-  return API_LAYERS.slice(0, profileRank + 1)
-    .map((layer) => layer(o, profileRank))
-    .join("\n");
+  return [...API_LAYERS.slice(0, profileRank + 1).map((layer) => layer(o, profileRank)), ...helperFunctions(o)].join("\n");
 }

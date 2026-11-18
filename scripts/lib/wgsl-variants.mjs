@@ -12,11 +12,16 @@ export const CHECK_SLOT = { group: 1, firstBinding: 3 };
 /** What three's TSL emits for a storage node named `vdbPool` (design note §6). */
 export const CHECK_BUFFER_EXPRESSION = "vdbPool.value";
 
+/** The opt-in helpers (K1.7a) each profile can take: all of them in the matrix's helper variants. */
+export const SAMPLE_HELPERS = ["rayClipSupport"];
+export const MARCH_HELPERS = ["cellBoundTrilinear", "hddaCellEnd", "rayClipSupport"];
+
 /**
  * Every generator variant that must compile: read/sample/march × type set ×
  * slot/buffer × isActive on/off, plus sample with `sampler: 'nearest'` and
- * with `outside: 'zero'`, and march with `outside: 'zero'` (trilinear and
- * nearest). Returns `{ id, options }[]`.
+ * with `outside: 'zero'`, march with `outside: 'zero'` (trilinear and
+ * nearest), and sample/march with every helper they allow. Returns
+ * `{ id, options }[]`.
  */
 export function variantMatrix() {
   const out = [];
@@ -28,10 +33,14 @@ export function variantMatrix() {
         if (profile === "sample") extras.push({ sampler: "nearest" }, { outside: "zero" });
         if (profile === "sample" || profile === "march") extras.push({ outside: "zero", sampler: "nearest" });
         if (profile === "march") extras.push({ outside: "zero" });
+        // K1.7a opt-in helpers: every helper the profile allows (appended, so the
+        // ids above, and their snapshot entries, are unchanged).
+        if (profile === "sample") extras.push({ helpers: SAMPLE_HELPERS });
+        if (profile === "march") extras.push({ helpers: MARCH_HELPERS });
         for (const extra of extras) {
           const options = { ...binding, types, profile, ...extra };
           const tag = Object.entries(extra)
-            .map(([k, v]) => `${k}=${v}`)
+            .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join("+") : v}`)
             .join(",");
           out.push({ id: `${profile}/${types.join("+")}/${mode}/${tag}`, options });
         }
@@ -58,6 +67,18 @@ export function checkKernel(module, options) {
   const isActive = options.isActive ?? true;
   const sample = options.profile !== "read";
   const march = options.profile === "march";
+  const helpers = new Set(options.helpers ?? []);
+  const helperCalls = [
+    helpers.has("rayClipSupport")
+      ? `    var ts = vec2f(0.0, 1.0e30);
+    if vdbRayClipSupport(g, p, d, &ts) {
+        s += ts.y;
+    }
+`
+      : "",
+    helpers.has("cellBoundTrilinear") ? "    s += vdbCellBoundTrilinear(&a, ijk, 8u);\n" : "",
+    helpers.has("hddaCellEnd") ? "    s += vdbHddaCellEnd(&h);\n" : "",
+  ].join("");
   return `${module}
 ${host}@group(0) @binding(0) var<storage, read_write> checkOut: array<f32>;
 
@@ -100,7 +121,7 @@ ${isActive ? "    if vdbIsActive(&a, ijk) {\n        s += 1.0;\n    }\n" : ""}${
     }
 `
       : ""
-  }    checkOut[g] = s;
+  }${helperCalls}    checkOut[g] = s;
 }
 `;
 }

@@ -33,7 +33,7 @@ import { VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES, type VDBGridTypeName, type VDBS
 import { apiWgsl, type ApiOptions } from "./api.js";
 import { WGSL_KEYWORDS, WGSL_RESERVED_WORDS } from "./reserved.js";
 import { PNANOVDB_CHUNKS, type PnanovdbChunk } from "./pnanovdb.chunks.generated.js";
-import type { VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile } from "./types.js";
+import type { VDBModuleHelper, VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile, VDBModuleTypeCheck } from "./types.js";
 
 /** First line of every generated module (§3.3). */
 export const VDB_MODULE_BANNER =
@@ -46,8 +46,16 @@ export const VDB_POOL_BINDING_NAME = "vdbPool";
 const PROFILES: readonly VDBModuleProfile[] = ["read", "sample", "march", "majorant"];
 const IMPLEMENTED_PROFILES = 3;
 
-/** `GPUShaderStage.COMPUTE`; the global does not exist in Node. */
-const SHADER_STAGE_COMPUTE = 0x4;
+/** `GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE` (0x2 | 0x4); the global does not exist in Node. */
+const SHADER_STAGE_FRAGMENT_COMPUTE = 0x2 | 0x4;
+
+/** Opt-in helpers in canonical order, with the lowest profile rank each needs. */
+const HELPERS: Readonly<Record<VDBModuleHelper, { readonly rank: number }>> = {
+  cellBoundTrilinear: { rank: 2 },
+  hddaCellEnd: { rank: 2 },
+  rayClipSupport: { rank: 1 },
+};
+const HELPER_NAMES = Object.keys(HELPERS) as VDBModuleHelper[];
 
 const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/g;
 const BUFFER_EXPRESSION = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
@@ -79,11 +87,30 @@ function checkSlot(slot: unknown, where: string): VDBSlot {
   return { group: s.group as number, firstBinding: s.firstBinding as number };
 }
 
-/** The old bvh-style positional slot (`{ group, firstBinding }` at the top level) would be silently misread. */
+/** The old bvh-style positional slot (`{ group, firstBinding }` at the top level of the module options) would be silently misread. */
 function rejectPositionalSlot(where: string, options: object): void {
   if ("group" in options || "firstBinding" in options) {
     throw bad(`${where}: got 'group' or 'firstBinding' at the top level. Pass { slot: { group, firstBinding } }.`);
   }
+}
+
+function normalizeHelpers(helpers: unknown, profile: VDBModuleProfile, profileRank: number, where: string): VDBModuleHelper[] {
+  if (helpers === undefined) return [];
+  if (helpers === null || typeof helpers === "string" || typeof (helpers as Iterable<unknown>)[Symbol.iterator] !== "function") {
+    throw bad(`${where}: helpers must be an array or set of helper names (${HELPER_NAMES.join(", ")}), got ${JSON.stringify(helpers)}.`);
+  }
+  const seen = new Set<string>();
+  for (const h of helpers as Iterable<unknown>) {
+    if (typeof h !== "string" || !(HELPER_NAMES as readonly string[]).includes(h)) {
+      throw bad(`${where}: unknown helper ${JSON.stringify(h)}; use ${HELPER_NAMES.join(", ")}.`);
+    }
+    const need = HELPERS[h as VDBModuleHelper].rank;
+    if (profileRank < need) {
+      throw bad(`${where}: helper '${h}' needs profile '${PROFILES[need]}' or above, got '${profile}'.`);
+    }
+    seen.add(h);
+  }
+  return HELPER_NAMES.filter((h) => seen.has(h));
 }
 
 function normalizeTypes(types: unknown, where: string): VDBGridTypeName[] {
@@ -109,8 +136,8 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
   }
   rejectPositionalSlot(where, options);
 
-  const hasSlot = options.slot !== undefined;
-  const hasBuffer = options.buffer !== undefined;
+  const hasSlot = (options as { slot?: unknown }).slot !== undefined;
+  const hasBuffer = (options as { buffer?: unknown }).buffer !== undefined;
   if (hasSlot === hasBuffer) {
     throw bad(`${where}: pass exactly one of slot: { group, firstBinding } (declares the binding) or buffer: '<wgsl expression>' (reads a host-declared array<u32>).`);
   }
@@ -118,7 +145,7 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
   if (hasSlot) {
     binding = { kind: "slot", slot: checkSlot(options.slot, where) };
   } else {
-    const expression = options.buffer;
+    const expression: unknown = options.buffer;
     if (typeof expression !== "string" || !BUFFER_EXPRESSION.test(expression)) {
       throw bad(`${where}: buffer must be a WGSL identifier or member chain such as 'vdbPool.value', got ${JSON.stringify(expression)}.`);
     }
@@ -165,6 +192,7 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
     isActive,
     sampler: sampleOnly ? sampler : "trilinear",
     outside: sampleOnly ? outside : "background",
+    helpers: normalizeHelpers(options.helpers, options.profile, profileRank, where),
   };
 }
 
@@ -405,6 +433,12 @@ function build(o: NormalizedOptions): string {
  * Generate a WGSL module for the pool (docs/design/K1-core.md §3.1).
  * Deterministic: the same options give the same string.
  *
+ * `types` must cover every grid type the host may add to the pool, not just
+ * the ones present now: a grid of a type the module wasn't generated for reads
+ * as 0. Either generate for every type up front (`VDB_ALL_SCALAR_TYPES`, or
+ * the host's known set) or regenerate the module and rebuild the pipeline when
+ * `checkModule(pool, options)` throws `VDB_TYPE_NOT_COMPILED` after an `add`.
+ *
  * @throws VDBError `VDB_BAD_OPTION` for invalid options.
  */
 export function vdbModuleWgsl(options: VDBModuleOptions): string {
@@ -420,36 +454,82 @@ export function vdbModuleWgsl(options: VDBModuleOptions): string {
 
 /**
  * The bind group layout entries a `slot` module declares: one read-only
- * storage buffer at `slot.firstBinding` (layout 1). `visibility` defaults to
- * `GPUShaderStage.COMPUTE`.
+ * storage buffer at `slot.firstBinding` (layout 1).
+ *
+ * Takes the same `VDBSlot` as `vdbModuleWgsl({ slot })` and
+ * `pool.bindGroupEntry(slot)`, either bare or as `{ slot, visibility }`.
+ * `visibility` defaults to `GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT`
+ * (read-only storage is legal in both stages), so render and compute hosts
+ * both work without it; pass it to narrow the layout.
+ *
+ * @throws VDBError `VDB_BAD_OPTION` for a malformed slot.
  */
-export function vdbModuleEntries(options: { readonly slot: VDBSlot; readonly visibility?: GPUShaderStageFlags | undefined }): GPUBindGroupLayoutEntry[] {
-  if (options === null || typeof options !== "object") throw bad("vdbModuleEntries: expected { slot, visibility? }.");
-  rejectPositionalSlot("vdbModuleEntries", options);
-  const slot = checkSlot(options.slot, "vdbModuleEntries");
-  return [{ binding: slot.firstBinding, visibility: options.visibility ?? SHADER_STAGE_COMPUTE, buffer: { type: "read-only-storage" } }];
+export function vdbModuleEntries(
+  slotOrOptions: VDBSlot | { readonly slot: VDBSlot; readonly visibility?: GPUShaderStageFlags | undefined },
+): GPUBindGroupLayoutEntry[] {
+  const where = "vdbModuleEntries";
+  if (slotOrOptions === null || typeof slotOrOptions !== "object") throw bad(`${where}: expected a slot { group, firstBinding } or { slot, visibility? }.`);
+  let slot: VDBSlot;
+  let visibility: GPUShaderStageFlags = SHADER_STAGE_FRAGMENT_COMPUTE;
+  if ("slot" in slotOrOptions) {
+    rejectPositionalSlot(where, slotOrOptions);
+    slot = checkSlot(slotOrOptions.slot, where);
+    const v = slotOrOptions.visibility;
+    if (v !== undefined) {
+      if (!Number.isInteger(v) || v <= 0) throw bad(`${where}: visibility must be GPUShaderStage flags (a positive integer), got ${JSON.stringify(v)}.`);
+      visibility = v;
+    }
+  } else {
+    if ("visibility" in slotOrOptions) throw bad(`${where}: pass visibility as { slot: { group, firstBinding }, visibility }.`);
+    slot = checkSlot(slotOrOptions, where);
+  }
+  return [{ binding: slot.firstBinding, visibility, buffer: { type: "read-only-storage" } }];
 }
 
 /**
  * Check that a module generated with `options` can read every grid in `pool`.
  *
+ * `options` is either the full `vdbModuleWgsl` options (validated as such) or
+ * just `{ types, layoutVersion? }` for a type/layout-only check, e.g. from an
+ * engine adapter that builds its module elsewhere. `layoutVersion` is the
+ * layout the module targets (default: this generator's,
+ * `VDB_GPU_LAYOUT_VERSION`).
+ *
+ * After every `pool.add`: a module must be generated for every type the host
+ * may add, or regenerated and its pipeline rebuilt.
+ *
  * @throws VDBError `VDB_LAYOUT_MISMATCH` if the pool's layout is not the one
- *   the generator targets; `VDB_TYPE_NOT_COMPILED` if the pool holds a grid
+ *   the module targets; `VDB_TYPE_NOT_COMPILED` if the pool holds a grid
  *   type the module would not decode; `VDB_BAD_OPTION` for invalid options.
  */
-export function checkModule(pool: VDBModulePoolLike, options: VDBModuleOptions): void {
-  const o = normalize(options, "checkModule");
-  if (pool.layoutVersion !== VDB_GPU_LAYOUT_VERSION) {
+export function checkModule(pool: VDBModulePoolLike, options: VDBModuleOptions | VDBModuleTypeCheck): void {
+  const where = "checkModule";
+  let o: { readonly types: readonly VDBGridTypeName[] };
+  let target = VDB_GPU_LAYOUT_VERSION;
+  if (options !== null && typeof options === "object" && !("slot" in options) && !("buffer" in options) && !("profile" in options)) {
+    // Type/layout-only form.
+    o = { types: normalizeTypes(options.types, where) };
+    const v = (options as VDBModuleTypeCheck).layoutVersion;
+    if (v !== undefined) {
+      if (!Number.isInteger(v) || v < 0) throw bad(`${where}: layoutVersion must be a non-negative integer, got ${JSON.stringify(v)}.`);
+      target = v;
+    }
+  } else {
+    o = normalize(options as VDBModuleOptions, where);
+  }
+  if (pool.layoutVersion !== target) {
     throw new VDBError(
       "VDB_LAYOUT_MISMATCH",
-      `the pool uses layout ${pool.layoutVersion} but this generator targets layout ${VDB_GPU_LAYOUT_VERSION}. Use one @pmndrs/vdb version for both.`,
+      `the pool uses layout ${pool.layoutVersion} but the module targets layout ${target}. Use one @pmndrs/vdb version for both.`,
     );
   }
   const missing = [...new Set(pool.types)].filter((t) => !o.types.includes(t));
   if (missing.length > 0) {
     throw new VDBError(
       "VDB_TYPE_NOT_COMPILED",
-      `the pool holds ${missing.join(", ")} grids but the module compiles only ${o.types.join(", ")}; those grids would read 0. Regenerate with types: [...pool.types].`,
+      `the pool holds ${missing.join(", ")} grids but the module compiles only ${o.types.join(", ")}; those grids would read 0. ` +
+        `A module must be generated for every type the host may add: regenerate it with types that include ${missing.join(", ")} ` +
+        `(e.g. [...pool.types], or VDB_ALL_SCALAR_TYPES to never rebuild) and rebuild the pipeline that uses it.`,
     );
   }
 }

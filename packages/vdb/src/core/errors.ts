@@ -13,7 +13,9 @@ export type VDBErrorCode =
   | "VDB_TYPE_NOT_COMPILED"
   | "VDB_LAYOUT_MISMATCH"
   | "VDB_BAD_OPTION"
-  | "VDB_DISPOSED";
+  | "VDB_DISPOSED"
+  /** An engine adapter found the engine's internals not behaving as the adapter expects (e.g. a renderer version it wasn't built for). */
+  | "VDB_ENGINE_MISMATCH";
 
 export class VDBError extends Error {
   readonly code: VDBErrorCode;

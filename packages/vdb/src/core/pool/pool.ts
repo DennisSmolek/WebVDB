@@ -377,6 +377,10 @@ export class VDBGridPool {
   /**
    * +1 whenever `buffer` changes object: rebuild bind groups. Monotonic: a
    * failed growth's rollback to the previous buffer is a new version too.
+   *
+   * Read it after `update(encoder)`: call `update(encoder)` before building
+   * or reusing bind groups this frame. A bind group built before `update()`
+   * keeps the previous (still-alive) buffer and silently misses new grids.
    */
   get version(): number {
     return this.#version;
@@ -443,7 +447,11 @@ export class VDBGridPool {
     return 0;
   }
 
-  /** Grid types of the live grids, for `vdbModuleWgsl({ types })`. */
+  /**
+   * Grid types of the live grids now, for `checkModule` and
+   * `vdbModuleWgsl({ types })`. It does not know about grids the host adds
+   * later: generate the module for every type the host may add (see `add`).
+   */
   get types(): ReadonlySet<VDBGridTypeName> {
     const out = new Set<VDBGridTypeName>();
     for (const g of this.#grids) if (g) out.add(g.header.gridType);
@@ -454,6 +462,13 @@ export class VDBGridPool {
    * Stages a grid image and returns its id at once. The image is validated
    * here (`VDB_BAD_IMAGE`, `VDB_UNSUPPORTED_GRID_TYPE`) and written by the next
    * `update`. Dead ids are reused, lowest first.
+   *
+   * The shader reading this pool decodes only the types its module was
+   * generated for; a grid of any other type reads as 0. A module must
+   * therefore be generated for every type the host may add (its known set,
+   * or `VDB_ALL_SCALAR_TYPES`), or regenerated and its pipeline rebuilt when
+   * a new type arrives. Call `checkModule(pool, options)` after `add` to
+   * catch a mismatch (`VDB_TYPE_NOT_COMPILED`).
    */
   add(image: Uint32Array, options: VDBAddOptions = {}): number {
     this.#checkAlive();
@@ -642,6 +657,12 @@ export class VDBGridPool {
    *
    * Submit `encoder` before the second `update` after this one (one update of
    * slack): a buffer this update retires stays alive until then.
+   *
+   * Call `update(encoder)` before building or reusing bind groups this frame,
+   * then compare `version` with the version the bind group was built at. A
+   * bind group built before `update()` keeps the previous (still-alive)
+   * buffer and silently misses new grids: no validation error, just stale
+   * data.
    */
   update(encoder: GPUCommandEncoder): void {
     this.#checkAlive();
@@ -675,7 +696,16 @@ export class VDBGridPool {
     this.device.queue.submit([encoder.finish()]);
   }
 
-  /** The bind group entry for `slot`: `{ binding: slot.firstBinding, resource: { buffer } }`. */
+  /**
+   * The bind group entry for `slot`: `{ binding: slot.firstBinding, resource: { buffer } }`.
+   * Takes the same `VDBSlot` as `vdbModuleWgsl({ slot })` and
+   * `vdbModuleEntries(slot)`.
+   *
+   * It names the current `buffer`, so call `update(encoder)` before building
+   * or reusing bind groups this frame, and rebuild when `version` changed. A
+   * bind group built before `update()` keeps the previous (still-alive)
+   * buffer and silently misses new grids.
+   */
   bindGroupEntry(slot: VDBSlot): GPUBindGroupEntry {
     this.#checkAlive();
     checkCount("slot.firstBinding", slot?.firstBinding, 0);

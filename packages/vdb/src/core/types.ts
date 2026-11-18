@@ -22,6 +22,16 @@ export const VDB_GRID_TYPE_IDS: Readonly<Record<VDBGridTypeName, number>> = {
 /** Canonical order; the generator sorts `types` into it so equal sets give equal bytes. */
 export const VDB_GRID_TYPE_NAMES: readonly VDBGridTypeName[] = ["float", "fp4", "fp8", "fp16", "fpn"];
 
+/**
+ * Every scalar grid type the pool can hold, for
+ * `vdbModuleWgsl({ types: VDB_ALL_SCALAR_TYPES, ... })`: a module that reads
+ * any grid a host may add later, so it never has to be regenerated and its
+ * pipeline rebuilt. The price is the largest module (every decoder); a host
+ * that knows its types up front should list just those. Same contents and
+ * order as {@link VDB_GRID_TYPE_NAMES}.
+ */
+export const VDB_ALL_SCALAR_TYPES: readonly VDBGridTypeName[] = Object.freeze([...VDB_GRID_TYPE_NAMES]);
+
 /** Where a kernel binds the pool: `@group(group) @binding(firstBinding)`. Layout 1 uses one binding (D10). */
 export interface VDBSlot {
   readonly group: number;

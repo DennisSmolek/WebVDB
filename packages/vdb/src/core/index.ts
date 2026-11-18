@@ -44,6 +44,15 @@ export {
 export type { VDBGridRecord, VDBPoolHeader, VDBVec3 } from "./pool/layout.js";
 // K1.4a: WGSL module generator (docs/design/K1-core.md §3).
 export { checkModule, vdbModuleEntries, vdbModuleWgsl, VDB_MODULE_BANNER } from "./wgsl/generate.js";
-export type { VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile } from "./wgsl/types.js";
-export { VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES } from "./types.js";
+export type {
+  VDBBufferModuleOptions,
+  VDBModuleCommonOptions,
+  VDBModuleHelper,
+  VDBModuleOptions,
+  VDBModulePoolLike,
+  VDBModuleProfile,
+  VDBModuleTypeCheck,
+  VDBSlotModuleOptions,
+} from "./wgsl/types.js";
+export { VDB_ALL_SCALAR_TYPES, VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES } from "./types.js";
 export type { VDBGridTypeName, VDBSlot } from "./types.js";
