@@ -2,7 +2,7 @@
   "name": "@pmndrs/vdb",
   "version": "0.0.0",
   "description": "Sparse NanoVDB volumes on WebGPU: engine-free WGSL core, pure-TS CPU tools, three.js adapter",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "homepage": "https://github.com/DennisSmolek/WebVDB#readme",
   "repository": {
     "type": "git",
@@ -50,6 +50,7 @@
   },
   "files": [
     "dist",
+    "LICENSE",
     "vendor/pnanovdb.wgsl",
     "vendor/NOTICE",
     "vendor/LICENSE",

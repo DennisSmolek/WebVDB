@@ -20,7 +20,7 @@ record departures in [DIVERGES.md](DIVERGES.md).
 | K0.3 | Boundary test: `core` never imports `three`; `tools` never imports `core` or `three` | T2 | ✅ | `packages/vdb/test/boundaries.test.ts` (no ESLint in the repo). |
 | K0.4 | Build and exports: subpaths `.`, `./tools`, `./three`; build with dts; `verify:packed-subpaths` (upscaler) | T2 | ✅ | `pnpm verify:packed-subpaths` + CI step. Exports point at `dist/` only. Keep v1's source resolution (tsconfig `paths` + Vite/Vitest aliases); do **not** add a `development` export condition. |
 | K0.5 | Rebrand README, STATUS and package READMEs to `@pmndrs/vdb`; add a "superseded by PHASES.md" banner to `docs/PLAN.md`, `docs/SPEC.md`, `docs/DECISIONS.md` | T1 | ✅ | |
-| K0.6 | Apply the licence (D13) to code headers, LICENSE and NOTICE; keep the vendored Apache-2.0 files | T1 | 🟨 | D13 confirmed MIT. |
+| K0.6 | Apply the licence (D13) to code headers, LICENSE and NOTICE; keep the vendored Apache-2.0 files | T1 | ✅ | MIT applied; vendored Apache-2.0 files and NOTICE unchanged and shipped. |
 | K0.7 | Move the repo to `pmndrs/vdb` (GitHub transfer keeps redirects) | owner | ⬜ | Timing is the owner's call; can follow K0.2. |
 | K0.8 | Gate run, plus `docs/handoffs/K0.md` | T2 | ✅ | 249 unit / 11 e2e / goldens byte-identical / pack dry-run / packed-consumer install. Note the new tools path for the pathtracer's importer. |
 

@@ -1,5 +1,7 @@
 # Third-party code
 
+Our code is MIT (D13); the third-party files below keep their own licences.
+
 Code and data in this repo that we did not write, with its licence and where it lives. Keep this list in step
 with each port, vendor drop or new test fixture (see CLAUDE.md, "Licences").
 

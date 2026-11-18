@@ -75,6 +75,6 @@ Fixtures (WDAS cloud, EmberGen free pack) are **never committed** — see
 
 ## License
 
-Project code: Apache-2.0. Vendored third-party code keeps its upstream
+Project code: MIT (see [LICENSE](./LICENSE)). Vendored third-party code keeps its upstream
 license and attribution — see
 [`packages/vdb/vendor/NOTICE`](./packages/vdb/vendor/NOTICE).

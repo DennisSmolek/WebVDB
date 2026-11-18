@@ -20,8 +20,7 @@ Research: R1 (renderer port plan) runs during K1/K2 and feeds K3.
 
 ## K0 — Re-foundation ✅
 
-Done 2026-11-18 ([docs/handoffs/K0.md](docs/handoffs/K0.md)), except two owner items: the licence (K0.6, waits on
-D13) and the repo move to `pmndrs/vdb` (K0.7).
+Done 2026-11-18 ([docs/handoffs/K0.md](docs/handoffs/K0.md)), except the repo move to `pmndrs/vdb` (K0.7, owner). Licence applied: MIT (D13).
 
 Rename to `@pmndrs/vdb` (D17) and reshape the repo into core plus adapters (D8). **No behaviour changes:** this
 phase moves code, it does not rewrite it.
