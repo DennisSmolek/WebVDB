@@ -235,7 +235,8 @@ describe("growth and compaction", () => {
     expect(written).toContain(pool.info(d).imageOffset);
     expect(writes(ops).some((o) => o.buffer === old)).toBe(false);
 
-    // Retired, not destroyed, until the next update.
+    // Retired, not destroyed: kept until the growth is confirmed, two updates pass and the queue drains
+    // (pool-lifecycle.test.ts covers the gating).
     expect(old.destroyed).toBe(false);
     expect(pool.retiredBytes).toBe(4096);
     for (const [id, img] of [[a, imgA], [b, imgB], [c, imgC], [d, imgD]] as const) {
@@ -243,9 +244,14 @@ describe("growth and compaction", () => {
     }
     expect(header(pool)).toMatchObject({ gridCapacity: 4, gridCount: 4 });
 
+    await pool.settled();
+    device.updateAndSubmit(pool);
     const next = device.updateAndSubmit(pool);
+    expect(kinds(next, "destroy")).toEqual([]);
+    const mark = device.log.length;
+    await device.completeWork();
     expect(old.destroyed).toBe(true);
-    expect(kinds(next, "destroy")).toEqual([{ kind: "destroy", buffer: old }]);
+    expect(kinds(device.since(mark), "destroy")).toEqual([{ kind: "destroy", buffer: old }]);
     expect(pool.retiredBytes).toBe(0);
     expect(pool.version).toBe(1);
   });
@@ -317,12 +323,14 @@ describe("growth and compaction", () => {
     expect(pool.info(c).imageOffset).toBe(DATA_START_4);
   });
 
-  it("VDB_POOL_LIMIT leaves the pool unchanged", async () => {
+  it("VDB_POOL_LIMIT in update keeps the buffer and writes only the table", async () => {
     const pool = await VDBGridPool.create(device.asGPU(), { initialBytes: 4096, maxGrids: 4, maxBytes: 8192 });
     const a = pool.add(makeImage({ bytes: 1024 }));
     pool.flush();
     const buffer = pool.buffer;
-    const big = pool.add(makeImage({ bytes: 16384, seed: 2 }));
+    // Each fits alone (staging accepts them); together they pass the limit: 672 + 1024 + 2 * 4000 > 8192.
+    const big = pool.add(makeImage({ bytes: 4000, seed: 2 }));
+    const big2 = pool.add(makeImage({ bytes: 4000, seed: 3 }));
     const revision = pool.revision;
     const mark = device.log.length;
     const encoder = device.createCommandEncoder() as unknown as GPUCommandEncoder;
@@ -335,23 +343,29 @@ describe("growth and compaction", () => {
     expect(err.code).toBe("VDB_POOL_LIMIT");
     expect(err.message).toMatch(/8192/);
     expect(err.message).toMatch(/requiredLimits/);
-    expect(device.since(mark)).toEqual([]); // nothing created, written or copied
+    // Nothing created or copied; only the two (dead) records and the header were written.
+    const ops = device.since(mark);
+    expect(ops.filter((o) => o.kind !== "write")).toEqual([]);
+    expect(writes(ops).every((o) => o.offset + o.size <= DATA_START_4)).toBe(true);
     expect([pool.buffer, pool.version, pool.byteLength, pool.revision, pool.retiredBytes]).toEqual([
       buffer, 0, 4096, revision, 0,
     ]);
     expect(pool.info(big).imageOffset).toBeNull();
+    expect(recordAt(pool, big).live).toBe(false);
     expect(pool.info(a).resident).toBe(true);
-    // Recoverable: drop the grid and update again.
-    pool.remove(big);
+    // Recoverable: drop a grid and update again (now it grows).
+    pool.remove(big2);
     pool.flush();
-    expect(pool.version).toBe(0);
+    expect(pool.version).toBe(1);
+    expect(pool.info(big).resident).toBe(true);
   });
 
-  it("VDB_POOL_LIMIT also applies at the device limit", async () => {
+  it("VDB_POOL_LIMIT also applies at the device limit, at staging", async () => {
     const small = new FakeDevice({ maxStorageBufferBindingSize: 8192 });
     const pool = await VDBGridPool.create(small.asGPU(), { initialBytes: 4096, maxGrids: 4 });
-    pool.add(makeImage({ bytes: 9000 }));
-    expect(code(() => pool.flush())).toBe("VDB_POOL_LIMIT");
+    expect(code(() => pool.add(makeImage({ bytes: 9000 })))).toBe("VDB_POOL_LIMIT");
+    expect(pool.gridCount).toBe(0);
+    expect(code(() => pool.flush())).toBe("no error");
     expect(small.buffers).toHaveLength(1);
   });
 });

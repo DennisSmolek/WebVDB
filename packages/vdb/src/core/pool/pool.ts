@@ -5,7 +5,18 @@
  * Model: CPU calls (`add`, `replace`, `remove`, `setTransform`, `setMajorant`)
  * stage changes and return at once; `update(encoder)` applies them. Growth and
  * compaction happen only in `update`, by a new buffer plus copies of the ranges
- * that were resident before that update; `version` bumps then and only then.
+ * that were resident before that update; `version` bumps then (and when a
+ * failed growth rolls back to the previous buffer).
+ *
+ * Lifecycle (docs/handoffs/K1.md, "K1.3 pool lifecycle"):
+ * - A request that could never fit under the byte limit throws `VDB_POOL_LIMIT`
+ *   at staging, with the pool unchanged.
+ * - Growth allocates inside `out-of-memory` and `validation` error scopes. The
+ *   pool switches to the new buffer at once (update is synchronous) but keeps
+ *   the old one alive until the scopes resolve; on an error it rolls back to the
+ *   old buffer and reports through `settled()` / `lastError`.
+ * - A retired buffer is destroyed once its growth is confirmed, two `update`s
+ *   have passed, and `queue.onSubmittedWorkDone()` asked at that point resolves.
  */
 
 import { VDBError } from "../errors.js";
@@ -133,6 +144,8 @@ interface MajorantState extends RangeState {
   dims: VDBVec3;
   bytes: number;
   pending: Float32Array | null;
+  /** The data last written, kept while a growth is unconfirmed so a rollback can stage it again. */
+  retained: Float32Array | null;
 }
 
 interface GridState {
@@ -141,11 +154,49 @@ interface GridState {
   capacity: number;
   image: RangeState;
   pendingImage: Uint32Array | null;
+  /** The image last written, kept while a growth is unconfirmed so a rollback can stage it again. */
+  retainedImage: Uint32Array | null;
+  /** +1 per `replace`: tells a rollback whether the old buffer still holds this grid's current image. */
+  imageSerial: number;
   transform: Float64Array | null;
   affines: GridAffines;
   valueMaxOverride: number | undefined;
   majorant: MajorantState | null;
 }
+
+/** What the buffer a growth copied from holds for one grid (clean, resident ranges only). */
+interface GridSnapshot {
+  imageSerial: number;
+  image: AllocatedRange | null;
+  majorant: MajorantState | null;
+  majorantRange: AllocatedRange | null;
+}
+
+/** A growth whose allocation the device hasn't confirmed yet. */
+interface Growth {
+  /** The buffer copied from; kept alive until this growth is confirmed or rolled back. */
+  from: GPUBuffer;
+  to: GPUBuffer;
+  /** Table capacity of `from`. */
+  capacity: number;
+  /** `update` count when it happened. */
+  update: number;
+  snapshot: Map<GridState, GridSnapshot>;
+  /** Settles in growth order; resolves to the rollback error, or `null` when confirmed or voided. */
+  done: Promise<VDBError | null>;
+}
+
+/** A replaced buffer awaiting destruction. */
+interface Retired {
+  buffer: GPUBuffer;
+  /** `update` count of the growth that replaced it. */
+  since: number;
+  /** `onSubmittedWorkDone` has been requested for it. */
+  waiting: boolean;
+}
+
+/** Updates a retired buffer must outlive before the pool asks the queue about it (one update of slack to submit). */
+const RETIRE_AFTER_UPDATES = 2;
 
 const DEFAULT_INITIAL_BYTES = 1 << 20;
 const DEFAULT_MAX_GRIDS = 16;
@@ -181,7 +232,7 @@ function validateMajorant(m: VDBBrickMajorant): MajorantState {
   }
   const bytes = cells * 4;
   if (bytes > 2 ** 32 - 32) badOption(`majorant needs ${bytes} bytes; the pool addresses ranges with 32 bits.`);
-  return { brickLog2: m.brickLog2, dims, bytes, pending: m.data, range: null, resident: false };
+  return { brickLog2: m.brickLog2, dims, bytes, pending: m.data, retained: null, range: null, resident: false };
 }
 
 /**
@@ -205,7 +256,8 @@ function checkValueMax(v: number | undefined): number | undefined {
  * what it allocated (D8).
  *
  * Images passed to `add`/`replace` are held by reference (not copied) until the
- * next `update` writes them; don't mutate them before then.
+ * next `update` writes them, and after that while a growth is unconfirmed
+ * (until `settled()` resolves); don't mutate them before then.
  */
 export class VDBGridPool {
   /** The device the pool allocates on. */
@@ -213,7 +265,10 @@ export class VDBGridPool {
 
   #buffer: GPUBuffer;
   #ownsBuffer: boolean;
-  #retired: GPUBuffer[] = [];
+  #retired: Retired[] = [];
+  #growths: Growth[] = [];
+  #updates = 0;
+  #lastError: VDBError | null = null;
   #version = 0;
   #revision = 0;
   #capacity: number;
@@ -310,12 +365,19 @@ export class VDBGridPool {
     return requiredLimits(adapter);
   }
 
-  /** The pool's buffer. Replaced only by `update`; then `version` changes. */
+  /**
+   * The pool's buffer. Replaced by a growth in `update`, or by the rollback of
+   * a growth whose allocation failed (asynchronously; see `settled`); `version`
+   * changes each time.
+   */
   get buffer(): GPUBuffer {
     return this.#buffer;
   }
 
-  /** +1 whenever `buffer` is a new object: rebuild bind groups. */
+  /**
+   * +1 whenever `buffer` changes object: rebuild bind groups. Monotonic: a
+   * failed growth's rollback to the previous buffer is a new version too.
+   */
   get version(): number {
     return this.#version;
   }
@@ -340,9 +402,34 @@ export class VDBGridPool {
     return this.#alloc.highWater;
   }
 
-  /** Bytes in retired buffers awaiting destruction at the next `update`. */
+  /** Bytes in replaced buffers still alive: awaiting growth confirmation or the queue (see `update`). */
   get retiredBytes(): number {
-    return this.#retired.reduce((n, b) => n + b.size, 0);
+    let n = 0;
+    for (const r of this.#retired) n += r.buffer.size;
+    for (const g of this.#growths) n += g.from.size;
+    return n;
+  }
+
+  /**
+   * The error from the last growth whose allocation failed (`VDB_POOL_LIMIT`;
+   * the pool rolled back to its previous buffer), or `null`. Cleared when a
+   * later growth is confirmed.
+   */
+  get lastError(): VDBError | null {
+    return this.#lastError;
+  }
+
+  /**
+   * Resolves once every growth started so far is confirmed by the device;
+   * rejects with the `VDB_POOL_LIMIT` error if one failed and the pool rolled
+   * back (see {@link lastError}). Resolves at once when no growth is pending.
+   */
+  settled(): Promise<void> {
+    this.#checkAlive();
+    return Promise.all(this.#growths.map((g) => g.done)).then((errors) => {
+      const error = errors.find((e) => e !== null);
+      if (error) throw error;
+    });
   }
 
   /** Records in the grid table. */
@@ -385,12 +472,15 @@ export class VDBGridPool {
         `The host buffer's table holds ${this.#capacity} grids and all are live. Remove a grid, or create the pool with a larger maxGrids.`,
       );
     }
+    this.#checkCanFit(Math.max(this.#grids.length, id + 1), majorant ? [capacity, majorant.bytes] : [capacity], "image");
     const grid: GridState = {
       header,
       label: options.label,
       capacity,
       image: { range: null, resident: false },
       pendingImage: image,
+      retainedImage: null,
+      imageSerial: 0,
       transform,
       affines,
       valueMaxOverride,
@@ -424,6 +514,7 @@ export class VDBGridPool {
     const header = readImageHeader(image);
     if (align32(header.byteLength) > grid.capacity) {
       const capacity = align32(header.byteLength);
+      this.#checkCanFit(this.#grids.length, [capacity], "image"); // replace drops the majorant
       const next: RangeState = { range: null, resident: false };
       this.#replaceRange(grid.image.range, () => this.#place(next, capacity, "image"));
       grid.image = next;
@@ -431,6 +522,7 @@ export class VDBGridPool {
     }
     grid.header = header;
     grid.pendingImage = image;
+    grid.imageSerial++;
     grid.affines = composeGridAffines(header, grid.transform);
     this.#dropMajorant(grid);
     this.#touch(id);
@@ -480,6 +572,7 @@ export class VDBGridPool {
       next.range = current.range;
       next.resident = current.resident;
     } else {
+      this.#checkCanFit(this.#grids.length, [grid.capacity, next.bytes], "majorant");
       this.#replaceRange(current?.range ?? null, () => this.#place(next, next.bytes, "majorant"));
     }
     grid.majorant = next;
@@ -532,30 +625,46 @@ export class VDBGridPool {
 
   /**
    * Applies staged changes, recording any copies into `encoder`:
-   * 1. destroys buffers retired by the previous `update`;
+   * 1. asks the queue about buffers retired at least two updates ago (once
+   *    their growth is confirmed); each is destroyed when
+   *    `onSubmittedWorkDone` resolves;
    * 2. if the staged state doesn't fit, grows (or, when only fragmentation
    *    blocks a placement, compacts) into a new buffer, copying ranges that
-   *    were resident before this call, and bumps `version`. Planned before
-   *    anything changes: on `VDB_POOL_LIMIT` the pool is left as it was;
+   *    were resident before this call, and bumps `version`. The allocation is
+   *    checked in error scopes; if it fails, the pool rolls back later (see
+   *    {@link settled}). Planned before anything changes: when the staged
+   *    grids together pass the byte limit, nothing is re-laid out;
    * 3. writes new images, majorants, dirty records and the header with
-   *    `queue.writeBuffer`.
-   * Submit `encoder` before the next `update`.
+   *    `queue.writeBuffer`, for ranges placed in the current buffer (a grid
+   *    still waiting for space reads as dead on the GPU).
+   * Then, if step 2 hit the limit, throws `VDB_POOL_LIMIT` (buffer and
+   * `version` unchanged; remove grids and update again).
+   *
+   * Submit `encoder` before the second `update` after this one (one update of
+   * slack): a buffer this update retires stays alive until then.
    */
   update(encoder: GPUCommandEncoder): void {
     this.#checkAlive();
-    for (const b of this.#retired) b.destroy();
-    this.#retired = [];
+    this.#updates++;
+    this.#reapRetired();
 
+    let limitError: VDBError | null = null;
     const needIds = this.#grids.length;
     const unplaced = this.#unplaced();
     if (needIds > this.#capacity || unplaced.length > 0) {
       if (needIds <= this.#capacity && this.#tryPlace(unplaced)) {
         // Placed in gaps freed since staging.
       } else {
-        this.#relayout(encoder, needIds);
+        try {
+          this.#relayout(encoder, needIds);
+        } catch (e) {
+          if (!(e instanceof VDBError) || e.code !== "VDB_POOL_LIMIT") throw e;
+          limitError = e; // independent writes below still reach the current buffer
+        }
       }
     }
     this.#writePending();
+    if (limitError) throw limitError;
   }
 
   /** Convenience: creates an encoder, calls `update`, and submits it. */
@@ -573,13 +682,21 @@ export class VDBGridPool {
     return { binding: slot.firstBinding, resource: { buffer: this.#buffer } };
   }
 
-  /** Destroys the buffers this pool created (current and retired), never a host buffer or the device. Idempotent. */
+  /**
+   * Destroys every buffer this pool created (current, retired, and those of an
+   * unconfirmed growth) at once, never a host buffer or the device. Submit no
+   * work recorded by `update` after this. Idempotent.
+   */
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    for (const b of this.#retired) b.destroy();
+    const owned = new Set<GPUBuffer>();
+    for (const r of this.#retired) owned.add(r.buffer);
+    for (const g of this.#growths) owned.add(g.from).add(g.to);
+    if (this.#ownsBuffer) owned.add(this.#buffer);
+    for (const b of owned) b.destroy();
     this.#retired = [];
-    if (this.#ownsBuffer) this.#buffer.destroy();
+    this.#growths = [];
     this.#grids = [];
     this.#dirtyRecords.clear();
   }
@@ -611,6 +728,37 @@ export class VDBGridPool {
     if (g.valueMaxOverride !== undefined) return g.valueMaxOverride;
     // Without stats there is no bound in the image; Infinity tells the integrator to pass valueMax.
     return g.header.hasStats ? Math.max(g.header.rootMax, g.header.background) : Infinity;
+  }
+
+  /** Limit detail for `VDB_POOL_LIMIT` messages. */
+  #limitDetail(): string {
+    const { maxStorageBufferBindingSize, maxBufferSize } = this.device.limits;
+    return (
+      `device maxStorageBufferBindingSize ${maxStorageBufferBindingSize}, maxBufferSize ${maxBufferSize}` +
+      `${this.#limit < deviceByteLimit(this.device) ? `, maxBytes ${this.#limit}` : ""}`
+    );
+  }
+
+  /**
+   * Throws `VDB_POOL_LIMIT` when ranges of `bytes` could not fit under the
+   * limit even alone, beside a table of `ids` records (§1.5). Staged, such a
+   * request would make every later `update` fail; reject it while the pool is
+   * unchanged. Host buffers are checked by `#place` instead (`VDB_POOL_FULL`).
+   */
+  #checkCanFit(ids: number, bytes: number[], what: string): void {
+    if (!this.#ownsBuffer) return;
+    let capacity = this.#capacity;
+    while (capacity < ids) capacity *= 2;
+    const start = dataStartOffset(capacity);
+    let needed = start;
+    for (const b of bytes) needed += align32(b);
+    if (needed <= this.#limit) return;
+    throw new VDBError(
+      "VDB_POOL_LIMIT",
+      `This ${what} needs ${needed - start} bytes beside a ${capacity}-grid table (${start} bytes), ${needed} in all: ` +
+        `more than the pool limit of ${this.#limit} bytes (${this.#limitDetail()}) even with no other grids. ` +
+        `Use a smaller grid, or request the device with VDBGridPool.requiredLimits(adapter). The pool is unchanged.`,
+    );
   }
 
   /** Frees `old`, runs `place` (which may reuse its space), and restores `old` if `place` throws. */
@@ -700,21 +848,55 @@ export class VDBGridPool {
     const grows = capacity > this.#capacity || needed > current;
     const size = grows ? Math.min(this.#limit, Math.max(needed, 2 * current)) : current;
     if (needed > size) {
-      const { maxStorageBufferBindingSize, maxBufferSize } = this.device.limits;
       throw new VDBError(
         "VDB_POOL_LIMIT",
-        `The staged grids need a ${needed}-byte pool; the limit is ${this.#limit} bytes (device ` +
-          `maxStorageBufferBindingSize ${maxStorageBufferBindingSize}, maxBufferSize ${maxBufferSize}` +
-          `${this.#limit < deviceByteLimit(this.device) ? `, maxBytes ${this.#limit}` : ""}). Remove grids, or request ` +
-          `the device with VDBGridPool.requiredLimits(adapter). The pool is unchanged.`,
+        `The staged grids need a ${needed}-byte pool; the limit is ${this.#limit} bytes (${this.#limitDetail()}). ` +
+          `Remove grids, or request the device with VDBGridPool.requiredLimits(adapter). The buffer is unchanged; ` +
+          `staged changes that fit it were applied.`,
       );
     }
 
-    const next = this.device.createBuffer({
+    // What `from` holds (clean, resident ranges), for a rollback if the allocation fails.
+    const snapshot = new Map<GridState, GridSnapshot>();
+    for (const g of this.#grids) {
+      if (!g) continue;
+      const m = g.majorant;
+      snapshot.set(g, {
+        imageSerial: g.imageSerial,
+        image: g.image.range && g.image.resident && !g.pendingImage ? { ...g.image.range } : null,
+        majorant: m,
+        majorantRange: m?.range && m.resident && !m.pending ? { ...m.range } : null,
+      });
+    }
+
+    // update() is synchronous: switch now, keep `from` alive, and settle when the scopes resolve.
+    const device = this.device;
+    device.pushErrorScope("out-of-memory");
+    device.pushErrorScope("validation");
+    const next = device.createBuffer({
       label: `${this.#label} (v${this.#version + 1})`,
       size,
       usage: POOL_BUFFER_USAGE | this.#usage,
     });
+    const validation = device.popErrorScope();
+    const oom = device.popErrorScope();
+    const growth: Growth = {
+      from: this.#buffer,
+      to: next,
+      capacity: this.#capacity,
+      update: this.#updates,
+      snapshot,
+      done: Promise.resolve(null),
+    };
+    // A rejected pop (e.g. the host popped our scope) tells us nothing: treat it as success.
+    const scopeError = Promise.all([oom, validation]).then(
+      ([o, v]) => o ?? v,
+      () => null,
+    );
+    const previous = this.#growths[this.#growths.length - 1]?.done ?? Promise.resolve(null);
+    growth.done = Promise.all([scopeError, previous]).then(([e]) => this.#settleGrowth(growth, e));
+    this.#growths.push(growth);
+
     const alloc = new RangeAllocator(start, size);
     for (const r of ranges) {
       const offset = alloc.alloc(r.bytes)!;
@@ -726,7 +908,6 @@ export class VDBGridPool {
       if (r.copyBytes === 0) r.state.resident = false;
     }
 
-    this.#retired.push(this.#buffer);
     this.#buffer = next;
     this.#alloc = alloc;
     this.#capacity = capacity;
@@ -734,55 +915,171 @@ export class VDBGridPool {
     this.#writeTable();
   }
 
-  /** Writes the header and every record (after create on a host buffer, and after a relayout). */
+  /**
+   * Runs when a growth's error scopes resolve, in growth order. Confirmed: its
+   * old buffer is retired. Failed: roll back to that old buffer, voiding every
+   * later growth (they copied from the failed buffer).
+   */
+  #settleGrowth(growth: Growth, scopeError: { message: string } | null): VDBError | null {
+    // Disposed (dispose destroyed everything), or voided by an earlier failure.
+    if (this.#disposed || this.#growths[0] !== growth) return null;
+    if (!scopeError) {
+      this.#growths.shift();
+      this.#retired.push({ buffer: growth.from, since: growth.update, waiting: false });
+      this.#lastError = null;
+      if (this.#growths.length === 0) this.#releaseRetained();
+      return null;
+    }
+    const error = new VDBError(
+      "VDB_POOL_LIMIT",
+      `The device could not allocate a ${growth.to.size}-byte pool buffer while growing (${scopeError.message}). ` +
+        `The pool rolled back to its previous ${growth.from.size}-byte buffer as version ${this.#version + 1}; rebuild ` +
+        `bind groups. Grids resident before the growth are intact; ones staged or written since are staged again. ` +
+        `Remove grids or free GPU memory, then update again.`,
+    );
+    this.#rollBack(growth);
+    this.#lastError = error;
+    return error;
+  }
+
+  /** Returns to `growth.from` and what it holds; every other range is staged again. */
+  #rollBack(growth: Growth): void {
+    for (const g of this.#growths) g.to.destroy(); // the failed buffer and any chained after it
+    this.#growths = [];
+    const alloc = new RangeAllocator(dataStartOffset(growth.capacity), growth.from.size);
+    for (const g of this.#grids) {
+      if (!g) continue;
+      const snap = growth.snapshot.get(g);
+      // Same serial: no replace since the snapshot, so `from` holds the current image and nothing is pending.
+      if (snap?.image && snap.imageSerial === g.imageSerial) {
+        alloc.restore(snap.image);
+        g.image.range = { ...snap.image };
+        g.image.resident = true;
+      } else {
+        g.image.range = null;
+        g.image.resident = false;
+        g.pendingImage ??= g.retainedImage;
+      }
+      const m = g.majorant;
+      if (!m) continue;
+      if (snap?.majorantRange && snap.majorant === m) {
+        alloc.restore(snap.majorantRange);
+        m.range = { ...snap.majorantRange };
+        m.resident = true;
+      } else {
+        m.range = null;
+        m.resident = false;
+        m.pending ??= m.retained;
+      }
+    }
+    this.#releaseRetained();
+    this.#buffer = growth.from;
+    this.#alloc = alloc;
+    this.#capacity = growth.capacity;
+    this.#version++;
+    this.#writeTable(); // `from`'s table is stale: restored grids are live, the rest read as dead until placed
+  }
+
+  #releaseRetained(): void {
+    for (const g of this.#grids) {
+      if (!g) continue;
+      g.retainedImage = null;
+      if (g.majorant) g.majorant.retained = null;
+    }
+  }
+
+  /**
+   * §1.4 step 1: for retired buffers that are confirmed and at least
+   * {@link RETIRE_AFTER_UPDATES} updates old (so the encoder that copied out of
+   * them has been submitted), asks the queue once and destroys them when that
+   * work is done.
+   */
+  #reapRetired(): void {
+    const ready = this.#retired.filter((r) => !r.waiting && this.#updates - r.since >= RETIRE_AFTER_UPDATES);
+    if (ready.length === 0) return;
+    for (const r of ready) r.waiting = true;
+    const destroy = (): void => {
+      if (this.#disposed) return; // dispose destroyed them
+      this.#retired = this.#retired.filter((r) => !ready.includes(r));
+      for (const r of ready) r.buffer.destroy();
+    };
+    this.device.queue.onSubmittedWorkDone().then(destroy, destroy);
+  }
+
+  /** Every range of `g` is placed. Until then its record stays dirty. */
+  #complete(g: GridState): boolean {
+    return g.image.range !== null && (g.majorant === null || g.majorant.range !== null);
+  }
+
+  /** The header's grid count: highest live id + 1, clamped to the table (ids past it can't be read). */
+  #headerGridCount(): number {
+    return Math.min(this.gridCount, this.#capacity);
+  }
+
+  /** Writes the header and every record (after create on a host buffer, a relayout, or a rollback). */
   #writeTable(): void {
     const words = new Uint32Array(VDB_POOL_HEADER_WORDS + this.#capacity * VDB_POOL_RECORD_WORDS);
+    const dirty = new Set<number>();
     this.#grids.forEach((g, id) => {
-      if (g && g.image.range) encodeRecord(this.#record(g), words, VDB_POOL_HEADER_WORDS + id * VDB_POOL_RECORD_WORDS);
+      if (!g) return;
+      if (id < this.#capacity && g.image.range) {
+        encodeRecord(this.#record(g), words, VDB_POOL_HEADER_WORDS + id * VDB_POOL_RECORD_WORDS);
+      }
+      if (!this.#complete(g)) dirty.add(id);
     });
-    encodeHeader({ gridCapacity: this.#capacity, gridCount: this.gridCount, usedBytes: this.usedBytes }, words, 0);
+    encodeHeader({ gridCapacity: this.#capacity, gridCount: this.#headerGridCount(), usedBytes: this.usedBytes }, words, 0);
     write(this.device.queue, this.#buffer, 0, words);
-    this.#dirtyRecords.clear();
+    this.#dirtyRecords = dirty;
     this.#headerDirty = false;
   }
 
   #writeHeader(): void {
-    const words = encodeHeader({ gridCapacity: this.#capacity, gridCount: this.gridCount, usedBytes: this.usedBytes });
+    const words = encodeHeader({ gridCapacity: this.#capacity, gridCount: this.#headerGridCount(), usedBytes: this.usedBytes });
     write(this.device.queue, this.#buffer, 0, words);
     this.#headerDirty = false;
   }
 
-  /** §1.4 step 3: images, majorants, dirty records, header. */
+  /**
+   * §1.4 step 3: images, majorants, dirty records, header. Only ranges placed
+   * in the current buffer are written; a grid whose image is unplaced gets a
+   * dead record, and its id stays dirty until every range of it is placed.
+   */
   #writePending(): void {
     const queue = this.device.queue;
+    const keep = this.#growths.length > 0; // a rollback may have to stage these again
     for (const g of this.#grids) {
       if (!g) continue;
-      if (g.pendingImage) {
-        write(queue, this.#buffer, g.image.range!.offset, g.pendingImage);
+      if (g.pendingImage && g.image.range) {
+        write(queue, this.#buffer, g.image.range.offset, g.pendingImage);
+        if (keep) g.retainedImage = g.pendingImage;
         g.pendingImage = null;
         g.image.resident = true;
       }
       const m = g.majorant;
-      if (m?.pending) {
-        write(queue, this.#buffer, m.range!.offset, m.pending);
+      if (m?.pending && m.range) {
+        write(queue, this.#buffer, m.range.offset, m.pending);
+        if (keep) m.retained = m.pending;
         m.pending = null;
         m.resident = true;
       }
     }
+    const dirty = new Set<number>();
     for (const id of [...this.#dirtyRecords].sort((a, b) => a - b)) {
-      if (id >= this.#capacity) continue; // past a shrunk table end: nothing to clear
       const g = this.#grids[id];
+      if (g && !this.#complete(g)) dirty.add(id);
+      if (id >= this.#capacity) continue; // past the table end: the relayout that grows the table writes it
       const words = new Uint32Array(VDB_POOL_RECORD_WORDS);
-      if (g) encodeRecord(this.#record(g), words, 0);
+      if (g?.image.range) encodeRecord(this.#record(g), words, 0);
       write(queue, this.#buffer, recordByteOffset(id), words);
     }
-    this.#dirtyRecords.clear();
+    this.#dirtyRecords = dirty;
     if (this.#headerDirty) this.#writeHeader();
   }
 
+  /** The record for `g`, whose image is placed. A majorant is recorded only once it is placed. */
   #record(g: GridState): VDBGridRecord {
     const h = g.header;
-    const m = g.majorant;
+    const m = g.majorant?.range ? g.majorant : null;
     return {
       imageOffset: g.image.range!.offset,
       imageBytes: h.byteLength,

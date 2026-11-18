@@ -4,6 +4,14 @@
  * `queue.submit`, which is WebGPU's queue order. Every call is logged so tests can
  * assert exactly what the pool did. Validation mirrors the WebGPU rules the pool
  * must respect (alignment, bounds, destroyed buffers, same-buffer copies).
+ *
+ * Error scopes, allocation failure and queue completion are modelled too:
+ * `failCreate` makes the next matching `createBuffer` return an invalid buffer
+ * and raise an `out-of-memory` error into the innermost matching scope; writes
+ * to an invalid buffer are dropped and a command buffer touching one is skipped
+ * at submit (both raise a validation error), as on a real device.
+ * `onSubmittedWorkDone` resolves only when the test calls `completeWork()`, and
+ * `holdScopes()` delays every `popErrorScope` until its release function runs.
  */
 
 export type FakeOp =
@@ -11,7 +19,8 @@ export type FakeOp =
   | { kind: "destroy"; buffer: FakeBuffer }
   | { kind: "write"; buffer: FakeBuffer; offset: number; size: number }
   | { kind: "copy"; src: FakeBuffer; srcOffset: number; dst: FakeBuffer; dstOffset: number; size: number }
-  | { kind: "submit"; copies: number };
+  | { kind: "submit"; copies: number }
+  | { kind: "error"; filter: "out-of-memory" | "validation"; message: string; captured: boolean };
 
 let nextBufferId = 1;
 
@@ -23,6 +32,8 @@ export class FakeBuffer {
   readonly data: Uint8Array;
   destroyed = false;
   destroyCalls = 0;
+  /** Created by a failed allocation (`FakeDevice.failCreate`): usable as a handle, holds nothing. */
+  invalid = false;
   readonly #device: FakeDevice;
 
   constructor(device: FakeDevice, desc: { size: number; usage: number; label?: string }) {
@@ -69,6 +80,10 @@ class FakeQueue {
 
   writeBuffer(buffer: FakeBuffer, offset: number, data: ArrayBufferView): void {
     if (buffer.destroyed) throw new Error("fake: writeBuffer to a destroyed buffer");
+    if (buffer.invalid) {
+      this.device.raise("validation", `writeBuffer to invalid buffer "${buffer.label}"`);
+      return;
+    }
     if (offset % 4 || data.byteLength % 4) throw new Error("fake: writeBuffer offset/size must be multiples of 4");
     if (offset + data.byteLength > buffer.size) {
       throw new Error(`fake: writeBuffer out of bounds (${offset} + ${data.byteLength} > ${buffer.size})`);
@@ -82,13 +97,28 @@ class FakeQueue {
     for (const cb of commandBuffers) {
       for (const c of cb.copies) {
         if (c.src.destroyed || c.dst.destroyed) throw new Error("fake: submitted a copy touching a destroyed buffer");
+      }
+      if (cb.copies.some((c) => c.src.invalid || c.dst.invalid)) {
+        this.device.raise("validation", "submitted a command buffer that uses an invalid buffer; it was skipped");
+        continue;
+      }
+      for (const c of cb.copies) {
         c.dst.data.set(c.src.data.subarray(c.srcOffset, c.srcOffset + c.size), c.dstOffset);
         n++;
       }
     }
+    this.device.submits++;
     this.device.log.push({ kind: "submit", copies: n });
   }
+
+  /** Resolves when the test calls `device.completeWork()`. */
+  onSubmittedWorkDone(): Promise<void> {
+    this.device.workDoneRequests++;
+    return new Promise<void>((resolve) => this.device.workDone.push(resolve));
+  }
 }
+
+type ErrorFilter = "out-of-memory" | "validation" | "internal";
 
 export interface FakeLimits {
   maxStorageBufferBindingSize: number;
@@ -102,7 +132,17 @@ export class FakeDevice {
   readonly limits: FakeLimits;
   readonly queue = new FakeQueue(this);
   readonly lost = new Promise<never>(() => {});
-  errorScopes = 0;
+  /** Open error scopes, innermost last. */
+  readonly scopes: { filter: ErrorFilter; error: { message: string } | null }[] = [];
+  /** Errors no scope captured. */
+  readonly uncaptured: string[] = [];
+  /** Pending `onSubmittedWorkDone` resolvers. */
+  readonly workDone: (() => void)[] = [];
+  workDoneRequests = 0;
+  submits = 0;
+  /** When set, the next `createBuffer` it matches fails (out of memory) and the predicate is cleared. */
+  failCreate: ((desc: { size: number; label?: string }) => boolean) | null = null;
+  #scopeGate: Promise<void> | null = null;
 
   constructor(limits: Partial<FakeLimits> = {}) {
     this.limits = {
@@ -116,9 +156,17 @@ export class FakeDevice {
   createBuffer(desc: { size: number; usage: number; label?: string }): FakeBuffer {
     if (desc.size > this.limits.maxBufferSize) throw new Error("fake: buffer larger than maxBufferSize");
     if (desc.size % 4) throw new Error("fake: buffer size must be a multiple of 4");
-    const b = new FakeBuffer(this, desc);
+    const fail = this.failCreate?.(desc) ?? false;
+    const b = new FakeBuffer(this, fail ? { ...desc, size: 0 } : desc);
+    // An invalid buffer still reports its requested size, like a real GPUBuffer.
+    if (fail) {
+      Object.defineProperty(b, "size", { value: desc.size });
+      b.invalid = true;
+      this.failCreate = null;
+    }
     this.buffers.push(b);
     this.log.push({ kind: "create", buffer: b });
+    if (fail) this.raise("out-of-memory", `fake: out of memory allocating ${desc.size} bytes`);
     return b;
   }
 
@@ -126,13 +174,50 @@ export class FakeDevice {
     return new FakeEncoder(this);
   }
 
-  pushErrorScope(): void {
-    this.errorScopes++;
+  /** Open error scopes (pushed and not yet popped). */
+  get errorScopes(): number {
+    return this.scopes.length;
   }
 
-  popErrorScope(): Promise<null> {
-    this.errorScopes--;
-    return Promise.resolve(null);
+  pushErrorScope(filter: ErrorFilter): void {
+    this.scopes.push({ filter, error: null });
+  }
+
+  popErrorScope(): Promise<{ message: string } | null> {
+    const scope = this.scopes.pop();
+    if (!scope) return Promise.reject(new Error("fake: popErrorScope with no scope"));
+    const gate = this.#scopeGate;
+    return gate ? gate.then(() => scope.error) : Promise.resolve(scope.error);
+  }
+
+  /** Routes an error to the innermost scope with its filter (first error wins), else `uncaptured`. */
+  raise(filter: "out-of-memory" | "validation", message: string): void {
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const s = this.scopes[i]!;
+      if (s.filter !== filter) continue;
+      s.error ??= { message };
+      this.log.push({ kind: "error", filter, message, captured: true });
+      return;
+    }
+    this.uncaptured.push(message);
+    this.log.push({ kind: "error", filter, message, captured: false });
+  }
+
+  /** Delays every `popErrorScope` result until the returned function is called. */
+  holdScopes(): () => Promise<void> {
+    let release!: () => void;
+    this.#scopeGate = new Promise<void>((r) => (release = r));
+    return async () => {
+      this.#scopeGate = null;
+      release();
+      await settle();
+    };
+  }
+
+  /** Resolves every pending `onSubmittedWorkDone`, then lets their callbacks run. */
+  async completeWork(): Promise<void> {
+    for (const resolve of this.workDone.splice(0)) resolve();
+    await settle();
   }
 
   /** Ops logged since `mark` (an index from `log.length`). */
@@ -156,3 +241,8 @@ export class FakeDevice {
 
 /** Usage bits (WebGPU spec values). */
 export const USAGE = { MAP_READ: 0x1, COPY_SRC: 0x4, COPY_DST: 0x8, STORAGE: 0x80 } as const;
+
+/** Lets every queued promise callback run (one macrotask turn drains the microtask queue). */
+export function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
