@@ -36,9 +36,10 @@ Spec: [docs/design/K1-core.md](docs/design/K1-core.md) (§8 has the acceptance p
 | K1.3b | `VDBGridPool`: create/add/replace/remove/setTransform/update/version/revision/dispose; host-buffer mode | T3 | ✅ | e2e readback of nine fixtures byte-identical. Reviewed (Opus); fixes landed (pool lifecycle 616b850; generator fixes in K1.4b). |
 | K1.4a | WGSL generator: chunk extraction from the vendored file, `read` + `sample` profiles, slot/buffer modes, `checkModule` | T3 | ✅ | 72/72 variants compile. Reviewed (Opus); fixes landed (pool lifecycle 616b850; generator fixes in K1.4b). |
 | K1.4b | `march` profile (HDDA, stats) + the Fp leaf-stats fix in the fork; `tools` twins (`hddaWalk`, `nodeStats`) | T3 | ✅ | 132/132 variants compile; GPU probe bit-exact; review fixes folded in. Majorant parts deferred (D22). |
-| K1.5 | Size snapshot + CI guard | T1 | 🟨 | Budgets in KiB (1024 B). Sizes measured for 132 variants (K1.4b handoff); snapshot not yet committed. |
-| K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | 🟨 | Fresh-eyes verification after (D11). `march` probe exists (`scripts/lib/march-probe.mjs`); the harness does not. |
-| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | 🟨 | Pool readback harness exists (`examples/src/harness/pool.html`); the no-engine smoke does not. |
+| K1.5 | Size snapshot + CI guard | T1 | ✅ | 132 variants; KiB budgets (one-Fp column re-baselined, D21 amendment). `pnpm wgsl:size --write` to update. |
+| K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | ✅ | `e2e/core-parity.spec.ts`: 19 variants, one growing pool, 0 ulp on SwiftShader. Fresh-eyes verification running (D11). |
+| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ✅ | `examples/src/demos/08-webgpu-smoke`, `e2e/demo-08.spec.ts`. Goldens made on macOS SwiftShader: confirm on Linux CI. API feedback in docs/handoffs/K1-7.md. |
+| K1.7a | Core API follow-ups from K1.7 (vdbModuleEntries visibility default, a trilinear-safe cell bound helper, HDDA cell-exit helper, types-up-front guidance) | T3 | ⬜ | Owner decides; see docs/handoffs/K1-7.md "API friction". |
 | K1.8 | Optional `reader: 'lean'` (≤ 4 KB `read`/Float), A/B vs vendored accessor | T3 | ⬜ | Not gating (D21). |
 
 ## K2 — three.js adapter, v1 parity
