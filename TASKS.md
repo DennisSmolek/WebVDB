@@ -62,8 +62,9 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K3.0 | Step 0: capture rig for his renderer (owner's machine) + dense `.wvdb` source | T2 | ⬜ | Needs K4.3. |
-| K3.1 | Step 1: froxels with `'volume'` lighting on the dense source; strict parity (PSNR ≥ 40 dB) | T3 | ⬜ | |
+| K3.0 | Step 0: capture rig for his renderer (owner's machine) + dense `.wvdb` source | T2 | 🟨 | 2026-11-18, reduced scope (no third-party execution): dense source (tools/core/three) byte-identical to a static re-implementation of his upload path, our-side harness + deterministic e2e, `scripts/k3/compare.mjs`, `capture-reference.mjs` written, not run. [docs/handoffs/K3-0.md](docs/handoffs/K3-0.md). Open: K3.0a. |
+| K3.0a | Owner: run `scripts/k3/capture-reference.mjs` on a hardware GPU; check the manifest's sanity rows (his own JPEG bar) | owner | ⬜ | Steps in the script header and the K3.0 handoff. Also load our `.wvdb` files in his `WVDBLoader` (K4.3 owner check). |
+| K3.1 | Step 1: froxels with `'volume'` lighting on the dense source; strict parity (PSNR ≥ 40 dB) | T3 | ⬜ | Brief: docs/handoffs/K3-0.md §Step 1. Needs K3.0a captures for the gate. |
 | K3.2 | Step 2: sparse `VDBGridPool` source + LOD A/B (none / coarse pyramid / node average); HDDA in the inject march | T3 | ⬜ | Needs K1.4b `march`. |
 | K3.3 | Step 3: `'frame'` lighting (shadow grid, cascades, transmittance, temporal, env) | T3 | ⬜ | |
 | K3.4 | Step 4: phase functions + multiple-scattering modes (two-sided, octaves, neural) | T3 | ⬜ | Neural weights pending R10. |

@@ -12,3 +12,9 @@ declare module "*.wgsl?raw" {
   const src: string;
   export default src;
 }
+
+/** Vite's `?url` import suffix: the served URL of the file (K3.0 harness loads a committed `.wvdb` this way). */
+declare module "*?url" {
+  const url: string;
+  export default url;
+}

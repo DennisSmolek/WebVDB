@@ -44,3 +44,14 @@ export type {
 // transform is the core's `applyValueTransform` (CPU).
 export { vdbGridStats, vdbDecodeToAtlas } from "./compute.js";
 export type { VDBThreeGridStatsOptions, VDBGridStatsResult, VDBThreeDecodeToAtlasOptions, VDBDecodeToAtlasResult } from "./compute.js";
+
+// K3.0: the dense `.wvdb` volume source (R1 §4.2) in his createVolumeNodes() shape.
+export { vdbDenseTextures, vdbVolumeUniforms, vdbVolumeNodes, vdbMinComponent, vdbMaxComponent } from "./volume-source.js";
+export type {
+  VDBDenseChannelTextures,
+  VDBThreeDenseSource,
+  VDBVolumeNodes,
+  VDBVolumeNodesOptions,
+  VDBVolumeUniformParameters,
+  VDBVolumeUniforms,
+} from "./volume-source.js";
