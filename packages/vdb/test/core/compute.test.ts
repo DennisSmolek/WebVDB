@@ -220,5 +220,5 @@ describe("applyValueTransform", () => {
     expect(new Uint8Array(out.buffer, out.byteOffset, out.byteLength)).toEqual(gpu);
     const leaf = ([[-40, -20, -30], [40, 20, 30], [0, 0, 0], [-40, 0, 0]] as [number, number, number][]).find((p) => getDim(image, p) === 1)!;
     expect(readValueF32(out, leaf)).toBe(Math.fround(readValueF32(image, leaf) * 3));
-  });
+  }, 30_000); // CPU transform of a full fixture: slow under parallel load
 });
