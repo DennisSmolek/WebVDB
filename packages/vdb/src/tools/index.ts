@@ -113,6 +113,16 @@ export {
 export type { GridMetadata } from "./nvdb-file.js";
 
 /**
+ * Coarse-first `.nvdb` delivery (K4.16, the K4.5 design's option a): bake
+ * `[<name>.lod48, <name>]` into one file, and read a `.nvdb` from a stream,
+ * emitting each grid as soon as its bytes (ZIP or raw) are complete.
+ */
+export { bakeCoarseFirst } from "./nanovdb/index.js";
+export type { BakeCoarseFirstOptions } from "./nanovdb/index.js";
+export { NvdbFormatError, NvdbStreamReader, nvdbLodName, parseNvdbLodName, readNvdbStream } from "./nvdb-stream.js";
+export type { NvdbStreamGrid, NvdbStreamReaderOptions } from "./nvdb-stream.js";
+
+/**
  * Pure-TypeScript CPU reference for NanoVDB voxel lookup/sampling (Phase 1/2,
  * docs/PLAN.md) — a byte-for-byte transliteration of the vendored
  * `PNanoVDB.h` root -> upper -> lower -> leaf descent, restricted to grid

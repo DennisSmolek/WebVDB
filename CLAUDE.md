@@ -122,3 +122,11 @@ From v1; details in docs/handoffs/.
 - Grid images can be anisotropic since K4.4 (`resampleGrid({ dimensions })`): `BuiltGrid.voxelSize` is the x
   component; read `voxelSizeXYZ` (or the three GridData doubles) for all three.
 - Check scripts that import `packages/vdb/dist` ran after `pnpm build`: a stale dist silently measures old code.
+- A multi-grid `.nvdb` segment is FileHeader, then **every** grid's FileMetaData + name, then every grid's data
+  (`io::Segment::write`); a file can hold several segments (`writeGrids`). Before K4.16 our `writeNvdb` and
+  `NanoVDBFile` interleaved metadata and data per grid, which native tools can't read for N > 1.
+- NanoVDB's `worldBBox` runs from the min voxel's *centre* to one voxel past the max voxel's centre; resample
+  boxes are cell boxes (`[i − ½, i + ½]`). Compare a preview's box with the full grid's after shifting each by
+  −voxelSize/2.
+- `VDBVolumeMaterial` integrates density per index voxel, so a coarse preview with k-times larger voxels looks
+  k-times thinner at the same `densityScale`. `vdbStreamCoarseFirst` reports `voxelRatio`; scale by it.

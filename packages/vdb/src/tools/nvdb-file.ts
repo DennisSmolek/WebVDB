@@ -15,8 +15,13 @@
  *
  * ## `.nvdb` "segment" format (FileHeader magic `NanoVDB0`/`NanoVDB2`)
  *
- *     FileHeader (16B), [FileMetaData (176B), gridName (nameSize B), grid
- *     data (compressed per codec)] x gridCount
+ *     FileHeader (16B), [FileMetaData (176B), gridName (nameSize B)] x gridCount,
+ *     [grid data (compressed per codec)] x gridCount
+ *
+ * A file is one or more such segments back to back (`io::Segment::write`
+ * writes the header and every grid's metadata before the grids;
+ * `writeGrids` writes one segment per GridHandle). With one grid per segment
+ * the layout is FileHeader, FileMetaData, name, grid data.
  *
  * FileHeader (`struct FileHeader`, IO.h/NanoVDB.h, 16 bytes):
  *
@@ -159,7 +164,7 @@ const ROOT_BASE_SIZE = 28;
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function requireBytes(buffer: ArrayBuffer, minLength: number, what: string): void {
+export function requireBytes(buffer: ArrayBuffer, minLength: number, what: string): void {
   if (buffer.byteLength < minLength) {
     throw new Error(
       `NanoVDBFile: truncated buffer while reading ${what} ` +
@@ -176,7 +181,7 @@ function requireBytes(buffer: ArrayBuffer, minLength: number, what: string): voi
  * arithmetic used to slice/allocate the grid image (Finding 2). Guard it
  * before it's used for anything.
  */
-function assertSafeGridSize(gridSize: number, context: string): void {
+export function assertSafeGridSize(gridSize: number, context: string): void {
   if (!Number.isSafeInteger(gridSize) || gridSize < 0) {
     throw new Error(
       `NanoVDBFile: ${context} has an unrepresentable gridSize (${gridSize}) — the on-disk u64 does not fit ` +
@@ -214,12 +219,12 @@ function checkInternalGridSize(gridBytes: Uint8Array, expectedGridSize: number, 
   }
 }
 
-function readMagic(buffer: ArrayBuffer, offset: number): string {
+export function readMagic(buffer: ArrayBuffer, offset: number): string {
   const bytes = new Uint8Array(buffer, offset, 8);
   return String.fromCharCode(...bytes);
 }
 
-function decodeCString(bytes: Uint8Array): string {
+export function decodeCString(bytes: Uint8Array): string {
   let end = bytes.indexOf(0);
   if (end < 0) end = bytes.length;
   return new TextDecoder().decode(bytes.subarray(0, end));
@@ -247,7 +252,7 @@ function formatVersion(v: ParsedVersion): string {
 /** ABI major version this loader targets (vendor/stride-tables.json `$meta.abi` = "32.9.1"). */
 const NANOVDB_MAJOR_VERSION = 32;
 
-function checkVersion(raw: number): ParsedVersion {
+export function checkVersion(raw: number): ParsedVersion {
   const v = parseVersion(raw);
   if (v.major !== NANOVDB_MAJOR_VERSION) {
     throw new Error(
@@ -308,17 +313,17 @@ const GRID_CLASS_NAMES: readonly string[] = [
   "End",
 ];
 
-function gridTypeName(id: number): string {
+export function gridTypeName(id: number): string {
   return GRID_TYPE_NAMES[id] ?? `Unknown(${id})`;
 }
 
-function gridClassName(id: number): string {
+export function gridClassName(id: number): string {
   return GRID_CLASS_NAMES[id] ?? `Unknown(${id})`;
 }
 
 const SUPPORTED_GRID_TYPES_SET: readonly string[] = SUPPORTED_GRID_TYPES;
 
-function validateGridType(gridType: string, gridName: string): void {
+export function validateGridType(gridType: string, gridName: string): void {
   if (!SUPPORTED_GRID_TYPES_SET.includes(gridType)) {
     throw new Error(
       `NanoVDBFile: grid "${gridName}" is a ${gridType} grid, which this loader does not ` +
@@ -337,7 +342,7 @@ function u32View(bytes: Uint8Array): Uint32Array {
   return new Uint32Array(copy.buffer, copy.byteOffset, copy.byteLength / 4);
 }
 
-interface ParsedFileMetaData {
+export interface ParsedFileMetaData {
   gridSize: number;
   voxelCount: number;
   gridTypeId: number;
@@ -348,7 +353,7 @@ interface ParsedFileMetaData {
   nameSize: number;
 }
 
-function readFileMetaData(view: DataView, offset: number): ParsedFileMetaData {
+export function readFileMetaData(view: DataView, offset: number): ParsedFileMetaData {
   const gridSize = Number(view.getBigUint64(offset + META_OFF_GRID_SIZE, true));
   const voxelCount = Number(view.getBigUint64(offset + META_OFF_VOXEL_COUNT, true));
   const gridTypeId = view.getUint32(offset + META_OFF_GRID_TYPE, true);
@@ -386,23 +391,26 @@ function readFileMetaData(view: DataView, offset: number): ParsedFileMetaData {
   return { gridSize, voxelCount, gridTypeId, gridClassId, worldBBox, indexBBox, voxelSize, nameSize };
 }
 
-interface GridRecord {
+export interface GridRecord {
   metadata: GridMetadata;
   image: Uint32Array;
 }
 
 // ---------------------------------------------------------------------------
-// Segment format: FileHeader + [FileMetaData, gridName, grid data] x N
+// Segment format: FileHeader + [FileMetaData, gridName] x N + [grid data] x N,
+// one or more segments per file (io::Segment, IO.h)
 // ---------------------------------------------------------------------------
 
-function parseSegments(buffer: ArrayBuffer): GridRecord[] {
-  requireBytes(buffer, FILE_HEADER_SIZE, "FileHeader");
-  const view = new DataView(buffer);
+/** Native file magics a segment's FileHeader may carry. */
+export function isFileHeaderMagic(magic: string): boolean {
+  return magic === "NanoVDB2" || magic === "NanoVDB0";
+}
 
-  checkVersion(view.getUint32(FILE_HEADER_OFF_VERSION, true));
-  const gridCount = view.getUint16(FILE_HEADER_OFF_GRID_COUNT, true);
-  const codec = view.getUint16(FILE_HEADER_OFF_CODEC, true);
-
+/** Checks a FileHeader's version and codec; returns its grid count and codec. */
+export function readFileHeader(view: DataView, offset: number): { gridCount: number; codec: Codec } {
+  checkVersion(view.getUint32(offset + FILE_HEADER_OFF_VERSION, true));
+  const gridCount = view.getUint16(offset + FILE_HEADER_OFF_GRID_COUNT, true);
+  const codec = view.getUint16(offset + FILE_HEADER_OFF_CODEC, true);
   if (codec === Codec.BLOSC) {
     throw new Error(
       "NanoVDBFile: this file uses the BLOSC codec, which is not supported in the browser. " +
@@ -412,91 +420,121 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
   if (codec !== Codec.NONE && codec !== Codec.ZIP) {
     throw new Error(`NanoVDBFile: unknown codec value ${codec} in FileHeader`);
   }
+  return { gridCount, codec: codec as Codec };
+}
 
+/**
+ * Inflates one ZIP grid payload into exactly `gridSize` bytes, bounded
+ * (Finding 2): a zip-bomb would otherwise inflate fully in memory before any
+ * size check runs. fflate's `out` option makes inflate() write into a fixed
+ * buffer and *truncate* rather than grow past it, so the output is
+ * allocated at gridSize + 1 bytes: a well-formed payload lands at exactly
+ * `gridSize` bytes, an oversized one is clamped to gridSize + 1 and rejected.
+ */
+export function inflateZipGrid(compressed: Uint8Array, gridSize: number, i: number, name: string): Uint8Array {
+  const outBound = new Uint8Array(gridSize + 1);
+  let decompressed: Uint8Array;
+  try {
+    decompressed = unzlibSync(compressed, { out: outBound });
+  } catch (err) {
+    throw new Error(`NanoVDBFile: failed to inflate ZIP-compressed grid #${i} ("${name}"): ${(err as Error).message}`);
+  }
+  if (decompressed.byteLength === outBound.length) {
+    throw new Error(
+      `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") exceeds its declared gridSize of ` +
+        `${gridSize} bytes (decompression is bounded to gridSize + 1 bytes to avoid unbounded memory ` +
+        `use on a corrupt or malicious file) — the file's metadata is untrustworthy.`,
+    );
+  }
+  if (decompressed.byteLength !== gridSize) {
+    throw new Error(
+      `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") is ${decompressed.byteLength} ` +
+        `bytes, expected ${gridSize}`,
+    );
+  }
+  return decompressed;
+}
+
+/** Runs the shared checks on a decoded grid image and builds its record. */
+export function finishGridRecord(meta: ParsedFileMetaData, name: string, i: number, gridBytes: Uint8Array): GridRecord {
+  checkInternalGridSize(gridBytes, meta.gridSize, i, name);
+  const gridType = gridTypeName(meta.gridTypeId);
+  const gridClass = gridClassName(meta.gridClassId);
+  validateGridType(gridType, name);
+  return {
+    metadata: {
+      name,
+      gridType,
+      gridClass,
+      worldBBox: meta.worldBBox,
+      indexBBox: meta.indexBBox,
+      voxelSize: meta.voxelSize,
+      voxelCount: meta.voxelCount,
+      gridByteSize: meta.gridSize,
+    },
+    image: u32View(gridBytes),
+  };
+}
+
+/**
+ * A segment is a FileHeader, then every grid's FileMetaData + name, then every
+ * grid's data in the same order (`Segment::write` writes the header and all
+ * metadata, then `Internal::write` writes each grid). A file is one or more
+ * segments back to back (`writeGrids` writes one per GridHandle); grids are
+ * numbered across segments. With one grid per segment the layout is
+ * FileHeader, FileMetaData, name, grid data.
+ */
+function parseSegments(buffer: ArrayBuffer): GridRecord[] {
+  const view = new DataView(buffer);
   const records: GridRecord[] = [];
-  let offset = FILE_HEADER_SIZE;
+  let offset = 0;
 
-  for (let i = 0; i < gridCount; i++) {
-    requireBytes(buffer, offset + FILE_METADATA_SIZE, `FileMetaData for grid #${i}`);
-    const meta = readFileMetaData(view, offset);
-    offset += FILE_METADATA_SIZE;
+  do {
+    requireBytes(buffer, offset + FILE_HEADER_SIZE, "FileHeader");
+    if (offset > 0 && !isFileHeaderMagic(readMagic(buffer, offset))) {
+      throw new Error(
+        `NanoVDBFile: the ${buffer.byteLength - offset} bytes after byte ${offset} are not another segment ` +
+          `(magic "${readMagic(buffer, offset)}"); the file is corrupt.`,
+      );
+    }
+    const { gridCount, codec } = readFileHeader(view, offset);
+    offset += FILE_HEADER_SIZE;
 
-    requireBytes(buffer, offset + meta.nameSize, `grid name for grid #${i}`);
-    const name = decodeCString(new Uint8Array(buffer, offset, meta.nameSize));
-    offset += meta.nameSize;
-
-    assertSafeGridSize(meta.gridSize, `grid #${i} ("${name}")'s FileMetaData.gridSize`);
-
-    let gridBytes: Uint8Array;
-    if (codec === Codec.NONE) {
-      requireBytes(buffer, offset + meta.gridSize, `grid data for grid #${i} ("${name}")`);
-      gridBytes = new Uint8Array(buffer, offset, meta.gridSize);
-      offset += meta.gridSize;
-    } else {
-      // Codec.ZIP: 8-byte LE compressed-size prefix, then that many bytes of
-      // zlib (RFC 1950) compressed data (io::Internal::write/read, IO.h).
-      requireBytes(buffer, offset + 8, `ZIP size prefix for grid #${i} ("${name}")`);
-      const compressedSize = Number(view.getBigUint64(offset, true));
-      offset += 8;
-      requireBytes(buffer, offset + compressedSize, `ZIP payload for grid #${i} ("${name}")`);
-      const compressed = new Uint8Array(buffer, offset, compressedSize);
-
-      // Bound the inflation output instead of calling unzlibSync(compressed)
-      // unbounded (Finding 2): a zip-bomb would otherwise inflate fully
-      // in memory before the size check below ever runs. fflate's `out`
-      // option makes inflate() write into a fixed buffer and *truncate*
-      // rather than grow past it (see node_modules/fflate's InflateOptions
-      // doc comment), so we allocate exactly one byte more than the
-      // declared gridSize: a well-formed payload lands at exactly
-      // meta.gridSize bytes, while an oversized/malicious one gets clamped
-      // to meta.gridSize + 1 and is caught below — no unbounded allocation
-      // ever happens.
-      const outBound = new Uint8Array(meta.gridSize + 1);
-      let decompressed: Uint8Array;
-      try {
-        decompressed = unzlibSync(compressed, { out: outBound });
-      } catch (err) {
-        throw new Error(
-          `NanoVDBFile: failed to inflate ZIP-compressed grid #${i} ("${name}"): ${(err as Error).message}`,
-        );
-      }
-      if (decompressed.byteLength === outBound.length) {
-        throw new Error(
-          `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") exceeds its declared gridSize of ` +
-            `${meta.gridSize} bytes (decompression is bounded to gridSize + 1 bytes to avoid unbounded memory ` +
-            `use on a corrupt or malicious file) — the file's metadata is untrustworthy.`,
-        );
-      }
-      if (decompressed.byteLength !== meta.gridSize) {
-        throw new Error(
-          `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") is ${decompressed.byteLength} ` +
-            `bytes, expected ${meta.gridSize}`,
-        );
-      }
-      gridBytes = decompressed;
-      offset += compressedSize;
+    const first = records.length;
+    const metas: { meta: ParsedFileMetaData; name: string }[] = [];
+    for (let k = 0; k < gridCount; k++) {
+      const i = first + k;
+      requireBytes(buffer, offset + FILE_METADATA_SIZE, `FileMetaData for grid #${i}`);
+      const meta = readFileMetaData(view, offset);
+      offset += FILE_METADATA_SIZE;
+      requireBytes(buffer, offset + meta.nameSize, `grid name for grid #${i}`);
+      const name = decodeCString(new Uint8Array(buffer, offset, meta.nameSize));
+      offset += meta.nameSize;
+      assertSafeGridSize(meta.gridSize, `grid #${i} ("${name}")'s FileMetaData.gridSize`);
+      metas.push({ meta, name });
     }
 
-    checkInternalGridSize(gridBytes, meta.gridSize, i, name);
-
-    const gridType = gridTypeName(meta.gridTypeId);
-    const gridClass = gridClassName(meta.gridClassId);
-    validateGridType(gridType, name);
-
-    records.push({
-      metadata: {
-        name,
-        gridType,
-        gridClass,
-        worldBBox: meta.worldBBox,
-        indexBBox: meta.indexBBox,
-        voxelSize: meta.voxelSize,
-        voxelCount: meta.voxelCount,
-        gridByteSize: meta.gridSize,
-      },
-      image: u32View(gridBytes),
-    });
-  }
+    for (let k = 0; k < gridCount; k++) {
+      const i = first + k;
+      const { meta, name } = metas[k]!;
+      let gridBytes: Uint8Array;
+      if (codec === Codec.NONE) {
+        requireBytes(buffer, offset + meta.gridSize, `grid data for grid #${i} ("${name}")`);
+        gridBytes = new Uint8Array(buffer, offset, meta.gridSize);
+        offset += meta.gridSize;
+      } else {
+        // Codec.ZIP: 8-byte LE compressed-size prefix, then that many bytes of
+        // zlib (RFC 1950) compressed data (io::Internal::write/read, IO.h).
+        requireBytes(buffer, offset + 8, `ZIP size prefix for grid #${i} ("${name}")`);
+        const compressedSize = Number(view.getBigUint64(offset, true));
+        offset += 8;
+        requireBytes(buffer, offset + compressedSize, `ZIP payload for grid #${i} ("${name}")`);
+        gridBytes = inflateZipGrid(new Uint8Array(buffer, offset, compressedSize), meta.gridSize, i, name);
+        offset += compressedSize;
+      }
+      records.push(finishGridRecord(meta, name, i, gridBytes));
+    }
+  } while (offset < buffer.byteLength);
 
   return records;
 }

@@ -1,9 +1,15 @@
 /**
- * write-nvdb.ts — `writeNvdb`: pack one or more finished grid images into a
- * segment-format `.nvdb` file (codec NONE), byte-for-byte in the framing the
- * repo's own `NanoVDBFile` loader parses:
+ * write-nvdb.ts — `writeNvdb`: pack one or more finished grid images into one
+ * segment of a `.nvdb` file, in NanoVDB's own `io::Segment` layout (IO.h
+ * `writeGrid`: the header and every grid's metadata first, then the grids):
  *
- *   FileHeader(16) + [FileMetaData(176) + gridName(nameSize) + image] x N
+ *   FileHeader(16) + [FileMetaData(176) + gridName(nameSize)] x N + [grid data] x N
+ *
+ * With one grid this is FileHeader, FileMetaData, name, image. Grid data is
+ * the image (codec NONE) or, for codec ZIP (K4.18), `io::Internal::write`'s
+ * framing: a u64 LE compressed byte count, then the zlib (RFC 1950) stream
+ * of the image, as zlib's `compress()` writes it. `FileMetaData.fileSize` is
+ * the on-disk size of that grid's data (8 + compressed bytes for ZIP).
  *
  * FileHeader magic is `NanoVDB2` (current file format). Each grid's
  * FileMetaData is derived by reading the grid image itself (GridData / TreeData
@@ -11,11 +17,11 @@
  * package built — and the metadata it writes always agrees with the image
  * (which is exactly what the loader's `mGridSize` cross-check verifies).
  *
- * Codec is NONE only in v1 (D3 non-goal list: ZIP write can be added with fflate
- * later). The 8-byte name key (`io::stringHash`) is written as 0: the loader
- * does not consult it, and the value is documented as advisory.
+ * The 8-byte name key (`io::stringHash`) is written as 0: NanoVDB's
+ * name-based `readGrid` accepts 0 as "no key" and compares the names.
  */
 
+import { zlibSync } from "fflate";
 import {
   GRID_OFF_GRID_CLASS,
   GRID_OFF_GRID_NAME,
@@ -67,10 +73,17 @@ const MD_OFF_BLIND_COUNT = 170;
 const MD_OFF_VERSION = 172;
 
 const CODEC_NONE = 0;
+const CODEC_ZIP = 1;
 
 export interface WriteNvdbOptions {
-  /** Reserved for future codec selection; only NONE is implemented in v1. */
-  codec?: "none";
+  /**
+   * Per-grid codec. `'none'` (default) stores the images; `'zip'` stores each
+   * as NanoVDB's `Codec::ZIP` (zlib), which native tools read when built with
+   * zlib and `NanoVDBFile` / `NvdbStreamReader` decode.
+   */
+  codec?: "none" | "zip";
+  /** zlib level for `codec: 'zip'`, 0–9. Default 9 (zlib's own default, used by `compress()`, is 6). */
+  zipLevel?: number;
 }
 
 interface ImageMeta {
@@ -164,23 +177,45 @@ function extractMeta(image: Uint32Array, i: number): ImageMeta {
   };
 }
 
+/** A grid's on-disk data: the image (NONE) or `u64 size + zlib stream` (ZIP). */
+function gridPayload(m: ImageMeta, codec: number, level: number): Uint8Array {
+  if (codec === CODEC_NONE) return m.imageBytes;
+  const compressed = zlibSync(m.imageBytes, { level: level as 9 });
+  const out = new Uint8Array(8 + compressed.byteLength);
+  new DataView(out.buffer).setBigUint64(0, BigInt(compressed.byteLength), true);
+  out.set(compressed, 8);
+  return out;
+}
+
 /**
- * Serializes `images` (each a complete NanoVDB grid image) into a
- * segment-format `.nvdb` file (`NanoVDB2` header, codec NONE) as an
- * `ArrayBuffer`.
+ * Serializes `images` (each a complete NanoVDB grid image) into a `.nvdb`
+ * file (`NanoVDB2` header, one segment, codec NONE or ZIP) as an
+ * `ArrayBuffer`. Grids keep their order, so a coarse preview written first
+ * arrives first in a stream.
  */
-export function writeNvdb(images: Uint32Array[], _opts: WriteNvdbOptions = {}): ArrayBuffer {
+export function writeNvdb(images: Uint32Array[], opts: WriteNvdbOptions = {}): ArrayBuffer {
   if (images.length === 0) {
     throw new Error("writeNvdb: at least one grid image is required");
   }
   if (images.length > 0xffff) {
     throw new Error(`writeNvdb: too many grids (${images.length}); FileHeader.gridCount is a u16`);
   }
+  const codecName = opts.codec ?? "none";
+  if (codecName !== "none" && codecName !== "zip") {
+    throw new Error(`writeNvdb: unknown codec "${String(codecName)}" (expected "none" or "zip")`);
+  }
+  const codec = codecName === "zip" ? CODEC_ZIP : CODEC_NONE;
+  const level = opts.zipLevel ?? 9;
+  if (!Number.isInteger(level) || level < 0 || level > 9) {
+    throw new Error(`writeNvdb: zipLevel must be an integer 0-9, got ${level}`);
+  }
 
   const metas = images.map((img, i) => extractMeta(img, i));
+  const payloads = metas.map((m) => gridPayload(m, codec, level));
 
   let total = FILE_HEADER_SIZE;
-  for (const m of metas) total += FILE_METADATA_SIZE + m.nameBytes.length + m.gridSize;
+  for (const m of metas) total += FILE_METADATA_SIZE + m.nameBytes.length;
+  for (const p of payloads) total += p.byteLength;
 
   const buffer = new ArrayBuffer(total);
   const dv = new DataView(buffer);
@@ -190,13 +225,14 @@ export function writeNvdb(images: Uint32Array[], _opts: WriteNvdbOptions = {}): 
   dv.setBigUint64(0, MAGIC_FILE, true);
   dv.setUint32(FH_OFF_VERSION, VERSION_PACKED, true);
   dv.setUint16(FH_OFF_GRID_COUNT, metas.length, true);
-  dv.setUint16(FH_OFF_CODEC, CODEC_NONE, true);
+  dv.setUint16(FH_OFF_CODEC, codec, true);
 
   let off = FILE_HEADER_SIZE;
-  for (const m of metas) {
+  for (let g = 0; g < metas.length; g++) {
+    const m = metas[g]!;
     // FileMetaData.
     dv.setBigUint64(off + MD_OFF_GRID_SIZE, BigInt(m.gridSize), true);
-    dv.setBigUint64(off + MD_OFF_FILE_SIZE, BigInt(m.gridSize), true); // codec NONE
+    dv.setBigUint64(off + MD_OFF_FILE_SIZE, BigInt(payloads[g]!.byteLength), true);
     dv.setBigUint64(off + MD_OFF_NAME_KEY, 0n, true); // advisory; loader ignores
     dv.setBigUint64(off + MD_OFF_VOXEL_COUNT, BigInt(m.voxelCount), true);
     dv.setUint32(off + MD_OFF_GRID_TYPE, m.gridType, true);
@@ -218,7 +254,7 @@ export function writeNvdb(images: Uint32Array[], _opts: WriteNvdbOptions = {}): 
     dv.setUint32(off + MD_OFF_TILE_COUNT + 0, m.tileCount[0], true);
     dv.setUint32(off + MD_OFF_TILE_COUNT + 4, m.tileCount[1], true);
     dv.setUint32(off + MD_OFF_TILE_COUNT + 8, m.tileCount[2], true);
-    dv.setUint16(off + MD_OFF_CODEC, CODEC_NONE, true);
+    dv.setUint16(off + MD_OFF_CODEC, codec, true);
     dv.setUint16(off + MD_OFF_BLIND_COUNT, 0, true);
     dv.setUint32(off + MD_OFF_VERSION, VERSION_PACKED, true);
     off += FILE_METADATA_SIZE;
@@ -226,10 +262,12 @@ export function writeNvdb(images: Uint32Array[], _opts: WriteNvdbOptions = {}): 
     // Grid name (incl. NUL).
     u8.set(m.nameBytes, off);
     off += m.nameBytes.length;
+  }
 
-    // Grid image bytes.
-    u8.set(m.imageBytes, off);
-    off += m.gridSize;
+  // Grid data, in the same order as the metadata.
+  for (const p of payloads) {
+    u8.set(p, off);
+    off += p.byteLength;
   }
 
   return buffer;

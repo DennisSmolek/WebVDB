@@ -93,7 +93,7 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 | File codec | Support |
 |---|---|
 | `NONE` | yes |
-| `ZIP` (zlib, via `fflate`) | yes |
+| `ZIP` (zlib, via `fflate`) | read and write (`writeNvdb(images, { codec: 'zip' })`) |
 | `BLOSC` | not supported — throws (see [D3](../../docs/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)) |
 
 ### The vendoring story
@@ -177,7 +177,9 @@ the NanoVDB `Map`.
 | `quantize` / `quantizeDetailed` | FLOAT grid image -> Fp8/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
 | `transform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](../../docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
 | `inspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
-| `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2 layout) |
+| `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2, `io::Segment` layout; `{ codec: 'zip' }` for NanoVDB's ZIP codec) |
+| `bakeCoarseFirst` | Coarse-first `.nvdb`: a small preview grid (`<name>.lod48`, box, FpN) then the full grid, ZIP by default |
+| `NvdbStreamReader` / `readNvdbStream` | Reads a `.nvdb` from pushed bytes or a stream, emitting each grid as soon as its data is complete; hostile-input checks before allocation |
 | `readNvdb` | Stub — reading `.nvdb` is `NanoVDBFile`, exported from this same subpath (`@pmndrs/vdb/tools`) |
 
 ### Supported `.vdb` subset
@@ -335,6 +337,27 @@ voxel centres (texel `i` at full resolution sits between voxels `min + i` and
 `transformLeafValues`). See
 [`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback)
 for the atlas fallback path through a stock `Data3DTexture`.
+
+### Coarse-first loading: `vdbStreamCoarseFirst`
+
+A file baked with `bakeCoarseFirst` (`@pmndrs/vdb/tools`) holds a ~12 KiB preview grid before the full grid
+(docs/design/K4-5-coarse-first.md). `vdbStreamCoarseFirst` reads the response body as it arrives, adds the
+preview to the pool with the full grid's size reserved, and replaces it in place when the full grid is in:
+
+```ts
+import { vdbStreamCoarseFirst } from "@pmndrs/vdb/three";
+
+const { id } = await vdbStreamCoarseFirst(pool, await fetch("/smoke.coarse.nvdb"), {
+  onGrid: (e) => {
+    // The material marches in index voxels: scale density while a coarser grid shows.
+    material.densityScale.value = baseDensity * e.voxelRatio;
+    mesh.geometry = vdbProxyGeometry(pool.info(e.id));
+  },
+});
+```
+
+Call `pool.update(encoder)` / `pool.flush()` and `grids.update()` in your frame loop as usual. `replace` drops
+a brick majorant: set it again in `onGrid` if you use one.
 
 ### Sequences: `VDBSequence`
 
