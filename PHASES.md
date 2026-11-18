@@ -107,7 +107,7 @@ adapter uses.
   owner's cloud system reuse it.
 - Every ported file carries attribution; every departure gets a DIVERGES row.
 
-**Exit gate:** his demo scenes render on our sparse source within an agreed image-diff threshold of his output;
+**Exit gate** (timing items deferred to a quiet machine, D25): his demo scenes render on our sparse source within an agreed image-diff threshold of his output;
 the WDAS quarter cloud runs at ≥ 60 fps at 1080p on the reference desktop **at a named quality preset** (v1's
 104 fps used `stepSize=4`, `shadowSteps=4`; its quality preset ran at 16.8 fps); goldens per lighting mode; and
 the A/B results are recorded.
