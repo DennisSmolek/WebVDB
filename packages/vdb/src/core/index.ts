@@ -16,3 +16,8 @@ export const pnanovdbWgslUrl = new URL("../../vendor/pnanovdb.wgsl", import.meta
 
 export { VDBError } from "./errors.js";
 export type { VDBErrorCode } from "./errors.js";
+
+// K1.4a: WGSL module generator (docs/design/K1-core.md §3).
+export { checkModule, vdbModuleEntries, vdbModuleWgsl, VDB_MODULE_BANNER } from "./wgsl/generate.js";
+export { VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES } from "./wgsl/types.js";
+export type { VDBGridTypeName, VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile, VDBSlot } from "./wgsl/types.js";
