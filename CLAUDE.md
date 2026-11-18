@@ -192,3 +192,6 @@ From v1; details in docs/handoffs/.
 - three r187 `NodeMaterial.setupOutgoingLight()` is `vec3(0)` for lit materials when the scene has no light, so `colorNode` draws black: draw debug output through `emissiveNode`; output colours clamp at 0 (encode signed values, e.g. `n * 0.5 + 0.5`).
 - A ray built from interpolated proxy-box positions (`positionWorld`, `positionViewDirection`) is ~0.02 px off the pixel centre; trace from `viewportUV` through `cameraProjectionMatrixInverse` when a CPU twin compares per pixel.
 - `VDBPoints`' disc map is mipmapped (his defaults): judge stray pixels against the sprite quad, coverage against the disc.
+- SwiftShader rasterizes varyings (e.g. `positionWorld`) over a large triangle with ~1e-4 relative error: subdivide receiver meshes in GPU twins and allow a position tolerance at sharp edges.
+- SwiftShader's division is ~12 bits: a march anchored at box-segment ends aliases sharp features by several % per ray; twin such passes on smooth data and gate sharp data on aggregates.
+- Volume mesh shadows appear from the second render after `castShadows` turns on (his filter goes on in the proxy's `onBeforeRender`, after lit meshes drew): render a few frames before measuring.
