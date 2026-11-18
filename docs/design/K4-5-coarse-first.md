@@ -1,6 +1,11 @@
 # K4.5: coarse-first `.nvdb` delivery (design note)
 
-Status: design only, 2026-11-18. Numbers are measured with K4.4's `resampleGrid` + `quantize` + gzip
+Status: implemented in K4.16/K4.18 ([docs/handoffs/K4-16.md](../handoffs/K4-16.md)). K4.16 found that NanoVDB's
+`io::Segment` writes every grid's FileMetaData before any grid data, so the full grid's metadata (184 B) now precedes
+the preview: first paint for (a) at `resolution: 48`, box, FpN is 12.0 KiB of gzip (12.3 KiB with `Codec.ZIP` and
+no HTTP compression), not 11.9 KiB. The tables below are the design-time numbers.
+
+Original status: design only, 2026-11-18. Numbers are measured with K4.4's `resampleGrid` + `quantize` + gzip
 (`scripts/measure-coarse-first.mjs`), except where a row says "estimate".
 
 **Goal (PHASES K4 exit gate):** the first paint of a streamed `.nvdb` is no larger than mjurczyk's smoke preview.

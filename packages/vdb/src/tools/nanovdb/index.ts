@@ -44,5 +44,7 @@ export type {
 } from "./resample.js";
 export { transform } from "./transform.js";
 export type { TransformInput, TransformSpec } from "./transform.js";
+export { bakeCoarseFirst } from "./coarse-first.js";
+export type { BakeCoarseFirstOptions } from "./coarse-first.js";
 export { inspect } from "./inspect.js";
 export type { InspectReport } from "./inspect.js";

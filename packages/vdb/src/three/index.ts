@@ -55,3 +55,15 @@ export type {
   VDBVolumeUniformParameters,
   VDBVolumeUniforms,
 } from "./volume-source.js";
+
+// K4.16: coarse-first `.nvdb` streaming into one pool id (add the preview with
+// the full size reserved, then replace). Engine-free glue; here because tools
+// may not import the core.
+export { vdbStreamCoarseFirst } from "./coarse-first.js";
+export type {
+  VDBCoarseFirstEvent,
+  VDBCoarseFirstOptions,
+  VDBCoarseFirstPoolLike,
+  VDBCoarseFirstResult,
+  VDBCoarseFirstSource,
+} from "./coarse-first.js";

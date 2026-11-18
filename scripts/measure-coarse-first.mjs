@@ -225,7 +225,8 @@ function run(label, file, { resolutions, hisBox = false, filters = ["point", "bo
         const previewGz = gz(previewFile).length;
         const multi = nvdb([r.image, fullFpn.image]);
         const multiGz = gz(multi);
-        const prefix = 16 + (previewFile.length - 16); // header + preview metadata + name + image
+        // header + both FileMetaData + names (io::Segment writes all metadata first, K4.16) + preview image
+        const prefix = previewFile.length + 176 + new TextEncoder().encode(fullFpn.gridName).length + 1;
         const offset = streamOffset(multiGz, prefix);
         const e = T.resampleError(grid, r.image);
         const m = mass(r.image, r.voxelSizeXYZ) / srcMass;
