@@ -76,10 +76,11 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      # Evaluation spike (docs/spikes/PICOVDB.md) — kept green so its size and
-      # correctness findings stay reproducible; not a shipping package.
-      - name: PicoVDB spike suite
-        run: pnpm vitest run --root experiments/picovdb-spike
+      # The PicoVDB evaluation spike (docs/spikes/PICOVDB.md, decision D16) is no
+      # longer run in CI: its byte-for-byte goldens were recorded against the
+      # vdb-samples revision before the 2026-07 re-pin, and re-recording needs the
+      # native picovdb tools. Run it locally with
+      # `pnpm vitest run --root experiments/picovdb-spike` (see the spike doc).
 
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium

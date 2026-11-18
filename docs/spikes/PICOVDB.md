@@ -390,3 +390,11 @@ PICOVDB_NATIVE=$PWD/picovdb/zig-out/bin/picovdb node experiments/picovdb-spike/s
 The root suite is unaffected: `pnpm vitest run` (234/234; `projects:
 ["packages/*"]` never sees `experiments/`) and `pnpm typecheck` (the spike is
 not in the root `tsconfig.json` references) both stay green.
+
+## Status 2026-11-19
+
+Removed from CI. The spike's byte-for-byte goldens (`experiments/picovdb-spike/test/convert.test.ts`) were recorded
+from the vdb-samples corpus before the 2026-07 re-pin (scripts/lib/vdb-samples.mjs, commit 2173458): the current
+`sphere.vdb` hashes differently, so the corpus-identity test fails by design. The findings above (D16) stand;
+re-recording the goldens needs the native picovdb converter. Re-evaluate on the D16 triggers (research R8).
+
