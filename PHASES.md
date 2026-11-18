@@ -93,7 +93,11 @@ parity on the new core; the new renderer is K3.
 **Exit gate:** demos 01–07 run on the new adapter; the e2e suite is green; goldens are unchanged, or
 re-baselined with a DIVERGES entry that says why.
 
-## K3 — Renderer: port and extend ⬜
+## K3 — Renderer: port and extend 🟨
+
+Parity (2026-11-19, captures of his renderer at 75e7345 on the owner's Apple GPU): all 7 gating scenes (Steps 1 and 3,
+isolated) pass the strict bar; ours on hardware is bit-identical to his in 6/7 (PSNR ∞), two-bunnies 52.6 dB.
+Steps 0–3 done; Step 4 in progress.
 
 Compete on rendering (D18). Bring mjurczyk's renderer (three-openvdb, MIT) in as the basis of our three.js
 renderer, re-based on the sparse core, and lift its engine-independent parts into shared foundations that every

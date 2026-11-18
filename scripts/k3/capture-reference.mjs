@@ -415,7 +415,16 @@ async function capture(context, scenario, fields, type) {
   if (scenario.isolate) {
     await isolateVolumes(page, scenario.isolate);
     // 'frame' lighting reads the environment lights from an async readback; let a changed environment settle.
-    if (scenario.isolate !== true) await waitForIdle(page, pending, errors);
+    if (scenario.isolate !== true) {
+      await waitForIdle(page, pending, errors);
+      // His environment lights are made on the update() after the async map readback lands, and the clock is paused
+      // (waitForIdle never renders a frame), so without frames here the captured frame still takes the 'outward'
+      // path. Run frames until the readback is consumed (real time passes for the GPU between them).
+      for (let i = 0; i < 6; i++) {
+        await page.clock.runFor(FRAME_TIME);
+        await page.waitForTimeout(150);
+      }
+    }
   }
   await page.clock.runFor(FRAME_TIME);
   await page.waitForTimeout(10);
