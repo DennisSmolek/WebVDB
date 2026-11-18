@@ -18,7 +18,7 @@ record departures in [DIVERGES.md](DIVERGES.md).
 | K0.1 | Confirm the name, scope and repo home (D17) and the licence (D13) | owner | 🟨 | D17 confirmed 2026-11-18. D13 (MIT) still open; v1 packages currently carry Apache-2.0 `LICENSE` files. |
 | K0.2 | Tag `v1-final`, then restructure into `packages/vdb/src/{core,tools,three}`, one `tsc` build, published as `@pmndrs/vdb` (D20) | T2 | ✅ | Moves only. `git mv` to keep history. The nanovdb-wgsl loader and CPU oracle go to `tools`; the WGSL fork and constants go to `core`. |
 | K0.3 | Boundary test: `core` never imports `three`; `tools` never imports `core` or `three` | T2 | ✅ | `packages/vdb/test/boundaries.test.ts` (no ESLint in the repo). |
-| K0.4 | Build and exports: subpaths `.`, `./tools`, `./three`; build with dts; `verify:packed-subpaths` (upscaler) | T2 | 🟨 | Exports point at `dist/` only. Keep v1's source resolution (tsconfig `paths` + Vite/Vitest aliases); do **not** add a `development` export condition. |
+| K0.4 | Build and exports: subpaths `.`, `./tools`, `./three`; build with dts; `verify:packed-subpaths` (upscaler) | T2 | 🟨 | Script + CI step in progress (T1). Exports point at `dist/` only. Keep v1's source resolution (tsconfig `paths` + Vite/Vitest aliases); do **not** add a `development` export condition. |
 | K0.5 | Rebrand README, STATUS and package READMEs to `@pmndrs/vdb`; add a "superseded by PHASES.md" banner to `docs/PLAN.md`, `docs/SPEC.md`, `docs/DECISIONS.md` | T1 | ⬜ | |
 | K0.6 | Apply the licence (D13) to code headers, LICENSE and NOTICE; keep the vendored Apache-2.0 files | T1 | ⏸ | Blocked on K0.1 (D13). |
 | K0.7 | Move the repo to `pmndrs/vdb` (GitHub transfer keeps redirects) | owner | ⬜ | Timing is the owner's call; can follow K0.2. |
@@ -26,20 +26,26 @@ record departures in [DIVERGES.md](DIVERGES.md).
 
 ## K1 — Engine-free core
 
+Spec: [docs/design/K1-core.md](docs/design/K1-core.md) (§8 has the acceptance per task). Order: K1.3a → (K1.3b ∥ K1.4a) → K1.4b → K1.5 ∥ K1.6 → K1.7.
+
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K1.1 | Set the WGSL size budget per profile: bytes and compile time on one reference device | coord | ⬜ | Use the pathtracer's published numbers as inputs (41–55 KB kernels; a 10 KB reader was its problem case). Not a gate on its team. |
-| K1.2 | Design note: `VDBGridPool` layout (grid table, alignment, layout version), the `{group, firstBinding}` slot API, symbol prefix | T3 | ⬜ | `spec/SPEC-draft.md` §3 is the starting sketch. bvh's `traceModuleWgsl` and `GPU_LAYOUT_VERSION` are the precedent. |
-| K1.3 | `VDBGridPool`: create, add, remove, update(encoder), version, dispose; host-owned device | T2 | ⬜ | |
-| K1.4 | WGSL module generator with `read`, `sample`, `march` and `majorant` profiles; grid types compiled in or out | T3 | ⬜ | Split the vendored fork into composable pieces. The fork's diff log records every change (D2). |
-| K1.5 | Size table and CI guard | T1 | ⬜ | |
-| K1.6 | Move the GPU parity harness onto generated modules: every profile × Float/Fp8/FpN | T2 | ⬜ | Fresh-eyes verification agent afterwards (D11). |
-| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ⬜ | Upscaler's `examples/webgpu/hello` is the precedent. |
+| K1.1 | WGSL size budget per profile | coord | ✅ | D21: budgets from measurement (K1-core §3.6). Compile-time column needs the owner's reference device. |
+| K1.2 | Design note | T3 | ✅ | docs/design/K1-core.md |
+| K1.3a | Pool layout: header + record encode/decode, `VDB_GPU_LAYOUT_VERSION`, WGSL record constants from one source | T3 | 🟨 | |
+| K1.3b | `VDBGridPool`: create/add/replace/remove/setTransform/update/version/revision/dispose; host-buffer mode | T3 | 🟨 | |
+| K1.4a | WGSL generator: chunk extraction from the vendored file, `read` + `sample` profiles, slot/buffer modes, `checkModule` | T3 | 🟨 | |
+| K1.4b | `march` profile (HDDA, stats) + the Fp leaf-stats fix in the fork; `tools` twins (`hddaWalk`, `nodeStats`) | T3 | ⬜ | Majorant parts deferred (D22). |
+| K1.5 | Size snapshot + CI guard | T1 | ⬜ | |
+| K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | ⬜ | Fresh-eyes verification after (D11). |
+| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ⬜ | |
+| K1.8 | Optional `reader: 'lean'` (≤ 4 KB `read`/Float), A/B vs vendored accessor | T3 | ⬜ | Not gating (D21). |
 
 ## K2 — three.js adapter, v1 parity
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
+| K2.0 | Move the repo to three r187 (D23) | T2 | ⬜ | Before K2.1. |
 | K2.1 | `getDevice(renderer)` and `getGPUTexture`, matching upscaler and denoiser so all tools share one device | T2 | ⬜ | |
 | K2.2 | `VDBGridNode` (`.module`, `.update()`) and the `vdbSample()` TSL helper | T3 | ⬜ | Replaces the v1 `setName` and buffer-rewrite trick. |
 | K2.3 | Port the v1 volume material, `gridStats`, `valueTransform`, `decodeToAtlas` and the sequence player | T2 | ⬜ | |
@@ -48,24 +54,28 @@ record departures in [DIVERGES.md](DIVERGES.md).
 
 ## K3 — Renderer: port and extend
 
+Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) §6 (D24). Pinned upstream: mjurczyk/openvdb `75e7345` (v0.26.0).
+
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K3.1 | Volume-source interface: sparse `VDBGridPool` and dense `.wvdb` levels behind one sampling API | T3 | ⬜ | Blocked on R1 and K2.2. |
-| K3.2 | Port march and lighting basics; A/B against his renderer on the same asset | T2 | ⬜ | Attribution on every ported file. |
-| K3.3 | Depth-aware froxels; shadows on meshes; emission onto meshes | T3 | ⬜ | |
-| K3.4 | Multiple scattering (his diffusion, octaves and network variants), then spectral media and phase functions | T3 | ⬜ | Uses the `majorant` profile where delta tracking applies. |
-| K3.5 | HDDA empty-space skipping in the march (deferred since v1) | T3 | ⬜ | The sparse advantage; A/B against fixed-step. |
-| K3.6 | Level-set surfaces and point grids | T2 | ⬜ | Needs K4.2. |
-| K3.7 | Lift engine-free shading WGSL into `core` | T2 | ⬜ | So other adapters and the cloud system reuse it. |
-| K3.8 | Gate run: his scenes on our source, WDAS at a named quality preset ≥ 60 fps 1080p, goldens per lighting mode | T2 | ⬜ | Quiet machine, paired runs (D11). |
+| K3.0 | Step 0: capture rig for his renderer (owner's machine) + dense `.wvdb` source | T2 | ⬜ | Needs K4.3. |
+| K3.1 | Step 1: froxels with `'volume'` lighting on the dense source; strict parity (PSNR ≥ 40 dB) | T3 | ⬜ | |
+| K3.2 | Step 2: sparse `VDBGridPool` source + LOD A/B (none / coarse pyramid / node average); HDDA in the inject march | T3 | ⬜ | Needs K1.4b `march`. |
+| K3.3 | Step 3: `'frame'` lighting (shadow grid, cascades, transmittance, temporal, env) | T3 | ⬜ | |
+| K3.4 | Step 4: phase functions + multiple-scattering modes (two-sided, octaves, neural) | T3 | ⬜ | Neural weights pending R10. |
+| K3.5 | Step 5: spectral media + presets | T2 | ⬜ | |
+| K3.6 | Step 6: mesh shadows + emission (three internals, r187) | T3 | ⬜ | |
+| K3.7 | Step 7: level sets + points | T3 | ⬜ | Needs K4.2. |
+| K3.8 | Lift each green step's shading into `core` WGSL with CPU twins | T3 | ⬜ | Rolling, after each step. |
+| K3.9 | Gate run: WDAS quarter cloud on sparse at a named preset ≥ 60 fps 1080p; goldens per lighting mode; A/B record | T2 | ⬜ | Quiet machine (D11). |
 
 ## K4 — Tools and interop
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K4.1 | Parse active tiles (`bunny_cloud.vdb`) | T2 | ⬜ | mjurczyk's MIT reader is a reference; attribute anything ported. |
+| K4.1 | Parse active tiles (`bunny_cloud.vdb`) | T3 | 🟨 | mjurczyk's MIT reader is a reference; attribute anything ported. |
 | K4.2 | Vector grids, then point grids, then level-set specifics | T2 | ⬜ | |
-| K4.3 | `.wvdb` read and write per his spec (v0.5, plus points from his v0.25.0) | T2 | ⬜ | A decoder written from the spec already worked in the comparison report. |
+| K4.3 | `.wvdb` read and write per his spec (v0.5, plus points from his v0.25.0) | T2 | ⬜ | Prerequisite for K3.0. A decoder written from the spec already worked in the comparison report. |
 | K4.4 | Resample-to-resolution bake | T2 | ⬜ | Measured: our FpN at his 128³ is 474 KiB against his 790 KiB. |
 | K4.5 | Coarse-first `.nvdb` delivery | T3 | ⬜ | Design first; his LOD0 is 14 KiB. |
 | K4.6 | Quantize keeps uniform regions as tiles (the ~12% Fp8 gap) | T2 | ⬜ | |
@@ -82,14 +92,14 @@ record departures in [DIVERGES.md](DIVERGES.md).
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| P1 | Pathtracer integration: point-sample API, majorant DDA two ways (node-max HDDA vs 8³ bricks), several grids per kernel, landed behind a setting | owner | ⬜ | D19. Update its importer (`bench/scenes/volumes/vdb-grid.ts`) to the K0 layout first. |
+| P1 | Pathtracer integration: point-sample API, the `majorant` profile + brick builder (D22), majorant DDA two ways (node-max HDDA vs 8³ bricks), several grids per kernel, landed behind a setting | owner | ⬜ | D19. Update its importer (`bench/scenes/volumes/vdb-grid.ts`) to the K0 layout first. |
 
 ## Research
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| R1 | Renderer port plan, written to `research/notes/R1-renderer-port.md` | T3 | ⬜ | Read his source statically; don't run it in the cloud sandbox. Track his releases (0.26.0 on 2026-11-18). |
+| R1 | Renderer port plan, written to `research/notes/R1-renderer-port.md` | T3 | ✅ | Read his source statically; don't run it in the cloud sandbox. Track his releases (0.26.0 on 2026-11-18). |
 | R2 | WDAS perf on hardware | owner | ✅ | 2026-07-12; `docs/handoffs/PHASE-3.md`. |
 | R3 | Native `nanovdb_convert` parity sweep | owner | ✅ | 2026-07-12; `pnpm parity:native`, `docs/handoffs/PHASE-5.md`. |
 | R9 | Retest the v1 sandbox workarounds on hardware | owner | ✅ | 2026-07-12; follow-up is K2.5. |
-| R10 | Outreach to mjurczyk: invite him in, offer the `.nvdb` loader PR; nudge him to add the LICENSE file (not blocking: it's MIT) | owner | ⬜ | Comparison report: https://claude.ai/artifact/FV7TNDJVmhuLxynaPf8X9o |
+| R10 | Outreach to mjurczyk: invite him in, offer the `.nvdb` loader PR; nudge him to add the LICENSE file (not blocking: it's MIT). Also confirm the neural-scattering weights are MIT, and note his `'approximate'` blackbody cites a Shadertoy (default CC BY-NC-SA) — we won't port that function verbatim | owner | ⬜ | Comparison report: https://claude.ai/artifact/FV7TNDJVmhuLxynaPf8X9o |

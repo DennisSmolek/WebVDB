@@ -52,8 +52,8 @@ Everything a WebGPU host needs to hold and read sparse grids, with no engine (D8
   - `read`: value and active state at an index
   - `sample`: plus world-to-index and trilinear
   - `march`: plus HDDA and stats
-  - `majorant`: plus a majorant DDA for delta tracking (the K3 renderer's multiple scattering and, later, the
-    pathtracer both need it)
+  - `majorant`: a majorant DDA for delta tracking — **deferred to after 0.1** (D22); the record keeps its
+    fields. Design: [docs/design/K1-core.md](docs/design/K1-core.md) §5
 - A WGSL size table per profile and grid-type set, measured as bytes and as compile time on one reference
   device, and guarded in CI.
 - The GPU parity harness moves onto the module generator. A raw-WebGPU example with no engine is the reference
@@ -63,8 +63,8 @@ Design inputs, not gates: the pathtracer's published constraints (Apple Chrome a
 stage; its kernels are 41–55 KB of WGSL) are why the contract is one binding and features compile out.
 
 **Exit gate:** the parity suite is green for every profile × {Float, Fp8, FpN} against the CPU twins; the size
-table is committed; the `read` profile for Float is ≤ 4 KB (provisional, confirmed in K1.1); and the raw-WebGPU
-example renders the smoke.
+snapshot is committed and every variant is within the budgets of K1-core §3.6 (D21; the ≤ 4 KB lean reader is
+the optional K1.8); and the raw-WebGPU example renders the smoke.
 
 ## K2 — three.js adapter, v1 parity ⬜
 
@@ -89,16 +89,17 @@ Compete on rendering (D18). Bring mjurczyk's renderer (three-openvdb, MIT) in as
 renderer, re-based on the sparse core, and lift its engine-independent parts into shared foundations that every
 adapter uses.
 
-- **Port plan first (R1):** map his `FrameVolume`/`FrameRenderer` modules into three buckets: engine-free
-  shading math (phase functions, spectral media, scattering approximations, froxel logic), three.js
-  integration (depth, mesh shadows, emission onto meshes), and the dense-texture data path.
+- **Port plan:** [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) (done). His renderer is
+  a froxel pipeline written in TSL; density is read in one place (`createVolumeNodes()`), by four materials.
 - **Volume source interface:** the renderer reads density through one interface with two sources: the sparse
   `VDBGridPool` (ours) and dense `.wvdb` levels (his format, D14). Users of his renderer keep their assets.
-- **Port in order,** each step A/B-tested against his renderer on the same asset (D11): march and lighting
-  basics → depth-aware froxels → shadows on meshes and emission → multiple scattering → spectral media and phase
-  functions → level-set surfaces and points.
+- **Port in order (D24),** each step A/B-tested against his renderer at the pinned commit on the same asset
+  (D11): 0 dense-source harness (needs K4.3 `.wvdb`) → 1 froxels with `'volume'` lighting → 2 sparse source +
+  LOD A/B → 3 `'frame'` lighting → 4 phase + multiple scattering → 5 spectral → 6 mesh shadows + emission →
+  7 level sets + points.
 - **Sparse advantages:** HDDA empty-space skipping in the march (deferred since v1), and full-resolution hero
-  assets with memory proportional to active voxels.
+  assets with memory proportional to active voxels. The hard part is LOD: his shadow grid samples prefiltered
+  mips, so the sparse source needs a coarse pyramid or node averages (A/B in Step 2).
 - **Shared foundations:** the shading WGSL lives in `core` (engine-free), so later adapters (R6) and the
   owner's cloud system reuse it.
 - Every ported file carries attribution; every departure gets a DIVERGES row.
@@ -148,7 +149,7 @@ promotion into a K phase.
 
 | ID | Item | Status | Feeds |
 |---|---|---|---|
-| R1 | Port plan for mjurczyk's renderer: module map (engine-free / three.js / dense data path), what each technique costs, and the port order. | ⬜ | K3 |
+| R1 | Port plan for mjurczyk's renderer | ✅ 2026-11-18: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md), pinned at `75e7345` (v0.26.0) | K3 |
 | R2 | WDAS perf on hardware | ✅ 2026-07-12: 103.96 fps at 1080p with `stepSize=4`, `shadowSteps=4`; table in `docs/handoffs/PHASE-3.md` | K3 gate |
 | R3 | `nanovdb_convert` parity on a native machine | ✅ 2026-07-12: strict FLOAT/FP8 parity on all four pinned sources (`pnpm parity:native`) | K4 |
 | R4 | The companion service and its browser successors (D6; v1 phases 6b and 9) | ⬜ | later |
