@@ -160,6 +160,27 @@ describe("staging: add / replace / remove", () => {
     expect([...pool.types]).toEqual(["fp8"]);
   });
 
+  it("imageRevision (K3.2a) moves on add and replace of that grid only, not on setTransform or another grid", async () => {
+    const pool = await VDBGridPool.create(device.asGPU(), { initialBytes: 65536, maxGrids: 4 });
+    const a = pool.add(makeImage({ bytes: 1024 }), { capacity: 4096 });
+    const b = pool.add(makeImage({ bytes: 1024, seed: 3 }));
+    expect([pool.info(a).imageRevision, pool.info(b).imageRevision]).toEqual([1, 2]);
+    pool.flush();
+    pool.replace(b, makeImage({ bytes: 1024, seed: 4 }));
+    expect([pool.info(a).imageRevision, pool.info(b).imageRevision]).toEqual([1, 3]);
+    pool.setTransform(a, [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]);
+    expect(pool.revision).toBe(4);
+    expect(pool.info(a).imageRevision).toBe(1);
+    pool.replace(a, makeImage({ bytes: 2048, seed: 5 }));
+    expect(pool.info(a).imageRevision).toBe(5);
+    // A reused id gets a new one.
+    pool.remove(b);
+    const c = pool.add(makeImage({ bytes: 1024, seed: 6 }));
+    expect(c).toBe(b);
+    expect(pool.info(c).imageRevision).toBe(pool.revision);
+    expect(pool.info(c).imageRevision).toBeGreaterThan(5);
+  });
+
   it("replace past the capacity moves the image (free + allocate)", async () => {
     const pool = await VDBGridPool.create(device.asGPU(), { initialBytes: 65536, maxGrids: 4 });
     const a = pool.add(makeImage({ bytes: 1024 }));

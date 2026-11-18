@@ -10,6 +10,7 @@ import {
   vdbBoxPyramid,
   vdbFrameNodeAverageSample,
   vdbFrameSkipEmpty,
+  vdbBoxPyramidLayout,
   vdbPyramidBaseLevel,
   wvdbDenseToNanoVdb,
   wvdbDenseVolume,
@@ -125,6 +126,30 @@ describe("vdbBoxPyramid ('coarse-pyramid' LOD)", () => {
     let worst = 0;
     for (let i = 0; i < his.data.length; i++) worst = Math.max(worst, Math.abs(his.data[i]! / 255 - p.atlas!.data[i]!));
     expect(worst).toBeLessThan(3 / 255);
+  });
+
+  it("vdbBoxPyramidLayout (shared with the core GPU build, K3.2a) = the CPU pyramid's sizes and his atlas offsets", () => {
+    const grid = wvdbDenseToNanoVdb(wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")), { mipmaps: false }));
+    const box = grid.textureIndexBox;
+    for (const pyramidMax of [128, 64, 32, 7, 1]) {
+      const p = vdbBoxPyramid(grid.image, { indexBox: box, pyramidMax });
+      const l = vdbBoxPyramidLayout([box.max[0] - box.min[0] + 1, box.max[1] - box.min[1] + 1, box.max[2] - box.min[2] + 1], { pyramidMax });
+      expect([l.level, ...l.dimensions, l.lodLevels]).toEqual([p.level, ...p.dimensions, p.lodLevels]);
+      expect(l.atlas?.dimensions ?? null).toEqual(p.atlas?.dimensions ?? null);
+      expect(l.atlas?.levels.length ?? 0).toBe(p.atlas?.levels ?? 0);
+      if (!l.atlas) continue;
+      // Each level sits at x = W − W / 2^(l−1) and is the ceil half of the one below (frameMipmaps.js packAtlas).
+      const W = l.atlas.dimensions[0];
+      let below = l.dimensions;
+      l.atlas.levels.forEach((level, i) => {
+        expect(level.offset).toBe(W - W / 2 ** i);
+        expect(level.dimensions).toEqual(below.map((v) => Math.max(1, Math.ceil(v / 2))));
+        expect(level.offset + level.dimensions[0]).toBeLessThanOrEqual(W);
+        below = level.dimensions;
+      });
+    }
+    expect(vdbBoxPyramidLayout([1, 1, 1], { level: 0 }).atlas).toBeNull();
+    expect(() => vdbBoxPyramidLayout([0, 4, 4])).toThrow(/positive integers/);
   });
 
   it("vdbBoxMipAtlasF32 averages 2x2x2 with clamped edge taps", () => {

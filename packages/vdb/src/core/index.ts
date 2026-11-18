@@ -58,6 +58,10 @@ export { VDB_ALL_SCALAR_TYPES, VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES } from "./
 export type { VDBGridTypeName, VDBSlot } from "./types.js";
 // K2.3: compute tools on the pool (gridStats, decodeToAtlas, applyValueTransform).
 export { applyValueTransform, decodeToAtlas, gridStats, VDB_VALUE_TRANSFORM_PRESETS } from "./compute/index.js";
+// K3.2a: the sparse source's coarse pyramid built on the GPU (CPU twin: tools `vdbBoxPyramid`).
+export { boxPyramidWgsl, createBoxPyramid } from "./compute/index.js";
+export type { VDBBoxPyramidGpu, VDBBoxPyramidGpuOptions, VDBBoxPyramidRecordOptions } from "./compute/index.js";
+export type { VDBBoxPyramidLayout, VDBPyramidAtlasLevel } from "../tools/frame/pyramid-layout.js";
 export type {
   AtlasFilter,
   AtlasFormat,

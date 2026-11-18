@@ -358,6 +358,9 @@ export type { VDBFrameFroxelSample } from "./frame/index.js";
  */
 export { vdbPyramidBaseLevel, vdbBoxMipAtlasF32, vdbBoxPyramid, vdbFrameNodeAverageSample, vdbFrameSkipEmpty } from "./frame/sparse.js";
 export type { VDBFloatMipAtlas, VDBBoxPyramidOptions, VDBBoxPyramid } from "./frame/sparse.js";
+// K3.2a: the pyramid's layout, shared with the core's GPU build (`createBoxPyramid`).
+export { vdbBoxPyramidLayout, vdbPyramidLevelSize } from "./frame/pyramid-layout.js";
+export type { VDBBoxPyramidLayout, VDBPyramidAtlasLevel } from "./frame/pyramid-layout.js";
 
 /**
  * K3.3: mjurczyk's 'frame' lighting, engine-free: the world shadow grid (cascades, caster ranges, change

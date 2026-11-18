@@ -70,8 +70,9 @@ export interface VDBFrameVolumeProps {
   emissionColor?: VDBVolumeNodesOptions["emissionColor"];
   /**
    * HDDA empty-space skipping in the shadow march (sparse sources; K3.2). Skipped samples are exactly
-   * 0, so the image does not change (within float noise); dense sources ignore it. Default false: on
-   * SwiftShader it cost more than it saved in every K3.2 scene (provisional, D25; hardware rerun K3.2c).
+   * 0, so the image does not change (within float noise); dense sources ignore it. Default false (D30: on the Apple GPU it
+   * slowed the shadow march 1.07–3.31× in all 12 paired runs, +7 to +26 ms per frame; owner rule D29 was "on
+   * unless the cost is large"). Timings in docs/handoffs/K3-2a.md.
    */
   hdda?: boolean;
 }
