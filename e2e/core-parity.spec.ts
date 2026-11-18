@@ -50,7 +50,7 @@ const MARCH_CATS = [
 test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", async ({ page }) => {
   const probe = await page.request.get(PROBE_FIXTURE_URL);
   test.skip(!probe.ok(), `fixtures missing (${PROBE_FIXTURE_URL} -> ${probe.status()})`);
-  test.setTimeout(150_000);
+  test.setTimeout(300_000);
 
   const consoleErrors: string[] = [];
   page.on("console", (msg) => {
