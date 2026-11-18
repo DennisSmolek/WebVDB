@@ -3,7 +3,8 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "inlineSources": true
+    "inlineSources": true,
+    "declarationMap": false
   },
   "include": ["src"]
 }

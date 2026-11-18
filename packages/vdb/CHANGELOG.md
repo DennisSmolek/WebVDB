@@ -6,7 +6,7 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ## [Unreleased]
 
-First public release (0.1.0). The earlier v1 unscoped packages (`webvdb` and siblings) were never published to npm;
+First public release (0.1.0). Our earlier v1 unscoped packages were never published (the npm `webvdb` package is mjurczyk's, not ours);
 `@pmndrs/vdb` is the first published name. MIT licensed. Peer: `three` r187 (optional, only for `@pmndrs/vdb/three`).
 The renderer, `.wvdb` format and level-set and point code derive from
 [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) (MIT); the WGSL traversal derives from

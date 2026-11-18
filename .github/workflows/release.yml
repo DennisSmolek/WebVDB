@@ -12,11 +12,11 @@ name: Release
 # publishes with provenance, then pushes the tag v<version>.
 #
 # OWNER ACTIONS before the first run (the workflow cannot do these):
-#   1. Move the repo to pmndrs/vdb (task K0.7). The package.json
+#   1. (done) Move the repo to pmndrs/vdb (task K0.7). The package.json
 #      repository/homepage/bugs URLs must match the repo that publishes, or
 #      provenance verification fails.
-#   0. The FIRST publish is manual (RELEASING.md); this workflow is for later releases.
-#   2. On npmjs.com, configure @pmndrs/vdb for Trusted Publishing: publisher
+#   2. The FIRST publish is manual (RELEASING.md); this workflow is for later releases.
+#   3. On npmjs.com, configure @pmndrs/vdb for Trusted Publishing: publisher
 #      GitHub Actions, organization pmndrs, repository vdb, workflow filename
 #      `release.yml` (keep this filename), no environment. For a package that
 #      does not exist yet, npm needs it created first (pending trusted

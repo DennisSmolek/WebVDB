@@ -147,7 +147,11 @@ reference for parser coverage.
 decode exactly per the spec; a `.wvdb` we write loads in his `WVDBLoader`; and the first paint of a streamed
 `.nvdb` is no larger than his 14 KiB smoke preview.
 
-## K5 — Release 0.1 ⬜
+## K5 — Release 0.1 🟨
+
+Ready to publish (2026-11-19): final re-review GO at 75cc1db + fixes; docs site (docs/site), CHANGELOG, shipped
+THIRD_PARTY_NOTICES.md, RELEASING.md. Remaining: the owner's manual first publish (RELEASING.md), then trusted
+publishing for later releases; K5.3 cloud-system showcase.
 
 - Docs in pmndrs/docs MDX format, with compiled snippets (`docs:check`, as in bvh).
 - Examples for raw WebGPU and three.js, plus the owner's cloud system as the showcase consumer.

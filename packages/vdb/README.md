@@ -5,7 +5,7 @@ froxel volume renderer, level sets and points. One package, three subpaths. Full
 
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
-| `@pmndrs/vdb` | the engine-free core: the vendored `pnanovdb.wgsl` module | no engine |
+| `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools | WebGPU, no engine |
 | `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
 | `@pmndrs/vdb/three` | the three.js / TSL adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, the froxel renderer (`VDBFrameVolume`, `VDBFrameRenderer`), `VDBLevelSetMaterial`, `VDBPoints`, `VDBSequence`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
@@ -20,11 +20,9 @@ npm install @pmndrs/vdb three    # to use @pmndrs/vdb/three
 
 ## `@pmndrs/vdb` (core) and the raw WGSL module
 
-Renderer-agnostic NanoVDB traversal/sampling **WGSL module** + a
-TypeScript **`.nvdb` file loader**. This is the low-level layer of
-`@pmndrs/vdb`: it doesn't know about three.js or any
-particular renderer — just how to get NanoVDB grid bytes off disk/network
-and how to walk them, in WGSL or in plain TS.
+The engine-free WebGPU layer: `VDBGridPool` (NanoVDB grids in one storage buffer on the host's `GPUDevice`), the
+generated `vdb*` WGSL module for reading, sampling and marching them (`vdbModuleWgsl`), and GPU compute tools. It
+knows nothing about three.js or any other engine. Loading `.nvdb` files is in `@pmndrs/vdb/tools` (`NvdbFile`).
 
 ### What's in the box
 
@@ -53,7 +51,7 @@ const { value, active } = vdbReadValueCpu(gridImage, [12, 4, -3]);
 ```
 
 `gridImage` is a zero-copy view into the file's buffer when possible
-(`file.isZeroCopy(0)` tells you which) — upload it straight into a GPU
+(`file.isGridImageZeroCopy(0)` tells you which) — upload it straight into a GPU
 `storage` buffer, no reshaping needed.
 
 ### Loading the raw WGSL module
