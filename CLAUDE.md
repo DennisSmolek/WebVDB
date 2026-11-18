@@ -201,3 +201,5 @@ From v1; details in docs/handoffs/.
   by path, examples as `../../../packages/vdb/src/tools/internal.js`, scripts as `dist/tools/internal.js`.
 - Every tools error on bad input is a `VDBToolsError` with a `code` (D32). `NvdbFormatError` is no longer a
   `VdbFormatError`: catch `VDBToolsError` (or check `code`) to cover every format.
+- His examples page renders with `new WebGPURenderer({ antialias: !isPhone })` (4× MSAA) inside three's half-float frame-buffer pass: parity harnesses render his scenes with 4 samples too, or mesh edges differ by a pixel.
+- His sequences normalise density by the mean of ALL frames (`FrameVolume.getDensityScale`), not the shown frame's; his time-driven sequence must be paused at a known frame (`pause()`, `frame = N`) for captures.

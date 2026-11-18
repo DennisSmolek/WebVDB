@@ -93,14 +93,14 @@ parity on the new core; the new renderer is K3.
 **Exit gate:** demos 01–07 run on the new adapter; the e2e suite is green; goldens are unchanged, or
 re-baselined with a DIVERGES entry that says why.
 
-## K3 — Renderer: port and extend 🟨
+## K3 — Renderer: port and extend ✅
 
 Parity (2026-11-19, captures of his renderer at 75e7345 on the owner's Apple GPU): all 7 gating scenes (Steps 1 and 3,
 isolated) pass the strict bar; ours on hardware is bit-identical to his in 6/7 (PSNR ∞), two-bunnies 52.6 dB.
-Steps 0–5 and 7 done. Steps 1–5: all 37 gating scenes pass on SwiftShader and hardware; on the Apple GPU 35/37 are
-bit-identical to his renderer (incl. neural, two-sided, octaves, Mie, spectral media and presets), white smoke max
-diff 1/255, two-bunnies 52.6 dB. Step 7: teapot / Venus silhouette IoU 0.994 / 0.996 (gate 0.99), point count
-9,802 = his (2026-11-19). Step 6 in progress.
+Done 2026-11-19. Parity against his renderer at 75e7345 on the Apple GPU (Chrome, metal-3): all 48 gating scenes
+(Steps 1, 3, 4, 5, 6) pass the strict bar; 46/48 bit-identical (white smoke max 1/255; two-bunnies 52.6 dB, his
+timer-driven second bunny). Step 7: level-set silhouette IoU 0.994 / 0.996, point count 9,802 = his. Timing gates
+deferred (D25); HDDA off (D30/D31).
 
 Compete on rendering (D18). Bring mjurczyk's renderer (three-openvdb, MIT) in as the basis of our three.js
 renderer, re-based on the sparse core, and lift its engine-independent parts into shared foundations that every
