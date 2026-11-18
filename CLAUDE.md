@@ -1,8 +1,9 @@
-# KumoVDB: rules for every agent
+# @pmndrs/vdb: rules for every agent
 
-KumoVDB (*kumo* 雲, "cloud") is sparse NanoVDB volumes on WebGPU for the pmndrs rendering tools. An engine-free
-WebGPU core comes first; three.js and other engines are thin adapters (D8). The repo is still named WebVDB
-until the move in K0 (D7, D9).
+`@pmndrs/vdb` is sparse NanoVDB volumes on WebGPU, part of the pmndrs rendering initiative. An engine-free
+WebGPU core comes first; three.js and other engines are thin adapters (D8). The renderer is ported from
+mjurczyk's three-openvdb and re-based on the sparse core (D18). The repo is still named WebVDB until it moves to
+`pmndrs/vdb` (D17, K0.7). The pathtracer integration comes after our 0.1 release (D19).
 
 ## Read first, write last
 
@@ -20,10 +21,12 @@ in DIVERGES.md with the reason.
 
 ## Working rules
 
+- **Workspace resolution:** published exports point at `dist/` only; in-repo imports reach source through
+  tsconfig `paths` and Vite/Vitest aliases. Never add a `development` export condition.
 - **The core is engine-free.** `packages/core` and `packages/tools` never import `three` or any engine (lint
   enforced, K0.3). The core takes the host's `GPUDevice`, records into the host's encoder, and frees only what it
   allocated.
-- **One storage buffer per kernel** at a host-chosen slot; generated WGSL with the `kumo` prefix; features
+- **One storage buffer per kernel** at a host-chosen slot; generated WGSL with the `vdb` prefix; features
   compile out (D10). Grow the WGSL size table (K1.5) only on purpose.
 - **Correctness before timing.** Every WGSL entry has a CPU twin in `tools`; parity tests come first.
 - **Build both, then decide.** Competing approaches go behind a setting and get an A/B. DECISIONS changes only
@@ -31,15 +34,16 @@ in DIVERGES.md with the reason.
 - **No timings from a loaded machine.** Name the device, browser and conditions; compare paired runs on one
   machine.
 - **Questions for the owner** come with a suggestion, pros and cons, and the test that would settle them.
-- **Consumer repos** (`pmndrs/pathtracer`, the cloud system): follow their own CLAUDE.md. Read-only unless the
-  task says otherwise.
+- **Consumer repos** (the owner's cloud system, `pmndrs/pathtracer`): follow their own CLAUDE.md. Read-only
+  unless the task says otherwise. Don't change code here to suit the pathtracer before 0.1 (D19).
 
 ## Licences
 
 - The vendored `pnanovdb.wgsl` (emcfarlane, Apache-2.0) and `PNanoVDB.h` (OpenVDB, Apache-2.0) keep their
   headers and NOTICE (D2).
-- mjurczyk/openvdb is MIT: port with attribution in THIRD_PARTY notes and a DIVERGES entry. Don't run its code
-  in the cloud sandbox; read it.
+- mjurczyk/openvdb is MIT (the repo has no LICENSE file yet; its npm packages declare MIT). Port with a header
+  naming "mjurczyk/openvdb contributors (MIT)", a THIRD_PARTY entry and a DIVERGES row.
+  Don't run its code in the cloud sandbox; read it.
 - Test assets are git-ignored and fetched by script. The openvdb.org samples are CC BY-SA 4.0.
 
 ## Agent tiers (v1 practice)
