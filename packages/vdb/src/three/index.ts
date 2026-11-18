@@ -45,24 +45,6 @@ export {
 } from "./wgsl.js";
 export type { VolumeWgslOptions, AssembledVolumeWgsl } from "./wgsl.js";
 
-export {
-  gridStats,
-  valueTransform,
-  decodeToAtlas,
-  buildComputeShaderSource,
-  buildValueTransformShaderSource,
-  resolveTransformBody,
-  computeAtlasDims,
-  bboxSize,
-  VALUE_TRANSFORM_PRESETS,
-} from "./compute.js";
-export type {
-  GridStatsOptions,
-  GridStatsResult,
-  ValueTransformResult,
-  DecodeToAtlasOptions,
-  DecodeToAtlasResult,
-  AtlasFilter,
-  AtlasFormat,
-  IndexBBox,
-} from "./compute.js";
+// K2.3: compute wrappers over the core tools (renderer in, promise out).
+export { gridStats, decodeToAtlas, valueTransform } from "./compute.js";
+export type { GridStatsOptions, GridStatsResult, DecodeToAtlasOptions, DecodeToAtlasResult } from "./compute.js";

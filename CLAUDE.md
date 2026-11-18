@@ -60,7 +60,7 @@ From v1; details in docs/handoffs/.
   SwiftShader flags are in `playwright.config.ts`.
 - `bindGroupLayouts` is positional. A skipped `@group` index silently invalidates the dispatch and leaves outputs
   zeroed; wrap pipeline creation in `pushErrorScope('validation')`.
-- `active` is a reserved WGSL word, and so is `set`.
+- `active` is a reserved WGSL word, and so are `set` and `filter` (also as a struct member name).
 - Back-ticks inside WGSL comments break the enclosing JS template literal.
 - three r185 storage buffers are fixed-size GPUBuffers: rebind in place, or pre-size with `maxGridBytes`.
 - three r185 `NodeMaterial` lighting is skipped when the scene has no light.

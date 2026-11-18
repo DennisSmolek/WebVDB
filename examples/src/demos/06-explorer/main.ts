@@ -12,8 +12,9 @@
  * feeds every panel below:
  *   - metadata table (name/type/class/voxel count/bboxes/voxel size/sizes)
  *   - `inspect()`'s node-count + memory-by-section bars
- *   - a 256-bin histogram (`gridStats` on the GPU; a ~100k-sample CPU scan if
- *     WebGPU isn't available)
+ *   - a 256-bin histogram (`gridStats`, the core compute pass over the grid's
+ *     `VDBGridPool` copy through the three wrapper (K2.3); a ~100k-sample CPU
+ *     scan if it fails)
  *   - LEAF-node bbox wireframes (`./leaf-walk.ts`, capped at 5000, drawn over
  *     the rendered volume)
  *   - a CPU-only axial Z-slice view (`readValue`, no GPU involved)
@@ -32,6 +33,14 @@
  * from-scratch fragment raymarch, not a stock `NodeMaterial` lighting model,
  * but noted for anyone extending this demo toward `VolumeNodeMaterial`.
  *
+ * ## Device and pool (K2.3)
+ *
+ * The page creates the `GPUDevice` and passes it to `WebGPURenderer` (D8);
+ * the loaded grid lives in one `VDBGridPool` on `getDevice(renderer)`
+ * (`pool.replace` on each load), which `gridStats` reads. The volume itself
+ * still renders through the v1 `NanoVDBVolumeMaterial` until the material
+ * port (K2.3 part A) lands: `makeVolumeMaterial` is the one place to switch.
+ *
  * ## Deterministic test mode (`?test=1&sample=vdb|nvdb`)
  *
  * Auto-loads the named sample (`sphere.vdb` or `sphere_fog_fp8.nvdb`),
@@ -43,8 +52,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
 import type { GridMetadata } from "@pmndrs/vdb/tools";
 import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer, gridStats } from "@pmndrs/vdb/three";
-import type { WebGPURenderer } from "three/webgpu";
+import { VDBGridPool } from "@pmndrs/vdb";
+import { NanoVDBGrid, NanoVDBVolumeMaterial, getDevice, gridStats } from "@pmndrs/vdb/three";
+import { WebGPURenderer } from "three/webgpu";
 import { buildFromVdbDetailed, inspect, parseVdb } from "@pmndrs/vdb/tools";
 import type { InspectReport } from "@pmndrs/vdb/tools";
 
@@ -56,6 +66,8 @@ interface Demo06State {
   voxelCount?: number;
   leafCount?: number;
   histogramNonEmpty?: boolean;
+  /** Where the histogram came from: the GPU `gridStats` pass or the CPU sampler fallback. */
+  histogramFrom?: "gpu" | "cpu";
   sliceNonEmpty?: boolean;
   error?: string;
 }
@@ -307,17 +319,19 @@ function cpuHistogramFallback(grid: NanoVDBGrid): Uint32Array {
   return histogram;
 }
 
-async function computeHistogram(device: GPUDevice | undefined, grid: NanoVDBGrid): Promise<Uint32Array> {
-  if (device) {
+/** GPU `gridStats` on the pool's copy of the grid; the CPU sampler if that fails. */
+async function computeHistogram(grid: NanoVDBGrid): Promise<{ histogram: Uint32Array; from: "gpu" | "cpu" }> {
+  if (renderer && pool && gridId !== undefined) {
     try {
-      const result = await gridStats(device, grid, pnanovdbSource, { histogramBins: HISTOGRAM_BINS });
-      return result.histogram;
-    } catch {
-      // Fall through to the CPU sampler below (defensive; gridStats is expected
-      // to succeed whenever `device` exists).
+      const result = await gridStats(renderer, pool, gridId, { histogramBins: HISTOGRAM_BINS });
+      return { histogram: result.histogram, from: "gpu" };
+    } catch (err) {
+      // Fall through to the CPU sampler below (defensive; gridStats is
+      // expected to succeed whenever the pool holds the grid).
+      console.warn("gridStats failed; using the CPU histogram sampler", err);
     }
   }
-  return cpuHistogramFallback(grid);
+  return { histogram: cpuHistogramFallback(grid), from: "cpu" };
 }
 
 // ---------------------------------------------------------------------------
@@ -437,12 +451,22 @@ function buildLeafWireframe(
   return { lines: new THREE.LineSegments(geometry, material), material, shown: origins.length, total };
 }
 
+/**
+ * The volume material. Still the v1 `NanoVDBVolumeMaterial` (its own copy of
+ * the image); K2.3 part A's pool-based material replaces this call, reading
+ * `pool` / `gridId` instead.
+ */
+function makeVolumeMaterial(grid: NanoVDBGrid): NanoVDBVolumeMaterial {
+  return new NanoVDBVolumeMaterial({ grid, pnanovdbSource, jitter: !TEST_MODE });
+}
+
 // ---------------------------------------------------------------------------
 // Renderer bootstrap (device-first, created once and reused across loads)
 // ---------------------------------------------------------------------------
 
 let renderer: WebGPURenderer | undefined;
-let device: GPUDevice | undefined;
+let pool: VDBGridPool | undefined;
+let gridId: number | undefined;
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let controls: OrbitControls;
@@ -459,8 +483,20 @@ let currentWireframe: THREE.LineSegments | undefined;
 let currentWireframeMaterial: THREE.LineBasicMaterial | undefined;
 let currentGrid: NanoVDBGrid | undefined;
 
+/** Features the v1 material path asked for (`createVolumeRenderer`'s defaults), when the adapter has them. */
+const WANTED_FEATURES: readonly GPUFeatureName[] = ["shader-f16", "float32-filterable"];
+
 async function initRenderer(): Promise<void> {
-  ({ renderer, device } = await createVolumeRenderer({}));
+  // Device first (D8): the page owns the device; three and the pool share it.
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("No WebGPU adapter.");
+  const device = await adapter.requestDevice({
+    requiredLimits: VDBGridPool.requiredLimits(adapter),
+    requiredFeatures: WANTED_FEATURES.filter((f) => adapter.features.has(f)),
+  });
+  renderer = new WebGPURenderer({ device, antialias: false });
+  await renderer.init();
+  pool = await VDBGridPool.create(getDevice(renderer), { label: "demo 06" });
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b1020);
   camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
@@ -540,7 +576,14 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
   renderMeta(grid, buffer.byteLength);
   renderInspect(report);
 
-  const histogram = await computeHistogram(device, grid);
+  // One pool slot for the loaded grid: replaced in place when it fits.
+  if (pool) {
+    if (gridId === undefined) gridId = pool.add(grid.image, { label: filename });
+    else pool.replace(gridId, grid.image);
+    pool.flush();
+  }
+
+  const { histogram, from: histogramFrom } = await computeHistogram(grid);
   renderHistogram(histogram);
   const histogramNonEmpty = histogram.some((v) => v > 0);
 
@@ -561,7 +604,7 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
     currentWireframeMaterial?.dispose();
   }
 
-  const volumeMaterial = new NanoVDBVolumeMaterial({ grid, pnanovdbSource, jitter: !TEST_MODE });
+  const volumeMaterial = makeVolumeMaterial(grid);
   const mesh = new THREE.Mesh(grid.proxyGeometry(), volumeMaterial);
   scene.add(mesh);
   scene.add(lines);
@@ -597,6 +640,7 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
     voxelCount: grid.metadata.voxelCount,
     leafCount: report.nodeCounts.leaf,
     histogramNonEmpty,
+    histogramFrom,
     sliceNonEmpty,
   };
 

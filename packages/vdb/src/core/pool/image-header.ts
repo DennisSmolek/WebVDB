@@ -105,6 +105,8 @@ export interface VDBImageHeader {
   indexBBoxMax: VDBVec3;
   voxelSize: VDBVec3;
   background: number;
+  /** Root min statistic (f32 as stored); meaningful only when `hasStats`. */
+  rootMin: number;
   /** Root max statistic; meaningful only when `hasStats`. */
   rootMax: number;
 }
@@ -219,6 +221,7 @@ export function readImageHeader(image: Uint32Array, what = "image"): VDBImageHea
     indexBBoxMax: i3(root + O.rootBBoxMax),
     voxelSize,
     background: view.getFloat32(root + O.rootBackground, true),
+    rootMin: view.getFloat32(root + O.rootMin, true),
     rootMax: view.getFloat32(root + O.rootMax, true),
   };
 }

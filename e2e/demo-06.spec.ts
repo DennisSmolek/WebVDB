@@ -9,7 +9,8 @@ import { expect, test } from "@playwright/test";
  * (leaf-bbox wireframe over the raymarched volume).
  *
  * SwiftShader compiles the full pnanovdb library shader slowly (~10-20s
- * cold), and this demo adds a `gridStats` compute pass plus a CPU tree walk
+ * cold), and this demo adds a `gridStats` compute pass (core compute on the
+ * page's `VDBGridPool` since K2.3; `histogramFrom` must be "gpu") plus a CPU tree walk
  * (leaf-bbox enumeration) and a CPU slice scan on top of demo 02's baseline
  * — so timeouts are generous.
  */
@@ -44,6 +45,7 @@ test.describe("demo 06 — explorer", () => {
     expect(state!.source, `expected the .nvdb route:\n${detail}`).toBe("nvdb");
     expect(state!.voxelCount ?? 0, `voxelCount should be > 0:\n${detail}`).toBeGreaterThan(0);
     expect(state!.histogramNonEmpty, `histogram should be non-empty:\n${detail}`).toBe(true);
+    expect(state!.histogramFrom, `histogram should come from the GPU gridStats pass:\n${detail}`).toBe("gpu");
     expect(state!.sliceNonEmpty, `slice should be non-empty:\n${detail}`).toBe(true);
 
     await expect(page).toHaveScreenshot("demo-06-nvdb.png", { maxDiffPixelRatio: 0.02 });
@@ -70,6 +72,7 @@ test.describe("demo 06 — explorer", () => {
     expect(state!.source, `expected the .vdb route:\n${detail}`).toBe("vdb");
     expect(state!.voxelCount ?? 0, `voxelCount should be > 0:\n${detail}`).toBeGreaterThan(0);
     expect(state!.histogramNonEmpty, `histogram should be non-empty:\n${detail}`).toBe(true);
+    expect(state!.histogramFrom, `histogram should come from the GPU gridStats pass:\n${detail}`).toBe("gpu");
     expect(state!.sliceNonEmpty, `slice should be non-empty:\n${detail}`).toBe(true);
   });
 });

@@ -135,6 +135,31 @@ export { probeCoords, probePoints } from "./cpu/probe-coords.js";
 export type { ProbeOpts } from "./cpu/probe-coords.js";
 
 /**
+ * CPU twins of the core compute tools (K2.3): `gridStatsCpu`,
+ * `decodeToAtlasCpu` (+ `atlasFromRaw`, the shared post-readback step), and
+ * `transformLeafValues`, the CPU value transform behind `applyValueTransform`.
+ */
+export {
+  atlasDims,
+  atlasFromRaw,
+  bboxSize,
+  decodeToAtlasCpu,
+  GRID_STATS_SUM_SCALE,
+  gridStatsCpu,
+  rootStats,
+  transformLeafValues,
+} from "./cpu/compute.js";
+export type {
+  AtlasFilter,
+  AtlasFormat,
+  AtlasFromRawOptions,
+  DecodeToAtlasCpuOptions,
+  GridStatsCpuOptions,
+  GridStatsCpuResult,
+  IndexBBox,
+} from "./cpu/compute.js";
+
+/**
  * Layout-constant accessors underlying `readValue` — exposed for callers
  * that need to walk NanoVDB tree structure generically (any grid type, not
  * just FLOAT/FP8/FPN) without decoding leaf values themselves, e.g.

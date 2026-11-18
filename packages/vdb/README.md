@@ -257,30 +257,41 @@ Live uniforms are plain three.js `Uniform`s exposed as properties, e.g.
 
 ### Compute utilities
 
-Standalone GPU compute passes over a `NanoVDBGrid` — each takes the
-`GPUDevice` (from `createVolumeRenderer`) and the same vendored
-`pnanovdbSource` text the material uses:
+Compute passes over a grid in a `VDBGridPool` (K2.3). The engine-free core
+records into your encoder and hands back a readback you resolve after
+submitting; the three wrappers take the renderer and return promises:
 
 ```ts
-import { gridStats, valueTransform, decodeToAtlas } from "@pmndrs/vdb/three";
+import { VDBGridPool, gridStats, decodeToAtlas, applyValueTransform } from "@pmndrs/vdb";
 
-const stats = await gridStats(device, grid, pnanovdbSource);
-// { min, max, mean, histogram: Uint32Array(256) }
+const id = pool.add(image);
+pool.update(encoder); // or pool.flush()
+const stats = gridStats(device, pool, id, { encoder, histogramBins: 256 });
+const atlas = decodeToAtlas(device, pool, id, { encoder, maxDim: 128, format: "uint8" });
+device.queue.submit([encoder.finish()]);
+await stats.read();  // { min, max, mean, histogram, activeVoxelCount, usedAtomicFastPath, range }
+await atlas.read();  // { data: Uint8Array | Float32Array, dims, range }; atlas.buffer is the raw f32 GPU output
 
-const { image } = await valueTransform(device, grid, pnanovdbSource, "return v * 2.0;");
-// or a named preset: VALUE_TRANSFORM_PRESETS has "double" | "half" | "negate" | "clamp01"
-
-const atlas = await decodeToAtlas(device, grid, pnanovdbSource, { format: "uint8", maxDim: 128 });
-// { data: Uint8Array | Float32Array, dims: [x, y, z], range: { min, max } }
+// Per-voxel edits run on the CPU (the pool is read-only to shaders) and are staged with pool.replace:
+applyValueTransform(pool, id, image, "double"); // or (v) => v * 2; Float grids only
 ```
 
-`valueTransform` is Float-grid-only in v1 (the address math assumes a
-4-byte, non-quantized value stride) and returns a **new** image — it
-never mutates the input. `decodeToAtlas` works for Float/Fp8/FpN and is
-the fallback path for renderers that sample a dense atlas instead of
-doing per-fragment sparse traversal (see
-[`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback),
-which cross-checks both against a CPU `readValue` pass).
+```ts
+import { gridStats, decodeToAtlas, valueTransform } from "@pmndrs/vdb/three";
+
+const stats = await gridStats(renderer, pool, id);
+const { data, dims, range, texture } = await decodeToAtlas(renderer, pool, id, { maxDim: 128 }); // texture: Data3DTexture
+const newImage = valueTransform(pool, id, image, "double");
+```
+
+Each tool frees only the buffers it allocated (in `read()` or `dispose()`).
+`gridStats` bins over the grid's root min/max statistics; `decodeToAtlas`
+normalizes to them by default. `applyValueTransform` rewrites leaf values
+(not tiles) and does not recompute the image's statistics. CPU twins live in
+`@pmndrs/vdb/tools` (`gridStatsCpu`, `decodeToAtlasCpu`, `atlasFromRaw`,
+`transformLeafValues`). See
+[`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback)
+for the atlas fallback path through a stock `Data3DTexture`.
 
 ### Sequences: `NanoVDBSequence`
 
