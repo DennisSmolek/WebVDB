@@ -64,6 +64,9 @@ function readRawValues(
   };
 
   const decodeBytes = (raw: Uint8Array, n: number): Float32Array => {
+    if (raw.length < n * elementSize) {
+      throw new VdbFormatError(`value payload is ${raw.length} bytes, expected ${n * elementSize}`);
+    }
     const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
     const out = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -72,16 +75,27 @@ function readRawValues(
     return out;
   };
 
+  /** The `<= 0` sentinel: raw values follow, `-n / elementSize` of them. */
+  const readSentinelRaw = (numBytes: number): Float32Array => {
+    const rawCount = -numBytes / elementSize;
+    if (!Number.isInteger(rawCount) || rawCount < 0 || rawCount > count) {
+      throw new VdbFormatError(
+        `raw-value sentinel ${numBytes} is not a whole number of ${elementSize}-byte values within the expected ${count}`,
+      );
+    }
+    return readPlain(rawCount);
+  };
+
   if (compression.blosc) {
     const numCompressedBytes = readI64AsNumber(reader);
-    if (numCompressedBytes <= 0) {
-      // Sentinel meaning "not worth compressing" — raw values follow instead.
-      const rawCount = -numCompressedBytes / elementSize;
-      return readPlain(rawCount);
-    }
+    if (numCompressedBytes <= 0) return readSentinelRaw(numCompressedBytes);
     // OpenVDB pads buffers shorter than Blosc's 48-byte minimum before
     // compressing, so the frame can decode to more than `count` values.
-    const decoded = decompressBlosc(reader.bytes_(numCompressedBytes));
+    const maxBytes = Math.max(count * elementSize, 48);
+    const decoded = decompressBlosc(reader.bytes_(numCompressedBytes), {
+      maxBytes,
+      expectedCbytes: numCompressedBytes,
+    });
     if (decoded.length < count * elementSize) {
       throw new VdbFormatError(`blosc frame decoded to ${decoded.length} bytes, expected ${count * elementSize}`);
     }
@@ -90,12 +104,9 @@ function readRawValues(
 
   if (compression.zip) {
     const numZippedBytes = readI64AsNumber(reader);
-    if (numZippedBytes <= 0) {
-      const rawCount = -numZippedBytes / elementSize;
-      return readPlain(rawCount);
-    }
+    if (numZippedBytes <= 0) return readSentinelRaw(numZippedBytes);
     const zippedBytes = reader.bytes_(numZippedBytes);
-    const inflated = inflateZlib(zippedBytes);
+    const inflated = inflateZlib(zippedBytes, count * elementSize);
     return decodeBytes(inflated.subarray(0, count * elementSize), count);
   }
 
@@ -168,6 +179,10 @@ export function readCompressedValues(reader: ByteReader, opts: ReadCompressedOpt
       : numValues;
 
   const raw = readRawValues(reader, onDiskCount, opts.useHalf, compression);
+
+  if (raw.length !== onDiskCount) {
+    throw new VdbFormatError(`node value payload holds ${raw.length} values, expected ${onDiskCount}`);
+  }
 
   if (compression.activeMask && raw.length !== numValues) {
     const expanded = new Float32Array(numValues);

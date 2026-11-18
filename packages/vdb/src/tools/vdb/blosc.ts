@@ -19,8 +19,9 @@
  *          2 Snappy, 3 zlib, 4 Zstd)
  *   memcpy'd: nbytes raw bytes follow the header.
  *   otherwise: nblocks i32 block starts (absolute frame offsets); each block
- *   holds `nsplits` streams (typesize streams when split, else 1; the last,
- *   short block is never split), each an i32 compressed size and its bytes. A
+ *   holds `nsplits` streams (typesize streams when split -- flag bit 4 clear,
+ *   typesize <= 16, block has >= 128 elements, not the short last block --
+ *   else 1), each an i32 compressed size and its bytes. A
  *   stream whose size equals its uncompressed size is stored raw.
  *
  * Derived from the format description above, not from any third-party code.
@@ -34,13 +35,33 @@ const FLAG_SHUFFLE = 0x01;
 const FLAG_MEMCPYED = 0x02;
 const FLAG_BITSHUFFLE = 0x04;
 const FLAG_DONT_SPLIT = 0x10;
+/** c-blosc `MAX_SPLITS` / `MIN_BUFFERSIZE`. */
+const MAX_SPLITS = 16;
+const MIN_BUFFERSIZE = 128;
 
 const CODEC_NAMES = ["BloscLZ", "LZ4", "Snappy", "zlib", "Zstd"];
 const CODEC_LZ4 = 1;
 const CODEC_ZLIB = 3;
 
-/** Decompresses one Blosc1 frame and returns its `nbytes` uncompressed bytes. */
-export function decompressBlosc(frame: Uint8Array): Uint8Array {
+/** Default output cap when a caller does not know the expected size (1 GiB). */
+const DEFAULT_MAX_BYTES = 1 << 30;
+
+export interface BloscLimits {
+  /** Largest uncompressed size the caller will accept; checked before allocating. */
+  maxBytes?: number;
+  /** The frame's required `cbytes` header field (what the enclosing format says it stored). */
+  expectedCbytes?: number;
+}
+
+/**
+ * Decompresses one Blosc1 frame and returns its `nbytes` uncompressed bytes.
+ *
+ * The frame is untrusted: every header field is validated against `maxBytes`
+ * (and the frame's own `cbytes`) before any allocation or read, mirroring
+ * c-blosc's `blosc_run_decompression_with_context` and `blosc_d` checks.
+ */
+export function decompressBlosc(frame: Uint8Array, limits: BloscLimits = {}): Uint8Array {
+  const maxBytes = limits.maxBytes ?? DEFAULT_MAX_BYTES;
   if (frame.length < HEADER_SIZE) {
     throw new VdbFormatError(`blosc frame is ${frame.length} bytes, shorter than its ${HEADER_SIZE}-byte header`);
   }
@@ -54,19 +75,29 @@ export function decompressBlosc(frame: Uint8Array): Uint8Array {
   if (version === 0 || version > 2) {
     throw new VdbUnsupportedError(`blosc frame format version ${version} (only Blosc1, versions 1-2, is supported)`);
   }
-  if (cbytes > frame.length) {
-    throw new VdbFormatError(`blosc frame declares ${cbytes} bytes but only ${frame.length} are present`);
+  if (flags & 0x08) throw new VdbUnsupportedError("blosc frame has compressor flags from a future version");
+  if (cbytes < HEADER_SIZE || cbytes > frame.length) {
+    throw new VdbFormatError(`blosc header field cbytes=${cbytes} is outside the ${frame.length}-byte frame`);
   }
-
-  const out = new Uint8Array(nbytes);
-  if (nbytes === 0) return out;
+  if (limits.expectedCbytes !== undefined && cbytes !== limits.expectedCbytes) {
+    throw new VdbFormatError(
+      `blosc header field cbytes=${cbytes} does not match the ${limits.expectedCbytes} compressed bytes stored`,
+    );
+  }
+  if (nbytes === 0) return new Uint8Array(0);
+  if (nbytes > maxBytes) {
+    throw new VdbFormatError(`blosc header field nbytes=${nbytes} exceeds the expected ${maxBytes}-byte output`);
+  }
+  if (blocksize === 0 || blocksize > maxBytes) {
+    throw new VdbFormatError(`blosc header field blocksize=${blocksize} is zero or exceeds the expected ${maxBytes}-byte output`);
+  }
+  if (typesize === 0) throw new VdbFormatError("blosc header field typesize is zero");
 
   if (flags & FLAG_MEMCPYED) {
-    if (HEADER_SIZE + nbytes > frame.length) {
-      throw new VdbFormatError("memcpy'd blosc frame is truncated");
+    if (nbytes + HEADER_SIZE !== cbytes) {
+      throw new VdbFormatError(`memcpy'd blosc frame: cbytes=${cbytes} != nbytes(${nbytes}) + ${HEADER_SIZE}`);
     }
-    out.set(frame.subarray(HEADER_SIZE, HEADER_SIZE + nbytes));
-    return out;
+    return frame.slice(HEADER_SIZE, HEADER_SIZE + nbytes);
   }
 
   if (flags & FLAG_BITSHUFFLE) {
@@ -78,29 +109,47 @@ export function decompressBlosc(frame: Uint8Array): Uint8Array {
       `blosc codec ${CODEC_NAMES[codec] ?? `#${codec}`} is not supported (LZ4 and zlib are; OpenVDB writes LZ4)`,
     );
   }
-  if (blocksize === 0) throw new VdbFormatError("blosc frame has a zero block size");
 
+  const nblocks = Math.ceil(nbytes / blocksize);
+  const tableEnd = HEADER_SIZE + 4 * nblocks;
+  if (tableEnd > cbytes) {
+    throw new VdbFormatError(`blosc block-start table (${nblocks} blocks) does not fit in cbytes=${cbytes}`);
+  }
+
+  const out = new Uint8Array(nbytes);
   const shuffle = (flags & FLAG_SHUFFLE) !== 0 && typesize > 1;
   const dontSplit = (flags & FLAG_DONT_SPLIT) !== 0;
-  const nblocks = Math.ceil(nbytes / blocksize);
-  const scratch = shuffle ? new Uint8Array(blocksize) : null;
+  // Never larger than the output: blocksize <= maxBytes, and a block never exceeds nbytes.
+  const scratch = shuffle ? new Uint8Array(Math.min(blocksize, nbytes)) : null;
 
   for (let b = 0; b < nblocks; b++) {
     const bstart = view.getInt32(HEADER_SIZE + 4 * b, true);
+    if (bstart < tableEnd || bstart + 4 > cbytes) {
+      throw new VdbFormatError(`blosc block-start[${b}]=${bstart} is outside [${tableEnd}, ${cbytes - 4}]`);
+    }
     const leftover = b === nblocks - 1 && nbytes % blocksize !== 0;
     const bsize = leftover ? nbytes % blocksize : blocksize;
-    const nsplits = !dontSplit && !leftover && typesize > 0 && bsize % typesize === 0 ? typesize : 1;
+    // c-blosc blosc_d: split only if the frame allows it, typesize <= MAX_SPLITS (16),
+    // the block holds >= MIN_BUFFERSIZE (128) elements, and it is not the leftover block.
+    // Frames from before the dont-split flag (c-blosc < 1.14) follow the same rule.
+    const nsplits =
+      !dontSplit && typesize <= MAX_SPLITS && Math.floor(bsize / typesize) >= MIN_BUFFERSIZE && !leftover
+        ? typesize
+        : 1;
     const neblock = bsize / nsplits;
+    if (!Number.isInteger(neblock)) {
+      throw new VdbFormatError(`blosc block ${b} of ${bsize} bytes does not divide into ${nsplits} splits`);
+    }
     const dest = out.subarray(b * blocksize, b * blocksize + bsize);
     const target = scratch ? scratch.subarray(0, bsize) : dest;
 
     let p = bstart;
     for (let s = 0; s < nsplits; s++) {
-      if (p + 4 > frame.length) throw new VdbFormatError("blosc block is truncated");
+      if (p + 4 > cbytes) throw new VdbFormatError(`blosc block ${b} stream ${s} size field is outside cbytes=${cbytes}`);
       const csize = view.getInt32(p, true);
       p += 4;
-      if (csize < 0 || p + csize > frame.length) {
-        throw new VdbFormatError(`blosc stream size ${csize} runs past the frame`);
+      if (csize < 0 || csize > cbytes - p) {
+        throw new VdbFormatError(`blosc stream size ${csize} (block ${b}, stream ${s}) runs past cbytes=${cbytes}`);
       }
       const src = frame.subarray(p, p + csize);
       const part = target.subarray(s * neblock, (s + 1) * neblock);
@@ -112,7 +161,7 @@ export function decompressBlosc(frame: Uint8Array): Uint8Array {
           throw new VdbFormatError(`LZ4 stream decoded to ${written} bytes, expected ${neblock}`);
         }
       } else {
-        const inflated = inflateZlib(src);
+        const inflated = inflateZlib(src, neblock);
         if (inflated.length !== neblock) {
           throw new VdbFormatError(`zlib stream decoded to ${inflated.length} bytes, expected ${neblock}`);
         }
