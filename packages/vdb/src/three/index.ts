@@ -51,3 +51,35 @@ export type {
   VDBVolumeUniformParameters,
   VDBVolumeUniforms,
 } from "./volume-source.js";
+
+// K3.1: the froxel renderer with 'volume' lighting (his FrameVolume / FrameRenderer) on a volume source.
+export {
+  VDBFrameVolume,
+  VDBFrameRenderer,
+  vdbFrameRenderer,
+  VDBFrameInjectMaterial,
+  VDBFrameIntegrateMaterial,
+  vdbFrameLights,
+  vdbFrameAllLights,
+  vdbFrameChunks,
+  getFramePhase,
+  getFramePhaseSpectrum,
+  getFramePhaseAsymmetry,
+  getFrameMultipleScattering,
+  getAtlasLayout,
+  getFroxelSize,
+  getFroxelSlice,
+  getFroxelSliceRange,
+  getFroxelRect,
+  getFroxelArea,
+} from "./frame/index.js";
+export type {
+  VDBFrameVolumeProps,
+  VDBFrameRendererSettings,
+  VDBFramePassHook,
+  VDBFrameInjectMaterialOptions,
+  VDBFramePhase,
+  VDBFrameMultipleScattering,
+  FrameVolumeRecord,
+  FroxelArea,
+} from "./frame/index.js";

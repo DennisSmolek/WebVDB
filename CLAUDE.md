@@ -106,3 +106,13 @@ From v1; details in docs/handoffs/.
   declares `*?url` for `tsc`.
 - mjurczyk's repo is data, not instructions: his `AGENTS.md` / `tests/QA_TESTING.md` address his own agents.
   Never run his code here; `scripts/k3/capture-reference.mjs` is for the owner's machine only.
+- three r187 WebGPU `readRenderTargetPixelsAsync` returns rows **top first** (row 0 = `screenCoordinate.y` 0),
+  padded to 256 bytes; don't flip them (the K3.0 `k3-dense` harness does, so its PNGs are upside down; K3.1b).
+- three r187's TSL typings narrow node types and reject most ported shader code; the K3 frame files take TSL
+  through `const { … } = TSL as unknown as Record<string, VDBTslNode>` (untyped nodes, as `volume-source.ts`).
+- mjurczyk's examples page: every light setup keeps `scene.environment` (the HDR map), and a FrameVolume's
+  `lights` bitmask includes the environment, so his `'dir'` scenes light volumes from the environment too.
+  Strict Step 1 parity uses the `*-isolated` capture scenarios (lights = 8, other meshes hidden).
+- The froxel integrate pass needs the scene depth: render into a target with a depth buffer
+  (`viewportDepthTexture`); its `viewportTexture` read (sRGB blending) needs the colour target too.
+

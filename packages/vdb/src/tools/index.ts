@@ -283,3 +283,33 @@ export type {
   BakeWvdbOptions,
   VdbToWvdbOptions,
 } from "./wvdb/index.js";
+
+/**
+ * K3.1: CPU twins of the froxel pipeline maths (mjurczyk's `'volume'` lighting), the test oracles
+ * of the `./three` frame passes: slice mapping, HG phase, shadow march, inject pre-integration,
+ * integrate composite, sRGB blend.
+ */
+export {
+  vdbFrameSliceDepth,
+  vdbFrameFroxelSlice,
+  vdbFrameSliceRange,
+  vdbFrameViewPosition,
+  vdbFrameFroxel,
+  vdbFrameDistanceFade,
+  vdbFrameBoxSteps,
+  vdbFrameNoise,
+  vdbFrameHenyeyGreenstein,
+  vdbFramePhaseWeight,
+  vdbFrameShadowAbsorption,
+  vdbFrameShadowStep,
+  vdbFrameShadowDepth,
+  vdbFrameShadowTransmittance,
+  vdbFrameShadowMarch,
+  vdbFrameShadowedLight,
+  vdbFrameInjectSlice,
+  vdbFrameIntegrate,
+  vdbSrgbOetf,
+  vdbSrgbEotf,
+  vdbFrameSrgbBlend,
+} from "./frame/index.js";
+export type { VDBFrameFroxelSample } from "./frame/index.js";

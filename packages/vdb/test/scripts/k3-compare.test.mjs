@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -135,5 +135,38 @@ describe("compare CLI", () => {
     expect(t).toMatch(/PROVISIONAL, D25/);
     const bad = spawnSync(process.execPath, [COMPARE, path.join(dir, "a.png")], { encoding: "utf8" });
     expect(bad.status).toBe(2);
+  });
+
+  it("K3.1 directory mode: the harness sidecar masks to the volume rect and non-parity scenes do not gate", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "k3-compare-dir-"));
+    const ours = path.join(root, "ours");
+    const ref = path.join(root, "ref");
+    mkdirSync(ours);
+    mkdirSync(ref);
+    // 20x10; the volume rect is the left half. A difference outside it must not count.
+    const base = solid(20, 10, [40, 50, 60]);
+    const outside = solid(20, 10, [40, 50, 60]);
+    for (let y = 0; y < 10; y++) for (let x = 12; x < 20; x++) outside.data[(y * 20 + x) * 4] = 200;
+    const inside = solid(20, 10, [40, 50, 60]);
+    for (let y = 0; y < 10; y++) for (let x = 0; x < 4; x++) inside.data[(y * 20 + x) * 4] = 200;
+    writeFileSync(path.join(ours, "masked.png"), encodePng(base));
+    writeFileSync(path.join(ref, "masked.png"), encodePng(outside));
+    writeFileSync(path.join(ours, "masked.json"), JSON.stringify({ volumeRect: [0, 0, 10, 10], parityExpected: true }));
+    writeFileSync(path.join(ours, "info.png"), encodePng(base));
+    writeFileSync(path.join(ref, "info.png"), encodePng(inside));
+    writeFileSync(path.join(ours, "info.json"), JSON.stringify({ volumeRect: [0, 0, 10, 10], parityExpected: false, parityNote: "environment (K3.4)" }));
+    writeFileSync(path.join(ours, "only-ours.png"), encodePng(base));
+    const run = spawnSync(process.execPath, [COMPARE, "--ours", ours, "--reference", ref, "--json"], { encoding: "utf8" });
+    expect(run.status).toBe(0);
+    const report = JSON.parse(run.stdout);
+    expect(report.results.map((r) => r.name)).toEqual(["info", "masked"]);
+    const [info, masked] = report.results;
+    expect(masked).toMatchObject({ pass: true, gates: true, mask: [0, 0, 10, 10], pixels: 100 });
+    expect(info).toMatchObject({ pass: false, gates: false, note: "environment (K3.4)", above: 40 });
+    // --gate all makes the INFO pair gate; --mask none compares the whole frame.
+    expect(spawnSync(process.execPath, [COMPARE, "--ours", ours, "--reference", ref, "--gate", "all"], { encoding: "utf8" }).status).toBe(1);
+    const whole = spawnSync(process.execPath, [COMPARE, "--ours", ours, "--reference", ref, "--mask", "none", "--scenes", "masked", "--json"], { encoding: "utf8" });
+    expect(whole.status).toBe(1);
+    expect(JSON.parse(whole.stdout).results[0]).toMatchObject({ name: "masked", mask: null, above: 80 });
   });
 });
