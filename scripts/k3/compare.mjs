@@ -13,8 +13,19 @@
 //                             ({ "<pass>": ms, ... } or { "passes": {...} }). Always labelled provisional:
 //                             no timing gates until a quiet machine (D25).
 //   --json                    print a JSON report instead of text
+//   --mask none|volume        volume: compare only inside the volume's screen rectangle, read from the
+//                             `<name>.json` sidecar next to our PNG (`volumeRect`, written by the K3.1 harness).
+//                             Default: volume when the sidecar has a rect, else none.
+//   --scenes a,b              directory mode: only these names
+//   --gate expected|all       expected (default): a pair whose sidecar says `parityExpected: false` (the Step 1
+//                             port cannot match that scene yet, e.g. environment or 'frame' lighting) is
+//                             reported as INFO and does not set the exit code. all: every pair gates.
 //
-// Exit code: 0 when every pair passes, 1 when any fails, 2 on a usage or input error.
+// K3.1 one-shot (after the owner's K3.0a capture exists in fixtures/k3-reference/75e7345/):
+//   pnpm k3:parity     # renders our parity scenes (e2e/k3-frame.spec.ts, K3_FRAME_PARITY=1) then runs this
+//                      # with --ours artifacts/k3/ours --reference fixtures/k3-reference/75e7345 --heatmap artifacts/k3/diff
+//
+// Exit code: 0 when every gating pair passes, 1 when any fails, 2 on a usage or input error.
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { PARITY_BARS, compareImages, diffHeatmap } from "./metrics.mjs";
@@ -54,8 +65,9 @@ if (opt.ours || opt.reference) {
   if (!opt.ours || !opt.reference) usage("--ours and --reference go together");
   for (const d of [opt.ours, opt.reference]) if (!existsSync(d) || !statSync(d).isDirectory()) usage(`not a directory: ${d}`);
   const refs = new Set(readdirSync(opt.reference).filter((f) => f.endsWith(".png")));
+  const only = opt.scenes ? new Set(String(opt.scenes).split(",")) : null;
   pairs = readdirSync(opt.ours)
-    .filter((f) => f.endsWith(".png") && refs.has(f))
+    .filter((f) => f.endsWith(".png") && refs.has(f) && (!only || only.has(f.replace(/\.png$/, ""))))
     .sort()
     .map((f) => ({ name: f.replace(/\.png$/, ""), ours: path.join(opt.ours, f), reference: path.join(opt.reference, f) }));
   if (!pairs.length) usage(`no PNG names in both ${opt.ours} and ${opt.reference}`);
@@ -63,6 +75,31 @@ if (opt.ours || opt.reference) {
   if (positional.length !== 2) usage();
   for (const f of positional) if (!existsSync(f)) usage(`missing file: ${f}`);
   pairs = [{ name: path.basename(positional[0]).replace(/\.png$/, ""), ours: positional[0], reference: positional[1] }];
+}
+
+const maskMode = opt.mask ?? "auto";
+if (!["auto", "none", "volume"].includes(maskMode)) usage(`unknown --mask ${maskMode}`);
+const gateMode = opt.gate ?? "expected";
+if (!["expected", "all"].includes(gateMode)) usage(`unknown --gate ${gateMode}`);
+
+/** The K3.1 harness sidecar next to our PNG (`<name>.json`), or null. */
+function sidecarOf(oursPng) {
+  const f = oursPng.replace(/\.png$/, ".json");
+  if (!existsSync(f)) return null;
+  try {
+    return JSON.parse(readFileSync(f, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Crop to [x0, y0, x1) x [y0, y1) (top-left origin). */
+function crop(img, [x0, y0, x1, y1]) {
+  const w = Math.max(0, Math.min(img.width, x1) - x0);
+  const h = Math.max(0, Math.min(img.height, y1) - y0);
+  const data = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) data.set(img.data.subarray(((y0 + y) * img.width + x0) * 4, ((y0 + y) * img.width + x0 + w) * 4), y * w * 4);
+  return { width: w, height: h, data };
 }
 
 const results = [];
@@ -75,6 +112,17 @@ for (const p of pairs) {
   } catch (e) {
     usage(`${p.name}: ${e.message}`);
   }
+  const sidecar = sidecarOf(p.ours);
+  const rect = sidecar?.volumeRect;
+  let mask = null;
+  if (maskMode === "volume" || (maskMode === "auto" && Array.isArray(rect))) {
+    if (!Array.isArray(rect) || rect.length !== 4) usage(`${p.name}: --mask volume needs volumeRect in ${p.ours.replace(/\.png$/, ".json")}`);
+    if (a.width !== b.width || a.height !== b.height) usage(`${p.name}: size mismatch ${a.width}x${a.height} vs ${b.width}x${b.height}`);
+    mask = rect;
+    a = crop(a, rect);
+    b = crop(b, rect);
+  }
+  const gates = gateMode === "all" || sidecar?.parityExpected !== false;
   let r;
   try {
     r = compareImages(a, b, bar);
@@ -87,7 +135,7 @@ for (const p of pairs) {
     writeFileSync(out, encodePng(diffHeatmap(a, b, { threshold: bar.threshold })));
     r.heatmap = out;
   }
-  results.push({ name: p.name, ours: p.ours, reference: p.reference, ...r });
+  results.push({ name: p.name, ours: p.ours, reference: p.reference, mask, gates, ...(sidecar?.parityNote ? { note: sidecar.parityNote } : {}), ...r });
 }
 
 let timings = null;
@@ -97,7 +145,7 @@ if (opt.timings) {
   timings = { provisional: true, note: "D25: not from a quiet machine; do not decide on these", passes: raw.passes ?? raw };
 }
 
-const pass = results.every((r) => r.pass);
+const pass = results.every((r) => r.pass || !r.gates);
 if (opt.json) {
   console.log(JSON.stringify({ bar: { name: barName, ...bar }, pass, results, timings }, (k, v) => (v === Infinity ? "Infinity" : v), 2));
 } else {
@@ -105,9 +153,10 @@ if (opt.json) {
   for (const r of results) {
     const psnrText = r.psnr === Infinity ? "inf (identical)" : `${r.psnr.toFixed(2)} dB`;
     console.log(
-      `${r.pass ? "PASS" : "FAIL"} ${r.name}: PSNR ${psnrText}, ${r.above}/${r.pixels} px (${(r.fraction * 100).toFixed(3)}%) > ${r.threshold}/255, max diff ${r.maxDiff}` +
+      `${!r.gates ? "INFO" : r.pass ? "PASS" : "FAIL"} ${r.name}${r.mask ? ` [volume rect ${r.mask.join(",")}]` : ""}: PSNR ${psnrText}, ${r.above}/${r.pixels} px (${(r.fraction * 100).toFixed(3)}%) > ${r.threshold}/255, max diff ${r.maxDiff}` +
         (r.heatmap ? `, heatmap ${r.heatmap}` : "") +
-        (r.failures.length ? `\n     ${r.failures.join("; ")}` : ""),
+        (r.failures.length ? `\n     ${r.failures.join("; ")}` : "") +
+        (r.note ? `\n     not gating: ${r.note}` : ""),
     );
   }
   if (timings) {

@@ -33,3 +33,5 @@ fixtures/parity/
 
 # K3 reference captures of mjurczyk/openvdb (scripts/k3/capture-reference.mjs; owner-run, never committed)
 fixtures/k3-reference/
+# K3.1 parity inputs copied from his clone (bunny_cloud.wvdb, smoke.wvdb: CC BY-SA sources), never committed
+fixtures/k3/

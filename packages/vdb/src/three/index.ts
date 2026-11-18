@@ -67,3 +67,36 @@ export type {
   VDBCoarseFirstResult,
   VDBCoarseFirstSource,
 } from "./coarse-first.js";
+
+// K3.1: the froxel renderer with 'volume' lighting (his FrameVolume / FrameRenderer) on a volume source.
+export {
+  VDBFrameVolume,
+  VDBFrameRenderer,
+  vdbFrameRenderer,
+  VDBFrameInjectMaterial,
+  VDBFrameIntegrateMaterial,
+  vdbFrameLights,
+  vdbFrameAllLights,
+  vdbFrameChunks,
+  // His helper names stay inside frame/ (diffable with upstream); the public names follow D17.
+  getFramePhase as vdbFramePhase,
+  getFramePhaseSpectrum as vdbFramePhaseSpectrum,
+  getFramePhaseAsymmetry as vdbFramePhaseAsymmetry,
+  getFrameMultipleScattering as vdbFrameMultipleScattering,
+  getAtlasLayout as vdbFrameAtlasLayout,
+  getFroxelSize as vdbFroxelSize,
+  getFroxelSlice as vdbFroxelSlice,
+  getFroxelSliceRange as vdbFroxelSliceRange,
+  getFroxelRect as vdbFroxelRect,
+  getFroxelArea as vdbFroxelArea,
+} from "./frame/index.js";
+export type {
+  VDBFrameVolumeProps,
+  VDBFrameRendererSettings,
+  VDBFramePassHook,
+  VDBFrameInjectMaterialOptions,
+  VDBFramePhase,
+  VDBFrameMultipleScattering,
+  FrameVolumeRecord,
+  FroxelArea,
+} from "./frame/index.js";

@@ -70,6 +70,13 @@ const SCENARIOS = [
   { name: "step1-lights-directional", step: 1, fields: { demo: "frame", lightSetup: "dir" }, sanity: "demo-1-lights-directional.jpg" },
   { name: "step1-volume-dir-ms-off", step: 1, fields: { demo: "frame", lighting: "volume", lightSetup: "dir", multipleScattering: false }, sanity: null },
   { name: "step1-volume-dir-ms-on", step: 1, fields: { demo: "frame", lighting: "volume", lightSetup: "dir", multipleScattering: true }, sanity: null },
+  // K3.1: the same two, isolated for the Step 1 parity bar. His 'dir' light setup keeps scene.environment (the HDR
+  // map) and every FrameVolume lights itself from it too (lights bitmask: all), which Step 1 does not port (K3.4).
+  // `isolate` uses his public API only, after the GUI fields: every FrameVolume gets lights = 8
+  // (frameLights.useDirectionalLights), every other mesh (grounded skybox, ground, props, light helpers) is hidden,
+  // and the background is his init colour 0x598eff (scene.background null + renderer clear colour).
+  { name: "step1-volume-dir-ms-off-isolated", step: 1, fields: { demo: "frame", lighting: "volume", lightSetup: "dir", multipleScattering: false }, sanity: null, isolate: true },
+  { name: "step1-volume-dir-ms-on-isolated", step: 1, fields: { demo: "frame", lighting: "volume", lightSetup: "dir", multipleScattering: true }, sanity: null, isolate: true },
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.
@@ -311,6 +318,24 @@ async function readMetadata(page) {
   });
 }
 
+/** K3.1 `isolate`: only the FrameVolumes and the directional light reach the frame (see SCENARIOS). His public API only. */
+async function isolateVolumes(page) {
+  await page.evaluate(async () => {
+    const { scene, renderer } = await import("/src/main.jsx");
+    const DIRECTIONAL_ONLY = 0b001000; // three-openvdb frame/core/frameLights.js useDirectionalLights
+    const insideVolume = (o) => {
+      for (let p = o; p; p = p.parent) if (p.isFrameVolume) return true;
+      return false;
+    };
+    scene.traverse((o) => {
+      if (o.isFrameVolume) o.lights = DIRECTIONAL_ONLY;
+      else if ((o.isMesh || o.isPoints || o.isLine || o.isSprite) && !insideVolume(o)) o.visible = false;
+    });
+    scene.background = null;
+    renderer.setClearColor(0x598eff, 1.0);
+  });
+}
+
 async function capture(context, scenario, fields, type) {
   const page = await context.newPage();
   const pending = new Set();
@@ -351,6 +376,7 @@ async function capture(context, scenario, fields, type) {
   const { demo, ...rest } = fields;
   await setFields(page, { demo, ...rest });
   await waitForIdle(page, pending, errors);
+  if (scenario.isolate) await isolateVolumes(page);
   await page.clock.runFor(FRAME_TIME);
   await page.waitForTimeout(10);
   const bytes = await page.screenshot(type === "png" ? { type: "png", style: HIDE_OVERLAYS } : { type: "jpeg", quality: JPEG_QUALITY, style: HIDE_OVERLAYS });
@@ -427,7 +453,7 @@ try {
     const parity = await capture(context, s, fields, "png");
     const file = `${s.name}.png`;
     writeFileSync(path.join(outDir, file), parity.bytes);
-    const entry = { name: s.name, step: s.step, fields, file, sha256: sha256(parity.bytes), metadata: parity.metadata, asis: null, sanity: null };
+    const entry = { name: s.name, step: s.step, fields, isolate: !!s.isolate, file, sha256: sha256(parity.bytes), metadata: parity.metadata, asis: null, sanity: null };
     const description = parity.metadata.adapter?.description ?? "";
     if (/swiftshader|llvmpipe|software/i.test(`${description} ${parity.metadata.adapter?.vendor ?? ""}`)) {
       throw new Error(`the browser used a software adapter (${description}); references must come from a hardware GPU (try --executable with an installed Chrome)`);
