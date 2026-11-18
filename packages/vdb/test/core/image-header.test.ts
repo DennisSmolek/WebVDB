@@ -60,10 +60,11 @@ describe("image-header offsets match tools and PNanoVDB.h", () => {
 
 describe("readImageHeader validation", () => {
   it("reads a synthetic image", () => {
-    const h = readImageHeader(makeImage({ bytes: 2048, gridType: 14, background: 0.5, rootMax: 2, name: "density" }));
+    const h = readImageHeader(makeImage({ bytes: 2048, gridType: 14, background: 0.5, rootMin: -0.25, rootMax: 2, name: "density" }));
     expect(h).toMatchObject({ gridType: "fp8", gridTypeId: 14, gridClass: 2, name: "density", byteLength: 2048 });
     expect(h.hasStats).toBe(true);
     expect(h.background).toBe(0.5);
+    expect(h.rootMin).toBe(-0.25);
     expect(h.rootMax).toBe(2);
     expect(h.indexBBoxMin).toEqual([-4, -4, -4]);
   });
@@ -123,5 +124,6 @@ describe.skipIf(!present)("readImageHeader on the nine primitive fixtures", () =
       expect(w(h.indexBBoxMin[a]!)).toBeCloseTo(meta.worldBBox.min[a]!, 9);
     }
     expect(h.rootMax).toBeGreaterThan(0);
+    expect(h.rootMin).toBeLessThanOrEqual(h.rootMax);
   });
 });

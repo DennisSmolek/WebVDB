@@ -18,6 +18,7 @@ export interface SyntheticImageOptions {
   bboxMin?: [number, number, number];
   bboxMax?: [number, number, number];
   background?: number;
+  rootMin?: number;
   rootMax?: number;
   /** Seeds the payload pattern so two images differ. */
   seed?: number;
@@ -85,7 +86,7 @@ export function makeImage(o: SyntheticImageOptions = {}): Uint32Array {
   }
   v.setUint32(root + 24, 0, true); // tile count
   v.setFloat32(root + 28, o.background ?? 0, true);
-  v.setFloat32(root + 32, 0, true);
+  v.setFloat32(root + 32, o.rootMin ?? 0, true);
   v.setFloat32(root + 36, o.rootMax ?? 1, true);
   return out;
 }

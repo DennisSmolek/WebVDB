@@ -123,6 +123,13 @@ export interface VDBGridInfo {
   instanceTransform: boolean;
   background: number;
   valueMax: number;
+  /**
+   * The root node's min/max statistics as stored in the image (f32). Meaningful
+   * only when `hasStats`; without stats they are whatever the file holds
+   * (usually 0). `gridStats` and `decodeToAtlas` use them as their range.
+   */
+  rootMin: number;
+  rootMax: number;
   voxelSize: VDBVec3;
   indexBBox: { min: VDBVec3; max: VDBVec3 };
   /** World-space AABB of the index bbox's voxels (max corner + 1 voxel), through the record's f64 transform. */
@@ -630,6 +637,8 @@ export class VDBGridPool {
       instanceTransform: g.transform !== null,
       background: h.background,
       valueMax: this.#valueMax(g),
+      rootMin: h.rootMin,
+      rootMax: h.rootMax,
       voxelSize: [...h.voxelSize],
       indexBBox: { min: [...lo], max: [...h.indexBBoxMax] },
       worldBBox: { min, max },

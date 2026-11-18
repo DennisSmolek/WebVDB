@@ -56,3 +56,17 @@ export type {
 } from "./wgsl/types.js";
 export { VDB_ALL_SCALAR_TYPES, VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES } from "./types.js";
 export type { VDBGridTypeName, VDBSlot } from "./types.js";
+// K2.3: compute tools on the pool (gridStats, decodeToAtlas, applyValueTransform).
+export { applyValueTransform, decodeToAtlas, gridStats, VDB_VALUE_TRANSFORM_PRESETS } from "./compute/index.js";
+export type {
+  AtlasFilter,
+  AtlasFormat,
+  VDBAtlas,
+  VDBAtlasReadback,
+  VDBDecodeToAtlasOptions,
+  VDBGridStats,
+  VDBGridStatsOptions,
+  VDBReadback,
+  VDBValueTransform,
+  VDBValueTransformPreset,
+} from "./compute/index.js";

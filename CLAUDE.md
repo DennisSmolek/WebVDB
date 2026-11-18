@@ -60,7 +60,7 @@ From v1; details in docs/handoffs/.
   SwiftShader flags are in `playwright.config.ts`.
 - `bindGroupLayouts` is positional. A skipped `@group` index silently invalidates the dispatch and leaves outputs
   zeroed; wrap pipeline creation in `pushErrorScope('validation')`.
-- `active` is a reserved WGSL word, and so is `set`.
+- `active` is a reserved WGSL word, and so are `set` and `filter` (also as a struct member name).
 - Back-ticks inside WGSL comments break the enclosing JS template literal.
 - three's storage attributes are fixed-size GPUBuffers (r185–r187). The K2 adapter sidesteps it: `VDBGridNode`
   binds the pool's own buffer and rebinds after a growth (`grids.update()` after the pool's update).

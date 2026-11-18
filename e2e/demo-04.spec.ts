@@ -9,6 +9,10 @@ import { expect, test } from "@playwright/test";
  * screenshot of the atlas render (deterministic `?test=1` mode, fixed pose,
  * one settled frame — same recipe as `demo-02.spec.ts`).
  *
+ * The atlas renders through the stock `Data3DTexture` + `texture3D()` (K2.5;
+ * the v1 storage-buffer bridge, DIVERGES V8, is gone: three r187 on headless
+ * SwiftShader accepts the 3D texture and renders this golden bit for bit).
+ *
  * SwiftShader compiles the shader + runs the compute passes slowly (cold
  * compile ~10-20s plus a ~200K-voxel dense-bbox gridStats/valueTransform
  * pass), so timeouts are generous.
@@ -44,7 +48,7 @@ test.describe("demo 04 — atlas-fallback (compute toolset)", () => {
     });
 
     await page.goto(
-      `${DEMO_URL}?test=1&texture=storage&presentation=readback&swizzle=on&keepAlive=on`,
+      `${DEMO_URL}?test=1&presentation=readback&swizzle=on&keepAlive=on`,
     );
     await page.waitForFunction(() => window.__DEMO04__ !== undefined, undefined, { timeout: 150_000 });
 
@@ -56,7 +60,7 @@ test.describe("demo 04 — atlas-fallback (compute toolset)", () => {
     expect(state!.ready, `demo should reach ready:\n${detail}`).toBe(true);
     expect(state!.statsOk, `gridStats should match the CPU/sidecar truth:\n${detail}`).toBe(true);
     expect(state!.transformOk, `valueTransform should match 2x the sidecar values:\n${detail}`).toBe(true);
-    expect(state!.textureMode, `CI must retain the storage bridge:\n${detail}`).toBe("storage");
+    expect(state!.textureMode, `the stock Data3DTexture path (K2.5, DIVERGES V8):\n${detail}`).toBe("3d");
     expect(state!.presentation, `CI must retain deterministic readback:\n${detail}`).toBe("readback");
     expect(state!.adapter, `canonical goldens require SwiftShader:\n${detail}`).toMatch(/swiftshader/i);
 
