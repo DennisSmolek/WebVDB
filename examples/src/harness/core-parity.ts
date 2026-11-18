@@ -145,7 +145,8 @@ function ord(x: number): number {
   return i < 0 ? -2147483648 - i : i;
 }
 function ulps(a: number, b: number): number {
-  if (Number.isNaN(a) || Number.isNaN(b)) return Number.isNaN(a) && Number.isNaN(b) ? 0 : Infinity;
+  // NaN never matches, even NaN vs NaN: the twins never produce NaN on the fixtures, so any NaN is a bug.
+  if (Number.isNaN(a) || Number.isNaN(b)) return Infinity;
   if (a === b) return 0;
   return Math.abs(ord(a) - ord(b));
 }

@@ -43,7 +43,11 @@ phase moves code, it does not rewrite it.
 pack:dry` shows one tarball with `.`, `./tools` and `./three`; the packed tarball installs into a clean external
 consumer and all three subpaths import from `dist/`.
 
-## K1 — Engine-free WebGPU core 🟨
+## K1 — Engine-free WebGPU core ✅
+
+Done 2026-11-18 ([docs/handoffs/K1.md](docs/handoffs/K1.md), K1-4a, K1-6, K1-7): pool, generator (`read`/`sample`/`march`),
+size snapshot, GPU parity gate (verified fresh-eyes), raw-WebGPU example. Compile-time column deferred (D25);
+K1.7a API polish and K1.8 lean reader open.
 
 Everything a WebGPU host needs to hold and read sparse grids, with no engine (D8, D10).
 
@@ -68,7 +72,7 @@ stage; its kernels are 41–55 KB of WGSL) are why the contract is one binding a
 snapshot is committed and every variant is within the budgets of K1-core §3.6 (D21; the ≤ 4 KB lean reader is
 the optional K1.8); and the raw-WebGPU example renders the smoke.
 
-## K2 — three.js adapter, v1 parity ⬜
+## K2 — three.js adapter, v1 parity 🟨
 
 Rebuild `./three` as a thin layer over K1, in the upscaler, denoiser and bvh style. This phase reaches v1
 parity on the new core; the new renderer is K3.
