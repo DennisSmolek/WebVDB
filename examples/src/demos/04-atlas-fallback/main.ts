@@ -141,7 +141,7 @@ const STATS_VALUE_EPS = 1e-3; // FP8 atlas isn't involved here, but keep parity 
 const TRANSFORM_VALUE_EPS = 1e-4;
 const MAX_TRANSFORM_SAMPLES = 50;
 
-/** Same r185 x SwiftShader compat shim as demo 02 (see its module header). */
+/** Same r185–r187 x SwiftShader compat shim as demo 02 (see its module header). */
 function installSwizzleCompatShim(): void {
   if (typeof GPUTexture === "undefined") return;
   const proto = GPUTexture.prototype as unknown as {

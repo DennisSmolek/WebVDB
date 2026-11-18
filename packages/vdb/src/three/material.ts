@@ -273,7 +273,7 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
    * its node graph — the Phase 7 sequence-playback primitive (docs/SPEC §3.5,
    * the grid-rebind flag from docs/handoffs/PHASE-3.md).
    *
-   * ## The mechanism (three r185, verified against source)
+   * ## The mechanism (three r185–r187, verified against source)
    *
    * The `fragmentNode`/`storage()` node — and the trilinear sampler baked into
    * the WGSL at construction — are fixed. What actually changes on the GPU is

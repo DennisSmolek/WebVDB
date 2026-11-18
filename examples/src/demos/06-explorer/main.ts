@@ -22,7 +22,7 @@
  *
  * Offscreen `RenderTarget` -> `readRenderTargetPixelsAsync` -> 2D-canvas blit
  * (canvas *presentation* drops the Dawn instance under this sandbox's
- * SwiftShader — see docs/handoffs/PHASE-3.md), the same r185 swizzle-string
+ * SwiftShader — see docs/handoffs/PHASE-3.md), the same r185–r187 swizzle-string
  * shim + adapter keep-alive shim, and `@pmndrs/vdb/tools`'s own package-exported
  * `readValue` (its `cpu/*` used to load `stride-tables.json` via `node:fs` —
  * not importable into a Vite page; see docs/handoffs/PHASE-5.md's "Known

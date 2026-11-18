@@ -37,7 +37,7 @@
  * Presentation is demo 02's recipe verbatim: offscreen `RenderTarget` ->
  * `readRenderTargetPixelsAsync` -> 2D-canvas blit (canvas *presentation*
  * drops the Dawn instance under this sandbox's SwiftShader — see
- * docs/handoffs/PHASE-3.md), plus the same r185 swizzle-string shim and
+ * docs/handoffs/PHASE-3.md), plus the same r185–r187 swizzle-string shim and
  * adapter keep-alive shim.
  */
 import * as THREE from "three";
