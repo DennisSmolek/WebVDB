@@ -32,6 +32,9 @@ import {
   TREE_OFF_NODE_COUNT_LOWER,
   TREE_OFF_NODE_COUNT_UPPER,
   TREE_OFF_NODE_OFFSET_ROOT,
+  TREE_OFF_TILE_COUNT_LOWER,
+  TREE_OFF_TILE_COUNT_ROOT,
+  TREE_OFF_TILE_COUNT_UPPER,
   TREE_OFF_VOXEL_COUNT,
   VERSION_PACKED,
 } from "./bytes.js";
@@ -82,6 +85,7 @@ interface ImageMeta {
   indexBBoxMin: [number, number, number];
   indexBBoxMax: [number, number, number];
   nodeCount: [number, number, number]; // leaf, lower, upper
+  tileCount: [number, number, number]; // lower, upper, root (active tiles)
   name: string;
   nameBytes: Uint8Array; // incl. trailing NUL
 }
@@ -125,6 +129,11 @@ function extractMeta(image: Uint32Array, i: number): ImageMeta {
     dv.getUint32(treeOff + TREE_OFF_NODE_COUNT_LOWER, true),
     dv.getUint32(treeOff + TREE_OFF_NODE_COUNT_UPPER, true),
   ];
+  const tileCount: [number, number, number] = [
+    dv.getUint32(treeOff + TREE_OFF_TILE_COUNT_LOWER, true),
+    dv.getUint32(treeOff + TREE_OFF_TILE_COUNT_UPPER, true),
+    dv.getUint32(treeOff + TREE_OFF_TILE_COUNT_ROOT, true),
+  ];
   const rootOff = treeOff + Number(dv.getBigUint64(treeOff + TREE_OFF_NODE_OFFSET_ROOT, true));
   const indexBBoxMin: [number, number, number] = [
     dv.getInt32(rootOff + ROOT_OFF_BBOX_MIN, true),
@@ -149,6 +158,7 @@ function extractMeta(image: Uint32Array, i: number): ImageMeta {
     indexBBoxMin,
     indexBBoxMax,
     nodeCount,
+    tileCount,
     name,
     nameBytes: nameWithNul,
   };
@@ -204,10 +214,10 @@ export function writeNvdb(images: Uint32Array[], _opts: WriteNvdbOptions = {}): 
     dv.setUint32(off + MD_OFF_NODE_COUNT + 4, m.nodeCount[1], true);
     dv.setUint32(off + MD_OFF_NODE_COUNT + 8, m.nodeCount[2], true);
     dv.setUint32(off + MD_OFF_NODE_COUNT + 12, 1, true);
-    // tileCount[3] all 0 (this builder emits no active tiles).
-    dv.setUint32(off + MD_OFF_TILE_COUNT + 0, 0, true);
-    dv.setUint32(off + MD_OFF_TILE_COUNT + 4, 0, true);
-    dv.setUint32(off + MD_OFF_TILE_COUNT + 8, 0, true);
+    // tileCount[3] = active tiles at lower, upper, root (copied from TreeData).
+    dv.setUint32(off + MD_OFF_TILE_COUNT + 0, m.tileCount[0], true);
+    dv.setUint32(off + MD_OFF_TILE_COUNT + 4, m.tileCount[1], true);
+    dv.setUint32(off + MD_OFF_TILE_COUNT + 8, m.tileCount[2], true);
     dv.setUint16(off + MD_OFF_CODEC, CODEC_NONE, true);
     dv.setUint16(off + MD_OFF_BLIND_COUNT, 0, true);
     dv.setUint32(off + MD_OFF_VERSION, VERSION_PACKED, true);

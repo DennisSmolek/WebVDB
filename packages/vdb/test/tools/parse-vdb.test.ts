@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ByteReader } from "../../src/tools/vdb/byte-reader.js";
 import { readCompressedValues } from "../../src/tools/vdb/compression.js";
-import { VdbFormatError, VdbUnsupportedError } from "../../src/tools/vdb/errors.js";
+import { VdbFormatError } from "../../src/tools/vdb/errors.js";
 import { parseVdb } from "../../src/tools/vdb/index.js";
 import type { VdbGrid } from "../../src/tools/vdb/types.js";
 
@@ -241,26 +241,13 @@ describe("parseVdb — error paths (no fixtures needed)", () => {
     expect(() => parseVdb(new ArrayBuffer(0))).toThrow(VdbFormatError);
   });
 
-  it("rejects blosc-compressed node data with a clear, actionable error", () => {
-    // Exercise the compressed-value reader directly: a minimal node-value
-    // payload flagged as blosc-compressed with a real (positive) byte
-    // count, which this parser deliberately does not implement.
+  it("rejects a truncated blosc frame as malformed (blosc itself is supported since K4.1)", () => {
+    // A node-value payload flagged as blosc-compressed whose 4-byte "frame"
+    // cannot even hold the 16-byte Blosc header.
     const bytes = new Uint8Array(1 + 8 + 4);
     bytes[0] = 0; // NodeMetaData.NoMaskOrInactiveVals
     new DataView(bytes.buffer).setBigInt64(1, 4n, true); // numCompressedBytes = 4 (> 0)
-    const reader = new ByteReader(bytes.buffer);
-
-    expect(() =>
-      readCompressedValues(reader, {
-        fileVersion: 222,
-        compression: { zip: false, activeMask: false, blosc: true },
-        useHalf: false,
-        background: 0,
-        numValues: 8,
-        valueMask: new Uint32Array(1),
-      }),
-    ).toThrow(VdbUnsupportedError);
-    expect(() =>
+    const read = () =>
       readCompressedValues(new ByteReader(bytes.buffer), {
         fileVersion: 222,
         compression: { zip: false, activeMask: false, blosc: true },
@@ -268,7 +255,8 @@ describe("parseVdb — error paths (no fixtures needed)", () => {
         background: 0,
         numValues: 8,
         valueMask: new Uint32Array(1),
-      }),
-    ).toThrow(/blosc/i);
+      });
+    expect(read).toThrow(VdbFormatError);
+    expect(read).toThrow(/blosc/i);
   });
 });

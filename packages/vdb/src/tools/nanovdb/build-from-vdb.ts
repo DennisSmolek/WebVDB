@@ -2,10 +2,12 @@
  * build-from-vdb.ts — bridges the `.vdb` parser to the NanoVDB serializer.
  *
  * A parsed {@link VdbGrid} exposes `iterLeaves()` (each leaf: 8-aligned origin,
- * 512 values, 512-bit value mask) and an index->world transform. `buildFromVdb`
- * streams those leaves straight into the leaf-iterator build path
- * ({@link buildFromLeavesDetailed}) with the FLOAT codec — no dense array is
- * materialised, so a 7M-active-voxel teapot in a large bbox stays sparse.
+ * 512 values, 512-bit value mask), `iterTiles()` (active tiles above leaf
+ * level) and an index->world transform. `buildFromVdb` streams those leaves
+ * straight into the leaf-iterator build path ({@link buildFromLeavesDetailed})
+ * with the FLOAT codec — no dense array is materialised, so a 7M-active-voxel
+ * teapot in a large bbox stays sparse — and writes the active tiles as NanoVDB
+ * tiles at the same level (K4.1).
  *
  * The `.vdb` transform is carried into the NanoVDB Map. v1 supports uniform
  * scale + translate only (which is what all four openvdb.org samples use); a
@@ -42,6 +44,7 @@ export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = 
     background: grid.background,
     gridName: opts.gridName ?? grid.name ?? "grid",
     gridClass: opts.gridClass ?? sourceGridClass(grid),
+    tiles: grid.iterTiles(),
   };
   return buildFromLeavesDetailed(grid.iterLeaves(), FLOAT_LEAF_CODEC, buildOpts);
 }

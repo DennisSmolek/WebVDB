@@ -30,7 +30,8 @@
  * (`read-value.ts`) and WGSL readers, plus structural conformance, NOT byte
  * identity with `nanovdb_convert`. Three things differ from a native encode and
  * are intentionally out of scope here: (a) active-tile compression of uniform
- * regions (see tree.ts), (b) the real Full/Partial CRC checksum (we write the
+ * regions (see tree.ts; active tiles that already exist in a leaf-path source
+ * ARE written as tiles, K4.1), (b) the real Full/Partial CRC checksum (we write the
  * "disabled" sentinel — see bytes.ts), and (c) native's trailing grid padding.
  * All three are tracked for the byte-parity follow-up; none affects any value a
  * reader returns.
@@ -77,6 +78,7 @@ import {
   NODE_OFF_BBOX_MAX,
   NODE_OFF_BBOX_MIN,
   NODE_OFF_FLAGS,
+  NODE_OFF_VALUE_MASK,
   ROOT_OFF_BBOX_MAX,
   ROOT_OFF_BBOX_MIN,
   ROOT_OFF_TABLE_SIZE,
@@ -107,6 +109,7 @@ import {
   type BuiltTree,
   type LeafInput,
   type LowerNode,
+  type TileInput,
   type UpperNode,
 } from "./tree.js";
 
@@ -139,6 +142,8 @@ export interface BuiltGrid {
   worldBBox: { min: [number, number, number]; max: [number, number, number] };
   voxelSize: number;
   nodeCounts: { leaf: number; lower: number; upper: number };
+  /** Active tiles per level (all 0 unless the source had active tiles). */
+  tileCounts: { lower: number; upper: number; root: number };
 }
 
 const GRID_CLASS_ID: Record<NonNullable<BuildFromDenseOptions["gridClass"]>, number> = {
@@ -215,6 +220,7 @@ export function buildFromDenseDetailed(
     worldBBox,
     voxelSize,
     nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
+    tileCounts: { ...tree.tileCounts },
   };
 }
 
@@ -229,6 +235,12 @@ export interface BuildFromLeavesOptions {
   gridName?: string;
   /** Grid class. Default "FogVolume". */
   gridClass?: "FogVolume" | "LevelSet" | "Unknown";
+  /**
+   * Active tiles above leaf level (8^3 lower-node, 128^3 upper-node and 4096^3
+   * root tiles), written as NanoVDB tiles rather than expanded into leaves. A
+   * tile may not share a slot with a leaf or child node. Default: none.
+   */
+  tiles?: Iterable<TileInput>;
 }
 
 /**
@@ -257,7 +269,7 @@ export function buildFromLeavesDetailed(
     );
   }
 
-  const tree = buildTreeFromLeaves(leaves);
+  const tree = buildTreeFromLeaves(leaves, opts.tiles);
   const image = layoutGrid(tree, codec, {
     gridName,
     nameBytes,
@@ -279,6 +291,7 @@ export function buildFromLeavesDetailed(
     worldBBox,
     voxelSize,
     nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
+    tileCounts: { ...tree.tileCounts },
   };
 }
 
@@ -335,11 +348,10 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
   w.setU32(treeOff + TREE_OFF_NODE_COUNT_LEAF, nLeaf);
   w.setU32(treeOff + TREE_OFF_NODE_COUNT_LOWER, nLower);
   w.setU32(treeOff + TREE_OFF_NODE_COUNT_UPPER, nUpper);
-  // This builder emits no active tiles (all active voxels live in leaves), so
-  // every active-tile count is 0. See tree.ts topology policy.
-  w.setU32(treeOff + TREE_OFF_TILE_COUNT_LOWER, 0);
-  w.setU32(treeOff + TREE_OFF_TILE_COUNT_UPPER, 0);
-  w.setU32(treeOff + TREE_OFF_TILE_COUNT_ROOT, 0);
+  // Active tiles exist only when the leaf-path source supplied them (K4.1).
+  w.setU32(treeOff + TREE_OFF_TILE_COUNT_LOWER, tree.tileCounts.lower);
+  w.setU32(treeOff + TREE_OFF_TILE_COUNT_UPPER, tree.tileCounts.upper);
+  w.setU32(treeOff + TREE_OFF_TILE_COUNT_ROOT, tree.tileCounts.root);
   w.setU64(treeOff + TREE_OFF_VOXEL_COUNT, BigInt(tree.activeVoxelCount));
 
   // ---- RootData + tiles --------------------------------------------------
@@ -353,9 +365,16 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
   tree.rootTiles.forEach((tile, i) => {
     const tileOff = rootOff + L.rootSize + i * L.rootTileSize;
     w.setU64(tileOff + ROOT_TILE_OFF_KEY, tile.key);
-    w.setI64(tileOff + ROOT_TILE_OFF_CHILD, BigInt(upperAbs(tile.child.memIndex) - rootOff));
-    w.setU32(tileOff + ROOT_TILE_OFF_STATE, 0);
-    codec.writeConstant(w, tileOff + L.rootTileOffValue, 0);
+    if (tile.child) {
+      w.setI64(tileOff + ROOT_TILE_OFF_CHILD, BigInt(upperAbs(tile.child.memIndex) - rootOff));
+      w.setU32(tileOff + ROOT_TILE_OFF_STATE, 0);
+      codec.writeConstant(w, tileOff + L.rootTileOffValue, 0);
+    } else {
+      // Active root tile: no child (offset 0), state on, the tile's value.
+      w.setI64(tileOff + ROOT_TILE_OFF_CHILD, 0n);
+      w.setU32(tileOff + ROOT_TILE_OFF_STATE, 1);
+      codec.writeConstant(w, tileOff + L.rootTileOffValue, tile.value);
+    }
   });
 
   // ---- Upper nodes -------------------------------------------------------
@@ -429,16 +448,21 @@ function writeInternalNode(
   w.setU64(nodeOff + NODE_OFF_FLAGS, BigInt(NODE_FLAG_STATS));
   writeStats(w, nodeOff, p.offMin, p.offMax, p.offAve, p.offStdDev, s);
 
-  // Table: child slots hold an i64 offset (relative to this node); every other
-  // slot is an inactive background tile carrying the background value. The
-  // value mask stays all-zero (this builder emits no active tiles).
+  // Table: child slots hold an i64 offset (relative to this node); active
+  // tiles set their value-mask bit and hold the tile value; every other slot
+  // is an inactive background tile carrying the background value.
   const childSlots = node.children;
+  const tiles = node.tiles;
   for (let n = 0; n < p.tableCount; n++) {
     const slotOff = nodeOff + p.tableOff + n * p.tableStride;
     const child = childSlots.get(n);
+    const tileValue = tiles.size > 0 ? tiles.get(n) : undefined;
     if (child !== undefined) {
       w.setMaskBit(nodeOff + p.childMaskOff, n);
       w.setI64(slotOff, BigInt(p.childAbs(child.memIndex) - nodeOff));
+    } else if (tileValue !== undefined) {
+      w.setMaskBit(nodeOff + NODE_OFF_VALUE_MASK, n);
+      p.codec.writeConstant(w, slotOff, tileValue);
     } else if (p.background !== 0) {
       // Skip when background is 0: the buffer is already zero-filled.
       p.codec.writeConstant(w, slotOff, p.background);

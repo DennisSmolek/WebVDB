@@ -116,6 +116,7 @@ describe("buildFromVdb — transform validation", () => {
       background: 0,
       readValue: () => ({ value: 0, active: false }),
       iterLeaves: () => [],
+      iterTiles: () => [],
     };
   }
 
