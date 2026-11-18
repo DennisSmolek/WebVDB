@@ -114,8 +114,9 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K5.1 | pmndrs/docs MDX site with compiled snippets | T2 | ⬜ | |
+| K5.1 | pmndrs/docs MDX site with compiled snippets | T2 | ✅ | `docs/site/` (19 pages), `docs/snippets/` (34 samples), `pnpm docs:check` in CI. Site not rendered against pmndrs/docs yet. |
 | K5.2 | Release workflow: manual, npm trusted publishing, CHANGELOG | T1 | 🟨 | `.github/workflows/release.yml` + `packages/vdb/CHANGELOG.md` ready. Owner decision 2026-11-19: no npm publish until the phases are cleared; then one manual first publish, after which the owner configures the trusted publisher (workflow `release.yml`). |
+| K5.4 | Pre-0.1 API polish from the docs pass: (a) `readNvdb` export throws "not implemented" — implement or remove; (b) Fp4/Fp16 load + CPU oracle (pool/WGSL accept them, `NanoVDBFile`/`readValue`/`sampleTrilinear` don't); (c) `vdbStreamCoarseFirst` options to apply `densityScale×voxelRatio`, majorant and proxy geometry after a swap; (d) frame renderer settings are a shared singleton via `vdbFrameRenderer()` — make per-volume overrides or document clearly; (e) stale sparse-source comment says hdda default on (D30 says off) | T2 | 🟨 | (a)–(c) running; (d)–(e) after K3.5/K3.2d land. |
 | K5.3 | Cloud-system showcase example | owner | ⬜ | |
 
 ## After 0.1
