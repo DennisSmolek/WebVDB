@@ -273,12 +273,10 @@ await renderer.renderAsync(scene, camera);
 - **`getDevice(renderer)`, `getGPUTexture(renderer, texture)`**: the raw
   WebGPU handles, as in `@pmndrs/upscaler` and `@pmndrs/denoiser`.
 - `createVolumeRenderer` remains as a convenience bootstrap (it creates the
-  device itself, with limits for one grid); `NanoVDBGrid` remains as a CPU
-  metadata wrapper for the compute utilities below.
-- **Deprecated:** `NanoVDBVolumeMaterial` (v1: one grid as its own storage
-  attribute, vendored library with a rewritten buffer global) is kept only
-  until demo 06 moves to `VDBVolumeMaterial`. `NanoVDBSequence` is gone (use
-  `VDBSequence`); `assembleVolumeWgsl`/`rewriteBufferGlobal` are no longer exported.
+  device itself, with limits for one grid).
+- Gone since v1: `NanoVDBGrid` (use `pool.info(id)` and `vdbProxyGeometry`),
+  `NanoVDBVolumeMaterial` (use `VDBVolumeMaterial`), `NanoVDBSequence` (use
+  `VDBSequence`), `assembleVolumeWgsl`/`rewriteBufferGlobal`.
 
 ### Compute utilities
 

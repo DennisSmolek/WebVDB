@@ -4,42 +4,37 @@
  *
  * Pipeline (SPEC §4/§3.3):
  *   - `.vdb` -> `parseVdb` (pure-TS OpenVDB container reader) -> `buildFromVdb`
- *     (streams parser leaves straight into the NanoVDB serializer, FLOAT) ->
- *     wrapped in a `NanoVDBGrid` for GPU use.
- *   - `.nvdb` -> `NanoVDBFile` (the proven Phase 1 loader) -> `NanoVDBGrid`.
+ *     (streams parser leaves straight into the NanoVDB serializer, FLOAT).
+ *   - `.nvdb` -> `NanoVDBFile` (the proven Phase 1 loader).
  *
- * Either way the result is one `NanoVDBGrid` (FLOAT/Fp8/FpN, SPEC §2.1), which
- * feeds every panel below:
+ * Either way the result is one NanoVDB image plus its metadata (FLOAT/Fp8/FpN,
+ * SPEC §2.1), which feeds every panel below:
  *   - metadata table (name/type/class/voxel count/bboxes/voxel size/sizes)
  *   - `inspect()`'s node-count + memory-by-section bars
  *   - a 256-bin histogram (`gridStats`, the core compute pass over the grid's
- *     `VDBGridPool` copy through the three wrapper (K2.3); a ~100k-sample CPU
- *     scan if it fails)
+ *     `VDBGridPool` copy through the three wrapper; a ~100k-sample CPU scan if
+ *     it fails)
  *   - LEAF-node bbox wireframes (`./leaf-walk.ts`, capped at 5000, drawn over
  *     the rendered volume)
  *   - a CPU-only axial Z-slice view (`readValue`, no GPU involved)
  *
- * ## Presentation & CPU reference: same decisions as demos 02/04
+ * ## Device, pool and material (K2)
  *
- * Offscreen `RenderTarget` -> `readRenderTargetPixelsAsync` -> 2D-canvas blit
- * (canvas *presentation* drops the Dawn instance under this sandbox's
- * SwiftShader — see docs/handoffs/PHASE-3.md), the same r185–r187 swizzle-string
- * shim + adapter keep-alive shim, and `@pmndrs/vdb/tools`'s own package-exported
- * `readValue` (its `cpu/*` used to load `stride-tables.json` via `node:fs` —
- * not importable into a Vite page; see docs/handoffs/PHASE-5.md's "Known
- * debts" for the dedup that fixed this). `NodeMaterial` still needs >=1
- * light in the scene for its lighting codepath to run at all (see
- * docs/handoffs/PHASE-4.md) — moot here since `NanoVDBVolumeMaterial` is a
- * from-scratch fragment raymarch, not a stock `NodeMaterial` lighting model,
- * but noted for anyone extending this demo toward `VolumeNodeMaterial`.
+ * The page creates the `GPUDevice` and passes it to `WebGPURenderer` (D8). The
+ * loaded grid lives in one `VDBGridPool` slot (`pool.replace` on each load),
+ * which `gridStats` reads and `VDBVolumeMaterial` marches through one
+ * `VDBGridNode` (profile `sample`, helper `rayClipSupport`, module types fixed
+ * up front so any reload reuses it). The proxy box and the wireframe's
+ * index-to-world affine come from `pool.info(id)`.
  *
- * ## Device and pool (K2.3)
+ * ## Presentation
  *
- * The page creates the `GPUDevice` and passes it to `WebGPURenderer` (D8);
- * the loaded grid lives in one `VDBGridPool` on `getDevice(renderer)`
- * (`pool.replace` on each load), which `gridStats` reads. The volume itself
- * still renders through the v1 `NanoVDBVolumeMaterial` until the material
- * port (K2.3 part A) lands: `makeVolumeMaterial` is the one place to switch.
+ * Default (`?presentation=direct`): three renders into the page's canvas.
+ * `?presentation=readback` renders into an offscreen `RenderTarget`, reads it
+ * back and blits it to a 2D canvas; the e2e spec uses it because headless
+ * SwiftShader drops the Dawn instance when a WebGPU canvas context is
+ * configured (DIVERGES V7). The swizzle-string and adapter keep-alive shims
+ * below are the same as demos 02/04.
  *
  * ## Deterministic test mode (`?test=1&sample=vdb|nvdb`)
  *
@@ -51,17 +46,24 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
 import type { GridMetadata } from "@pmndrs/vdb/tools";
-import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, getDevice, gridStats } from "@pmndrs/vdb/three";
+import type { VDBGridInfo } from "@pmndrs/vdb";
+import { VDBGridNode, VDBVolumeMaterial, getDevice, gridStats, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import { WebGPURenderer } from "three/webgpu";
 import { buildFromVdbDetailed, inspect, parseVdb } from "@pmndrs/vdb/tools";
 import type { InspectReport } from "@pmndrs/vdb/tools";
 
 import { walkLeafOrigins } from "./leaf-walk";
 
+/** One loaded grid: its NanoVDB image and the file/builder metadata the panels show. */
+interface ExplorerGrid {
+  image: Uint32Array;
+  metadata: GridMetadata;
+}
+
 interface Demo06State {
   ready: boolean;
+  presentation?: "direct" | "readback";
   source?: "vdb" | "nvdb";
   voxelCount?: number;
   leafCount?: number;
@@ -130,6 +132,8 @@ const LEAF_CAP = 5000;
 
 const params = new URLSearchParams(location.search);
 const TEST_MODE = params.get("test") === "1";
+/** `?presentation=readback` renders offscreen and blits through a 2D canvas (the e2e spec uses it: SwiftShader has no WebGPU canvas). */
+const PRESENTATION: "direct" | "readback" = params.get("presentation") === "readback" ? "readback" : "direct";
 const TEST_SAMPLE: "vdb" | "nvdb" = params.get("sample") === "vdb" ? "vdb" : "nvdb";
 
 const appEl = document.querySelector<HTMLDivElement>("#app")!;
@@ -167,11 +171,11 @@ function detectFormat(buffer: ArrayBuffer, filename: string): "vdb" | "nvdb" {
 }
 
 interface LoadedSource {
-  grid: NanoVDBGrid;
+  grid: ExplorerGrid;
   source: "vdb" | "nvdb";
 }
 
-/** `.vdb` -> parseVdb -> buildFromVdb (FLOAT); `.nvdb` -> NanoVDBFile — either way, one `NanoVDBGrid`. */
+/** `.vdb` -> parseVdb -> buildFromVdb (FLOAT); `.nvdb` -> NanoVDBFile — either way, one `ExplorerGrid`. */
 function loadFromArrayBuffer(buffer: ArrayBuffer, format: "vdb" | "nvdb"): LoadedSource {
   if (format === "vdb") {
     const vdbFile = parseVdb(buffer);
@@ -188,10 +192,12 @@ function loadFromArrayBuffer(buffer: ArrayBuffer, format: "vdb" | "nvdb"): Loade
       voxelCount: built.voxelCount,
       gridByteSize: built.image.byteLength,
     };
-    return { grid: new NanoVDBGrid({ image: built.image, metadata }), source: "vdb" };
+    return { grid: { image: built.image, metadata }, source: "vdb" };
   }
   const file = NanoVDBFile.fromArrayBuffer(buffer);
-  return { grid: NanoVDBGrid.fromFile(file, 0), source: "nvdb" };
+  const metadata = file.grids[0];
+  if (!metadata) throw new Error("this .nvdb file contains no grids");
+  return { grid: { image: file.gridImage(0), metadata }, source: "nvdb" };
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +208,7 @@ function fmtVec3(v: readonly [number, number, number], digits = 3): string {
   return `[${v.map((x) => x.toFixed(digits)).join(", ")}]`;
 }
 
-function renderMeta(grid: NanoVDBGrid, fileByteLength: number): void {
+function renderMeta(grid: ExplorerGrid, fileByteLength: number): void {
   const m = grid.metadata;
   const rows: Array<[string, string]> = [
     ["name", m.name || "(unnamed)"],
@@ -288,7 +294,7 @@ function renderHistogram(histogram: Uint32Array): void {
 }
 
 /** ~100k-sample CPU scan, used when WebGPU (or `gridStats` itself) is unavailable. */
-function cpuHistogramFallback(grid: NanoVDBGrid): Uint32Array {
+function cpuHistogramFallback(grid: ExplorerGrid): Uint32Array {
   const [minX, minY, minZ] = grid.metadata.indexBBox.min;
   const [maxX, maxY, maxZ] = grid.metadata.indexBBox.max;
   const sizeX = maxX - minX + 1;
@@ -320,7 +326,7 @@ function cpuHistogramFallback(grid: NanoVDBGrid): Uint32Array {
 }
 
 /** GPU `gridStats` on the pool's copy of the grid; the CPU sampler if that fails. */
-async function computeHistogram(grid: NanoVDBGrid): Promise<{ histogram: Uint32Array; from: "gpu" | "cpu" }> {
+async function computeHistogram(grid: ExplorerGrid): Promise<{ histogram: Uint32Array; from: "gpu" | "cpu" }> {
   if (renderer && pool && gridId !== undefined) {
     try {
       const result = await gridStats(renderer, pool, gridId, { histogramBins: HISTOGRAM_BINS });
@@ -338,7 +344,7 @@ async function computeHistogram(grid: NanoVDBGrid): Promise<{ histogram: Uint32A
 // Panel: axial Z-slice (pure CPU, no GPU involved)
 // ---------------------------------------------------------------------------
 
-function renderSlice(grid: NanoVDBGrid, z: number): boolean {
+function renderSlice(grid: ExplorerGrid, z: number): boolean {
   const [minX, minY] = grid.metadata.indexBBox.min;
   const [maxX, maxY] = grid.metadata.indexBBox.max;
   const w = maxX - minX + 1;
@@ -411,13 +417,20 @@ const WIREFRAME_EDGES: ReadonlyArray<readonly [number, number]> = [
 ];
 
 function buildLeafWireframe(
-  grid: NanoVDBGrid,
+  grid: ExplorerGrid,
+  info: VDBGridInfo,
   cap: number,
 ): { lines: THREE.LineSegments; material: THREE.LineBasicMaterial; shown: number; total: number } {
-  const { origins, total } = walkLeafOrigins(grid.image, grid.gridTypeId, cap);
+  const { origins, total } = walkLeafOrigins(grid.image, info.gridTypeId, cap);
   const LEAF_DIM = 8;
   const positions = new Float32Array(origins.length * WIREFRAME_EDGES.length * 2 * 3);
-  const m = grid.indexToWorld();
+  const a = info.indexToWorld; // 3x4 row-major index -> world
+  const m = new THREE.Matrix4().set(
+    a[0]!, a[1]!, a[2]!, a[3]!,
+    a[4]!, a[5]!, a[6]!, a[7]!,
+    a[8]!, a[9]!, a[10]!, a[11]!,
+    0, 0, 0, 1,
+  );
   let ptr = 0;
 
   const corners: THREE.Vector3[] = Array.from({ length: 8 }, () => new THREE.Vector3());
@@ -451,15 +464,6 @@ function buildLeafWireframe(
   return { lines: new THREE.LineSegments(geometry, material), material, shown: origins.length, total };
 }
 
-/**
- * The volume material. Still the v1 `NanoVDBVolumeMaterial` (its own copy of
- * the image); K2.3 part A's pool-based material replaces this call, reading
- * `pool` / `gridId` instead.
- */
-function makeVolumeMaterial(grid: NanoVDBGrid): NanoVDBVolumeMaterial {
-  return new NanoVDBVolumeMaterial({ grid, pnanovdbSource, jitter: !TEST_MODE });
-}
-
 // ---------------------------------------------------------------------------
 // Renderer bootstrap (device-first, created once and reused across loads)
 // ---------------------------------------------------------------------------
@@ -478,12 +482,16 @@ let vw = 0;
 let vh = 0;
 
 let currentMesh: THREE.Mesh | undefined;
-let currentMeshMaterial: NanoVDBVolumeMaterial | undefined;
+let currentMeshMaterial: VDBVolumeMaterial | undefined;
+let grids: VDBGridNode | undefined;
 let currentWireframe: THREE.LineSegments | undefined;
 let currentWireframeMaterial: THREE.LineBasicMaterial | undefined;
-let currentGrid: NanoVDBGrid | undefined;
+let currentGrid: ExplorerGrid | undefined;
 
-/** Features the v1 material path asked for (`createVolumeRenderer`'s defaults), when the adapter has them. */
+/** Grid types the one shared module decodes: everything the explorer loads (`.vdb` builds Float). */
+const MODULE_TYPES = ["float", "fp8", "fpn"] as const;
+
+/** Optional device features requested when the adapter has them. */
 const WANTED_FEATURES: readonly GPUFeatureName[] = ["shader-f16", "float32-filterable"];
 
 async function initRenderer(): Promise<void> {
@@ -494,20 +502,22 @@ async function initRenderer(): Promise<void> {
     requiredLimits: VDBGridPool.requiredLimits(adapter),
     requiredFeatures: WANTED_FEATURES.filter((f) => adapter.features.has(f)),
   });
-  renderer = new WebGPURenderer({ device, antialias: false });
+  display = document.createElement("canvas");
+  renderer = new WebGPURenderer({ device, antialias: false, ...(PRESENTATION === "direct" ? { canvas: display } : {}) });
   await renderer.init();
   pool = await VDBGridPool.create(getDevice(renderer), { label: "demo 06" });
+  // One module for the page (types fixed up front so a reload of any type reuses it).
+  grids = new VDBGridNode(renderer, pool, { types: MODULE_TYPES, profile: "sample", helpers: ["rayClipSupport"] });
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b1020);
   camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
 
-  display = document.createElement("canvas");
   display.id = "view";
   display.style.width = "100%";
   display.style.height = "100%";
   display.style.display = "block";
   appEl.appendChild(display);
-  ctx2d = display.getContext("2d")!;
+  if (PRESENTATION === "readback") ctx2d = display.getContext("2d")!;
 
   controls = new OrbitControls(camera, display);
   controls.enableDamping = !TEST_MODE;
@@ -519,10 +529,13 @@ async function initRenderer(): Promise<void> {
 function setViewport(w: number, h: number): void {
   vw = Math.max(1, w);
   vh = Math.max(1, h);
-  display.width = vw;
-  display.height = vh;
-  rt.setSize(vw, vh);
-  flip = new Uint8ClampedArray(vw * vh * 4);
+  if (PRESENTATION === "direct") renderer!.setSize(vw, vh, false);
+  else {
+    display.width = vw;
+    display.height = vh;
+    rt.setSize(vw, vh);
+    flip = new Uint8ClampedArray(vw * vh * 4);
+  }
   camera.aspect = vw / vh;
   camera.updateProjectionMatrix();
 }
@@ -549,6 +562,13 @@ function placeCamera(
 }
 
 async function presentFrame(): Promise<void> {
+  // The pool's update is already submitted (flush); rebind after any growth.
+  grids!.update();
+  if (PRESENTATION === "direct") {
+    renderer!.setRenderTarget(null);
+    await renderer!.renderAsync(scene, camera);
+    return;
+  }
   renderer!.setRenderTarget(rt);
   await renderer!.renderAsync(scene, camera);
   const pixels = (await renderer!.readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as Uint8Array;
@@ -577,17 +597,17 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
   renderInspect(report);
 
   // One pool slot for the loaded grid: replaced in place when it fits.
-  if (pool) {
-    if (gridId === undefined) gridId = pool.add(grid.image, { label: filename });
-    else pool.replace(gridId, grid.image);
-    pool.flush();
-  }
+  if (gridId === undefined) gridId = pool!.add(grid.image, { label: filename });
+  else pool!.replace(gridId, grid.image);
+  pool!.flush();
+  await pool!.settled();
+  const info = pool!.info(gridId);
 
   const { histogram, from: histogramFrom } = await computeHistogram(grid);
   renderHistogram(histogram);
   const histogramNonEmpty = histogram.some((v) => v > 0);
 
-  const { lines, material: wireframeMaterial, shown, total } = buildLeafWireframe(grid, LEAF_CAP);
+  const { lines, material: wireframeMaterial, shown, total } = buildLeafWireframe(grid, info, LEAF_CAP);
   leafNoteEl.textContent =
     total > shown
       ? `leaf bboxes: showing ${shown.toLocaleString()} of ${total.toLocaleString()} (capped at ${LEAF_CAP.toLocaleString()})`
@@ -604,8 +624,9 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
     currentWireframeMaterial?.dispose();
   }
 
-  const volumeMaterial = makeVolumeMaterial(grid);
-  const mesh = new THREE.Mesh(grid.proxyGeometry(), volumeMaterial);
+  grids!.update();
+  const volumeMaterial = new VDBVolumeMaterial(renderer!, grids!, gridId, { jitter: !TEST_MODE });
+  const mesh = new THREE.Mesh(vdbProxyGeometry(info), volumeMaterial);
   scene.add(mesh);
   scene.add(lines);
   currentMesh = mesh;
@@ -614,7 +635,10 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
   currentWireframeMaterial = wireframeMaterial;
   currentGrid = grid;
 
-  const worldBox = grid.worldBBox();
+  const worldBox = new THREE.Box3(
+    new THREE.Vector3(...grid.metadata.worldBBox.min),
+    new THREE.Vector3(...grid.metadata.worldBBox.max),
+  );
   const center = worldBox.getCenter(new THREE.Vector3());
   const size = worldBox.getSize(new THREE.Vector3());
   const diag = Math.max(size.length(), 1e-3);
@@ -636,6 +660,7 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
 
   const state: Demo06State = {
     ready: true,
+    presentation: PRESENTATION,
     source,
     voxelCount: grid.metadata.voxelCount,
     leafCount: report.nodeCounts.leaf,

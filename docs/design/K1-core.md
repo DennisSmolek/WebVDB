@@ -420,7 +420,7 @@ grids.update();   // each frame, after pool.update(encoder) was submitted: if po
 ```
 
 - **Binding:** the stand-in `StorageBufferAttribute`'s backend record gets `buffer = pool.buffer` before three
-  first sees it (`backend.get(attr).buffer`; three r185's `createAttribute` skips creation when it is set,
+  first sees it (`backend.get(attr).buffer`; three r187's `createAttribute` skips creation when it is set,
   checked). three emits `struct vdbPoolStruct { value: array<u32> }` at a binding it chooses; the generator's
   `buffer` mode reads `vdbPool.value[i]` at its one site. `setName` is public API and keeps shader text
   identical across loads; the v1 parts that go away are the regex over the vendored file and the
@@ -428,7 +428,7 @@ grids.update();   // each frame, after pool.update(encoder) was submitted: if po
 - **Rebind:** `update()` compares `pool.version`; on change it makes a new stand-in bound to the new buffer and
   sets the storage node's value. Nothing recompiles. `revision` changes need no three action.
 - **Disposal:** three destroys an attribute's buffer on `dispose` and in `renderer.dispose()`
-  (`destroyAttribute`, which calls `data.buffer.destroy()` in r185). Wrap `backend.destroyAttribute` once per
+  (`destroyAttribute`, which calls `data.buffer.destroy()` in r187). Wrap `backend.destroyAttribute` once per
   backend so a stand-in gets a throwaway buffer first, as bvh does. The pool stays the owner.
 
 three limitations found (none breaks the one-binding contract):
@@ -436,8 +436,7 @@ three limitations found (none breaks the one-binding contract):
 1. TSL owns `@group/@binding`; the host can't choose a slot. Hence the `buffer` mode. Still one binding.
 2. Binding a foreign `GPUBuffer` uses backend internals (`backend.get`, `destroyAttribute`), not public API. Pin
    the three peer range and keep a compatibility check that fails loudly (bvh's `checkStandIn`).
-3. **Version skew:** bvh pins three `>=0.187 <0.188`; WebVDB v1 is on r185. A host app has one three. K2 should
-   move to bvh's range, or both packages will be unusable together.
+3. **Version skew:** bvh pins three `>=0.187 <0.188`; WebVDB v1 was on r185. A host app has one three; K2 moved to bvh's range (r187, D23).
 4. Compatibility-mode devices may allow 0 storage buffers in the fragment stage, so a fragment-stage volume
    material needs a core device; `unsupportedReason` reports it.
 5. `wgslFn` parses only the first `fn`; helpers belong in the module CodeNode (v1 learned this).

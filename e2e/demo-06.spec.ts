@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 /**
  * Demo 06 — explorer: half of the Phase 5/8 demo gate ("drag-drop a .vdb and
  * render it", docs/PLAN.md). Two deterministic navigations exercise both
- * load routes — `?sample=nvdb` (NanoVDBFile) and `?sample=vdb` (parseVdb ->
+ * load routes — `?sample=nvdb&presentation=readback` (NanoVDBFile) and `?sample=vdb&presentation=readback` (parseVdb ->
  * buildFromVdb) — asserting the metadata/inspect/histogram/slice panels all
  * populated (`window.__DEMO06__`). One golden image pins the nvdb render
  * (leaf-bbox wireframe over the raymarched volume).
  *
- * SwiftShader compiles the full pnanovdb library shader slowly (~10-20s
+ * Pages pass `presentation=readback` (no WebGPU canvas on SwiftShader). SwiftShader compiles the shader slowly (~10-20s
  * cold), and this demo adds a `gridStats` compute pass (core compute on the
  * page's `VDBGridPool` since K2.3; `histogramFrom` must be "gpu") plus a CPU tree walk
  * (leaf-bbox enumeration) and a CPU slice scan on top of demo 02's baseline
@@ -33,7 +33,7 @@ test.describe("demo 06 — explorer", () => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
 
-    await page.goto(`${DEMO_URL}?test=1&sample=nvdb`);
+    await page.goto(`${DEMO_URL}?test=1&sample=nvdb&presentation=readback`);
     await page.waitForFunction(() => window.__DEMO06__ !== undefined, undefined, { timeout: 100_000 });
 
     const state = await page.evaluate(() => window.__DEMO06__);
@@ -60,7 +60,7 @@ test.describe("demo 06 — explorer", () => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
 
-    await page.goto(`${DEMO_URL}?test=1&sample=vdb`);
+    await page.goto(`${DEMO_URL}?test=1&sample=vdb&presentation=readback`);
     await page.waitForFunction(() => window.__DEMO06__ !== undefined, undefined, { timeout: 100_000 });
 
     const state = await page.evaluate(() => window.__DEMO06__);

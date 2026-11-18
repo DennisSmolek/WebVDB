@@ -72,7 +72,11 @@ stage; its kernels are 41–55 KB of WGSL) are why the contract is one binding a
 snapshot is committed and every variant is within the budgets of K1-core §3.6 (D21; the ≤ 4 KB lean reader is
 the optional K1.8); and the raw-WebGPU example renders the smoke.
 
-## K2 — three.js adapter, v1 parity 🟨
+## K2 — three.js adapter, v1 parity ✅
+
+Done 2026-11-18 ([docs/handoffs/K2.md](docs/handoffs/K2.md), K2-0, K2-3B): three r187; `getDevice`, `VDBGridNode`,
+`vdbSample`/`vdbReadValue`; `VDBVolumeMaterial`, `VDBSequence`, compute on the core; demos 01–07 on the new
+adapter with goldens unchanged; v1 binding trick and sandbox workarounds removed (V7, V8 closed).
 
 Rebuild `./three` as a thin layer over K1, in the upscaler, denoiser and bvh style. This phase reaches v1
 parity on the new core; the new renderer is K3.

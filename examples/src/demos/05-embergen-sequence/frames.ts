@@ -10,9 +10,9 @@
  * domain, deterministic in the frame index. Because the blob moves and the
  * background is a hard 0, each frame's ACTIVE topology (and therefore its grid
  * byte length) varies frame to frame — which is exactly the case that makes
- * `NanoVDBVolumeMaterial.rebindGrid` need pre-sized (`maxGridBytes`) capacity
- * rather than the same-size fast path. That's deliberate: the demo proves the
- * harder, realistic rebind story.
+ * `VDBSequence` (`pool.replace`) has to handle a frame that outgrows its
+ * slot, not just the same-size fast path. That's deliberate: the demo proves the
+ * harder, realistic growth story.
  *
  * Shared by the demo (in-memory + Blob-URL paths) and any node-side script.
  */

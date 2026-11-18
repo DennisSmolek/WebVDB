@@ -37,18 +37,6 @@ export type {
 export { createVolumeRenderer, computeRequiredLimits, nextPow2 } from "./renderer.js";
 export type { VolumeRendererOptions, CapabilityReport, RequiredLimits } from "./renderer.js";
 
-// CPU-side grid + file metadata (v1; still used by the compute utilities below).
-export { NanoVDBGrid } from "./grid.js";
-export type { NanoVDBGridOptions } from "./grid.js";
-
-/**
- * @deprecated v1 material (one grid as its own storage attribute, vendored
- * library with a rewritten buffer global). Kept only until demo 06 moves to
- * `VDBVolumeMaterial` (K2.3 part B); use `VDBVolumeMaterial`.
- */
-export { NanoVDBVolumeMaterial } from "./legacy-material.js";
-export type { NanoVDBVolumeMaterialParameters } from "./legacy-material.js";
-
 // K2.3: compute wrappers over the core tools (renderer in, promise out).
 export { gridStats, decodeToAtlas, valueTransform } from "./compute.js";
 export type { GridStatsOptions, GridStatsResult, DecodeToAtlasOptions, DecodeToAtlasResult } from "./compute.js";
