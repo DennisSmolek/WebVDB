@@ -166,6 +166,16 @@ const PARITY_SCENES = [
     "step4-frame-phase-g-exponent",
     "step4-lighting-volume-phase-g-low",
   ].flatMap((name) => [`${name}-dir-isolated`, `${name}-asis`]),
+  // K3.5 (R1 §6 Step 5): spectral media and presets (his Spectral folder: `spectral`, `medium`, `angstromExponent`), as
+  // Step 4; and 'volume' lighting with his sky-midday environment (the 'volume' environment terms; `isolate: 'environment'`).
+  ...[
+    "step5-spectral",
+    ...["cloud", "fog", "ice", "soot", "white-smoke", "dark-smoke", "haze", "dust"].map((m) => `step5-medium-${m}`),
+    "step5-angstrom-air",
+    "step5-lighting-volume-medium-dark-smoke",
+  ].flatMap((name) => [`${name}-dir-isolated`, `${name}-asis`]),
+  "step5-lighting-volume-sky-midday-env-isolated",
+  "step5-lighting-volume-medium-cloud-sky-midday-env-isolated",
 ];
 for (const scene of PARITY_SCENES) {
   test(`K3.1 parity render: ${scene}`, async ({ page }) => {

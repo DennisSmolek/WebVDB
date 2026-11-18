@@ -454,3 +454,61 @@ export {
 } from "./frame/neural.js";
 export type { VDBFrameNeuralNetwork, VDBFrameNeuralMip } from "./frame/neural.js";
 export { vdbFrameNeuralWeights } from "./frame/neural-weights.js";
+
+/**
+ * K3.5: mjurczyk's spectral media, engine-free: the measured medium presets (his `frameMediumPresets`, with the
+ * cited measurements and the fit that gives them), the extinction spectrum and slot groups, and CPU twins of the
+ * spectral shader chunks and passes (transmittance per slot group, environment grid, density, lighting, inject
+ * march and pre-integration, integrate) and of the 'volume'-lighting isotropic terms (ambient + light probe,
+ * environment, hemisphere).
+ */
+export {
+  vdbFrameMediumPresets,
+  vdbFrameMediumNames,
+  vdbFrameMediumProps,
+  vdbFrameMediumMeasurements,
+  vdbFrameMediumFromMeasurements,
+  vdbFrameFitPhaseGExponent,
+} from "./frame/medium.js";
+export type { VDBFrameMediumPreset, VDBFrameMediumProps, VDBFrameMediumMeasurement, VDBFrameMeasured } from "./frame/medium.js";
+export {
+  vdbFrameSpectrumWavelengths,
+  vdbFrameSpectralGroupCount,
+  vdbFrameSpectralGroups,
+  vdbFrameExtinctionSpectrum,
+  vdbFrameMeanComponent,
+  vdbFrameSpectralShadowUnit,
+  vdbFrameSpectralShadowDepths,
+  vdbFrameSpectralShadowStep,
+  vdbFrameSpectralGridAlbedo,
+  vdbFrameSpectralShadowDepth,
+  vdbFrameSpectralShadowMarchDepth,
+  vdbFrameSpectralShadowTransmittance,
+  vdbFrameSpectralOctaveLight,
+  vdbFrameSpectralShadowTotal,
+  vdbFrameSpectralShadowedLight,
+  vdbFrameUnpackSpectralGroup,
+  vdbFramePackSpectralGroup,
+  vdbFrameSpectralGridSample,
+  vdbFrameSpectralGridMarch,
+  vdbFrameSpectralTransmittanceVoxel,
+  vdbFrameSpectralEnvironmentGridVoxel,
+  vdbFrameSpectralDensityFroxel,
+  vdbFrameSpectralLightingFroxel,
+  vdbFrameSpectralGroupsAt,
+  vdbShIrradianceAt,
+  vdbFrameInjectIsotropicIrradiance,
+  vdbFrameSpectralShadowMarch,
+  vdbFrameSpectralInjectSlice,
+  vdbFrameSpectralIntegrate,
+} from "./frame/spectral.js";
+export type {
+  VDBFrameSpectralDepths,
+  VDBFrameSpectralShadow,
+  VDBFrameSpectralMarch,
+  VDBFrameSpectralDensityInputs,
+  VDBFrameSpectralLightingInputs,
+  VDBFrameInjectMarch,
+  VDBFrameInjectLightInputs,
+} from "./frame/spectral.js";
+export { vdbFrameDensityFroxelSteps } from "./frame/grid.js";

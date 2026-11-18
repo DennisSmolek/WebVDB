@@ -75,7 +75,7 @@ export interface TwinStats {
 }
 
 /** Readback as tight rows (r187: rows top first, padded to 256 bytes). */
-function tightRows<T extends Uint16Array | Float32Array>(pixels: T, w: number, h: number, channels: number): T {
+export function tightRows<T extends Uint16Array | Float32Array>(pixels: T, w: number, h: number, channels: number): T {
   const tight = w * channels;
   const stride = h > 1 ? (pixels.length - tight) / (h - 1) : tight;
   if (!Number.isInteger(stride) || stride < tight) throw new Error(`readback layout: ${pixels.length} elements for ${w}x${h}x${channels}`);
@@ -115,7 +115,7 @@ export function gridLayout(fr: VDBFrameRenderer): VDBFrameGridLayout {
   };
 }
 
-function accumulate(stats: TwinStats, gpu: number, cpu: number, absTol: number, relTol: number, where: unknown): void {
+export function accumulate(stats: TwinStats, gpu: number, cpu: number, absTol: number, relTol: number, where: unknown): void {
   const d = Math.abs(gpu - cpu);
   stats.compared++;
   stats.maxAbs = Math.max(stats.maxAbs, d);
@@ -126,8 +126,8 @@ function accumulate(stats: TwinStats, gpu: number, cpu: number, absTol: number, 
   }
 }
 
-const newStats = (): TwinStats => ({ compared: 0, maxAbs: 0, maxRel: 0, over: 0, within: 1 });
-const finish = (s: TwinStats) => {
+export const newStats = (): TwinStats => ({ compared: 0, maxAbs: 0, maxRel: 0, over: 0, within: 1 });
+export const finish = (s: TwinStats) => {
   s.within = s.compared > 0 ? 1 - s.over / s.compared : 0;
   return s;
 };

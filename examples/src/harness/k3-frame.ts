@@ -44,13 +44,21 @@
  * L = 0.5 as background and lighting, a white (non-absorbing) volume, no scene light; the result's `furnace` has the
  * 9 × 9 centre mean / L (his readout) and volume-pixel statistics of radiance / L. With `?twins=1` also the K3.4
  * chunk probe (`scatterProbe`) and, with 'neural', the grid mip twin.
+ *
+ * K3.5 (spectral media + presets, R1 §6 Step 5): `?spectral=1` (the renderer's `spectral`), `?medium=<name>` (his GUI
+ * 'Medium' field: getFrameMediumProps on the volume — albedo, Ångström exponent, phase — and the renderer's 'frame'
+ * phase; turns spectral on), `?angstrom=` (the volume's Ångström exponent); his Step 5 scenes (`step5-*`, as is and
+ * isolated). With `?twins=1` and spectral on, the spectral pass twins (transmittance per slot group, environment
+ * grid, density, lighting) and the spectral chunk probe (`spectralProbe`); `?twin=1` takes the spectral integrate twin;
+ * `?extraLights=N` adds N directional lights (6 shadow slots fill the 4 spectral slot groups).
+ * 'volume' lighting now reads the environment, hemisphere and light-probe terms (the furnace runs on it too).
  * Results: `window.__VDB_K3_FRAME__` (e2e/k3-frame.spec.ts writes PNGs to artifacts/k3/ours/).
  */
 import * as THREE from "three";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { densityTwin, environmentGridTwin, furnaceEnvironment, gridMipTwin, lightingTwin, probeGrid, probeScattering, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
 import {
@@ -73,6 +81,7 @@ import {
   wvdbDenseVolume,
   type VDBFrameFroxelSample,
 } from "@pmndrs/vdb/tools";
+import { probeSpectral, spectralDensityTwin, spectralEnvironmentGridTwin, spectralIntegrateTwin, spectralLightingTwin, spectralTransmittanceTwin } from "./k3-frame-spectral.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,6 +110,10 @@ interface SceneDef {
   settings?: Partial<VDBFrameRendererSettings>;
   /** K3.4: his volume phase fields (`phaseG`, ...: 'volume' lighting). */
   volumePhase?: { phaseG?: number; phaseBackG?: number; phaseBackWeight?: number; phaseGExponent?: number };
+  /** K3.5: his Spectral folder fields (`spectral`, `medium`, `angstromExponent`). */
+  spectral?: boolean;
+  medium?: string;
+  angstromExponent?: number;
 }
 
 // K3.3 (R1 §6 Step 3): his 'frame' lighting scenes. The as-is captures use his 'environment' light setup:
@@ -166,6 +179,27 @@ const STEP4_SCENES: Record<string, SceneDef> = Object.fromEntries(
     .map((d) => [d.name, d]),
 );
 
+// K3.5 (R1 §6 Step 5): his Spectral folder (utils/medium.js): `spectral`, each measured `medium` (which turns spectral on
+// and sets the albedo, Ångström exponent and the volume and 'frame' phases), an Ångström exponent alone, and 'volume'
+// lighting with a medium. He has no validation JPEGs for them. As Step 4: `*-asis` (his 'environment' light setup; INFO)
+// and `*-dir-isolated` (his sun only; the gate). The 'volume' lighting environment scenes (`*-env-isolated`: no scene
+// light, his sky-midday map kept, `isolate: 'environment'`) gate the 'volume'-lighting environment terms.
+const STEP5_MEDIA = ["cloud", "fog", "ice", "soot", "white-smoke", "dark-smoke", "haze", "dust"];
+const step5 = (name: string, extra: Partial<SceneDef>): SceneDef[] => [
+  step3(`${name}-asis`, { lightSetup: "environment", multipleScattering: "neural", ...extra }, false, STEP4_WHY_ENV),
+  step3(`${name}-dir-isolated`, { multipleScattering: "neural", ...extra }, true),
+];
+const STEP5_SCENES: Record<string, SceneDef> = Object.fromEntries(
+  [
+    ...step5("step5-spectral", { spectral: true }),
+    ...STEP5_MEDIA.flatMap((m) => step5(`step5-medium-${m}`, { medium: m })),
+    ...step5("step5-angstrom-air", { spectral: true, angstromExponent: 4.09 }),
+    ...step5("step5-lighting-volume-medium-dark-smoke", { lighting: "volume", medium: "dark-smoke" }),
+    step3("step5-lighting-volume-sky-midday-env-isolated", { lighting: "volume", multipleScattering: "neural", lightSetup: "none", environment: "sky-midday" }, true),
+    step3("step5-lighting-volume-medium-cloud-sky-midday-env-isolated", { lighting: "volume", multipleScattering: "neural", lightSetup: "none", environment: "sky-midday", medium: "cloud" }, true),
+  ].map((d) => [d.name, d]),
+);
+
 // His frame.js scene list (capture-reference.mjs SCENARIOS). `multipleScattering` 'neural' (his default) is the
 // same as true with 'volume' lighting (the network runs only in 'frame' lighting).
 const HIS_SCENES: Record<string, SceneDef> = {
@@ -180,7 +214,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
     lighting: "volume",
     multipleScattering: false,
     parityExpected: false,
-    why: "his 'dir' setup keeps scene.environment, which lights the volume too (K3.4), and shows the skybox and ground",
+    why: "his 'dir' setup keeps scene.environment, which lights the volume too (ported in K3.5; this harness scene does not load his map), and shows the skybox and ground",
   },
   "step1-volume-dir-ms-on": {
     name: "step1-volume-dir-ms-on",
@@ -189,7 +223,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
     lighting: "volume",
     multipleScattering: true,
     parityExpected: false,
-    why: "his 'dir' setup keeps scene.environment, which lights the volume too (K3.4), and shows the skybox and ground",
+    why: "his 'dir' setup keeps scene.environment, which lights the volume too (ported in K3.5; this harness scene does not load his map), and shows the skybox and ground",
   },
   "step1-lighting-volume": {
     name: "step1-lighting-volume",
@@ -198,7 +232,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
     lighting: "volume",
     multipleScattering: true,
     parityExpected: false,
-    why: "his 'environment' light setup lights the volume from the HDR environment (K3.4); rendered unlit here",
+    why: "his 'environment' light setup: scene lights extracted from the HDR map, the map as scene.environment and the grounded skybox; rendered unlit here (the 'volume' environment terms gate in step5-lighting-volume-sky-midday-env-isolated)",
   },
   "step1-lights-directional": { name: "step1-lights-directional", file: "/fixtures/k3/bunny_cloud.wvdb", lightSetup: "dir", lighting: "frame", multipleScattering: true, parityExpected: false, why: "'frame' lighting (K3.3); rendered with 'volume' lighting" },
   "step1-multiple-scattering-off": { name: "step1-multiple-scattering-off", file: "/fixtures/k3/bunny_cloud.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: false, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
@@ -206,6 +240,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
   "step0-smoke": { name: "step0-smoke", file: "/fixtures/k3/smoke.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: true, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
   ...STEP3_SCENES,
   ...STEP4_SCENES,
+  ...STEP5_SCENES,
 };
 
 interface ChunkProbe {
@@ -265,6 +300,11 @@ interface Result {
   gridMipTwin?: TwinStats & { levels: number };
   furnace?: { radiance: number; centerRatio: number[]; corner: number[]; volumePixels: number; meanRatio: number; minRatio: number; maxRatio: number; meanAbsDeviation: number; p05: number; p95: number; environment: { mode: string; count: number } | null };
   temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
+  // K3.5
+  spectral?: boolean;
+  medium?: string | null;
+  spectralProbe?: TwinStats;
+  spectralGroups?: number;
 }
 
 declare global {
@@ -307,6 +347,11 @@ const TWINS = params.get("twins") === "1";
 const TEMPORAL_CHECK = Number(params.get("temporalCheck") ?? 0);
 const REDRAW_FRAMES = Number(params.get("redraw") ?? 0);
 const LIGHT_SETUP = (params.get("lights") ?? (FURNACE ? "none" : def?.lightSetup) ?? "dir") as SceneDef["lightSetup"] | "dir-hemi";
+// K3.5: his Spectral folder (a medium turns spectral on, as his GUI)
+const MEDIUM = params.get("medium") ?? def?.medium ?? null;
+const MEDIUM_PROPS = MEDIUM ? vdbFrameMedium(MEDIUM) : null;
+const SPECTRAL = params.has("spectral") ? params.get("spectral") === "1" : !!(def?.spectral || MEDIUM_PROPS);
+const ANGSTROM = params.has("angstrom") ? Number(params.get("angstrom")) : (def?.angstromExponent ?? null);
 // K3.4: ?ms=0|1|two-sided|octaves|neural
 const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
 const MS: VDBFrameMultipleScattering = params.has("ms") ? parseMs(params.get("ms")!) : (def?.multipleScattering ?? true);
@@ -469,6 +514,16 @@ async function main(): Promise<void> {
     ...PHASE_OVERRIDES,
   });
   if (params.has("ms")) frameRenderer.settings.multipleScattering = MS;
+  // K3.5: his medium onChange also sets the 'frame' phase fields (frame-phase, frame-phaseG, frame-phaseGExponent)
+  frameRenderer.settings.spectral = SPECTRAL;
+  if (MEDIUM_PROPS) {
+    if (!params.has("phase")) frameRenderer.settings.phase = MEDIUM_PROPS.phase;
+    if (!params.has("phaseG")) frameRenderer.settings.phaseG = MEDIUM_PROPS.phaseG;
+    if (!params.has("phaseGExponent")) frameRenderer.settings.phaseGExponent = MEDIUM_PROPS.phaseGExponent;
+  }
+  if (MEDIUM && !MEDIUM_PROPS) throw new Error(`unknown ?medium=${MEDIUM}`);
+  result.spectral = SPECTRAL;
+  result.medium = MEDIUM;
   // K3.4 `?defaults=1`: the renderer's own lighting / temporal / multipleScattering defaults (his set since K3.4)
   if (DEFAULTS) {
     const fresh = new VDBFrameRenderer().settings;
@@ -508,17 +563,20 @@ async function main(): Promise<void> {
   // His frame.js demo params (L93–116, utils/phase.js phaseParams): dual-lobe 0.8 / -0.3 / 0.2, extinction 100.
   // K3.4: his volume phase fields (`def.volumePhase`), and `?phase*` for 'volume' lighting.
   const volumePhase = { phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0, ...(def.volumePhase ?? {}) };
+  if (MEDIUM_PROPS) Object.assign(volumePhase, { phaseG: MEDIUM_PROPS.phaseG, phaseGExponent: MEDIUM_PROPS.phaseGExponent });
   for (const k of ["phaseG", "phaseBackG", "phaseBackWeight", "phaseGExponent"] as const) if (PHASE_OVERRIDES[k] !== undefined) volumePhase[k] = PHASE_OVERRIDES[k];
   const volume = new VDBFrameVolume(source, {
     frameRenderer,
     bbox,
-    baseColor: "#ffffff",
+    baseColor: MEDIUM_PROPS ? MEDIUM_PROPS.baseColor : "#ffffff",
+    // His frame.js default angstromExponent 0 (grey); a medium sets its own
+    angstromExponent: MEDIUM_PROPS ? MEDIUM_PROPS.angstromExponent : (ANGSTROM ?? 0.0),
     absorbance: 1.0,
     densityScale: 1.0,
     normalizeDensity: true,
     opacity: 1.0,
     extinction: num("extinction") ?? (def.smoke ? 40 : 100),
-    phase: (PHASE_OVERRIDES.phase as VDBFramePhase | undefined) ?? "dual-lobe",
+    phase: (PHASE_OVERRIDES.phase as VDBFramePhase | undefined) ?? MEDIUM_PROPS?.phase ?? "dual-lobe",
     ...volumePhase,
     shadowSteps: SHADOW_STEPS,
     mipmaps: MIPS,
@@ -599,6 +657,14 @@ async function main(): Promise<void> {
     scene.add(sun);
     scene.add(sun.target);
   }
+  // K3.5 `?extraLights=N`: N more directional lights (shadow slots 1..N; 6 slots fill the 4 spectral slot groups)
+  for (let i = 0; i < Number(params.get("extraLights") ?? 0); i++) {
+    const a = (i + 1) * 1.3;
+    const extra = new THREE.DirectionalLight(new THREE.Color().setHSL((i * 0.17) % 1, 0.6, 0.6), 0.35);
+    extra.position.set(Math.cos(a) * 150.0, 80.0 + 30.0 * i, Math.sin(a) * 150.0);
+    scene.add(extra);
+    scene.add(extra.target);
+  }
   if (LIGHT_SETUP === "dir-hemi") {
     // His hemisphere and ambient lights (frame.js L196–200), for the 'frame' lighting twin (sky up / down slots).
     scene.add(new THREE.HemisphereLight(0x88aaff, 0x443322, 0.5));
@@ -678,7 +744,8 @@ async function main(): Promise<void> {
     return out;
   }
 
-  if (ENV && LIGHTING === "frame" && ENV_MODE !== "outward") {
+  // K3.5: 'volume' lighting reads the environment lights too
+  if (ENV && ENV_MODE !== "outward") {
     // K3.4 furnace / any environment: wait for the 'directional' lights (async readback).
     let tries = 0;
     while (!frameRenderer.environment && tries++ < 60) {
@@ -717,7 +784,14 @@ async function main(): Promise<void> {
   if (!def.parityExpected) log(`parity with his capture not expected: ${def.why}`, "warn");
 
   // --- integrate pass vs its CPU twin (froxel grid = screen: one unfiltered froxel column per pixel) ---
-  if (TWIN) result.twin = await integrateTwin(renderer, frameRenderer, firstLinear);
+  if (TWIN) {
+    const bg = BACKGROUND.clone();
+    result.twin = SPECTRAL ? await spectralIntegrateTwin(renderer, frameRenderer, firstLinear, W, H, [bg.r, bg.g, bg.b]) : await integrateTwin(renderer, frameRenderer, firstLinear);
+  }
+  if (SPECTRAL || params.get("spectralProbe") === "1") {
+    result.spectralProbe = await probeSpectral(renderer);
+    log(`spectral chunk probe: ${result.spectralProbe.compared} values, max |d| ${result.spectralProbe.maxAbs.toExponential(2)} (max rel ${result.spectralProbe.maxRel.toExponential(2)}), ${result.spectralProbe.over} over`, result.spectralProbe.over === 0 ? "ok" : "fail");
+  }
 
   // --- TSL chunks vs the CPU twins --------------------------------------------------------------
   result.chunkProbe = await probeChunks(renderer);
@@ -785,7 +859,15 @@ async function main(): Promise<void> {
       gridVoxel: (g.frameGridVoxel.array as THREE.Vector3[]).slice(0, count).map((v) => v.toArray()),
     };
     // The last frame drew the passes the twins read (identical frames; the targets hold the last draw).
-    if (TWINS) {
+    if (TWINS && SPECTRAL) {
+      const t = await spectralTransmittanceTwin(renderer, frameRenderer);
+      result.spectralGroups = t.groups;
+      result.transmittanceTwin = t;
+      result.lightingTwin = await spectralLightingTwin(renderer, frameRenderer);
+      if (SOURCE_KIND === "dense" && volumes.length === 1) result.densityTwin = await spectralDensityTwin(renderer, frameRenderer, volume, dense);
+      if (frameRenderer.environmentGridMaterial.frameLightCount.value > 0 && frameRenderer.redrawStats.environmentGrid.drawn > 0) result.environmentGridTwin = await spectralEnvironmentGridTwin(renderer, frameRenderer);
+      log(`spectral twins (${t.groups} groups): transmittance ${JSON.stringify(result.transmittanceTwin)}; lighting ${JSON.stringify(result.lightingTwin)}; density ${JSON.stringify(result.densityTwin ?? null)}; environment grid ${JSON.stringify(result.environmentGridTwin ?? null)}`);
+    } else if (TWINS) {
       result.transmittanceTwin = await transmittanceTwin(renderer, frameRenderer);
       result.lightingTwin = await lightingTwin(renderer, frameRenderer);
       if (SOURCE_KIND === "dense" && volumes.length === 1) {
@@ -810,6 +892,7 @@ async function main(): Promise<void> {
         log(`grid mip twin: ${result.gridMipTwin.compared} values over ${result.gridMipTwin.levels} levels, max |d| ${result.gridMipTwin.maxAbs.toExponential(2)}, ${result.gridMipTwin.over} over`, result.gridMipTwin.over === 0 ? "ok" : "fail");
       }
     }
+    if (SPECTRAL) result.spectralGroups = Math.ceil(Math.max(0, (frameRenderer.transmittanceMaterial.frameShadowLightCount.value as number) - 1) / 2) + 1;
     result.gridProbe = await probeGrid(renderer, frameRenderer);
     log(`grid chunk probe: ${result.gridProbe.compared} values, max |d| ${result.gridProbe.maxAbs.toExponential(2)}, ${result.gridProbe.over} over`, result.gridProbe.over === 0 ? "ok" : "fail");
 

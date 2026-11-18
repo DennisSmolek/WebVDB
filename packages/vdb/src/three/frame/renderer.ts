@@ -14,13 +14,19 @@
 //   L642–699 (isNeural, the grid mip targets, renderGridMips), L1052–1056 and L1086–1098 (octaves,
 //   two-sided and neural uniforms of the inject and transmittance passes), L1132 and L1201 (octaves of the
 //   density and lighting passes), L506–518 and L559 (octaves in the environment grid signature and pass),
-//   L1213–1226 (the neural, two-sided and octave fields of the transmittance signature).
+//   L1213–1226 (the neural, two-sided and octave fields of the transmittance signature);
+//   K3.5: L176–189 (createAtlasTarget, isSpectralTarget), L335–337 (the spectral transmittance targets),
+//   L514 and L556 (spectral in the environment grid signature and pass), L638–640 (isSpectral), L702–713
+//   (getSpectralTransmittanceTarget), L725–866 (the spectral targets of updateTargets / updateGridTargets),
+//   L908 (environment lights in both lighting modes), L973–1003 (the alpha targets of renderTemporal),
+//   L1030 (the inject pass reads the scene environment), L1079–1196 (the slot group loop and the spectral maps
+//   of renderFrameLighting), L1210–1231 (the spectral fields of the transmittance signature), L1303
+//   (spectral in the grid signature).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; one inject, density and shadow density material per volume source (the
-// source is compiled into each; DIVERGES V30); grey only (spectral is K3.5); mesh shadows and
-// emission lights for K3.6; 'volume' lighting does not read hemisphere, probe or environment
-// lights yet; the neural network is a settable value (`neuralNetwork`; null: diffusion, with a
-// warning); per-pass timing hooks and a redraw-skip counter. Divergences: DIVERGES.md (K3.1, K3.3
+// source is compiled into each; DIVERGES V30); mesh shadows and emission lights for K3.6; the neural
+// network is a settable value (`neuralNetwork`; null: diffusion, with a warning); per-pass timing
+// hooks and a redraw-skip counter. Divergences: DIVERGES.md (K3.1, K3.3
 // and K3.4 rows), V23–V25, V30–V34.
 
 /**
@@ -78,7 +84,7 @@ import { VDBFrameGridMipMaterial } from "./grid-mip-material.js";
 import { vdbFrameNeuralCheck, type VDBFrameNeuralNetwork } from "../../tools/frame/neural.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
-import { getFrameExtinctionSpectrum } from "./spectrum.js";
+import { getFrameExtinctionSpectrum, getFrameSpectralGroups } from "./spectrum.js";
 import { VDBFrameTemporalMaterial } from "./temporal-material.js";
 import { VDBFrameTransmittanceMaterial, frameNeuralMipLevels, frameShadowLightSlots } from "./transmittance-material.js";
 import { FrameVolumeCollector, getFrameFadeRadius, getFroxelArea, getFroxelRect, getFroxelSliceRange, type FrameVolumeEntry, type FrameVolumeRecord } from "./view.js";
@@ -150,7 +156,12 @@ export interface VDBFrameRendererSettings {
   scatteringOctaveContribution: number;
   /** `'octaves'`: c (0–1, default 0.5). */
   scatteringOctavePhase: number;
-  /** Grey only (K3.5). */
+  /**
+   * Spectral media (K3.5, his `spectral`, default false): per-channel extinction (each volume's
+   * `extinctionScale` × (λ / 550)^−`angstromExponent`), per-channel albedo and multiple scattering. 'frame'
+   * lighting draws one transmittance pass per slot group (3 targets each); the froxel atlas gets a second
+   * target. `'neural'` runs as 1D diffusion (his `isNeural`). See `getFrameMediumProps` for measured media.
+   */
   spectral: boolean;
 }
 
@@ -199,6 +210,21 @@ const createRenderTarget = (width: number, height: number, options: THREE.Render
     depthBuffer: false,
     ...options,
   });
+
+// NOTE Froxel atlas. Spectral: a second target with the red and blue alpha (and the green alpha in w for blending).
+const createAtlasTarget = (width: number, height: number, spectral: boolean) => {
+  if (!spectral) {
+    return createRenderTarget(width, height);
+  }
+
+  const target = createRenderTarget(width, height, { count: 2 });
+
+  target.textures[1]!.format = THREE.RGFormat;
+
+  return target;
+};
+
+const isSpectralTarget = (target: THREE.RenderTarget) => target.textures.length > 1;
 
 const createScene = () => {
   const scene = new THREE.Scene();
@@ -455,6 +481,9 @@ export class VDBFrameRenderer {
   densityTarget: THREE.RenderTarget | null = null;
   shadowDensityTarget: THREE.RenderTarget | null = null;
   transmittanceTarget: THREE.RenderTarget | null = null;
+  // NOTE Renderer settings.spectral: 3 transmittance targets for each slot group in use (spectrum.ts).
+  // Made when a group is first used. transmittanceTarget is null then.
+  spectralTransmittanceTargets: THREE.RenderTarget[] = [];
   lightLimitWarned = false;
   private readonly warned = new Set<string>();
 
@@ -654,7 +683,6 @@ export class VDBFrameRenderer {
 
   private checkSettings(): void {
     const s = this.settings;
-    if (s.spectral) this.warnOnce("spectral", "spectral is not ported yet (K3.5); rendering grey.");
     if (this.isFrameLighting() && s.multipleScattering === "neural" && !this.neuralNetwork) {
       this.warnOnce("neural", "multipleScattering 'neural' has no network (neuralNetwork is null); the scene light slots use 1D diffusion (true).");
     }
@@ -663,6 +691,10 @@ export class VDBFrameRenderer {
   /** The multiple scattering mode (settings.multipleScattering; 'neural' is diffusion outside the network). */
   private multipleScatteringMode(): VDBFrameMultipleScattering {
     return this.settings.multipleScattering;
+  }
+
+  isSpectral(): boolean {
+    return this.settings.spectral === true;
   }
 
   // NOTE multipleScattering 'neural' uses the network only with grey 'frame' lighting. Other cases use diffusion.
@@ -732,12 +764,37 @@ export class VDBFrameRenderer {
     }
   }
 
+  // NOTE The 3 transmittance targets of a spectral slot group, the same size as the shadow grid
+  getSpectralTransmittanceTarget(group: number): THREE.RenderTarget {
+    const targets = this.spectralTransmittanceTargets;
+
+    while (targets.length <= group) {
+      const { width, height } = this.shadowDensityTarget!;
+
+      targets.push(createRenderTarget(width, height, { count: 3 }));
+    }
+
+    return targets[group]!;
+  }
+
+  // NOTE The lighting and density passes keep their group textures bound when they do not read them: they get their
+  // own placeholders (one texture each, see renderFrameLighting), not the disposed targets.
+  disposeSpectralTransmittanceTargets(): void {
+    this.spectralTransmittanceTargets.forEach((target) => target.dispose());
+    this.spectralTransmittanceTargets = [];
+
+    for (const map of [...this.lightingMaterial.frameSpectralTransmittanceMaps, ...this.densityShadowUniforms.frameSkyTransmittanceMaps]) {
+      map.value = new THREE.Texture();
+    }
+  }
+
   updateTargets(renderer: RendererLike): void {
     const { depth, subSteps } = this.settings;
     const { width, height } = getFroxelSize(this.settings, renderer, froxelSize, this.froxelHeldSize);
+    const spectral = this.isSpectral();
     const froxelAtlas = getAtlasLayout(width, height, depth);
 
-    if (!this.atlasTarget || this.atlasTarget.width !== froxelAtlas.width || this.atlasTarget.height !== froxelAtlas.height) {
+    if (!this.atlasTarget || this.atlasTarget.width !== froxelAtlas.width || this.atlasTarget.height !== froxelAtlas.height || isSpectralTarget(this.atlasTarget) !== spectral) {
       const maxTextureSize = getMaxTextureSize(renderer);
 
       if (froxelAtlas.width > maxTextureSize || froxelAtlas.height > maxTextureSize) {
@@ -745,9 +802,14 @@ export class VDBFrameRenderer {
       }
 
       this.atlasTarget?.dispose();
-      this.atlasTarget = createRenderTarget(froxelAtlas.width, froxelAtlas.height);
+      this.atlasTarget = createAtlasTarget(froxelAtlas.width, froxelAtlas.height, spectral);
       this.historyValid = false;
     }
+
+    // NOTE The per-volume inject materials are set in renderInject
+    this.lightingMaterial.setSpectral(spectral);
+    this.temporalMaterial.setSpectral(spectral);
+    this.integrateMaterial.setSpectral(spectral);
 
     const { froxelGrid, froxelColumns } = this.froxelUniforms;
 
@@ -763,24 +825,30 @@ export class VDBFrameRenderer {
     this.froxelTileUniforms.frameTileColumns.value = froxelAtlas.columns;
     this.froxelTileUniforms.frameTargetSize.value.set(froxelAtlas.width, froxelAtlas.height);
     this.froxelUniforms.froxelAtlasSize.value.set(froxelAtlas.width, froxelAtlas.height);
-    this.integrateMaterial.froxelAtlas.value = this.atlasTarget.texture;
+    this.integrateMaterial.froxelAtlas.value = this.atlasTarget.textures[0];
+    this.integrateMaterial.froxelAlphaAtlas.value = this.atlasTarget.textures[spectral ? 1 : 0];
 
     if (this.settings.temporal) {
       for (let index = 0; index < this.historyTargets.length; index++) {
         const target = this.historyTargets[index];
 
-        if (!target || target.width !== froxelAtlas.width || target.height !== froxelAtlas.height) {
+        if (!target || target.width !== froxelAtlas.width || target.height !== froxelAtlas.height || isSpectralTarget(target) !== spectral) {
           target?.dispose();
-          this.historyTargets[index] = createRenderTarget(froxelAtlas.width, froxelAtlas.height);
+          this.historyTargets[index] = createAtlasTarget(froxelAtlas.width, froxelAtlas.height, spectral);
           this.historyValid = false;
         }
       }
     }
 
     if (this.isFrameLighting()) {
-      if (!this.densityTarget || this.densityTarget.width !== froxelAtlas.width || this.densityTarget.height !== froxelAtlas.height) {
+      // NOTE Spectral: 3 targets (albedo, emission, extinction of each channel), no light slot targets
+      const densityCount = spectral ? 3 : 4;
+
+      if (!this.densityTarget || this.densityTarget.width !== froxelAtlas.width || this.densityTarget.height !== froxelAtlas.height || this.densityTarget.textures.length !== densityCount) {
         this.densityTarget?.dispose();
-        this.densityTarget = createRenderTarget(froxelAtlas.width, froxelAtlas.height, { count: 4, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+        this.densityTarget = createRenderTarget(froxelAtlas.width, froxelAtlas.height, { count: densityCount, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+        this.densityClearMaterial.fragmentNode = outputStruct(...Array.from({ length: densityCount }, () => vec4(0.0)));
+        this.densityClearMaterial.needsUpdate = true;
       }
 
       this.updateGridTargets();
@@ -791,20 +859,27 @@ export class VDBFrameRenderer {
     const resolution = Math.max(2, Math.round(this.settings.shadowResolution));
     const cascades = this.getCascadeCount();
     const gridAtlas = getAtlasLayout(resolution, resolution, resolution * cascades);
+    const spectral = this.isSpectral();
 
-    if (!this.shadowDensityTarget || this.shadowDensityTarget.width !== gridAtlas.width || this.shadowDensityTarget.height !== gridAtlas.height) {
+    if (!this.shadowDensityTarget || this.shadowDensityTarget.width !== gridAtlas.width || this.shadowDensityTarget.height !== gridAtlas.height || isSpectralTarget(this.shadowDensityTarget) !== spectral) {
       this.shadowDensityTarget?.dispose();
       this.transmittanceTarget?.dispose();
+      this.disposeSpectralTransmittanceTargets();
 
-      // NOTE Extinction and absorption
-      this.shadowDensityTarget = createRenderTarget(gridAtlas.width, gridAtlas.height, { format: THREE.RGFormat });
+      // NOTE Extinction and absorption. Spectral: (extinction rgb, 0) and (absorption rgb, 0).
+      this.shadowDensityTarget = spectral ? createRenderTarget(gridAtlas.width, gridAtlas.height, { count: 2 }) : createRenderTarget(gridAtlas.width, gridAtlas.height, { format: THREE.RGFormat });
       // NOTE Total transmittance (2 targets), then direct transmittance of the light slots (2 targets).
-      this.transmittanceTarget = createRenderTarget(gridAtlas.width, gridAtlas.height, { count: 4 });
+      // Spectral: the slot group targets (getSpectralTransmittanceTarget).
+      this.transmittanceTarget = spectral ? null : createRenderTarget(gridAtlas.width, gridAtlas.height, { count: 4 });
 
       // NOTE A new target is empty, so the last cascade and the environment grid are drawn again
       this.gridState.castSignature = [];
       this.environmentGridSignature = [];
     }
+
+    // NOTE The per-volume shadow density materials are set in getShadowDensityMaterial
+    this.transmittanceMaterial.setSpectral(spectral);
+    this.environmentGridMaterial.setSpectral(spectral);
 
     // NOTE The environment grid is one cascade. A new target is empty, so the signature is reset.
     const environmentAtlas = getAtlasLayout(resolution, resolution, resolution);
@@ -838,8 +913,8 @@ export class VDBFrameRenderer {
 
     renderer.getClearColor(clearColor);
 
-    // NOTE null: the environment uses the 'outward' path. 'volume' lighting does not read environment lights yet.
-    this.environment = this.isFrameLighting() ? this.environmentLights.update(renderer, scene as never, this.settings) : null;
+    // NOTE null: the environment uses the 'outward' path. 'volume' lighting marches every environment light in each volume.
+    this.environment = this.environmentLights.update(renderer, scene as never, this.settings);
 
     this.updateTargets(renderer);
     this.updateFroxelArea(volumes, camera);
@@ -912,8 +987,10 @@ export class VDBFrameRenderer {
     const writeTarget = this.historyTargets[1 - this.historyIndex]!;
     const cam = camera as THREE.PerspectiveCamera;
 
-    material.frameCurrentMap.value = this.atlasTarget!.texture;
-    material.frameHistoryMap.value = readTarget.texture;
+    material.frameCurrentMap.value = this.atlasTarget!.textures[0];
+    material.frameHistoryMap.value = readTarget.textures[0];
+    material.frameCurrentAlphaMap.value = this.atlasTarget!.textures.at(-1);
+    material.frameHistoryAlphaMap.value = readTarget.textures.at(-1);
     material.frameUseHistory.value = this.historyValid && this.historyCamera === camera ? 1 : 0;
     material.frameTemporalBlend.value = Math.min(1.0, Math.max(0.01, this.settings.temporalBlend));
     material.frameCameraMatrixWorld.value.copy(camera.matrixWorld);
@@ -928,7 +1005,8 @@ export class VDBFrameRenderer {
     renderer.clear(true, false, false);
     renderer.render(this.temporalScene, camera);
 
-    this.integrateMaterial.froxelAtlas.value = writeTarget.texture;
+    this.integrateMaterial.froxelAtlas.value = writeTarget.textures[0];
+    this.integrateMaterial.froxelAlphaAtlas.value = writeTarget.textures.at(-1);
 
     this.historyIndex = 1 - this.historyIndex;
     this.historyValid = true;
@@ -979,6 +1057,7 @@ export class VDBFrameRenderer {
       injectMesh.material = injectMaterial;
 
       injectMaterial.frameCameraMatrixWorld.value.copy(camera.matrixWorld);
+      injectMaterial.setEnvironment(scene.environment);
       setVolumeUniforms(injectMaterial, frameVolume, volume);
       injectMaterial.frameLights.value = frameVolume.lights;
       injectMaterial.frameShadowSteps.value = frameVolume.shadowSteps;
@@ -1008,6 +1087,7 @@ export class VDBFrameRenderer {
         sourceUniforms: frameVolume.sourceUniforms,
         mipmaps,
         hdda: frameVolume.hdda,
+        spectral: this.isSpectral(),
         ...(frameVolume.emissionColor ? { emissionColor: frameVolume.emissionColor } : {}),
       });
       frameVolume.injectMaterial = material;
@@ -1015,6 +1095,9 @@ export class VDBFrameRenderer {
 
     material.setMipmaps(mipmaps);
     material.setHdda(frameVolume.hdda);
+    material.setSpectral(this.isSpectral());
+    // NOTE The hemisphere and environment-light loops are compiled in only when the scene has those lights (updateLights)
+    material.setLightTerms((this.lightUniforms.frameHemiCount.value as number) > 0, (this.lightUniforms.frameEnvironmentCount.value as number) > 0);
 
     return material;
   }
@@ -1046,6 +1129,7 @@ export class VDBFrameRenderer {
     }
 
     material.setMipmaps(mipmaps);
+    material.setSpectral(this.isSpectral());
 
     return material;
   }
@@ -1068,6 +1152,7 @@ export class VDBFrameRenderer {
     }
 
     material.setMipmaps(mipmaps);
+    material.setSpectral(this.isSpectral());
 
     return material;
   }
@@ -1087,11 +1172,14 @@ export class VDBFrameRenderer {
 
     this.gridFreshCamera = null;
     const useEnvironmentGrid = useShadows && lights.environmentGridLights.length > 0;
+    const spectral = this.isSpectral();
+    const spectralGroups = getFrameSpectralGroups(lights.shadowLightCount);
 
     if (useShadows) {
       const material = this.transmittanceMaterial;
 
-      material.frameShadowDensityMap.value = this.shadowDensityTarget!.texture;
+      material.frameShadowDensityMap.value = this.shadowDensityTarget!.textures[0];
+      material.frameShadowAbsorptionMap.value = this.shadowDensityTarget!.textures.at(-1);
       material.frameShadowLightCount.value = lights.shadowLightCount;
       material.frameMultipleScattering.value = ms;
       material.frameScatteringOctaves.value.copy(octaves);
@@ -1105,8 +1193,21 @@ export class VDBFrameRenderer {
         this.passHook?.end?.("gridMips");
       }
 
-      if (this.transmittanceUnchanged(lights.shadowLightCount)) {
+      if (this.transmittanceUnchanged(lights.shadowLightCount, spectral ? spectralGroups : 0)) {
         this.redrawStats.transmittance.skipped++;
+      } else if (spectral) {
+        this.redrawStats.transmittance.drawn++;
+        this.passHook?.begin?.("transmittance");
+
+        // NOTE One pass for each slot group in use, each into its own targets
+        for (let group = 0; group < spectralGroups; group++) {
+          material.frameSpectralGroup.value = group;
+
+          renderer.setRenderTarget(this.getSpectralTransmittanceTarget(group));
+          renderer.render(this.transmittanceScene, camera);
+        }
+
+        this.passHook?.end?.("transmittance");
       } else {
         this.redrawStats.transmittance.drawn++;
         this.passHook?.begin?.("transmittance");
@@ -1123,13 +1224,18 @@ export class VDBFrameRenderer {
     }
 
     const { densityShadowUniforms } = this;
-    const transmittance = this.transmittanceTarget!;
 
     densityShadowUniforms.frameUseShadows.value = useShadows ? 1 : 0;
-    densityShadowUniforms.frameTransmittanceMap0.value = transmittance.textures[0];
-    densityShadowUniforms.frameTransmittanceMap1.value = transmittance.textures[1];
-    densityShadowUniforms.frameTransmittanceMap2.value = transmittance.textures[2];
-    densityShadowUniforms.frameTransmittanceMap3.value = transmittance.textures[3];
+
+    if (!spectral) {
+      const transmittance = this.transmittanceTarget!;
+
+      densityShadowUniforms.frameTransmittanceMap0.value = transmittance.textures[0];
+      densityShadowUniforms.frameTransmittanceMap1.value = transmittance.textures[1];
+      densityShadowUniforms.frameTransmittanceMap2.value = transmittance.textures[2];
+      densityShadowUniforms.frameTransmittanceMap3.value = transmittance.textures[3];
+    }
+
     densityShadowUniforms.frameShadowSceneLightCount.value = lights.environmentShadowSlot;
     getFramePhase(this.settings, densityShadowUniforms.framePhase.value);
     getFramePhaseSpectrum(this.settings, densityShadowUniforms.framePhaseSpectrum.value);
@@ -1142,6 +1248,15 @@ export class VDBFrameRenderer {
         ? frameDensityEnvironment.none
         : frameDensityEnvironment.outward;
     densityShadowUniforms.frameCameraMatrixWorld.value.copy(camera.matrixWorld);
+
+    // NOTE Spectral: sky up and sky down are in the first two targets of group 0 (bound also without shadows: not his)
+    if (spectral) {
+      const skyMaps = densityShadowUniforms.frameSkyTransmittanceMaps;
+
+      for (let index = 0; index < skyMaps.length; index++) {
+        skyMaps[index]!.value = this.getSpectralTransmittanceTarget(0).textures[index];
+      }
+    }
 
     this.copyEnvironment(this.densityScene, scene);
 
@@ -1162,8 +1277,26 @@ export class VDBFrameRenderer {
 
     lightingMaterial.frameDensityAlbedoMap.value = density.textures[0];
     lightingMaterial.frameDensityEmissionMap.value = density.textures[1];
-    lightingMaterial.frameDensityShadowMap0.value = density.textures[2];
-    lightingMaterial.frameDensityShadowMap1.value = density.textures[3];
+
+    if (spectral) {
+      lightingMaterial.frameDensityExtinctionMap.value = density.textures[2];
+      lightingMaterial.frameSpectralGroups.value = useShadows ? spectralGroups : 0;
+
+      // NOTE Groups not in use keep the textures they have (their own targets or the initial placeholders); the lighting
+      // pass does not read them. Not his (he gives them group 0's targets): three's TextureNode uniform hash is its
+      // texture's uuid, so nodes that hold one texture when the shader is built share one binding, and a group that
+      // came into use later (an environment light taking a slot after its readback) kept reading group 0.
+      if (useShadows) {
+        const maps = lightingMaterial.frameSpectralTransmittanceMaps;
+
+        for (let index = 0; index < spectralGroups * 3; index++) {
+          maps[index]!.value = this.getSpectralTransmittanceTarget(Math.floor(index / 3)).textures[index % 3];
+        }
+      }
+    } else {
+      lightingMaterial.frameDensityShadowMap0.value = density.textures[2];
+      lightingMaterial.frameDensityShadowMap1.value = density.textures[3];
+    }
     lightingMaterial.frameShadowLightCount.value = lights.shadowLightCount;
     lightingMaterial.frameEnvironmentLightCount.value = useShadows ? lights.environmentLightCount : 0;
     lightingMaterial.frameEnvironmentShadowSlot.value = lights.environmentShadowSlot;
@@ -1181,16 +1314,21 @@ export class VDBFrameRenderer {
 
   // NOTE Whether the transmittance target already holds what this render would draw: the same grid content, target,
   // shadow lights and settings. A jittered grid changes in each frame, so it is always drawn.
-  transmittanceUnchanged(shadowLightCount: number): boolean {
+  transmittanceUnchanged(shadowLightCount: number, spectralGroups = 0): boolean {
     const material = this.transmittanceMaterial;
     const values = this.nextTransmittanceSignature;
 
     values.length = 0;
-    values.push(this.gridState.gridVersion, this.shadowDensityTarget!.texture.id, this.transmittanceTarget!.texture.id, shadowLightCount, material.frameMultipleScattering.value as number);
+    // NOTE Spectral rendering has no single transmittance target, only the targets of its groups below
+    values.push(this.gridState.gridVersion, this.shadowDensityTarget!.texture.id, this.transmittanceTarget ? this.transmittanceTarget.texture.id : -1, spectralGroups, shadowLightCount, material.frameMultipleScattering.value as number);
     // NOTE The network: on/off and which weights (a swapped network draws again)
     values.push(material.neural ? networkId(material.neural) : 0, material.frameTwoSided.value as number);
     vdbSignaturePushVector(values, material.frameScatteringOctaves.value);
     vdbSignaturePushVector(values, this.lightUniforms.frameSkyDirection.value);
+
+    for (let group = 0; group < spectralGroups; group++) {
+      values.push(this.getSpectralTransmittanceTarget(group).texture.id);
+    }
 
     const shadowLights = material.frameShadowLights.array as THREE.Vector4[];
 
@@ -1253,7 +1391,7 @@ export class VDBFrameRenderer {
       casters,
       frameGridCount.value as number,
       frameGridResolution.value as number,
-      false,
+      this.isSpectral(),
       frameGridMin.array as THREE.Vector3[],
       frameGridSize.array as THREE.Vector3[],
       (values, { frameVolume, volume }) => {
@@ -1279,7 +1417,7 @@ export class VDBFrameRenderer {
     this.environmentGridUniforms.frameEnvironmentGridCascade.value = cascade;
 
     signature.length = 0;
-    signature.push(frameGridResolution.value as number, cascade, 0, ms);
+    signature.push(frameGridResolution.value as number, cascade, this.isSpectral() ? 1 : 0, ms);
     vdbSignaturePushVector(signature, octaves);
     vdbSignaturePushVector(signature, (frameGridMin.array as THREE.Vector3[])[cascade]!);
     vdbSignaturePushVector(signature, (frameGridSize.array as THREE.Vector3[])[cascade]!);
@@ -1304,7 +1442,8 @@ export class VDBFrameRenderer {
 
     const material = this.environmentGridMaterial;
 
-    material.frameShadowDensityMap.value = this.shadowDensityTarget!.texture;
+    material.frameShadowDensityMap.value = this.shadowDensityTarget!.textures[0];
+    material.frameShadowAbsorptionMap.value = this.shadowDensityTarget!.textures.at(-1);
     material.frameLightCount.value = gridLights.length;
     material.frameMultipleScattering.value = ms;
     material.frameScatteringOctaves.value.copy(octaves);
@@ -1528,10 +1667,6 @@ export class VDBFrameRenderer {
     if (light.isAmbientLight) {
       frameAmbientColor.value.add(lightColor);
     } else if (light.isHemisphereLight) {
-      if (!this.isFrameLighting()) {
-        this.warnOnce("light-type", "hemisphere lights and light probes are not ported to 'volume' lighting yet (K3.4); they are ignored there.");
-      }
-
       const hemiCount = state.hemiCount;
 
       if (hemiCount < frameMaxHemisphereLights) {
@@ -1554,10 +1689,6 @@ export class VDBFrameRenderer {
         state.hasSky = true;
       }
     } else if (light.isLightProbe) {
-      if (!this.isFrameLighting()) {
-        this.warnOnce("light-type", "hemisphere lights and light probes are not ported to 'volume' lighting yet (K3.4); they are ignored there.");
-      }
-
       const { coefficients } = light.sh!;
 
       for (let i = 0; i < coefficients.length; i++) {
@@ -1612,10 +1743,6 @@ export class VDBFrameRenderer {
       v.set(0.0, 0.0, 0.0);
     }
 
-    if (scene.environment && !this.isFrameLighting()) {
-      this.warnOnce("environment", "the scene environment does not light volumes in 'volume' lighting yet (K3.4).");
-    }
-
     scene.traverseVisible(this.visitLight);
     state.camera = null;
 
@@ -1646,7 +1773,7 @@ export class VDBFrameRenderer {
 
     u.frameLightCount.value = count;
 
-    // NOTE Environment lights
+    // NOTE Environment lights. 'volume' lighting marches all of them in each volume.
     const { environment } = this;
     const environmentCount = environment ? environment.count : 0;
     const environmentDirections = u.frameEnvironmentDirections.array as THREE.Vector3[];
@@ -1716,6 +1843,7 @@ export class VDBFrameRenderer {
     this.historyTargets.forEach((target) => target?.dispose());
     this.historyTargets = [null, null];
     this.historyValid = false;
+    this.disposeSpectralTransmittanceTargets();
 
     for (const key of ["atlasTarget", "densityTarget", "shadowDensityTarget", "transmittanceTarget", "environmentMapTarget", "environmentGridTarget"] as const) {
       this[key]?.dispose();

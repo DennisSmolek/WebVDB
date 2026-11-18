@@ -34,6 +34,10 @@ export {
 } from "./phase.js";
 export type { VDBFramePhase, VDBFrameMultipleScattering, VDBFramePhaseSource } from "./phase.js";
 export { getAtlasLayout, getFroxelSize } from "./layout.js";
+// K3.5: spectral media and presets
+export { getFrameMediumProps } from "./medium.js";
+export type { VDBFrameMediumVolumeProps } from "./medium.js";
+export { frameSpectrumWavelengths, frameAngstromExponents, getFrameAngstromExponent, getFrameExtinctionSpectrum, frameSpectralGroupCount, getFrameSpectralGroups } from "./spectrum.js";
 export { FrameVolumeCollector, getFroxelSlice, getFroxelSliceRange, getFroxelRect, getFroxelArea, getFrameFadeRadius } from "./view.js";
 export type { FrameVolumeRecord, FroxelArea } from "./view.js";
 export * as vdbFrameChunks from "./chunks.js";
