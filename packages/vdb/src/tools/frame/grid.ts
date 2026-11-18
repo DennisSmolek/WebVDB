@@ -14,7 +14,8 @@
 // Changes: engine-free (plain `{ x, y, z }` vectors and boxes instead of three's `Box3`/`Vector3`,
 // so `tools` stays free of three; the three adapter passes its own objects, which fit); the shader
 // maths as f64 CPU twins (test oracles of the `./three` 'frame' lighting passes); K3.4 adds the octave,
-// two-sided and neural (callback) terms; no spectral terms (K3.5). Divergences: DIVERGES.md (K3.3, K3.4 rows).
+// two-sided and neural (callback) terms; the spectral twins are in spectral.ts (K3.5; they share
+// `vdbFrameDensityFroxelSteps`). Divergences: DIVERGES.md (K3.3, K3.4 rows).
 
 /**
  * The world shadow grid of mjurczyk's `'frame'` lighting (K3.3, R1 §6 Step 3), engine-free: the
@@ -615,6 +616,29 @@ export interface VDBFrameDensityInputs {
  * blending), or null when the froxel is discarded. `fragCoord` is the atlas pixel (bottom-left).
  */
 export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs): [Vec4, Vec4, Vec4, Vec4] | null {
+  const f = vdbFrameDensityFroxelSteps(fragCoord, p);
+  if (!f) return null;
+  const { viewNear, viewFar, localNear, localFar, t0, segment, steps, subStepLength, lod, jitter, mul } = f;
+  const lerp3 = (x: Vec3, y: Vec3, t: number): Vec3 => [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
+  let extinctionSum = 0;
+  let transmittance = 1;
+  let visibleWeight = 0;
+  let visibleTSum = 0;
+  for (let i = 0; i < steps; i++) {
+    const t = t0 + segment * ((i + jitter) / steps);
+    const e = p.extinctionAt(lerp3(localNear, localFar, t), lod) * p.opacity * vdbFrameDistanceFade(p.fadeRadius, lerp3(viewNear, viewFar, t));
+    const stepT = Math.exp(-e * subStepLength);
+    const w = transmittance * (1 - stepT);
+    visibleWeight += w;
+    visibleTSum += w * t;
+    extinctionSum += e;
+    transmittance *= stepT;
+  }
+  return densityFroxelTail(p, viewNear, viewFar, mul, extinctionSum, steps, segment, visibleWeight, visibleTSum);
+}
+
+/** The froxel geometry of the density pass (and the inject pre-integration): box segment, sub-steps, lods. null: discarded. */
+export function vdbFrameDensityFroxelSteps(fragCoord: Vec2, p: Pick<VDBFrameDensityInputs, "froxelGrid" | "columns" | "range" | "projectionInverse" | "viewToLocal" | "maxTexels" | "mipLevels" | "worldScale" | "subSteps" | "jitter">) {
   const froxel = vdbFrameFroxel(p.froxelGrid, p.columns, p.range, p.projectionInverse, fragCoord);
   const mul = (m: ArrayLike<number>, v: Vec3): Vec3 => [0, 1, 2].map((r) => m[r]! * v[0] + m[4 + r]! * v[1] + m[8 + r]! * v[2] + m[12 + r]!) as Vec3;
   const { viewNear, viewFar } = froxel;
@@ -650,21 +674,21 @@ export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs)
   const subStepLength = (Math.hypot(viewFar[0] - viewNear[0], viewFar[1] - viewNear[1], viewFar[2] - viewNear[2]) * segment) / steps;
   const lod = Math.max(widthLod, getLod(subStepLength / p.worldScale));
   const jitter = vdbFrameNoise(p.jitter, fragCoord);
+  return { froxel, viewNear, viewFar, localNear, localFar, t0, segment, steps, subStepLength, lod, jitter, mul };
+}
+
+function densityFroxelTail(
+  p: VDBFrameDensityInputs,
+  viewNear: Vec3,
+  viewFar: Vec3,
+  mul: (m: ArrayLike<number>, v: Vec3) => Vec3,
+  extinctionSum: number,
+  steps: number,
+  segment: number,
+  visibleWeight: number,
+  visibleTSum: number,
+): [Vec4, Vec4, Vec4, Vec4] | null {
   const lerp3 = (x: Vec3, y: Vec3, t: number): Vec3 => [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
-  let extinctionSum = 0;
-  let transmittance = 1;
-  let visibleWeight = 0;
-  let visibleTSum = 0;
-  for (let i = 0; i < steps; i++) {
-    const t = t0 + segment * ((i + jitter) / steps);
-    const e = p.extinctionAt(lerp3(localNear, localFar, t), lod) * p.opacity * vdbFrameDistanceFade(p.fadeRadius, lerp3(viewNear, viewFar, t));
-    const stepT = Math.exp(-e * subStepLength);
-    const w = transmittance * (1 - stepT);
-    visibleWeight += w;
-    visibleTSum += w * t;
-    extinctionSum += e;
-    transmittance *= stepT;
-  }
   const extinction = (extinctionSum / steps) * segment;
   if (!(extinction > 0)) return null;
   const visibleT = visibleWeight > 0 ? visibleTSum / visibleWeight : 0.5;

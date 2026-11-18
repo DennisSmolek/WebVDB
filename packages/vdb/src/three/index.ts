@@ -112,6 +112,11 @@ export {
   getFroxelSliceRange as vdbFroxelSliceRange,
   getFroxelRect as vdbFroxelRect,
   getFroxelArea as vdbFroxelArea,
+  // K3.5: spectral media (his getFrameMediumProps: the three Color / Vector3 volume props of a preset)
+  getFrameMediumProps as vdbFrameMedium,
+  getFrameExtinctionSpectrum as vdbFrameExtinctionSpectrumInto,
+  getFrameAngstromExponent as vdbFrameAngstromExponent,
+  frameAngstromExponents as vdbFrameAngstromExponents,
 } from "./frame/index.js";
 export type {
   VDBFrameVolumeProps,
@@ -124,4 +129,5 @@ export type {
   VDBFrameMultipleScattering,
   FrameVolumeRecord,
   FroxelArea,
+  VDBFrameMediumVolumeProps,
 } from "./frame/index.js";

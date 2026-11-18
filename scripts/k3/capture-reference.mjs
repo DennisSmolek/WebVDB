@@ -128,6 +128,24 @@ const SCENARIOS = [
     { name: `${name}-asis`, step: 4, fields: { demo: "frame", ...extra }, sanity },
     { name: `${name}-dir-isolated`, step: 4, fields: { demo: "frame", lightSetup: "dir", ...extra }, sanity: null, isolate: extra.lighting === "volume" ? true : "frame" },
   ]),
+  // K3.5 (R1 §6 Step 5): spectral media and presets, his Spectral folder fields (utils/medium.js): `spectral`, `medium`
+  // (its onChange turns spectral on and sets fogColor / baseColor (exact linear albedo), angstromExponent, phaseG,
+  // phaseGExponent and the frame-phase fields) and `angstromExponent`. His default multipleScattering 'neural' (spectral
+  // runs it as 1D diffusion, his isNeural). He has no validation JPEGs for them (sanity null). As Step 4: `*-asis` (INFO)
+  // and `*-dir-isolated` (his sun only, the gate; 'volume' lighting `isolate: true`).
+  ...[
+    ["step5-spectral", { spectral: true }],
+    ...["cloud", "fog", "ice", "soot", "white-smoke", "dark-smoke", "haze", "dust"].map((m) => [`step5-medium-${m}`, { medium: m }]),
+    ["step5-angstrom-air", { spectral: true, angstromExponent: 4.09 }],
+    ["step5-lighting-volume-medium-dark-smoke", { lighting: "volume", medium: "dark-smoke" }],
+  ].flatMap(([name, extra]) => [
+    { name: `${name}-asis`, step: 5, fields: { demo: "frame", ...extra }, sanity: null },
+    { name: `${name}-dir-isolated`, step: 5, fields: { demo: "frame", lightSetup: "dir", ...extra }, sanity: null, isolate: extra.lighting === "volume" ? true : "frame" },
+  ]),
+  // K3.5: 'volume' lighting with his sky-midday environment and no scene light (`isolate: 'environment'`: the map kept,
+  // FrameVolume `lights` untouched): the 'volume'-lighting environment terms (his inject pass's environment lights).
+  { name: "step5-lighting-volume-sky-midday-env-isolated", step: 5, fields: { demo: "frame", lighting: "volume", lightSetup: "none", environment: "sky-midday" }, sanity: null, isolate: "environment" },
+  { name: "step5-lighting-volume-medium-cloud-sky-midday-env-isolated", step: 5, fields: { demo: "frame", lighting: "volume", lightSetup: "none", environment: "sky-midday", medium: "cloud" }, sanity: null, isolate: "environment" },
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.

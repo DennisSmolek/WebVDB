@@ -261,8 +261,8 @@ test("K3.4 defaults (V33): 'frame' lighting + temporal + 'neural' render cleanly
 
 // His white furnace (src/docs/examples/src/utils/furnace.js): a uniform environment of radiance L lights a white
 // (non-absorbing) volume and is its background; an exact renderer returns L everywhere (the volume vanishes). His
-// multiple scattering modes are approximations, so the ratio is recorded per mode, not forced. 'frame' lighting only:
-// 'volume' lighting does not read the environment yet. K3.4 (SwiftShader): 1D, 'two-sided' and 'neural' 0.998 mean
+// multiple scattering modes are approximations, so the ratio is recorded per mode, not forced. 'frame' lighting here;
+// 'volume' lighting reads the environment since K3.5 (its furnace is in k3-frame-spectral.spec.ts). K3.4 (SwiftShader): 1D, 'two-sided' and 'neural' 0.998 mean
 // v/L (every environment light is on the environment grid with isotropic diffusion; the network and the two-sided
 // march light only scene light slots), 'octaves' 0.73 / 0.47, single scattering 0.26 / 0.16 (extinction 40 / 200).
 const FURNACE_MODES = ["0", "1", "two-sided", "octaves", "neural"];

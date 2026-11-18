@@ -12,8 +12,8 @@
 //   transmittance, frameShadowOpticalDepth, frameOctaveLight), L416–462 (frameTwoSidedDiffusion,
 //   frameShadowTotal), L464–481 (frameShadowedLight with octaves); core/framePhase.js L110–129
 //   (getFrameScatteringOctaves).
-// Changes: CPU (f64) twins of the TSL shader maths, used as test oracles (grey; the spectral variants
-// are K3.5). Divergences: DIVERGES.md (K3.1 and K3.4 rows).
+// Changes: CPU (f64) twins of the TSL shader maths, used as test oracles (grey; the spectral twins are in
+// spectral.ts). Divergences: DIVERGES.md (K3.1 and K3.4 rows).
 
 /**
  * CPU twins of the froxel pipeline maths (K3.1, R1 §6 Step 1; CLAUDE.md "every WGSL entry has a CPU

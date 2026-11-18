@@ -1,10 +1,10 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/FrameTransmittanceMaterial.js L43–276 (light slots, the grey
 //   transmittance pass; K3.4: the octave uniform, the two-sided back march and setNeural / the neural
-//   slot light).
+//   slot light); K3.5: L66–70 (absorption map, slot group uniform), L85–91 (setSpectral), L278–459
+//   (buildSpectralNodes: one pass per slot group).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
-// Changes: TypeScript; grey only (the spectral slot groups are K3.5); the network is a parameter of
-// setNeural (VDBFrameNeuralNetwork). Source-free: the pass reads only the shadow grid (and its mips).
+// Changes: TypeScript; the network is a parameter of setNeural (VDBFrameNeuralNetwork). Source-free: the pass reads only the shadow grid (and its mips).
 // Divergences: DIVERGES.md (K3.3, K3.4 rows).
 
 /**
@@ -15,6 +15,11 @@
  * direct, 1, 1). Multiple scattering: diffusion (1D), octaves, 'two-sided' (a back march per slot) or
  * 'neural' (the network's scattered light per slot). CPU twin: `@pmndrs/vdb/tools`
  * `vdbFrameTransmittanceVoxel`.
+ *
+ * Spectral (K3.5, renderer `settings.spectral`): the grid holds the extinction and the absorption of each
+ * channel; the pass runs once per slot group (spectrum.ts `getFrameSpectralGroups`) into the 3 RGBA targets
+ * of that group, each direction marched once with the depths of all channels. CPU twin:
+ * `vdbFrameSpectralTransmittanceVoxel`.
  */
 
 import * as THREE from "three";
@@ -23,6 +28,9 @@ import * as TSL from "three/tsl";
 import type { VDBTslNode } from "../grid-node.js";
 import {
   createGridNodes,
+  frameSpectralShadowStep,
+  frameSpectralShadowTransmittance,
+  minComponent,
   frameFragCoord,
   frameFullscreenVertex,
   frameIsotropicDiffusion,
@@ -37,7 +45,7 @@ import {
 import { createNeuralNodes } from "./neural.js";
 import type { VDBFrameNeuralNetwork } from "../../tools/frame/neural.js";
 
-const { Break, Fn, If, Loop, abs, float, int, length, max, min, normalize, outputStruct, property, select, texture, uniform, uniformArray, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { Break, Fn, If, Loop, abs, bool, dot, float, int, length, max, min, normalize, outputStruct, property, select, texture, uniform, uniformArray, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
 // NOTE Light slots: sky up, sky down, then 6 lights. Targets 0 and 1: total transmittance of all slots.
 // NOTE Targets 2 and 3: direct transmittance of the 6 lights. Then the lighting gives the phase only to the direct light.
@@ -68,6 +76,10 @@ export class VDBFrameTransmittanceMaterial extends NodeMaterial {
   readonly frameScatteringOctaves = uniform(new THREE.Vector4());
   // NOTE multipleScattering 'two-sided' (phase.ts): light slots also march away from the light
   readonly frameTwoSided = uniform(0.0);
+  // NOTE Renderer settings.spectral: the absorption target of the grid, and the slot group of this pass (spectrum.ts).
+  // The renderer draws this pass one time for each group in use, into its own targets.
+  readonly frameShadowAbsorptionMap = texture(new THREE.Texture());
+  readonly frameSpectralGroup = uniform(0, "int");
   // NOTE multipleScattering 'neural': mips of the last cascade (VDBFrameGridMipMaterial), levels 1 and up,
   // and their atlas layouts (columns, width, height). Five levels for his six-level network.
   readonly frameNeuralMipMaps = Array.from({ length: frameNeuralMipLevels }, () => texture(new THREE.Texture()));
@@ -76,6 +88,7 @@ export class VDBFrameTransmittanceMaterial extends NodeMaterial {
   readonly lightUniforms: LightUniforms;
   /** The network compiled in (multipleScattering 'neural'), or null. */
   neural: VDBFrameNeuralNetwork | null = null;
+  spectral = false;
 
   constructor(o: VDBFrameTransmittanceMaterialOptions) {
     super();
@@ -101,7 +114,21 @@ export class VDBFrameTransmittanceMaterial extends NodeMaterial {
     }
   }
 
+  setSpectral(spectral: boolean): void {
+    if (spectral !== this.spectral) {
+      this.spectral = spectral;
+      this.buildNodes();
+      this.needsUpdate = true;
+    }
+  }
+
   buildNodes(): void {
+    if (this.spectral) {
+      this.buildSpectralNodes();
+
+      return;
+    }
+
     const { gridUniforms, lightUniforms } = this;
     const grid = createGridNodes(gridUniforms);
     const { frameGridMin, frameGridSize, frameGridVoxel, frameGridCount, frameGridAtlasSize } = gridUniforms;
@@ -236,5 +263,150 @@ export class VDBFrameTransmittanceMaterial extends NodeMaterial {
     })();
 
     this.outputNode = outputStruct(transmittance0, transmittance1, transmittance2, transmittance3);
+  }
+
+  // NOTE Spectral: transmittance of each channel for the slots of one group (spectrum.ts).
+  // One march for each direction: the grid gives the extinction and absorption of all channels at each step.
+  buildSpectralNodes(): void {
+    const { gridUniforms, lightUniforms } = this;
+    const grid = createGridNodes(gridUniforms);
+    const { frameGridMin, frameGridSize, frameGridVoxel, frameGridCount, frameGridAtlasSize } = gridUniforms;
+    const { frameSkyDirection } = lightUniforms;
+    const ms = this.frameMultipleScattering;
+    const octaves = this.frameScatteringOctaves;
+    const group = this.frameSpectralGroup;
+
+    const outputs = [property("vec4"), property("vec4"), property("vec4")];
+
+    // NOTE (extinction, absorption) of each channel
+    const gridSample = (worldPosition: VDBTslNode) => {
+      const found = grid.findCascade(worldPosition, int(0));
+      const cascade = max(found, int(0)).toVar();
+      const uvw = grid.gridUvw(cascade, worldPosition).toVar();
+      const inside = found.greaterThanEqual(0);
+
+      return {
+        extinction: select(inside, grid.sampleGrid(this.frameShadowDensityMap, cascade, uvw).rgb, vec3(0.0)),
+        absorption: select(inside, grid.sampleGrid(this.frameShadowAbsorptionMap, cascade, uvw).rgb, vec3(0.0)),
+      };
+    };
+
+    // NOTE The same march as the grey pass, with the depths of each channel. Stops when all channels are dark.
+    // Returns { x: direct, y: total, z: reduced depth, w: effective depth }. enabled false: no march, 1.0 and depths 0.0.
+    const march = (enabled: VDBTslNode, origin: VDBTslNode, direction: VDBTslNode, maxDistance: VDBTslNode, jitter: VDBTslNode) => {
+      const direct = vec3(1.0).toVar();
+      const total = vec3(1.0).toVar();
+      const reduced = vec3(0.0).toVar();
+      const effective = vec3(0.0).toVar();
+
+      If(enabled, () => {
+        const depths = { x: vec3(0.0).toVar(), y: vec3(0.0).toVar(), z: vec3(0.0).toVar() };
+        const traveled = float(0.0).toVar();
+        const probe = vec3(origin).toVar();
+
+        Loop(maxShadowSteps, () => {
+          const cascade = grid.findCascade(probe, int(0)).toVar();
+
+          If(cascade.lessThan(0).or(traveled.greaterThanEqual(maxDistance)).or(minComponent(frameShadowMarchDepth(depths, ms, octaves)).greaterThan(6.0)), () => {
+            Break();
+          });
+
+          const voxelsPerUnit = abs(direction).div(frameGridVoxel.element(cascade));
+          const stepLength = min(float(1.0).div(max(voxelsPerUnit.x, max(voxelsPerUnit.y, voxelsPerUnit.z))), maxDistance.sub(traveled)).toVar();
+
+          const sample = gridSample(probe.add(direction.mul(stepLength).mul(jitter)));
+          const step = frameSpectralShadowStep(sample.extinction, sample.absorption, ms);
+
+          depths.x.addAssign(step.x.mul(stepLength));
+          depths.y.addAssign(step.y.mul(stepLength));
+          depths.z.addAssign(step.z.mul(stepLength));
+          probe.addAssign(direction.mul(stepLength));
+          traveled.addAssign(stepLength);
+        });
+
+        const shadow = frameSpectralShadowTransmittance(depths, ms, octaves);
+
+        direct.assign(shadow.x);
+        total.assign(shadow.y);
+        reduced.assign(depths.z);
+        effective.assign(depths.y);
+      });
+
+      return { x: direct, y: total, z: reduced, w: effective };
+    };
+
+    // NOTE Sky up and down are isotropic, and opposite. Diffusion: two-sided total of each channel (frameIsotropicDiffusion).
+    const skyTotal = (front: { y: VDBTslNode; z: VDBTslNode; w: VDBTslNode }, back: { z: VDBTslNode }) => select(ms.greaterThan(0.0), frameIsotropicDiffusion(front.z, back.z, front.w), front.y);
+
+    // NOTE March of a light slot. Light w is 1.0 for a light direction, 2.0 or more for a light position.
+    const marchSlot = (enabled: VDBTslNode, slot: VDBTslNode, worldPosition: VDBTslNode, jitter: VDBTslNode) => {
+      // NOTE Group 3 has no second slot (slot 6). The clamp keeps the read in the array, the march is off.
+      const light = this.frameShadowLights.element(min(slot, int(frameShadowLightSlots - 1))).toVar();
+      const isDirection = light.w.lessThan(1.5);
+      const toLight = light.xyz.sub(worldPosition).toVar();
+      const direction = select(isDirection, normalize(light.xyz), normalize(toLight)).toVar();
+      const active = enabled.and(slot.lessThan(this.frameShadowLightCount)).toVar();
+      const front = march(active, worldPosition, direction, select(isDirection, float(1e20), length(toLight)), jitter);
+
+      // NOTE Two-sided: diffusion of the slab between the light side and the far side, for each channel
+      If(this.frameTwoSided.greaterThan(0.5), () => {
+        const back = march(active, worldPosition, direction.negate(), float(1e20), jitter);
+
+        front.y.assign(frameTwoSidedDiffusion(front.x, front.z, front.w, back.z));
+      });
+
+      return front;
+    };
+
+    this.vertexNode = frameFullscreenVertex;
+
+    this.colorNode = Fn(() => {
+      const fragCoord = frameFragCoord(frameGridAtlasSize).toVar();
+      const cell = grid.getGridCell(fragCoord);
+      const cascade = cell.cascade.toVar();
+
+      outputs.forEach((output) => output.assign(vec4(1.0)));
+
+      If(cascade.lessThan(frameGridCount), () => {
+        const voxel = frameGridVoxel.element(cascade).toVar();
+        const worldPosition = frameGridMin.element(cascade).add(cell.gridUvw.mul(frameGridSize.element(cascade))).toVar();
+
+        // NOTE Skip voxels with no extinction near them. The lighting pass does not read them.
+        let nearExtinction: VDBTslNode = float(0.0);
+
+        for (let i = 0; i < 8; i++) {
+          const corner = vec3(i & 1, (i >> 1) & 1, (i >> 2) & 1).sub(0.5);
+
+          nearExtinction = nearExtinction.add(dot(gridSample(worldPosition.add(corner.mul(voxel))).extinction, vec3(1.0)));
+        }
+
+        If(nearExtinction.greaterThan(0.0), () => {
+          const jitter = frameNoise(gridUniforms.frameJitter, fragCoord).toVar();
+          const skyDirection = normalize(frameSkyDirection).toVar();
+          const isSkyGroup = group.equal(0).toVar();
+          const slotA = group.mul(2).sub(1).toVar();
+
+          // NOTE Group 0: sky up, sky down, slot 0. Other groups: slots 2g - 1 and 2g, and no third march.
+          const first = march(isSkyGroup, worldPosition, skyDirection, float(1e20), jitter);
+          const second = march(isSkyGroup, worldPosition, skyDirection.negate(), float(1e20), jitter);
+          const slotFirst = marchSlot(isSkyGroup.not(), max(slotA, int(0)), worldPosition, jitter);
+          const slotSecond = marchSlot(bool(true), select(isSkyGroup, int(0), slotA.add(1)), worldPosition, jitter);
+
+          const a = {
+            x: select(isSkyGroup, skyTotal(first, second), slotFirst.y).toVar(),
+            y: select(isSkyGroup, skyTotal(second, first), slotFirst.x).toVar(),
+          };
+          const b = { x: slotSecond.y, y: slotSecond.x };
+
+          outputs[0]!.assign(vec4(a.x, a.y.x));
+          outputs[1]!.assign(vec4(a.y.y, a.y.z, b.x.x, b.x.y));
+          outputs[2]!.assign(vec4(b.x.z, b.y));
+        });
+      });
+
+      return vec4(0.0);
+    })();
+
+    this.outputNode = outputStruct(...outputs);
   }
 }

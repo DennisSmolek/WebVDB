@@ -43,8 +43,9 @@ export interface VDBFrameVolumeProps {
   scatterColor?: THREE.ColorRepresentation;
   /** With normalizeDensity: optical depth of the longest box side at the mean density (default 100). */
   extinction?: number;
-  /** Spectral only (K3.5); kept for the uniform layout. */
+  /** Extinction scale of each channel (renderer `settings.spectral`; with `angstromExponent`, spectrum.ts). */
   extinctionScale?: [number, number, number] | THREE.Vector3Like;
+  /** Ångström exponent of the extinction spectrum: a number or a name of `frameAngstromExponents` (default 'cloud': 0, grey). */
   angstromExponent?: string | number;
   phase?: VDBFramePhase;
   phaseG?: number;
