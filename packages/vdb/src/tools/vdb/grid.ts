@@ -55,6 +55,8 @@ export interface GridInit {
   tiles?: TileData[];
   /** Point data grids: per-leaf attribute data. */
   pointLeaves?: PointLeafData[];
+  /** Point data grids: the most `points()` may allocate. Default: unlimited. */
+  pointOutputBudget?: number;
 }
 
 type Value = number | Vec3Tuple;
@@ -149,11 +151,13 @@ class VdbPointDataGridImpl extends VdbGridImpl {
   readonly attributes: VdbPointAttributeInfo[];
   readonly groupNames: string[];
   private readonly pointLeaves: PointLeafData[];
+  private readonly pointOutputBudget: number | undefined;
   private decoded: VdbPointList | null = null;
 
   constructor(init: GridInit) {
     super(init);
     this.pointLeaves = init.pointLeaves ?? [];
+    this.pointOutputBudget = init.pointOutputBudget;
     let count = 0;
     for (const leaf of this.pointLeaves) count += leaf.offsets[leaf.offsets.length - 1]!;
     this.pointCount = count;
@@ -163,7 +167,9 @@ class VdbPointDataGridImpl extends VdbGridImpl {
   }
 
   points(): VdbPointList {
-    this.decoded ??= decodePoints(this.pointLeaves, this.transform.matrix);
+    this.decoded ??= decodePoints(this.pointLeaves, this.transform.matrix, {
+      ...(this.pointOutputBudget !== undefined ? { maxOutputBytes: this.pointOutputBudget } : {}),
+    });
     return this.decoded;
   }
 }

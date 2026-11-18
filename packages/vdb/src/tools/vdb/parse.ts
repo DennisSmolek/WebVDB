@@ -183,7 +183,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
     }
 
     const transform = readTransform(reader);
-    const { background, leaves, tiles, activeVoxelCount, pointLeaves } = readTree(reader, {
+    const { background, leaves, tiles, activeVoxelCount, pointLeaves, pointOutputBudget } = readTree(reader, {
       fileVersion,
       compression,
       useHalf,
@@ -203,7 +203,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
         background,
         leaves,
         tiles,
-        ...(pointLeaves ? { pointLeaves } : {}),
+        ...(pointLeaves ? { pointLeaves, pointOutputBudget } : {}),
       }),
     );
 

@@ -41,6 +41,28 @@
  * Each leaf voxel holds the *end* offset of its points in the leaf's arrays.
  * The position attribute `P` is a voxel-space offset from the voxel centre;
  * world position = `indexToWorld(ijk + P)`.
+ *
+ * ## Hostile input (K4.2 hardening)
+ *
+ * Every count, size and offset read from the file is bounded before it drives
+ * an allocation or a loop, and every failure is a `VdbFormatError` or
+ * `VdbUnsupportedError`:
+ *
+ * - The pass loops only visit the leaves that own an array for the pass, so
+ *   their work is bounded by the array metadata actually stored (a large
+ *   `numPasses` costs nothing). A leaf with more attributes than the passes
+ *   cover is rejected.
+ * - Page headers: a page body must fit in the file, and a Blosc page may claim
+ *   at most {@link MAX_BLOSC_RATIO} times its compressed size. A page must be
+ *   filled exactly by the arrays assigned to it.
+ * - Point counts: the grid's total point count, times the 12 bytes of its
+ *   positions, may not exceed {@link MAX_POINT_EXPANSION} times the file size.
+ *   Uniform arrays store one value for any number of points, so nothing else
+ *   bounds a count.
+ * - Decoding: every output array and every decoded page is charged against a
+ *   budget of {@link MAX_POINT_EXPANSION} times the file size before it is
+ *   allocated. Strides and group offsets are range-checked (no int32
+ *   wrap-around).
  */
 
 import type { ByteReader } from "./byte-reader.js";
@@ -67,6 +89,28 @@ const FLAG_CONSTANT_STRIDE = 0x8;
 /** The `u16` voxel-buffer size that marks an uncompressed buffer. */
 const VOXEL_BUFFER_UNCOMPRESSED = 0xffff;
 
+/**
+ * The most a Blosc1 frame from OpenVDB can expand: deflate's worst case is
+ * about 1032:1 and LZ4's 255:1 (each length byte adds at most 255 output
+ * bytes). A Blosc page header claiming more is not a real page.
+ */
+export const MAX_BLOSC_RATIO = 1032;
+
+/**
+ * Decoded point output allowed per byte of the source file. The real samples
+ * need under 3 (waterfall_points: 156 MB in, 381 MB of positions and
+ * attributes out); 256 matches LZ4's ceiling and leaves room for uniform
+ * arrays, which store one value for a whole leaf.
+ */
+export const MAX_POINT_EXPANSION = 256;
+
+/** Bytes of decoded position per point (3 x f32). */
+const POSITION_BYTES = 12;
+
+/** Descriptor limits: far above any real file, low enough to bound the loops. */
+const MAX_ATTRIBUTES = 1 << 16;
+const MAX_GROUPS = 1 << 16;
+
 /** One attribute set descriptor (`AttributeSet::Descriptor`). */
 export interface PointDescriptor {
   /** In attribute-set order (`index` = position). */
@@ -82,8 +126,6 @@ export interface PointPage {
   uncompressedBytes: number;
   /** The page body as stored (a view into the file), once read. */
   data: Uint8Array | null;
-  /** Decoded body, cached by {@link decodePoints}. */
-  decoded?: Uint8Array;
 }
 
 /** One leaf's attribute array (`TypedAttributeArray` metadata plus where its bytes are). */
@@ -130,42 +172,62 @@ export interface ReadPointBuffersOptions {
 
 /** `AttributeSet::Descriptor::read`. */
 function readDescriptor(reader: ByteReader): PointDescriptor {
-  const count = Number(reader.u64());
-  if (count > 1 << 16) throw new VdbFormatError(`point attribute descriptor claims ${count} attributes`);
+  const count = reader.u64();
+  if (count > BigInt(MAX_ATTRIBUTES)) throw new VdbFormatError(`point attribute descriptor claims ${count} attributes`);
+  const n = Number(count);
   const types: { type: string; codec: string }[] = [];
-  for (let i = 0; i < count; i++) types.push({ type: reader.string(), codec: reader.string() });
-  const names = new Array<string | undefined>(count);
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < n; i++) types.push({ type: reader.string(), codec: reader.string() });
+  const names = new Array<string | undefined>(n);
+  const seen = new Set<string>();
+  for (let i = 0; i < n; i++) {
     const name = reader.string();
-    const index = Number(reader.u64());
-    if (index >= count) throw new VdbFormatError(`point attribute "${name}" has index ${index} of ${count}`);
-    names[index] = name;
+    const index = reader.u64();
+    if (index >= count) throw new VdbFormatError(`point attribute "${name}" has index ${index} of ${n}`);
+    // Descriptor::read inserts into a std::map, so a repeated name would leave an attribute unnamed.
+    if (seen.has(name)) throw new VdbFormatError(`point attribute name "${name}" appears twice`);
+    seen.add(name);
+    names[Number(index)] = name;
   }
   const attributes = types.map(({ type, codec }, index) => {
     const name = names[index];
     if (name === undefined) throw new VdbFormatError(`point attribute ${index} has no name`);
     return { name, type, codec, index };
   });
-  const groupCount = Number(reader.u64());
-  if (groupCount > 1 << 16) throw new VdbFormatError(`point attribute descriptor claims ${groupCount} groups`);
+  const groupCount = reader.u64();
+  if (groupCount > BigInt(MAX_GROUPS)) throw new VdbFormatError(`point attribute descriptor claims ${groupCount} groups`);
   const groups: { name: string; offset: number }[] = [];
-  for (let i = 0; i < groupCount; i++) groups.push({ name: reader.string(), offset: Number(reader.u64()) });
+  const groupNames = new Set<string>();
+  for (let i = 0; i < Number(groupCount); i++) {
+    const name = reader.string();
+    const offset = reader.u64();
+    // The group map is a std::map too: the first entry for a name wins.
+    if (groupNames.has(name)) continue;
+    groupNames.add(name);
+    // Range-checked against the group arrays when decoded (`Descriptor::groupIndex`);
+    // anything past 2^32 bits is out of range for any descriptor.
+    groups.push({ name, offset: offset > 0xffffffffn ? Number.MAX_SAFE_INTEGER : Number(offset) });
+  }
   readMetadataMap(reader); // descriptor metadata (default values, string tables): not needed here
   return { attributes, groups };
 }
 
 /** `TypedAttributeArray::readMetadata`. */
 function readArrayMetadata(reader: ByteReader): PointArrayData {
-  const total = Number(reader.u64());
-  const bytes = total - 2 - 4; // minus the two flag bytes and the u32 size
+  const total = reader.u64();
   const flags = reader.u8();
   const serialization = reader.u8();
   const size = reader.u32();
   if (serialization >= 0x10) {
     throw new VdbUnsupportedError(`point attribute serialization flags 0x${serialization.toString(16)}`);
   }
-  if (bytes < 0) throw new VdbFormatError(`point attribute array byte count ${total} is too small`);
+  if (total < 6n || total > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new VdbFormatError(`point attribute array byte count ${total} is out of range`);
+  }
+  const bytes = Number(total) - 2 - 4; // minus the two flag bytes and the u32 size
   const strideOrTotal = serialization & WRITE_STRIDED ? reader.u32() : 1;
+  if (serialization & WRITE_STRIDED && flags & FLAG_CONSTANT_STRIDE && strideOrTotal === 0) {
+    throw new VdbFormatError("point attribute array has a constant stride of 0");
+  }
   return {
     flags,
     serialization,
@@ -189,6 +251,18 @@ function createPageHandle(reader: ByteReader, stream: PagedStream, array: PointA
     if (compressedBytes === 0 || uncompressedBytes <= 0) {
       throw new VdbFormatError(`point attribute page header ${compressedBytes}/${uncompressedBytes} is empty`);
     }
+    // The body follows later in the file, so it can be no larger than the file.
+    const storedBytes = Math.abs(compressedBytes);
+    if (storedBytes > reader.length) {
+      throw new VdbFormatError(
+        `point attribute page header claims ${storedBytes} stored bytes in a ${reader.length}-byte file`,
+      );
+    }
+    if (compressedBytes > 0 && uncompressedBytes > Math.max(compressedBytes * MAX_BLOSC_RATIO, BLOSC_PAD_BYTES)) {
+      throw new VdbFormatError(
+        `point attribute page header claims ${uncompressedBytes} bytes from a ${compressedBytes}-byte Blosc frame`,
+      );
+    }
     stream.page = { compressedBytes, uncompressedBytes, data: null };
     stream.uncompressedBytes = uncompressedBytes;
     stream.byteIndex = 0;
@@ -205,7 +279,8 @@ function createPageHandle(reader: ByteReader, stream: PagedStream, array: PointA
 
 /** `PagedInputStream::read`: read the array's page body when it starts a new page. */
 function readPage(reader: ByteReader, stream: PagedStream, array: PointArrayData): void {
-  const page = array.page!;
+  const page = array.page;
+  if (!page) throw new VdbFormatError("paged point attribute array has no page");
   if (stream.byteIndex === stream.uncompressedBytes) {
     stream.uncompressedBytes = page.uncompressedBytes;
     page.data = reader.bytes_(Math.abs(page.compressedBytes));
@@ -253,62 +328,109 @@ export function readPointDataBuffers(reader: ByteReader, opts: ReadPointBuffersO
 
   const leaves: PointLeafData[] = opts.leaves.map((l) => ({
     origin: l.origin,
-    valueMask: new Uint32Array(LEAF_NUM_VALUES / 32),
-    offsets: new Uint32Array(LEAF_NUM_VALUES),
+    valueMask: EMPTY_MASK,
+    offsets: EMPTY_OFFSETS,
     descriptor: { attributes: [], groups: [] },
     arrays: [],
   }));
-  const streams: PagedStream[] = Array.from({ length: attributeCount }, () => ({
+  let sharedDescriptor: PointDescriptor | null = null;
+
+  // Pass 0: voxel buffer sizes (only used by OpenVDB for delayed loading).
+  for (let i = 0; i < n; i++) reader.u16();
+
+  // Pass 1: descriptors and attribute array metadata.
+  let maxArrays = 0;
+  for (const leaf of leaves) {
+    if (sharedDescriptor) {
+      leaf.descriptor = sharedDescriptor;
+    } else {
+      const header = reader.u8();
+      leaf.descriptor = readDescriptor(reader);
+      if (header & HEADER_SHARED_DESCRIPTOR) sharedDescriptor = leaf.descriptor;
+      if (header & HEADER_SKIP_BYTES) {
+        const skip = reader.u64();
+        if (skip > BigInt(reader.length - reader.pos)) {
+          throw new VdbFormatError(`point leaf descriptor asks to skip ${skip} bytes past the end of the file`);
+        }
+        reader.skip(Number(skip));
+      }
+      if (header > 3) throw new VdbUnsupportedError(`point leaf descriptor header flags 0x${header.toString(16)}`);
+    }
+    leaf.arrays = leaf.descriptor.attributes.map(() => readArrayMetadata(reader));
+    maxArrays = Math.max(maxArrays, leaf.arrays.length);
+  }
+  // `PointDataLeafNode::buffers()` is 2 * attributes + 4, and the grid writes the
+  // largest leaf's count: arrays past `attributeCount` would never be read.
+  if (maxArrays > attributeCount) {
+    throw new VdbFormatError(
+      `point leaf has ${maxArrays} attribute arrays, but the grid writes ${numPasses} passes (room for ${attributeCount})`,
+    );
+  }
+  // The leaves that own array i, so passes cost no more than the arrays stored.
+  const owners: PointLeafData[][] = Array.from({ length: maxArrays }, () => []);
+  for (const leaf of leaves) for (let i = 0; i < leaf.arrays.length; i++) owners[i]!.push(leaf);
+  const streams: PagedStream[] = Array.from({ length: maxArrays }, () => ({
     page: null,
     byteIndex: 0,
     uncompressedBytes: 0,
   }));
-  let sharedDescriptor: PointDescriptor | null = null;
 
-  for (let pass = 0; pass < numPasses; pass++) {
-    for (const leaf of leaves) {
-      if (pass === 0) {
-        reader.u16(); // voxel buffer size (only used for delayed loading)
-      } else if (pass === 1) {
-        if (sharedDescriptor) {
-          leaf.descriptor = sharedDescriptor;
-        } else {
-          const header = reader.u8();
-          leaf.descriptor = readDescriptor(reader);
-          if (header & HEADER_SHARED_DESCRIPTOR) sharedDescriptor = leaf.descriptor;
-          if (header & HEADER_SKIP_BYTES) reader.skip(Number(reader.u64()));
-          if (header > 3) throw new VdbUnsupportedError(`point leaf descriptor header flags 0x${header.toString(16)}`);
-        }
-        leaf.arrays = leaf.descriptor.attributes.map(() => readArrayMetadata(reader));
-      } else if (pass < attributeCount + 2) {
-        const array = leaf.arrays[pass - 2];
-        if (array?.isPaged) createPageHandle(reader, streams[pass - 2]!, array);
-      } else if (pass === attributeCount + 2) {
-        const { valueMask, offsets } = readVoxelBuffer(reader, opts.fileVersion);
-        leaf.valueMask = valueMask;
-        leaf.offsets = offsets;
-        // Every attribute array holds one entry per point of the leaf.
-        const points = offsets[LEAF_NUM_VALUES - 1]!;
-        const bad = leaf.arrays.find((a) => a.size !== points);
-        if (bad) {
-          throw new VdbFormatError(`point leaf has ${points} points but an attribute array of size ${bad.size}`);
-        }
-      } else if (pass < attributeCount * 2 + 3) {
-        const index = pass - attributeCount - 3;
-        const array = leaf.arrays[index];
-        if (!array) continue;
-        if (array.isPaged) {
-          readPage(reader, streams[index]!, array);
-        } else {
-          // TypedAttributeArray::readBuffers.
-          array.bloscCompressed = array.isUniform ? false : reader.u8() === 1;
-          array.raw = reader.bytes_(array.bytes);
-        }
-      }
-      // Later passes are cleanup only.
+  // Passes 2 .. n+1: page headers.
+  for (let i = 0; i < maxArrays; i++) {
+    for (const leaf of owners[i]!) {
+      const array = leaf.arrays[i]!;
+      if (array.isPaged) createPageHandle(reader, streams[i]!, array);
     }
+    checkStreamComplete(streams[i]!, i, "page headers");
   }
+
+  // Pass n+2: voxel buffers. Every attribute array holds one entry per point of the leaf.
+  let totalPoints = 0;
+  for (const leaf of leaves) {
+    const { valueMask, offsets } = readVoxelBuffer(reader, opts.fileVersion);
+    leaf.valueMask = valueMask;
+    leaf.offsets = offsets;
+    const points = offsets[LEAF_NUM_VALUES - 1]!;
+    const bad = leaf.arrays.find((a) => a.size !== points);
+    if (bad) {
+      throw new VdbFormatError(`point leaf has ${points} points but an attribute array of size ${bad.size}`);
+    }
+    totalPoints += points;
+  }
+  if (totalPoints * POSITION_BYTES > MAX_POINT_EXPANSION * reader.length) {
+    throw new VdbFormatError(
+      `point data grid claims ${totalPoints} points, more than a ${reader.length}-byte file can hold`,
+    );
+  }
+
+  // Passes n+3 .. 2n+2: page bodies, or the buffers of non-paged arrays.
+  for (let i = 0; i < maxArrays; i++) {
+    for (const leaf of owners[i]!) {
+      const array = leaf.arrays[i]!;
+      if (array.isPaged) {
+        readPage(reader, streams[i]!, array);
+      } else {
+        // TypedAttributeArray::readBuffers.
+        array.bloscCompressed = array.isUniform ? false : reader.u8() === 1;
+        array.raw = reader.bytes_(array.bytes);
+      }
+    }
+    checkStreamComplete(streams[i]!, i, "page bodies");
+  }
+  // Passes past 2n+2 are cleanup only (no I/O), however many the header claims.
   return leaves;
+}
+
+const EMPTY_MASK = new Uint32Array(LEAF_NUM_VALUES / 32);
+const EMPTY_OFFSETS = new Uint32Array(LEAF_NUM_VALUES);
+
+/** A paged stream must end on a page boundary, or the next pass reads out of step. */
+function checkStreamComplete(stream: PagedStream, index: number, what: string): void {
+  if (stream.byteIndex !== stream.uncompressedBytes) {
+    throw new VdbFormatError(
+      `point attribute ${index} ${what} end mid-page (${stream.byteIndex} of ${stream.uncompressedBytes} bytes)`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +487,7 @@ const KIND_BYTES: Record<ScalarKind, number> = {
   f64: 8,
 };
 
-type ArrayCtor = { new (n: number): VdbPointAttributeArray };
+type ArrayCtor = { new (n: number): VdbPointAttributeArray; readonly BYTES_PER_ELEMENT: number };
 
 const OUTPUT_CTOR: Record<ScalarKind, ArrayCtor> = {
   bool: Uint8Array,
@@ -412,9 +534,12 @@ function scalarReader(kind: ScalarKind): (view: DataView, at: number) => number 
 
 const fround = Math.fround;
 
-/** `math::QuantizedUnitVec::sNormalizationWeights`, generated: `1 / |(x, y, 126 - x - y)|` per slot. */
 let unitVecWeights: Float32Array | null = null;
-function unitVecWeightTable(): Float32Array {
+/**
+ * `math::QuantizedUnitVec::sNormalizationWeights`, generated: `1 / |(x, y, 126 - x - y)|`
+ * per slot. Exported for the test against OpenVDB's literal table.
+ */
+export function unitVecWeightTable(): Float32Array {
   if (unitVecWeights) return unitVecWeights;
   const table = new Float32Array(8192);
   for (let slot = 0; slot < 8192; slot++) {
@@ -551,25 +676,67 @@ function decompressExact(frame: Uint8Array, expectedBytes: number, what: string)
   return bytes;
 }
 
-/** The array's stored bytes, decompressed. */
-function arrayBytes(array: PointArrayData, expectedBytes: number): { bytes: Uint8Array; offset: number } {
+/**
+ * The decoded-output budget of one {@link decodePoints} call. Output arrays
+ * and decoded pages are charged before they are allocated; a short-lived
+ * buffer is only checked against what is left.
+ */
+class DecodeBudget {
+  private used = 0;
+
+  constructor(private readonly limit: number) {}
+
+  private fail(bytes: number, what: string): never {
+    throw new VdbFormatError(
+      `decoding ${what} needs ${bytes} bytes, past the point grid's ${this.limit}-byte output budget ` +
+        `(${MAX_POINT_EXPANSION} x the file size; ${this.used} bytes already used)`,
+    );
+  }
+
+  /** Reserves `bytes` for an allocation that lives until the decode ends. */
+  charge(bytes: number, what: string): void {
+    if (bytes > this.limit - this.used) this.fail(bytes, what);
+    this.used += bytes;
+  }
+
+  /** Checks a short-lived allocation against the budget left. */
+  check(bytes: number, what: string): void {
+    if (bytes > this.limit - this.used) this.fail(bytes, what);
+  }
+}
+
+interface DecodeContext {
+  budget: DecodeBudget;
+  /** Decoded Blosc pages, shared by the arrays they hold; dropped when the decode ends. */
+  pages: Map<PointPage, Uint8Array>;
+}
+
+/** The array's stored bytes (decompressed), checked to be exactly `expectedBytes`. */
+function arrayBytes(
+  array: PointArrayData,
+  expectedBytes: number,
+  ctx: DecodeContext,
+): { bytes: Uint8Array; offset: number } {
   if (array.isPaged) {
-    const page = array.page;
-    if (!page?.data) throw new VdbFormatError("paged point attribute has no page body");
-    if (!page.decoded) {
-      if (page.compressedBytes > 0) {
-        page.decoded = decompressExact(page.data, page.uncompressedBytes, "point attribute page");
-      } else {
-        page.decoded = page.data;
-      }
-    }
     if (array.bytes !== expectedBytes) {
       throw new VdbFormatError(`paged point attribute holds ${array.bytes} bytes, expected ${expectedBytes}`);
     }
-    return { bytes: page.decoded, offset: array.pageOffset };
+    const page = array.page;
+    if (!page?.data) throw new VdbFormatError("paged point attribute has no page body");
+    let decoded = page.compressedBytes > 0 ? ctx.pages.get(page) : page.data;
+    if (!decoded) {
+      ctx.budget.charge(Math.max(page.uncompressedBytes, BLOSC_PAD_BYTES), "a point attribute page");
+      decoded = decompressExact(page.data, page.uncompressedBytes, "point attribute page");
+      ctx.pages.set(page, decoded);
+    }
+    if (array.pageOffset + expectedBytes > decoded.length) {
+      throw new VdbFormatError(`paged point attribute runs past its ${decoded.length}-byte page`);
+    }
+    return { bytes: decoded, offset: array.pageOffset };
   }
   if (!array.raw) throw new VdbFormatError("point attribute has no buffer");
   if (array.bloscCompressed) {
+    ctx.budget.check(expectedBytes, "a point attribute buffer");
     return { bytes: decompressExact(array.raw, expectedBytes, "point attribute"), offset: 0 };
   }
   if (array.raw.length !== expectedBytes) {
@@ -586,15 +753,33 @@ function groupArrayIndices(descriptor: PointDescriptor): number[] {
     .sort((a, b) => a - b);
 }
 
+export interface DecodePointsOptions {
+  /**
+   * Upper bound on the bytes the decode may allocate (outputs plus decoded
+   * pages). The parser passes {@link MAX_POINT_EXPANSION} times the file size.
+   * Default: unlimited.
+   */
+  maxOutputBytes?: number;
+}
+
 /**
  * Decodes the points of a parsed point data grid: world-space positions from
  * `P` (through `matrix`, a row-major 4x4 index->world transform) and every
  * other attribute the codec table covers.
  */
-export function decodePoints(leaves: readonly PointLeafData[], matrix: readonly number[]): VdbPointList {
+export function decodePoints(
+  leaves: readonly PointLeafData[],
+  matrix: readonly number[],
+  options: DecodePointsOptions = {},
+): VdbPointList {
+  const ctx: DecodeContext = {
+    budget: new DecodeBudget(options.maxOutputBytes ?? Number.POSITIVE_INFINITY),
+    pages: new Map(),
+  };
   let count = 0;
   for (const leaf of leaves) count += leaf.offsets[LEAF_NUM_VALUES - 1]!;
 
+  ctx.budget.charge(count * POSITION_BYTES, "point positions");
   const positions = new Float32Array(count * 3);
   const attributes: Record<string, VdbPointAttributeArray> = {};
   const attributeShapes: Record<string, { components: number; stride: number }> = {};
@@ -615,13 +800,25 @@ export function decodePoints(leaves: readonly PointLeafData[], matrix: readonly 
 
     // Positions: voxel ijk + P offset, then index -> world.
     const pInfo = descriptor.attributes.find((a) => a.name === "P");
-    let p: Float32Array | null = null;
+    // f32 offsets (every OpenVDB P codec but vec3d/null) decode in place into
+    // `positions`, then each point is transformed over its own offset.
+    let p: ArrayLike<number> | null = null;
+    let pAt = 0;
     if (pInfo) {
       const codec = attributeCodec(pInfo.type, pInfo.codec);
       if (!codec || codec.components !== 3) {
         throw new VdbUnsupportedError(`point position attribute P is ${pInfo.type}/${pInfo.codec}`);
       }
-      p = decodeArray(arrays[pInfo.index]!, codec, leafCount, pInfo) as Float32Array;
+      if (codec.output === Float32Array) {
+        decodeArrayInto(arrays[pInfo.index]!, codec, leafCount, pInfo, ctx, positions, base * 3);
+        p = positions;
+        pAt = base * 3;
+      } else {
+        ctx.budget.check(leafCount * 3 * codec.output.BYTES_PER_ELEMENT, "a leaf's point offsets");
+        const offsets = new codec.output(leafCount * 3);
+        decodeArrayInto(arrays[pInfo.index]!, codec, leafCount, pInfo, ctx, offsets, 0);
+        p = offsets as ArrayLike<number>;
+      }
     }
     let voxel = 0;
     for (let i = 0; i < leafCount; i++) {
@@ -629,16 +826,16 @@ export function decodePoints(leaves: readonly PointLeafData[], matrix: readonly 
       const ix = leaf.origin[0] + (voxel >> (2 * LEAF_LOG2DIM));
       const iy = leaf.origin[1] + ((voxel >> LEAF_LOG2DIM) & 7);
       const iz = leaf.origin[2] + (voxel & 7);
-      const x = ix + (p ? p[i * 3]! : 0);
-      const y = iy + (p ? p[i * 3 + 1]! : 0);
-      const z = iz + (p ? p[i * 3 + 2]! : 0);
+      const x = ix + (p ? p[pAt + i * 3]! : 0);
+      const y = iy + (p ? p[pAt + i * 3 + 1]! : 0);
+      const z = iz + (p ? p[pAt + i * 3 + 2]! : 0);
       const out = (base + i) * 3;
       positions[out] = m[0]! * x + m[1]! * y + m[2]! * z + m[3]!;
       positions[out + 1] = m[4]! * x + m[5]! * y + m[6]! * z + m[7]!;
       positions[out + 2] = m[8]! * x + m[9]! * y + m[10]! * z + m[11]!;
     }
 
-    // Other attributes.
+    // Other attributes, decoded straight into the grid-wide output.
     for (const info of descriptor.attributes) {
       if (info.name === "P" || (info.type === "uint8" && info.codec === "grp")) continue;
       const codec = attributeCodec(info.type, info.codec);
@@ -651,7 +848,9 @@ export function decodePoints(leaves: readonly PointLeafData[], matrix: readonly 
       let target = attributes[info.name];
       const shape = attributeShapes[info.name];
       if (!target) {
-        target = new codec.output(count * stride * codec.components);
+        const length = count * stride * codec.components;
+        ctx.budget.charge(length * codec.output.BYTES_PER_ELEMENT, `point attribute "${info.name}"`);
+        target = new codec.output(length);
         attributes[info.name] = target;
         attributeShapes[info.name] = { components: codec.components, stride };
       } else if (
@@ -662,25 +861,32 @@ export function decodePoints(leaves: readonly PointLeafData[], matrix: readonly 
       ) {
         throw new VdbUnsupportedError(`point attribute "${info.name}" changes type between leaves`);
       }
-      const values = decodeArray(array, codec, leafCount * stride, info);
-      (target as Float32Array).set(values as Float32Array, base * stride * codec.components);
+      decodeArrayInto(array, codec, leafCount * stride, info, ctx, target, base * stride * codec.components);
     }
 
-    // Groups: one bit per point in the uint8 group arrays.
+    // Groups: one bit per point in the uint8 group arrays (`Descriptor::groupIndex`).
     if (descriptor.groups.length > 0) {
       const groupArrays = groupArrayIndices(descriptor);
       const decodedGroups = new Map<number, Uint8Array>();
+      const uint8 = attributeCodec("uint8", "null")!;
       for (const { name, offset } of descriptor.groups) {
-        const arrayIndex = groupArrays[offset >> 3];
-        if (arrayIndex === undefined) throw new VdbFormatError(`point group "${name}" offset ${offset} is out of range`);
+        if (offset >= groupArrays.length * 8) {
+          throw new VdbFormatError(`point group "${name}" offset ${offset} is out of range`);
+        }
+        const arrayIndex = groupArrays[Math.floor(offset / 8)]!;
         let bits = decodedGroups.get(arrayIndex);
         if (!bits) {
-          const info = descriptor.attributes[arrayIndex]!;
-          bits = decodeArray(arrays[arrayIndex]!, attributeCodec("uint8", "null")!, leafCount, info) as Uint8Array;
+          ctx.budget.check(leafCount, "a leaf's group bits");
+          bits = new Uint8Array(leafCount);
+          decodeArrayInto(arrays[arrayIndex]!, uint8, leafCount, descriptor.attributes[arrayIndex]!, ctx, bits, 0);
           decodedGroups.set(arrayIndex, bits);
         }
-        const target = (groups[name] ??= new Uint8Array(count));
-        const bit = offset & 7;
+        let target = groups[name];
+        if (!target) {
+          ctx.budget.charge(count, `point group "${name}"`);
+          target = groups[name] = new Uint8Array(count);
+        }
+        const bit = offset % 8;
         for (let i = 0; i < leafCount; i++) target[base + i] = (bits[i]! >> bit) & 1;
       }
     }
@@ -691,13 +897,20 @@ export function decodePoints(leaves: readonly PointLeafData[], matrix: readonly 
   return { count, positions, attributes, attributeShapes, groups, skipped };
 }
 
-/** Decodes `elements` elements of one leaf array (a uniform array repeats its single value). */
-function decodeArray(
+/**
+ * Decodes `elements` elements of one leaf array into `out` from `outAt` (a
+ * uniform array repeats its single value). The array's size and stride are
+ * checked before any byte is read.
+ */
+function decodeArrayInto(
   array: PointArrayData,
   codec: AttributeCodec,
   elements: number,
   info: VdbPointAttributeInfo,
-): VdbPointAttributeArray {
+  ctx: DecodeContext,
+  out: VdbPointAttributeArray,
+  outAt: number,
+): void {
   const stride = arrayStride(array) ?? 1;
   if (array.size * stride !== elements) {
     throw new VdbFormatError(
@@ -705,11 +918,10 @@ function decodeArray(
     );
   }
   const stored = array.isUniform ? 1 : elements;
-  const { bytes, offset } = arrayBytes(array, stored * codec.storageBytes);
-  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, stored * codec.storageBytes);
-  const out = new codec.output(elements * codec.components);
+  const storedBytes = stored * codec.storageBytes;
+  const { bytes, offset } = arrayBytes(array, storedBytes, ctx);
+  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, storedBytes);
   for (let i = 0; i < elements; i++) {
-    codec.decode(view, array.isUniform ? 0 : i * codec.storageBytes, out, i * codec.components);
+    codec.decode(view, array.isUniform ? 0 : i * codec.storageBytes, out, outAt + i * codec.components);
   }
-  return out;
 }

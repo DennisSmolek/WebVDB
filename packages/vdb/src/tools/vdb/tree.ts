@@ -52,7 +52,7 @@ import type { ByteReader } from "./byte-reader.js";
 import type { CompressionFlags, ValueFormat } from "./compression.js";
 import { FLOAT_FORMAT, readCompressedValues, readFullValue } from "./compression.js";
 import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
-import { type PointLeafData, readPointDataBuffers } from "./points.js";
+import { MAX_POINT_EXPANSION, type PointLeafData, readPointDataBuffers } from "./points.js";
 
 export const LEAF_LOG2DIM = 3;
 export const LOWER_LOG2DIM = 4;
@@ -93,6 +93,8 @@ export interface TreeReadResult {
   leaves: LeafData[];
   /** Point data grids only: per-leaf attribute data, in `leaves` order. */
   pointLeaves?: PointLeafData[];
+  /** Point data grids only: the most `points()` may allocate (a multiple of the file size). */
+  pointOutputBudget?: number;
   /** Active tiles at root, upper and lower level (inactive tiles are dropped). */
   tiles: TileData[];
   /** Active voxels in leaves plus `dim^3` per active tile. */
@@ -309,5 +311,11 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
   for (const leaf of leaves) activeVoxelCount += countBits(leaf.valueMask);
   for (const tile of tiles) activeVoxelCount += tile.dim ** 3;
 
-  return { background, leaves, tiles, activeVoxelCount, ...(pointLeaves ? { pointLeaves } : {}) };
+  return {
+    background,
+    leaves,
+    tiles,
+    activeVoxelCount,
+    ...(pointLeaves ? { pointLeaves, pointOutputBudget: MAX_POINT_EXPANSION * reader.length } : {}),
+  };
 }
