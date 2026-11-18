@@ -55,6 +55,7 @@ async function bakeLocal() {
   const gpp = run("g++", [
     "-std=c++17",
     "-O2",
+    "-ffp-contract=off", // no FMA contraction: clang (arm64) fuses code*q+min, GCC (x86) does not — sidecars must not depend on the compiler
     "-I",
     path.join(clone, "nanovdb"),
     path.join(ROOT, "docker", "fixture-bake", "bake_primitives.cpp"),

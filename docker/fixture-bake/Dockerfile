@@ -39,7 +39,7 @@ RUN cmake -S openvdb -B build \
 
 # The bake program is NanoVDB-header-only — no OpenVDB link needed.
 COPY bake_primitives.cpp /src/
-RUN g++ -std=c++17 -O2 -I /src/openvdb/nanovdb /src/bake_primitives.cpp -o /usr/local/bin/bake_primitives
+RUN g++ -std=c++17 -O2 -ffp-contract=off -I /src/openvdb/nanovdb /src/bake_primitives.cpp -o /usr/local/bin/bake_primitives
 
 COPY CMakeLists.txt normalize_vdb.cpp /src/fixture-tools/
 RUN cmake -S /src/fixture-tools -B /src/fixture-tools-build \

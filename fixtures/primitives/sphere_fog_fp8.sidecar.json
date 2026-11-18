@@ -30,7 +30,7 @@
     {"ijk": [1, 51, -23], "value": 0, "active": false},
     {"ijk": [33, -17, 38], "value": 0, "active": false},
     {"ijk": [1, -22, -44], "value": 0.266666681, "active": true},
-    {"ijk": [-23, 37, -16], "value": 0.99999994, "active": true},
+    {"ijk": [-23, 37, -16], "value": 1, "active": true},
     {"ijk": [35, -20, -20], "value": 1, "active": true},
     {"ijk": [-17, -7, 27], "value": 1, "active": true},
     {"ijk": [-46, -8, -43], "value": 0, "active": false},
