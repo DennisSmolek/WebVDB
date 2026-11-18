@@ -119,7 +119,12 @@ the WDAS quarter cloud runs at ≥ 60 fps at 1080p on the reference desktop **at
 104 fps used `stepSize=4`, `shadowSteps=4`; its quality preset ran at 16.8 fps); goldens per lighting mode; and
 the A/B results are recorded.
 
-## K4 — Tools and interop 🟨
+## K4 — Tools and interop ✅
+
+Done 2026-11-18 except owner-machine checks (K4.10, K4.15, K4.17: native OpenVDB/NanoVDB oracles; our `.wvdb` in his
+`WVDBLoader`). Exit gate met: `bunny_cloud.vdb` parses (Blosc, tiles) and round-trips through the oracle; his `.wvdb`
+files decode exactly; coarse-first `.nvdb` first paint 12.3 KiB on smoke (gate 14.8). Also: vector and point grids,
+level-set inactive values/tiles, resample bake, collapse, hostile-input hardening throughout.
 
 CPU-side breadth, runnable in parallel from K0 since it touches no GPU code. His MIT `.vdb` reader is the
 reference for parser coverage.
