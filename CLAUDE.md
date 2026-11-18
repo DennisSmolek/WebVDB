@@ -1,0 +1,65 @@
+# KumoVDB: rules for every agent
+
+KumoVDB (*kumo* 雲, "cloud") is sparse NanoVDB volumes on WebGPU for the pmndrs rendering tools. An engine-free
+WebGPU core comes first; three.js and other engines are thin adapters (D8). The repo is still named WebVDB
+until the move in K0 (D7, D9).
+
+## Read first, write last
+
+Read these before starting:
+- [PHASES.md](PHASES.md): the plan, phases and exit gates.
+- [TASKS.md](TASKS.md): what's open and who owns it.
+- [DECISIONS.md](DECISIONS.md): what's settled; don't re-litigate.
+- [DIVERGES.md](DIVERGES.md): where we split from a source, and why.
+- Background: [spec/SPEC-draft.md](spec/SPEC-draft.md), [research/INDEX.md](research/INDEX.md), and the v1
+  history in [docs/handoffs/](docs/handoffs/).
+
+When you finish, update TASKS.md (mark done, add follow-ups) and add anything that would have saved you time to
+**Traps** below. Record every departure from a source (`PNanoVDB.h`, NanoVDB, OpenVDB, mjurczyk/openvdb, a paper)
+in DIVERGES.md with the reason.
+
+## Working rules
+
+- **The core is engine-free.** `packages/core` and `packages/tools` never import `three` or any engine (lint
+  enforced, K0.3). The core takes the host's `GPUDevice`, records into the host's encoder, and frees only what it
+  allocated.
+- **One storage buffer per kernel** at a host-chosen slot; generated WGSL with the `kumo` prefix; features
+  compile out (D10). Grow the WGSL size table (K1.5) only on purpose.
+- **Correctness before timing.** Every WGSL entry has a CPU twin in `tools`; parity tests come first.
+- **Build both, then decide.** Competing approaches go behind a setting and get an A/B. DECISIONS changes only
+  after the A/B.
+- **No timings from a loaded machine.** Name the device, browser and conditions; compare paired runs on one
+  machine.
+- **Questions for the owner** come with a suggestion, pros and cons, and the test that would settle them.
+- **Consumer repos** (`pmndrs/pathtracer`, the cloud system): follow their own CLAUDE.md. Read-only unless the
+  task says otherwise.
+
+## Licences
+
+- The vendored `pnanovdb.wgsl` (emcfarlane, Apache-2.0) and `PNanoVDB.h` (OpenVDB, Apache-2.0) keep their
+  headers and NOTICE (D2).
+- mjurczyk/openvdb is MIT: port with attribution in THIRD_PARTY notes and a DIVERGES entry. Don't run its code
+  in the cloud sandbox; read it.
+- Test assets are git-ignored and fetched by script. The openvdb.org samples are CC BY-SA 4.0.
+
+## Agent tiers (v1 practice)
+
+T3 (Opus) designs and takes risky work. T2 (Sonnet) implements from a written brief. T1 (Haiku) does mechanical
+work. A separate agent verifies each phase gate. Briefs are self-contained: goal, paths, acceptance commands,
+and what not to touch.
+
+## Traps
+
+From v1; details in docs/handoffs/.
+- WebGPU in headless Chromium needs a secure context: serve over `http://localhost`, never `about:blank`.
+  SwiftShader flags are in `playwright.config.ts`.
+- `bindGroupLayouts` is positional. A skipped `@group` index silently invalidates the dispatch and leaves outputs
+  zeroed; wrap pipeline creation in `pushErrorScope('validation')`.
+- `active` is a reserved WGSL word, and so is `set`.
+- Back-ticks inside WGSL comments break the enclosing JS template literal.
+- three r185 storage buffers are fixed-size GPUBuffers: rebind in place, or pre-size with `maxGridBytes`.
+- three r185 `NodeMaterial` lighting is skipped when the scene has no light.
+- NanoVDB `worldBBox.max` is one voxel beyond `indexToWorld(indexBBox.max)`.
+- Native fog grids can store root background ≠ near-field inactive tile values (3 vs 0 on the sphere fixture).
+- The `.nvdb` grids under `fixtures/` are git-ignored. Run `pnpm fixtures:bake` before fixture tests;
+  sidecars are committed.
