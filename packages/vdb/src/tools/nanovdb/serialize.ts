@@ -41,6 +41,7 @@ import {
   CHECKSUM_DISABLED,
   GRID_CLASS_FOG_VOLUME,
   GRID_CLASS_LEVEL_SET,
+  GRID_CLASS_STAGGERED,
   GRID_FLAGS_STATS_BBOX_BREADTH_FIRST,
   GRID_NAME_MAX,
   GRID_OFF_BLIND_METADATA_COUNT,
@@ -101,7 +102,7 @@ import {
   UPPER_TABLE_COUNT,
   VERSION_PACKED,
 } from "./bytes.js";
-import { FLOAT_LEAF_CODEC, type LeafCodec } from "./leaf-codec.js";
+import { FLOAT_LEAF_CODEC, type LeafCodec, writeVec3StatsBlock } from "./leaf-codec.js";
 import { StatsAccumulator } from "./stats.js";
 import {
   buildTree,
@@ -110,6 +111,7 @@ import {
   type LeafInput,
   type LowerNode,
   type TileInput,
+  type TileValue,
   type UpperNode,
 } from "./tree.js";
 
@@ -130,8 +132,11 @@ export interface BuildFromDenseOptions {
   /** Grid name (<256 bytes incl. NUL). Default "dense". */
   gridName?: string;
   /** Grid class. Default "FogVolume". */
-  gridClass?: "FogVolume" | "LevelSet" | "Unknown";
+  gridClass?: GridClassName;
 }
+
+/** Grid classes the serializer writes (NanoVDB `GridClass`). */
+export type GridClassName = "FogVolume" | "LevelSet" | "Staggered" | "Unknown";
 
 /** Result of a build, exposing metadata alongside the raw image. */
 export interface BuiltGrid {
@@ -146,9 +151,10 @@ export interface BuiltGrid {
   tileCounts: { lower: number; upper: number; root: number };
 }
 
-const GRID_CLASS_ID: Record<NonNullable<BuildFromDenseOptions["gridClass"]>, number> = {
+const GRID_CLASS_ID: Record<GridClassName, number> = {
   FogVolume: GRID_CLASS_FOG_VOLUME,
   LevelSet: GRID_CLASS_LEVEL_SET,
+  Staggered: GRID_CLASS_STAGGERED,
   Unknown: 0,
 };
 
@@ -229,12 +235,12 @@ export interface BuildFromLeavesOptions {
   voxelSize?: number;
   /** World-space translation (the NanoVDB Map's vec / index-origin world pos). Default [0,0,0]. */
   worldOrigin?: [number, number, number];
-  /** Background (inactive) value. Default 0. */
-  background?: number;
+  /** Background (inactive) value: a number, or `[x, y, z]` for a Vec3f codec. Default 0. */
+  background?: TileValue;
   /** Grid name (<256 bytes incl. NUL). Default "grid". */
   gridName?: string;
   /** Grid class. Default "FogVolume". */
-  gridClass?: "FogVolume" | "LevelSet" | "Unknown";
+  gridClass?: GridClassName;
   /**
    * Active tiles above leaf level (8^3 lower-node, 128^3 upper-node and 4096^3
    * root tiles), written as NanoVDB tiles rather than expanded into leaves. A
@@ -256,7 +262,11 @@ export function buildFromLeavesDetailed(
   opts: BuildFromLeavesOptions = {},
 ): BuiltGrid {
   const voxelSize = opts.voxelSize ?? 1;
-  const background = opts.background ?? 0;
+  const components = codec.components ?? 1;
+  const background: TileValue = opts.background ?? (components === 3 ? [0, 0, 0] : 0);
+  if ((typeof background === "number") !== (components === 1)) {
+    throw new Error(`buildFromLeaves: background must have ${components} component(s) for this codec`);
+  }
   const gridName = opts.gridName ?? "grid";
   const gridClassId = GRID_CLASS_ID[opts.gridClass ?? "FogVolume"];
   const worldOrigin = opts.worldOrigin ?? [0, 0, 0];
@@ -269,7 +279,7 @@ export function buildFromLeavesDetailed(
     );
   }
 
-  const tree = buildTreeFromLeaves(leaves, opts.tiles);
+  const tree = buildTreeFromLeaves(leaves, opts.tiles, components);
   const image = layoutGrid(tree, codec, {
     gridName,
     nameBytes,
@@ -302,7 +312,7 @@ interface LayoutParams {
   voxelSize: number;
   worldOrigin: [number, number, number];
   origin: [number, number, number];
-  background: number;
+  background: TileValue;
 }
 
 function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32Array {
@@ -360,7 +370,7 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
   writeCoord(w, rootOff + ROOT_OFF_BBOX_MAX, ibox.max);
   w.setU32(rootOff + ROOT_OFF_TABLE_SIZE, nTiles);
   codec.writeConstant(w, rootOff + L.rootOffBackground, p.background);
-  writeStats(w, rootOff, L.rootOffMin, L.rootOffMax, L.rootOffAve, L.rootOffStdDev, tree.root);
+  writeStats(w, codec, rootOff, L.rootOffMin, L.rootOffMax, L.rootOffAve, L.rootOffStdDev, tree.root);
 
   tree.rootTiles.forEach((tile, i) => {
     const tileOff = rootOff + L.rootSize + i * L.rootTileSize;
@@ -368,7 +378,7 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
     if (tile.child) {
       w.setI64(tileOff + ROOT_TILE_OFF_CHILD, BigInt(upperAbs(tile.child.memIndex) - rootOff));
       w.setU32(tileOff + ROOT_TILE_OFF_STATE, 0);
-      codec.writeConstant(w, tileOff + L.rootTileOffValue, 0);
+      // Child slot: the value field stays zero (the image is zero-filled).
     } else {
       // Active root tile: no child (offset 0), state on, the tile's value.
       w.setI64(tileOff + ROOT_TILE_OFF_CHILD, 0n);
@@ -428,7 +438,7 @@ interface InternalNodeWriteParams {
   offMax: number;
   offAve: number;
   offStdDev: number;
-  background: number;
+  background: TileValue;
   codec: LeafCodec;
   /** Absolute byte offset of child with the given memIndex. */
   childAbs: (memIndex: number) => number;
@@ -446,13 +456,15 @@ function writeInternalNode(
   writeCoord(w, nodeOff + NODE_OFF_BBOX_MIN, bmin);
   writeCoord(w, nodeOff + NODE_OFF_BBOX_MAX, bmax);
   w.setU64(nodeOff + NODE_OFF_FLAGS, BigInt(NODE_FLAG_STATS));
-  writeStats(w, nodeOff, p.offMin, p.offMax, p.offAve, p.offStdDev, s);
+  writeStats(w, p.codec, nodeOff, p.offMin, p.offMax, p.offAve, p.offStdDev, s);
 
   // Table: child slots hold an i64 offset (relative to this node); active
   // tiles set their value-mask bit and hold the tile value; every other slot
   // is an inactive background tile carrying the background value.
   const childSlots = node.children;
   const tiles = node.tiles;
+  const backgroundIsZero =
+    typeof p.background === "number" ? p.background === 0 : p.background.every((c) => c === 0);
   for (let n = 0; n < p.tableCount; n++) {
     const slotOff = nodeOff + p.tableOff + n * p.tableStride;
     const child = childSlots.get(n);
@@ -463,7 +475,7 @@ function writeInternalNode(
     } else if (tileValue !== undefined) {
       w.setMaskBit(nodeOff + NODE_OFF_VALUE_MASK, n);
       p.codec.writeConstant(w, slotOff, tileValue);
-    } else if (p.background !== 0) {
+    } else if (!backgroundIsZero) {
       // Skip when background is 0: the buffer is already zero-filled.
       p.codec.writeConstant(w, slotOff, p.background);
     }
@@ -472,6 +484,7 @@ function writeInternalNode(
 
 function writeStats(
   w: GridImageWriter,
+  codec: LeafCodec,
   base: number,
   offMin: number,
   offMax: number,
@@ -479,6 +492,10 @@ function writeStats(
   offStdDev: number,
   s: StatsAccumulator,
 ): void {
+  if (codec.components === 3) {
+    writeVec3StatsBlock(w, base, offMin, offMax, offAve, offStdDev, s);
+    return;
+  }
   w.setF32(base + offMin, s.isEmpty ? 0 : s.min);
   w.setF32(base + offMax, s.isEmpty ? 0 : s.max);
   w.setF32(base + offAve, s.average);

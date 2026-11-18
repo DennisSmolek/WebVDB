@@ -216,7 +216,8 @@ function gridTypeNameFor(id: number): SupportedGridTypeName {
   const knownName = Object.entries(gridTypeIds).find(([, v]) => v === id)?.[0];
   throw new Error(
     `readValue: unsupported grid type ${id}${knownName ? ` (${knownName})` : ""}; ` +
-      `only FLOAT (${gridTypeIds.FLOAT}), FP8 (${gridTypeIds.FP8}) and FPN (${gridTypeIds.FPN}) are implemented`,
+      `only FLOAT (${gridTypeIds.FLOAT}), FP8 (${gridTypeIds.FP8}) and FPN (${gridTypeIds.FPN}) are implemented` +
+      (knownName === "VEC3F" ? "; use readValueVec3 for VEC3F grids" : ""),
   );
 }
 
@@ -330,19 +331,23 @@ function descendRoot(
 
 // ----------------------------- public API -----------------------------------
 
+function checkMagic(gridWords: Uint32Array, fn: string): void {
+  const magic = readU64(gridWords, GRID_OFF_MAGIC);
+  if (magic !== MAGIC_GRID) {
+    throw new Error(
+      `${fn}: invalid NanoVDB grid magic 0x${magic.toString(16)} ` +
+        `(expected 0x${MAGIC_GRID.toString(16)}); gridWords does not start at a GridData block`,
+    );
+  }
+}
+
 /**
  * Looks up voxel `ijk` in a NanoVDB grid image (little-endian u32 words,
  * `GridData` at word 0). Supports grid types FLOAT (1), FP8 (14) and FPN
  * (16); throws for anything else.
  */
 export function readValue(gridWords: Uint32Array, ijk: [number, number, number]): ReadResult {
-  const magic = readU64(gridWords, GRID_OFF_MAGIC);
-  if (magic !== MAGIC_GRID) {
-    throw new Error(
-      `readValue: invalid NanoVDB grid magic 0x${magic.toString(16)} ` +
-        `(expected 0x${MAGIC_GRID.toString(16)}); gridWords does not start at a GridData block`,
-    );
-  }
+  checkMagic(gridWords, "readValue");
 
   const gridTypeId = readU32(gridWords, GRID_OFF_GRID_TYPE);
   const gridTypeName = gridTypeNameFor(gridTypeId);
@@ -387,4 +392,35 @@ export function readLeafQuantum(gridWords: Uint32Array, ijk: [number, number, nu
   if (resolved.level !== 0) return 0;
 
   return readF32(gridWords, resolved.valueAddress - LEAF_TABLE_NEG_OFF_QUANTUM);
+}
+
+export interface ReadVec3Result {
+  value: [number, number, number];
+  active: boolean;
+}
+
+/**
+ * Looks up voxel `ijk` in a NanoVDB VEC3F (6) grid image: the same root ->
+ * upper -> lower -> leaf descent as {@link readValue} with the VEC3F layout
+ * constants, then 3 f32 at the resolved address (`pnanovdb_read_vec3f`).
+ * Throws for any other grid type.
+ */
+export function readValueVec3(gridWords: Uint32Array, ijk: [number, number, number]): ReadVec3Result {
+  checkMagic(gridWords, "readValueVec3");
+  const gridTypeId = readU32(gridWords, GRID_OFF_GRID_TYPE);
+  if (gridTypeId !== gridTypeIds.VEC3F) {
+    const knownName = Object.entries(gridTypeIds).find(([, v]) => v === gridTypeId)?.[0];
+    throw new Error(
+      `readValueVec3: grid type ${gridTypeId}${knownName ? ` (${knownName})` : ""} is not VEC3F (${gridTypeIds.VEC3F})`,
+    );
+  }
+  const gt = gridTypeConstantsFor("VEC3F");
+  const treeAddress = GRID_SIZE;
+  const rootAddress = treeAddress + Number(readU64(gridWords, treeAddress + TREE_OFF_NODE_OFFSET_ROOT));
+  const resolved = descendRoot(gridWords, rootAddress, ijk, gt);
+  const a = resolved.valueAddress;
+  return {
+    value: [readF32(gridWords, a), readF32(gridWords, a + 4), readF32(gridWords, a + 8)],
+    active: resolved.active,
+  };
 }

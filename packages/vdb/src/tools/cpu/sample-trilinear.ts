@@ -46,7 +46,8 @@
  * where `lerp(a, b, t) = a + (b - a) * t`.
  */
 import { indexBBox } from "./march.js";
-import { readValue } from "./read-value.js";
+import { readValue, readValueVec3 } from "./read-value.js";
+import { defineNumber } from "./stride-tables.js";
 
 type Coord = readonly [number, number, number];
 
@@ -64,10 +65,25 @@ export interface SampleOptions {
   outside?: "background" | "zero";
 }
 
-function zeroOutside(gridWords: Uint32Array, options: SampleOptions | undefined): ((c: Coord) => boolean) | null {
+/** Root index bbox of any grid type (the root block's bbox is type-independent). */
+function rootIndexBBox(gridWords: Uint32Array): { min: Coord; max: Coord } {
+  const gridSize = defineNumber("PNANOVDB_GRID_SIZE");
+  const root = gridSize + gridWords[(gridSize + defineNumber("PNANOVDB_TREE_OFF_NODE_OFFSET_ROOT")) >>> 2]!;
+  const at = (name: string): Coord => {
+    const w = (root + defineNumber(name)) >>> 2;
+    return [gridWords[w]! | 0, gridWords[w + 1]! | 0, gridWords[w + 2]! | 0];
+  };
+  return { min: at("PNANOVDB_ROOT_OFF_BBOX_MIN"), max: at("PNANOVDB_ROOT_OFF_BBOX_MAX") };
+}
+
+function zeroOutside(
+  gridWords: Uint32Array,
+  options: SampleOptions | undefined,
+  bbox: (words: Uint32Array) => { min: Coord; max: Coord } = indexBBox,
+): ((c: Coord) => boolean) | null {
   if ((options?.outside ?? "background") === "background") return null;
   if (options?.outside !== "zero") throw new Error(`sample: outside must be 'background' or 'zero', got ${String(options?.outside)}`);
-  const { min, max } = indexBBox(gridWords);
+  const { min, max } = bbox(gridWords);
   return (c) => c[0] < min[0] || c[1] < min[1] || c[2] < min[2] || c[0] > max[0] || c[1] > max[1] || c[2] > max[2];
 }
 
@@ -124,4 +140,48 @@ export function sampleTrilinear(gridWords: Uint32Array, xyz: [number, number, nu
   const c1 = lerp(c01, c11, fy);
 
   return lerp(c0, c1, fz);
+}
+
+/**
+ * Componentwise trilinear sample of a VEC3F grid image: the same eight taps,
+ * lerp order and `outside` handling as {@link sampleTrilinear}, applied to x,
+ * y and z independently (NanoVDB `TrilinearSampler` on a `Vec3f` grid).
+ */
+export function sampleTrilinearVec3(
+  gridWords: Uint32Array,
+  xyz: [number, number, number],
+  options?: SampleOptions,
+): [number, number, number] {
+  const outside = zeroOutside(gridWords, options, rootIndexBBox);
+  const bx = Math.floor(xyz[0]);
+  const by = Math.floor(xyz[1]);
+  const bz = Math.floor(xyz[2]);
+  const fx = xyz[0] - bx;
+  const fy = xyz[1] - by;
+  const fz = xyz[2] - bz;
+
+  const tap = (dx: 0 | 1, dy: 0 | 1, dz: 0 | 1): [number, number, number] => {
+    const coord: [number, number, number] = [bx + dx, by + dy, bz + dz];
+    if (outside?.(coord)) return [0, 0, 0];
+    return readValueVec3(gridWords, coord).value;
+  };
+
+  const v000 = tap(0, 0, 0);
+  const v100 = tap(1, 0, 0);
+  const v010 = tap(0, 1, 0);
+  const v110 = tap(1, 1, 0);
+  const v001 = tap(0, 0, 1);
+  const v101 = tap(1, 0, 1);
+  const v011 = tap(0, 1, 1);
+  const v111 = tap(1, 1, 1);
+
+  const out: [number, number, number] = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const c00 = lerp(v000[c]!, v100[c]!, fx);
+    const c10 = lerp(v010[c]!, v110[c]!, fx);
+    const c01 = lerp(v001[c]!, v101[c]!, fx);
+    const c11 = lerp(v011[c]!, v111[c]!, fx);
+    out[c] = lerp(lerp(c00, c10, fy), lerp(c01, c11, fy), fz);
+  }
+  return out;
 }

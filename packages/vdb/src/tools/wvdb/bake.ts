@@ -158,6 +158,12 @@ export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdb
 
 /** A parsed `.vdb` grid (axis-aligned map) as a sample source. */
 export function wvdbSourceFromVdbGrid(grid: VdbGrid): WvdbSampleSource {
+  if (grid.valueType !== "float") {
+    throw new Error(
+      `wvdbSourceFromVdbGrid: grid "${grid.name}" is a ${grid.valueType} grid; only float grids can be baked ` +
+        `(vdbToWvdb skips the others)`,
+    );
+  }
   const m = grid.transform.matrix;
   if (m[1] !== 0 || m[2] !== 0 || m[4] !== 0 || m[6] !== 0 || m[8] !== 0 || m[9] !== 0) {
     throw new Error(`wvdbSourceFromVdbGrid: grid "${grid.name}" has a rotated map; only axis-aligned maps are supported`);
@@ -251,8 +257,9 @@ export interface VdbToWvdbOptions extends BakeWvdbOptions {
 
 /**
  * `.vdb` → `.wvdb`, like his `wvdb` CLI with the same options. Given the file
- * bytes, `source.sha256` is their digest. (Our parser reads FloatGrid 5-4-3
- * grids only and throws on others; his CLI skips them.)
+ * bytes, `source.sha256` is their digest. Only float grids are baked: vector
+ * and point data grids are skipped (his CLI bakes vectors as 3 channels and
+ * point data grids as points grids; not ported yet).
  */
 export function vdbToWvdb(input: ArrayBuffer | Uint8Array | VdbFile, options: VdbToWvdbOptions = {}): WriteWvdbResult {
   const { fileName = "", ...bake } = options;
@@ -268,7 +275,9 @@ export function vdbToWvdb(input: ArrayBuffer | Uint8Array | VdbFile, options: Vd
   } else {
     file = input;
   }
-  return bakeWvdb(file.grids.map(wvdbSourceFromVdbGrid), { ...bake, ...(source ? { source } : {}) });
+  const floatGrids = file.grids.filter((g) => g.valueType === "float");
+  if (floatGrids.length === 0) throw new Error("vdbToWvdb: the file has no float grids to bake");
+  return bakeWvdb(floatGrids.map(wvdbSourceFromVdbGrid), { ...bake, ...(source ? { source } : {}) });
 }
 
 /** NanoVDB grid image(s) → `.wvdb`, sampled through the CPU oracle. */

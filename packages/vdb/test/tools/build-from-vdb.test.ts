@@ -109,6 +109,8 @@ describe("buildFromVdb — transform validation", () => {
     return {
       name: "fake",
       gridType: "Tree_float_5_4_3",
+      valueType: "float",
+      components: 1,
       transform: { type: "AffineMap", matrix, voxelSize: [1, 1, 1] },
       metadata: {},
       indexBBox: null,

@@ -47,12 +47,18 @@ import {
   upperCoordToOffset,
   LEAF_TABLE_COUNT,
 } from "./bytes.js";
-import { StatsAccumulator } from "./stats.js";
+import { StatsAccumulator, Vec3StatsAccumulator } from "./stats.js";
+
+/** A tile (or background) value: a scalar, or `[x, y, z]` for Vec3f grids. */
+export type TileValue = number | readonly [number, number, number];
+
+/** Values per voxel: 1 (scalar grids) or 3 (Vec3f, xyz interleaved). */
+export type Components = 1 | 3;
 
 export interface Leaf {
   /** 8-aligned index-space min corner. */
   origin: [number, number, number];
-  /** All 512 voxel values in leaf-offset order. */
+  /** All 512 voxel values in leaf-offset order (`components` scalars each). */
   values: Float32Array;
   /** 512-bit active mask as 16 u32 words. */
   valueMask: Uint32Array;
@@ -66,7 +72,7 @@ export interface LowerNode {
   /** slot (0..4095) -> child leaf. */
   children: Map<number, Leaf>;
   /** slot (0..4095) -> value of an active 8^3 tile. Other slots are background tiles. */
-  tiles: Map<number, number>;
+  tiles: Map<number, TileValue>;
   stats: StatsAccumulator;
   memIndex: number;
 }
@@ -77,7 +83,7 @@ export interface UpperNode {
   /** slot (0..32767) -> child lower node. */
   children: Map<number, LowerNode>;
   /** slot (0..32767) -> value of an active 128^3 tile. Other slots are background tiles. */
-  tiles: Map<number, number>;
+  tiles: Map<number, TileValue>;
   stats: StatsAccumulator;
   memIndex: number;
 }
@@ -85,7 +91,7 @@ export interface UpperNode {
 /** One root-table entry: a child upper node, or an active 4096^3 tile. */
 export type RootTile =
   | { key: bigint; origin: [number, number, number]; child: UpperNode }
-  | { key: bigint; origin: [number, number, number]; child: null; value: number };
+  | { key: bigint; origin: [number, number, number]; child: null; value: TileValue };
 
 export interface BuiltTree {
   uppers: UpperNode[];
@@ -208,18 +214,30 @@ export function buildTree(
 export function buildTreeFromLeaves(
   source: Iterable<LeafInput>,
   tiles: Iterable<TileInput> = [],
+  components: Components = 1,
 ): BuiltTree {
   const leaves: Leaf[] = [];
   for (const src of source) {
     const [lx, ly, lz] = src.origin;
-    const stats = new StatsAccumulator();
+    if (src.values.length !== LEAF_TABLE_COUNT * components) {
+      throw new Error(
+        `buildFromLeaves: leaf at [${lx}, ${ly}, ${lz}] has ${src.values.length} values, ` +
+          `expected ${LEAF_TABLE_COUNT * components}`,
+      );
+    }
+    const stats = components === 3 ? new Vec3StatsAccumulator() : new StatsAccumulator();
     for (let n = 0; n < LEAF_TABLE_COUNT; n++) {
       const active = (src.valueMask[n >>> 5]! >>> (n & 31)) & 1;
       if (active) {
         const x = lx + ((n >> 6) & 7);
         const y = ly + ((n >> 3) & 7);
         const z = lz + (n & 7);
-        stats.addVoxel(src.values[n]!, x, y, z);
+        if (stats instanceof Vec3StatsAccumulator) {
+          const v = src.values;
+          stats.addVoxelVec(v[n * 3]!, v[n * 3 + 1]!, v[n * 3 + 2]!, x, y, z);
+        } else {
+          stats.addVoxel(src.values[n]!, x, y, z);
+        }
       }
     }
     leaves.push({
@@ -230,13 +248,13 @@ export function buildTreeFromLeaves(
       memIndex: -1,
     });
   }
-  return assembleTree(leaves, tiles);
+  return assembleTree(leaves, tiles, components);
 }
 
 /** Minimal shape a leaf source must provide to `buildTreeFromLeaves`. */
 export interface LeafInput {
   origin: [number, number, number];
-  /** All 512 voxel values in leaf-offset order (active and inactive). */
+  /** All 512 voxel values in leaf-offset order (active and inactive); xyz interleaved for Vec3f. */
   values: Float32Array;
   /** 512-bit active mask as 16 u32 words. */
   valueMask: Uint32Array;
@@ -250,7 +268,7 @@ export interface LeafInput {
 export interface TileInput {
   origin: [number, number, number];
   dim: number;
-  value: number;
+  value: TileValue;
 }
 
 /** NanoVDB GridStats weight for a tile of edge `dim`: the child node type's slot count. */
@@ -261,7 +279,8 @@ const TILE_STATS_WEIGHT: Record<number, number> = { 8: 512, 128: 4096, 4096: 327
  * a flat list of leaves. Shared by the dense (`buildTree`) and leaf-iterator
  * (`buildTreeFromLeaves`) build paths.
  */
-function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = []): BuiltTree {
+function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], components: Components = 1): BuiltTree {
+  const newStats = (): StatsAccumulator => (components === 3 ? new Vec3StatsAccumulator() : new StatsAccumulator());
   // -- Assemble lower/upper nodes from leaves ------------------------------
   const upperMap = new Map<string, UpperNode>();
   const lowerMap = new Map<string, LowerNode>();
@@ -278,7 +297,7 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = []): Bui
         origin: [ux, uy, uz],
         children: new Map(),
         tiles: new Map(),
-        stats: new StatsAccumulator(),
+        stats: newStats(),
         memIndex: -1,
       };
       upperMap.set(uk, upper);
@@ -297,7 +316,7 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = []): Bui
         origin: [wx, wy, wz],
         children: new Map(),
         tiles: new Map(),
-        stats: new StatsAccumulator(),
+        stats: newStats(),
         memIndex: -1,
       };
       lowerMap.set(lk, lower);
@@ -312,12 +331,15 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = []): Bui
   }
 
   // -- Place active tiles --------------------------------------------------
-  const rootTileMap = new Map<string, { origin: [number, number, number]; value: number }>();
+  const rootTileMap = new Map<string, { origin: [number, number, number]; value: TileValue }>();
   const tileCounts = { lower: 0, upper: 0, root: 0 };
   let tileVoxels = 0;
   for (const tile of tileList) {
     const [tx, ty, tz] = tile.origin;
     const { dim, value } = tile;
+    if ((typeof value === "number") !== (components === 1)) {
+      throw new Error(`buildFromLeaves: tile value ${JSON.stringify(value)} does not have ${components} component(s)`);
+    }
     if (TILE_STATS_WEIGHT[dim] === undefined) {
       throw new Error(`buildFromLeaves: tile dim ${dim} must be 8, 128 or 4096`);
     }
@@ -403,13 +425,13 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = []): Bui
     ),
   ].sort(byOrigin);
 
-  const root = new StatsAccumulator();
+  const root = newStats();
   for (const entry of rootTiles) {
     if (entry.child) {
       root.merge(entry.child.stats);
     } else {
       const [x, y, z] = entry.origin;
-      root.addTile(entry.value, TILE_STATS_WEIGHT[4096]!, entry.origin, [x + 4095, y + 4095, z + 4095]);
+      addTileValue(root, entry.value, TILE_STATS_WEIGHT[4096]!, entry.origin, [x + 4095, y + 4095, z + 4095]);
     }
   }
 
@@ -430,7 +452,7 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = []): Bui
 /** Adds an internal node's active tiles to its stats, in slot order (GridStats weighting). */
 function addTileStats(
   stats: StatsAccumulator,
-  tiles: Map<number, number>,
+  tiles: Map<number, TileValue>,
   origin: readonly [number, number, number],
   log2dim: number,
   childDim: number,
@@ -443,8 +465,20 @@ function addTileStats(
     const x = origin[0] + ((n >> (2 * log2dim)) & mask) * childDim;
     const y = origin[1] + ((n >> log2dim) & mask) * childDim;
     const z = origin[2] + (n & mask) * childDim;
-    stats.addTile(tiles.get(n)!, weight, [x, y, z], [x + childDim - 1, y + childDim - 1, z + childDim - 1]);
+    addTileValue(stats, tiles.get(n)!, weight, [x, y, z], [x + childDim - 1, y + childDim - 1, z + childDim - 1]);
   }
+}
+
+/** Adds a scalar or vector tile to its accumulator. */
+function addTileValue(
+  stats: StatsAccumulator,
+  value: TileValue,
+  weight: number,
+  bboxMin: readonly [number, number, number],
+  bboxMax: readonly [number, number, number],
+): void {
+  if (typeof value === "number") stats.addTile(value, weight, bboxMin, bboxMax);
+  else (stats as Vec3StatsAccumulator).addTileVec(value, weight, bboxMin, bboxMax);
 }
 
 import { coordToKey } from "./bytes.js";

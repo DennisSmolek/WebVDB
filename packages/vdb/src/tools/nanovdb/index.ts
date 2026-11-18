@@ -22,7 +22,13 @@ export type { BuildFromDenseOptions, BuildFromLeavesOptions, BuiltGrid } from ".
 export { writeNvdb } from "./write-nvdb.js";
 export type { WriteNvdbOptions } from "./write-nvdb.js";
 export type { LeafCodec } from "./leaf-codec.js";
-export { FLOAT_LEAF_CODEC, FP8_LEAF_CODEC, makeFpNLeafCodec, FPN_DEFAULT_TOLERANCE } from "./leaf-codec.js";
+export {
+  FLOAT_LEAF_CODEC,
+  FP8_LEAF_CODEC,
+  makeFpNLeafCodec,
+  FPN_DEFAULT_TOLERANCE,
+  VEC3F_LEAF_CODEC,
+} from "./leaf-codec.js";
 export { buildFromVdb, buildFromVdbDetailed } from "./build-from-vdb.js";
 export type { BuildFromVdbOptions } from "./build-from-vdb.js";
 export { quantize, quantizeDetailed } from "./quantize.js";
