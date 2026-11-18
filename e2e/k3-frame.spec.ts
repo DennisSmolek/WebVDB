@@ -133,11 +133,27 @@ const PARITY_SCENES = [
   "step1-lighting-volume",
   "step1-lights-directional",
   "step1-multiple-scattering-off",
+  // K3.3 'frame' lighting (R1 §6 Step 3). Only the *-isolated variants are parityExpected (capture-reference.mjs
+  // `isolate: 'frame'` / `'environment'`); the as-is scenes use his three-environment-shadows light setup.
+  "step3-default-dir-isolated",
+  "step3-shadow-cascades-4-dir-isolated",
+  "step3-shadow-grid-high-dir-isolated",
+  "step3-two-bunnies-dir-isolated",
+  "step3-environment-sky-midday-env-isolated",
+  "step3-default",
+  "step3-shadow-cascades-4",
+  "step3-shadow-grid-high",
+  "step3-two-bunnies",
+  "step3-environment-sky-midday",
 ];
 for (const scene of PARITY_SCENES) {
   test(`K3.1 parity render: ${scene}`, async ({ page }) => {
     test.skip(process.env.K3_FRAME_PARITY !== "1", "set K3_FRAME_PARITY=1 (needs fixtures/k3/bunny_cloud.wvdb)");
     test.skip(!existsSync(path.join(repoRoot, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing (copy it from his clone)");
+    test.skip(
+      scene.includes("sky-midday") && !existsSync(path.join(repoRoot, "fixtures", "k3", "sky-midday-HDR.jpg")),
+      "fixtures/k3/sky-midday-HDR.jpg missing (copy src/docs/examples/public/assets/sky-midday-HDR.jpg from his clone)",
+    );
     test.setTimeout(1_200_000);
     const r1 = await run(page, `?scene=${scene}`);
     expect(r1.error, detailOf(r1)).toBeUndefined();
