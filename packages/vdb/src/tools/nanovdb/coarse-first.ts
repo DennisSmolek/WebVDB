@@ -28,7 +28,10 @@ export interface BakeCoarseFirstOptions {
    * coarsest first. Default 48 (the K4.5 recommendation).
    */
   previewResolution?: number | number[];
-  /** Preview filter. Default `'box'` (conserves mass; K4.19 decides between box and point). */
+  /**
+   * Preview filter. Default `'trilinear'` (D26: ~1 dB closer to the full render than `'box'` at resolution 48
+   * in the K4.19 A/B). Use `'box'` for thin or high-frequency data (most phase-stable, conserves mass).
+   */
   filter?: ResampleFilter;
   /** Preview encoding. Default `'fpn'`. */
   quantize?: QuantizeMode | "none";
@@ -112,7 +115,7 @@ export function bakeCoarseFirst(source: Uint32Array | VdbGrid | VdbFile, options
     (resolution) =>
       resampleGrid(resampleSource, {
         resolution,
-        filter: options.filter ?? "box",
+        filter: options.filter ?? "trilinear",
         ...(previewQuantize === "none" ? {} : { quantize: previewQuantize }),
         ...(options.tolerance === undefined ? {} : { tolerance: options.tolerance }),
         gridName: nvdbLodName(name, resolution),

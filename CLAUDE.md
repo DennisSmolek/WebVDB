@@ -139,4 +139,5 @@ From v1; details in docs/handoffs/.
   Strict Step 1 parity uses the `*-isolated` capture scenarios (lights = 8, other meshes hidden).
 - The froxel integrate pass needs the scene depth: render into a target with a depth buffer
   (`viewportDepthTexture`); its `viewportTexture` read (sRGB blending) needs the colour target too.
-
+- Collapse (K4.6) changes upper/root ave/stddev (GridStats weights tiles by slot count); compare only min, max, bbox and counts between collapsed and uncollapsed images.
+- `WvdbStreamReader` partial-LOD events share live level objects: copy what you keep.
