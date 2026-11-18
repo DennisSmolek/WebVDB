@@ -95,6 +95,13 @@ test("K3.2a GPU pyramid = CPU pyramid (≤ 1 f16 ulp): cloud04 (L₀ 1 and 2), s
   expectParity(t.replaced.atlas, `three replaced atlas\n${detail}`);
   // The source's content version follows the grid's imageRevision ('frame' lighting redraws its shadow grid).
   expect(t.versions[1], detail).toBeGreaterThan(t.versions[0]);
+  // K3.2e: the density mean (normalizeDensity) follows the replace: read back from the pool, the same stats as a
+  // source made from the new image, and the scale uniform divides by the new mean.
+  expect(t.stats.updates, detail).toBe(1);
+  expect(t.stats.after, detail).toEqual(t.stats.expected);
+  expect(t.stats.after.meanNonZero, detail).not.toBe(t.stats.before.meanNonZero);
+  expect(t.stats.scale[1], detail).toBe(t.stats.expectedScale);
+  expect(t.stats.scale[1], detail).not.toBe(t.stats.scale[0]);
 });
 
 test("K3.2a GPU pyramid = CPU pyramid on smoke.vdb (fractional box weights) and the sphere level set (inactive ±3 tiles: blocks with no active voxel read 0)", async ({ page }) => {

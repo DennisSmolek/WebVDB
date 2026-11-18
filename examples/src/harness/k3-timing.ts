@@ -8,7 +8,8 @@
  * sources; smoke and wdas sparse at full resolution, dense a `?denseRes=` (128) bake), `?source=dense|sparse`,
  * `?lod=none|node|pyramid` (sparse), `?hdda=1|0`, `?lighting=volume|frame`, `?w=&h=` (1920x1080),
  * `?froxels=WxHxD` (his 512x512x24), `?substeps=` (32), `?shadowSteps=` (32), `?ms=0|1`, `?dist=` (camera
- * distance / box diagonal, 0.75), `?frames=` (30, measured) `?warmup=` (10), `?shadowRes=` (64).
+ * distance / box diagonal, 0.75), `?frames=` (30, measured) `?warmup=` (10), `?shadowRes=` (64), `?fast=0|1` and
+ * `?cache=0|1` (K3.2d sparse level-0 sampling: `fastTrilinear`, `cacheAccessor`; default the source's defaults).
  *
  * Per measured frame: the froxel passes alone (`renderFroxels`; in 'frame' lighting the signature-cached
  * shadow density and transmittance are skipped in a still scene), the same with the grid passes forced
@@ -74,6 +75,9 @@ const FRAMES = Number(params.get("frames") ?? 30);
 const WARMUP = Number(params.get("warmup") ?? 10);
 const DIST = Number(params.get("dist") ?? 0.75);
 const DENSE_RES = Number(params.get("denseRes") ?? 128);
+// K3.2d sparse level-0 sampling: `?fast=0|1` (vdbSampleFast; default: the source's default), `?cache=0|1` (one accessor per invocation).
+const FAST = params.has("fast") ? params.get("fast") !== "0" : undefined;
+const CACHE = params.has("cache") ? params.get("cache") !== "0" : undefined;
 const BACKGROUND = new THREE.Color(0x598eff);
 
 const root = document.getElementById("demo-root")!;
@@ -173,9 +177,11 @@ async function main(): Promise<void> {
     const id = pool.add(asset.image);
     pool.flush();
     await pool.settled();
-    const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage"] });
+    const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"] });
     const s = vdbSparseSource(grids, { density: id }, {
       lod: LOD!,
+      ...(FAST !== undefined ? { fastTrilinear: FAST } : {}),
+      ...(CACHE !== undefined ? { cacheAccessor: CACHE } : {}),
       images: { density: asset.image },
       ...(asset.dense ? { stats: { meanNonZero: asset.dense.meanDensity, max: asset.dense.maxDensity, activeVoxels: asset.dense.activeTexels } } : {}),
       ...(asset.indexBox ? { indexBox: asset.indexBox } : {}),
@@ -191,7 +197,7 @@ async function main(): Promise<void> {
   }
   result.gpuBytes = gpuBytes;
   result.lodLevels = source.lodLevels;
-  result.config = { asset: ASSET, source: SOURCE, lod: SOURCE === "sparse" ? LOD : "dense mips", hdda: HDDA, lighting: LIGHTING, width: W, height: H, froxels: FROXELS, subSteps: SUBSTEPS, shadowSteps: SHADOW_STEPS, frames: FRAMES, warmup: WARMUP, dist: DIST, settings: { ...frameRenderer.settings } };
+  result.config = { asset: ASSET, source: SOURCE, lod: SOURCE === "sparse" ? LOD : "dense mips", hdda: HDDA, ...(SOURCE === "sparse" ? { fastTrilinear: (source as { fastTrilinear?: boolean }).fastTrilinear, cacheAccessor: (source as { cacheAccessor?: boolean }).cacheAccessor } : {}), lighting: LIGHTING, width: W, height: H, froxels: FROXELS, subSteps: SUBSTEPS, shadowSteps: SHADOW_STEPS, frames: FRAMES, warmup: WARMUP, dist: DIST, settings: { ...frameRenderer.settings } };
 
   const b = asset.bbox ?? (source as { bbox?: [Vec3, Vec3] }).bbox;
   if (!b) throw new Error("no volume box");

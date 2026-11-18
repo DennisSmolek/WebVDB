@@ -49,7 +49,7 @@ describe("wgslNameProblems (helper)", () => {
 describe("vdbModuleWgsl: every variant", () => {
   it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage", () => {
     expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(132);
-    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(36);
+    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(60);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {
@@ -367,7 +367,7 @@ describe("vdbModuleEntries", () => {
 
 describe("opt-in helpers (K1.7a)", () => {
   const march = { slot: CHECK_SLOT, types: ["float", "fp8"], profile: "march" } as const;
-  const HELPER_FNS = ["vdbCellBoundTrilinear", "vdbHddaCellEnd", "vdbRayClipSupport"];
+  const HELPER_FNS = ["vdbCellBoundTrilinear", "vdbHddaCellEnd", "vdbRayClipSupport", "vdbSampleFast"];
 
   it("emit nothing unless requested: no helpers and helpers: [] give the same bytes", () => {
     const plain = vdbModuleWgsl(march);
@@ -411,6 +411,23 @@ describe("opt-in helpers (K1.7a)", () => {
     expect(vdbModuleWgsl({ ...sample, sampler: "nearest" })).toContain("vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)) - vec3f(0.5), vec3f(vdbIndexMax(g)) + vec3f(0.5),");
     // The plain vdbRayClip keeps its voxel-cell box.
     expect(vdbModuleWgsl(sample)).toContain("vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)), vec3f(vdbIndexMax(g) + vec3i(1)),");
+  });
+
+  it("fastTrilinear (K3.2d) adds vdbSampleFast and its lower-node tap, no vendored code; trilinear only", () => {
+    const plain = vdbModuleWgsl(march);
+    const code = vdbModuleWgsl({ ...march, helpers: ["fastTrilinear"] });
+    expect(code.startsWith(plain.slice(0, -1))).toBe(true);
+    expect(declaredNames(code.slice(plain.length - 1))).toEqual(["vdb_lower_tap", "vdbSampleFast"]);
+    expect(code).toContain("fn vdbSampleFast(acc: ptr<function, VdbAccessor>, xyz: vec3f) -> f32 {");
+    // Falls back to vdbSample on a lower node's +x/+y/+z face; the 8 taps in the vendored order and lerp structure.
+    expect(code).toContain("if !(*acc).ok || any((b & vec3i(127)) == vec3i(127)) {\n        return vdbSample(acc, xyz);");
+    expect(count(code, "vdb_lower_tap(t, buf, n, b, ")).toBe(8);
+    expect(code).toContain("return mix(mix(mix(c0.x, c0.y, u.x), mix(c0.z, c0.w, u.x), u.y), mix(mix(c1.x, c1.y, u.x), mix(c1.z, c1.w, u.x), u.y), u.z);");
+    // outside 'zero': taps outside the index bbox read 0, so only bases with all 8 taps inside take the fast path.
+    expect(vdbModuleWgsl({ ...march, outside: "zero", helpers: ["fastTrilinear"] })).toContain("|| any(b < (*acc).lo) || any(b >= (*acc).hi) {");
+    expect(vdbModuleWgsl({ ...march, profile: "sample", helpers: ["fastTrilinear"] })).toContain("fn vdbSampleFast(");
+    expect(() => vdbModuleWgsl({ ...march, profile: "read", helpers: ["fastTrilinear"] })).toThrow(/helper 'fastTrilinear' needs profile 'sample'/);
+    expect(() => vdbModuleWgsl({ ...march, sampler: "nearest", helpers: ["fastTrilinear"] })).toThrow(/helper 'fastTrilinear' needs sampler 'trilinear'/);
   });
 
   it("say which profile a helper needs", () => {

@@ -5,7 +5,7 @@
 // artifacts/k3/hardware/timings-<stamp>.json and .md (+ timings-latest.*).
 //
 //   node scripts/k3/time-hardware.mjs                 # starts its own Vite server
-//   node scripts/k3/time-hardware.mjs --only=hdda     # one group: hdda | gap | pyramid | k3frame
+//   node scripts/k3/time-hardware.mjs --only=hdda     # one group: hdda | gap | pyramid | k3frame | bench, sampling (K3.2d, opt-in)
 //   options: --frames=30 --warmup=10 --port=5443 --base=http://127.0.0.1:5173 (reuse a server)
 //            --quiet (you assert nothing else is using the GPU: drops the 'provisional' label)
 //            --note="..." (recorded with the results) --allow-swiftshader --small (debug the script itself
@@ -67,6 +67,28 @@ if (group("k3frame") && fixture("k3/bunny_cloud.wvdb")) {
   for (const source of ["dense", "sparse"]) {
     runs.push({ group: "k3frame", key: `step3-default-dir-isolated/${source}`, page: "k3-frame", state: "__VDB_K3_FRAME__", query: `scene=step3-default-dir-isolated&source=${source}&timing=1&${SMALL ? "w=320&h=180&froxels=64x64x16" : "w=1920&h=1080"}&timingFrames=${FRAMES}&timingWarmup=${WARMUP}` });
   }
+}
+if (group("sampling") && ONLY) {
+  // K3.2d: the sparse level-0 sampling candidates (fastTrilinear, cacheAccessor) in the real passes, HDDA off, vs dense.
+  // Opt-in (--only=sampling); --sampling-assets= limits the assets, --sampling-variants= the variants (base,fast,cache,fastcache).
+  const sa = String(arg("sampling-assets", "")).split(",").filter(Boolean);
+  const sv = String(arg("sampling-variants", "base,fast,cache,fastcache")).split(",").filter(Boolean);
+  const Q = { base: "fast=0&cache=0", fast: "fast=1&cache=0", cache: "fast=0&cache=1", fastcache: "fast=1&cache=1" };
+  for (const asset of sa.length ? sa : assets) for (const lighting of ["frame", "volume"]) {
+    runs.push({ group: "sampling", key: `${asset}/${lighting}/dense`, page: "k3-timing", query: `asset=${asset}&source=dense&lod=pyramid&hdda=0&lighting=${lighting}&${HD}` });
+    for (const v of sv) runs.push({ group: "sampling", key: `${asset}/${lighting}/${v}`, page: "k3-timing", query: `asset=${asset}&source=sparse&lod=pyramid&hdda=0&lighting=${lighting}&${Q[v]}&${HD}` });
+  }
+}
+if (group("custom") && ONLY) {
+  // Ad-hoc k3-timing configurations: --custom="key=query;key=query" (query without the HD part, which is appended).
+  for (const entry of String(arg("custom", "")).split(";").filter(Boolean)) {
+    const at = entry.indexOf("=");
+    runs.push({ group: "custom", key: entry.slice(0, at), page: "k3-timing", query: `${entry.slice(at + 1)}&${HD}` });
+  }
+}
+if (group("bench") && ONLY) {
+  // K3.2d: the sampling microbenchmark (compute kernels: dense texture fetch vs sparse vdbSample variants). Opt-in (--only=bench).
+  runs.push({ group: "bench", key: "sample-bench", page: "k3-sample-bench", state: "__VDB_K3_SAMPLE_BENCH__", query: `assets=${["cloud04", ...assets.filter((a) => a !== "cloud04")].join(",")}&repeat=${Math.max(5, Math.min(FRAMES, 15))}${SMALL ? "&threads=4096&steps=8" : ""}` });
 }
 if (group("pyramid")) {
   // (3) GPU vs CPU coarse-pyramid build.
@@ -200,6 +222,44 @@ function markdown(report) {
     lines.push("");
   }
 
+  const sampling = by("sampling");
+  if (sampling.length) {
+    lines.push(`## K3.2d sparse level-0 sampling ('coarse-pyramid', HDDA off): the source pass (density for 'frame', inject for 'volume')`, "");
+    const variants = [...new Set(sampling.map((r) => r.key.split("/")[2]))];
+    lines.push(`| asset | lighting | ${variants.map((v) => `${v} pass`).join(" | ")} | ${variants.map((v) => `${v} wall`).join(" | ")} |`, `|---|---|${variants.map(() => "---:").join("|")}|${variants.map(() => "---:").join("|")}|`);
+    const keys = [...new Set(sampling.map((r) => r.key.split("/").slice(0, 2).join("/")))];
+    for (const k of keys) {
+      const [asset, lighting] = k.split("/");
+      const res = (v) => sampling.find((r) => r.key === `${k}/${v}`)?.result ?? {};
+      const pass = (v) => (lighting === "frame" ? res(v).passesMs?.density : res(v).passesMs?.inject);
+      lines.push(`| ${asset} | ${lighting} | ${variants.map((v) => f2(pass(v))).join(" | ")} | ${variants.map((v) => f2(res(v).frameWallMs)).join(" | ")} |`);
+    }
+    lines.push("", "Per-pass medians (ms):", "");
+    for (const r of sampling) lines.push(`- ${r.key}: ${JSON.stringify(r.result?.passesMs ?? {})}${r.result?.error ? ` ERROR ${r.result.error.split("\n")[0]}` : ""}`);
+    lines.push("");
+  }
+  const custom = by("custom");
+  if (custom.length) {
+    lines.push(`## Custom configurations`, "", `| key | query | froxels | frame wall | passes |`, `|---|---|---:|---:|---|`);
+    for (const r of custom) lines.push(`| ${r.key} | ${r.query.split("&w=")[0]} | ${f2(r.result?.froxelsMs)} | ${f2(r.result?.frameWallMs)} | ${JSON.stringify(r.result?.passesMs ?? {})}${r.result?.error ? ` ERROR ${r.result.error.split("\n")[0]}` : ""} |`);
+    lines.push("");
+  }
+  const bench = by("bench")[0]?.result;
+  if (bench?.rows) {
+    lines.push(`## Sampling microbenchmark (compute; ns per sample, median; mismatches vs 'init' bit for bit)`, "");
+    const variants = [...new Set(bench.rows.map((r) => r.variant))];
+    lines.push(`| asset | stride | ${variants.join(" | ")} |`, `|---|---:|${variants.map(() => "---:").join("|")}|`);
+    const keys = [...new Set(bench.rows.map((r) => `${r.asset}|${r.stride}`))];
+    for (const k of keys) {
+      const [asset, stride] = k.split("|");
+      const cell = (v) => {
+        const r = bench.rows.find((x) => x.asset === asset && String(x.stride) === stride && x.variant === v);
+        return r ? `${r.nsPerSample.toFixed(3)}${r.mismatches ? ` (≠${r.mismatches})` : ""}` : "—";
+      };
+      lines.push(`| ${asset} | ${stride} | ${variants.map(cell).join(" | ")} |`);
+    }
+    lines.push("");
+  }
   const pyr = by("pyramid")[0]?.result;
   if (pyr?.assets) {
     lines.push(`## (3) Coarse-pyramid build: GPU (createBoxPyramid) vs CPU (vdbBoxPyramid + f16 conversion)`, "");
@@ -259,6 +319,8 @@ try {
       const summary =
         run.page === "k3-timing"
           ? `froxels ${f2(res.froxelsMs)} ms, wall ${f2(res.frameWallMs)} ms, passes ${JSON.stringify(res.passesMs ?? {})}`
+          : run.page === "k3-sample-bench"
+            ? `${(res.rows ?? []).length} rows`
           : run.page === "k3-frame"
             ? `timings ${JSON.stringify(res.timings ?? {})}`
             : `${(res.assets ?? []).map((a) => `${a.name} GPU ${f2(a.gpuMs ?? a.gpuWallMs)} / CPU ${f1(a.cpuMs)} ms`).join("; ")}`;

@@ -55,6 +55,7 @@ const HELPERS: Readonly<Record<VDBModuleHelper, { readonly rank: number }>> = {
   hddaCellEnd: { rank: 2 },
   nodeAverage: { rank: 2 },
   rayClipSupport: { rank: 1 },
+  fastTrilinear: { rank: 1 },
 };
 const HELPER_NAMES = Object.keys(HELPERS) as VDBModuleHelper[];
 
@@ -193,8 +194,16 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
     isActive,
     sampler: sampleOnly ? sampler : "trilinear",
     outside: sampleOnly ? outside : "background",
-    helpers: normalizeHelpers(options.helpers, options.profile, profileRank, where),
+    helpers: checkHelperSampler(normalizeHelpers(options.helpers, options.profile, profileRank, where), sampleOnly ? sampler : "trilinear", where),
   };
+}
+
+/** `fastTrilinear` shares one leaf between the 8 trilinear taps; `nearest` has one tap. */
+function checkHelperSampler(helpers: VDBModuleHelper[], sampler: "trilinear" | "nearest", where: string): VDBModuleHelper[] {
+  if (sampler === "nearest" && helpers.includes("fastTrilinear")) {
+    throw bad(`${where}: helper 'fastTrilinear' needs sampler 'trilinear' (nearest reads one voxel; call vdbSample).`);
+  }
+  return helpers;
 }
 
 // ---------------------------------------------------------------------------

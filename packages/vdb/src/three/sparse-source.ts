@@ -11,14 +11,16 @@
  * The sparse volume source (K3.2, R1 §4.2–4.3): a `VDBGridPool` grid behind the same seam as the
  * dense `.wvdb` source, so `VDBFrameVolume` renders NanoVDB grids.
  *
- *   const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage"] });
+ *   const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"] });
  *   const source = vdbSparseSource(grids, { density: id }, { lod: "coarse-pyramid", images: { density: image } });
  *   const volume = new VDBFrameVolume(source, { extinction: 100 });   // box: the grid's world box
  *
  * Positions are his local unit box [-0.5, 0.5]³; uvw = local + 0.5 (+ offset, wrapped) maps onto the
  * channel grid's index cell box `[min − ½, max + ½]` (voxel centres at integers), so uvw
  * (i + 0.5) / N lands on voxel min + i as on a dense texel centre. The sample position is clamped to
- * `[min, max]` (his clamp-to-edge). Level 0 is the pool's trilinear `vdbSample`.
+ * `[min, max]` (his clamp-to-edge). Level 0 is the pool's trilinear `vdbSample`; with the node helper
+ * `'fastTrilinear'` (recommended, K3.2d) it is `vdbSampleFast` through one accessor per shader invocation
+ * (`cacheAccessor`): the same values, 1.5–2× faster on the hardware GPU (docs/handoffs/K3-2d.md).
  *
  * LOD (`lod`, his `sampleExtinction(localPos, lod)` at lod ≥ 1; R1 §4.3):
  * - `'none'`: level 0 always (no prefilter; aliases when a froxel spans many voxels). lodLevels 0.
@@ -43,7 +45,7 @@
 
 import * as THREE from "three";
 import * as TSL from "three/tsl";
-import { wgslFn } from "three/tsl";
+import { code, wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
 import type { VDBVolumeChannels } from "../core/source/types.js";
 import { createBoxPyramid, type VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
@@ -106,12 +108,30 @@ export interface VDBSparseSourceOptions {
   normalize?: "none" | "clamp01";
   /** CPU copies of the grid images: the density stats (and a `pyramidBuild: 'cpu'` pyramid) read `density`. */
   images?: { density?: Uint32Array };
-  /** Density stats (`normalizeDensity` divides by `meanNonZero`). Default: computed from `images.density`. */
+  /**
+   * Density stats (`normalizeDensity` divides by `meanNonZero`). Default: computed from `images.density`.
+   * Either way they describe the image at creation; after the density grid's image changes (`pool.replace`,
+   * its `imageRevision`) the source reads the new image back from the pool and recomputes them (K3.2e; see
+   * `statsUpdates`).
+   */
   stats?: { meanNonZero: number; max: number; activeVoxels: number };
   /** Density index box the unit box covers (default: the grid's index bbox). Aux grids use their own. */
   indexBox?: VDBIndexBox;
   /** World box (default: the density cell box through the grid's transform, as an AABB). */
   bbox?: [Vec3, Vec3];
+  /**
+   * K3.2d: level-0 samples through `vdbSampleFast` (the 8 trilinear taps as lower-node child lookups, no
+   * tree walk per tap; bit-identical to `vdbSample`). Needs the `VDBGridNode` helper `'fastTrilinear'`.
+   * Default: on when the node has the helper.
+   */
+  fastTrilinear?: boolean;
+  /**
+   * K3.2d: keep one accessor per shader invocation (a WGSL `var<private>`) across the samples of a march
+   * instead of a fresh one per sample, so consecutive samples reuse its cached leaf/lower/upper nodes. The
+   * values are the same either way. Default true (the K3.2d hardware A/B: with `fastTrilinear`, whose taps
+   * start from the cached lower node, 10–25% off the source passes; alone it changes little).
+   */
+  cacheAccessor?: boolean;
 }
 
 /** What the source needs from a pool: `info` and the ids' grids (a `VDBGridPool`). */
@@ -150,6 +170,10 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   readonly indexBox: VDBIndexBox;
   /** `'coarse-pyramid'` only: the pyramid and its textures. */
   readonly pyramid: VDBSparsePyramid | null;
+  /** K3.2d: level 0 through `vdbSampleFast` (see the option). */
+  readonly fastTrilinear: boolean;
+  /** K3.2d: one accessor per invocation across samples (see the option). */
+  readonly cacheAccessor: boolean;
   /**
    * GPU bytes: the grids' pool capacity, the pyramid textures (r16f) and the GPU build's scratch
    * buffers (kept for rebuilds; 0 on the CPU path).
@@ -157,6 +181,18 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   readonly gpuBytes: { readonly pool: number; readonly pyramid: number; readonly pyramidScratch: number };
   /** GPU pyramid builds recorded so far (the first, then one per image change). */
   readonly pyramidBuilds: number;
+  /** Density stats (`normalizeDensity`'s `meanNonZero`): of the density image at creation, then of the latest one read back (K3.2e). */
+  readonly stats: { readonly meanNonZero: number; readonly max: number; readonly activeVoxels: number };
+  /** Times the stats were recomputed after an image change (K3.2e). */
+  readonly statsUpdates: number;
+  /**
+   * K3.2e: if the density grid's image changed since the stats were computed and it is resident, reads it
+   * back from the pool (own encoder, submitted) and recomputes the stats (tools' twin of the CPU path);
+   * resolves to whether it did. Renders call it themselves (the density scale uniform's render update) and
+   * apply the new mean on the first render after the readback lands; call it after `pool.update` was
+   * submitted, as `grids.update()`.
+   */
+  refreshStats(): Promise<boolean>;
   /**
    * GPU path: rebuilds the pyramid now (own encoder, submitted) if the density grid's image changed
    * since the last build and it is resident; returns whether it did. Renders that sample the pyramid
@@ -266,15 +302,15 @@ const NODE_AVERAGE_WGSL = /* wgsl */ `fn vdbFrameNodeAverage(g: u32, p: vec3f, d
 }`;
 
 // The 'node-average' density at a lod (one call per sample: level 0 → 3 → 7 blends, two taps at most).
-const NODE_LOD_WGSL = /* wgsl */ `fn vdbFrameNodeLod(g: u32, p: vec3f, lod: f32) -> f32 {
+const nodeLodWgsl = (sample: string) => /* wgsl */ `fn vdbFrameNodeLod(g: u32, p: vec3f, lod: f32) -> f32 {
     var acc = vdbAccessorInit(g);
     if lod <= 0.0 {
-        return vdbSample(&acc, p);
+        return ${sample}(&acc, p);
     }
     let fine = lod < 3.0;
     var a = 0.0;
     if fine {
-        a = vdbSample(&acc, p);
+        a = ${sample}(&acc, p);
     } else {
         a = vdbFrameNodeAverage(g, p, 8u);
     }
@@ -285,6 +321,31 @@ const NODE_LOD_WGSL = /* wgsl */ `fn vdbFrameNodeLod(g: u32, p: vec3f, lod: f32)
     let t = select((lod - 3.0) / 4.0, lod / 3.0, fine);
     return mix(a, b, t);
 }`;
+
+// K3.2d: level-0 density through the source's own sampler: vdbSampleFast (helper 'fastTrilinear') and/or one
+// accessor per invocation kept in a private variable (copied in and out: WGSL can't pass a ptr<private> where
+// the API takes ptr<function>). Same values as vdbSample with a fresh accessor (the accessor cache only skips
+// the descent).
+const SAMPLE_CACHE_WGSL = /* wgsl */ `var<private> vdbFrameAcc: VdbAccessor;
+var<private> vdbFrameAccGrid: u32 = 0xffffffffu;`;
+const sampleWgsl = (fast: boolean, cached: boolean) => {
+  const call = fast ? "vdbSampleFast" : "vdbSample";
+  return cached
+    ? /* wgsl */ `fn vdbFrameSample(g: u32, xyz: vec3f) -> f32 {
+    if vdbFrameAccGrid != g {
+        vdbFrameAcc = vdbAccessorInit(g);
+        vdbFrameAccGrid = g;
+    }
+    var a = vdbFrameAcc;
+    let v = ${call}(&a, xyz);
+    vdbFrameAcc = a;
+    return v;
+}`
+    : /* wgsl */ `fn vdbFrameSample(g: u32, xyz: vec3f) -> f32 {
+    var a = vdbAccessorInit(g);
+    return ${call}(&a, xyz);
+}`;
+};
 
 // The HDDA empty-space query; CPU twin tools vdbFrameSkipEmpty (see there for the contract).
 const SKIP_EMPTY_WGSL = /* wgsl */ `fn vdbFrameSkipEmpty(g: u32, o: vec3f, d: vec3f, t0: f32, t1: f32, cutoff: f32, dilate: u32) -> vec2f {
@@ -328,11 +389,14 @@ class SparseSource implements VDBThreeSparseSource {
   readonly auxBoxes: Record<"mask" | "albedo" | "emission", VDBIndexBox | null>;
   readonly texels: [number, number, number];
   readonly lodLevels: number;
-  readonly stats: { meanNonZero: number; max: number; activeVoxels: number };
+  stats: { meanNonZero: number; max: number; activeVoxels: number };
+  statsUpdates = 0;
   readonly boxToSource: Float32Array;
   readonly bbox: [Vec3, Vec3];
   readonly pyramid: VDBSparsePyramid | null;
   readonly gpuBytes: { pool: number; pyramid: number; pyramidScratch: number };
+  readonly fastTrilinear: boolean;
+  readonly cacheAccessor: boolean;
   pyramidBuilds = 0;
   private poolRevisionSeen = -1;
   private readonly poolIds: number[];
@@ -340,6 +404,11 @@ class SparseSource implements VDBThreeSparseSource {
   private nodeAverageCache: ((...a: unknown[]) => VDBTslNode) | null = null;
   private nodeLodCache: ((...a: unknown[]) => VDBTslNode) | null = null;
   private skipCache: ((...a: unknown[]) => VDBTslNode) | null = null;
+  private sampleCache: ((...a: unknown[]) => VDBTslNode) | null = null;
+  /** K3.2e: the density imageRevision the stats describe, the pool revision last checked, and a readback in flight. */
+  private statsRevision = -1;
+  private statsPoolRevisionSeen = -1;
+  private statsReadback: Promise<boolean> | null = null;
 
   constructor(grids: VDBGridNode, ids: VDBSparseSourceGrids, o: VDBSparseSourceOptions) {
     const pool = grids.pool as unknown as Partial<PoolInfoLike>;
@@ -349,13 +418,18 @@ class SparseSource implements VDBThreeSparseSource {
     if (lod !== "none" && lod !== "coarse-pyramid" && lod !== "node-average") throw bad(`unknown lod ${JSON.stringify(lod)}; use 'none', 'coarse-pyramid' or 'node-average'.`);
     const normalize = o.normalize ?? "none";
     if (normalize !== "none" && normalize !== "clamp01") throw bad(`unknown normalize ${JSON.stringify(normalize)}; use 'none' or 'clamp01'.`);
-    const helpers = new Set(grids.options.helpers ?? []);
+    const helpers = new Set<string>(grids.options.helpers ?? []);
     if (grids.options.profile !== "march" || !helpers.has("cellBoundTrilinear") || !helpers.has("hddaCellEnd") || (lod === "node-average" && !helpers.has("nodeAverage"))) {
       throw bad(
         `make the VDBGridNode with profile 'march' and helpers ['cellBoundTrilinear', 'hddaCellEnd'${lod === "node-average" ? ", 'nodeAverage'" : ""}] ` +
           `(got profile '${grids.options.profile}', helpers [${[...helpers].join(", ")}]).`,
       );
     }
+    const fastTrilinear = o.fastTrilinear ?? helpers.has("fastTrilinear");
+    if (fastTrilinear && !helpers.has("fastTrilinear")) throw bad("fastTrilinear needs the VDBGridNode helper 'fastTrilinear' (add it to helpers), or pass fastTrilinear: false.");
+    if (fastTrilinear && grids.options.sampler === "nearest") throw bad("fastTrilinear needs the VDBGridNode's sampler 'trilinear'.");
+    this.fastTrilinear = fastTrilinear;
+    this.cacheAccessor = o.cacheAccessor ?? true;
     const density = info(ids.density);
     if (lod === "node-average" && !density.hasStats) throw bad("lod 'node-average' reads node statistics; this grid has none (rebuild it with stats).");
     this.grids = grids;
@@ -374,6 +448,7 @@ class SparseSource implements VDBThreeSparseSource {
     if (o.stats) this.stats = { ...o.stats };
     else if (image) this.stats = imageStats(image, normalize === "clamp01");
     else throw bad("pass images.density (the CPU image, for the density stats) or stats.");
+    this.statsRevision = (density as { imageRevision?: number }).imageRevision ?? -1;
     // Local unit box → sample index space: p = min − ½ + (local + ½)·size (column-major).
     const [sx, sy, sz] = this.texels;
     this.boxToSource = new Float32Array([sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, b.min[0] - 0.5 + 0.5 * sx, b.min[1] - 0.5 + 0.5 * sy, b.min[2] - 0.5 + 0.5 * sz, 1]);
@@ -483,14 +558,70 @@ class SparseSource implements VDBThreeSparseSource {
     return true;
   }
 
+  refreshStats(): Promise<boolean> {
+    if (this.statsReadback) return this.statsReadback;
+    const pool = this.grids.pool as unknown as {
+      revision?: number;
+      device?: GPUDevice;
+      buffer?: GPUBuffer;
+      info(id: number): { imageRevision?: number; resident?: boolean; imageOffset?: number | null; imageBytes?: number };
+    };
+    // Cheap test first (once per render): the pool's revision moves on any change.
+    if (typeof pool.revision !== "number" || pool.revision === this.statsPoolRevisionSeen || !pool.device || !pool.buffer) return Promise.resolve(false);
+    let info: ReturnType<typeof pool.info>;
+    try {
+      info = pool.info(this.ids.density);
+    } catch {
+      return Promise.resolve(false); // removed: keep the last stats
+    }
+    const revision = info.imageRevision ?? -1;
+    if (revision === this.statsRevision) {
+      this.statsPoolRevisionSeen = pool.revision;
+      return Promise.resolve(false);
+    }
+    // Not written yet (the update that writes it is still to come): look again next time.
+    if (!info.resident || info.imageOffset === null || info.imageOffset === undefined || !info.imageBytes) return Promise.resolve(false);
+    const { device, buffer } = pool;
+    const bytes = info.imageBytes;
+    const staging = device.createBuffer({ label: "vdbSparseSource stats readback", size: bytes, usage: 0x1 | 0x8 }); // MAP_READ | COPY_DST (no WebGPU globals in Node tests)
+    const encoder = device.createCommandEncoder({ label: "vdbSparseSource stats readback" });
+    encoder.copyBufferToBuffer(buffer, info.imageOffset, staging, 0, bytes);
+    device.queue.submit([encoder.finish()]);
+    const seen = pool.revision;
+    this.statsReadback = staging
+      .mapAsync(0x1) // GPUMapMode.READ
+      .then(() => {
+        const image = new Uint32Array(staging.getMappedRange().slice(0));
+        this.stats = imageStats(image, this.normalize === "clamp01");
+        this.statsRevision = revision;
+        this.statsPoolRevisionSeen = seen;
+        this.statsUpdates++;
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        staging.destroy();
+        this.statsReadback = null;
+      });
+    return this.statsReadback;
+  }
+
   nodeAverageFn(): (...a: unknown[]) => VDBTslNode {
     this.nodeAverageCache ??= wgslFn(NODE_AVERAGE_WGSL, [this.grids.module] as never) as unknown as (...a: unknown[]) => VDBTslNode;
     return this.nodeAverageCache;
   }
 
   private nodeLodFn(): (...a: unknown[]) => VDBTslNode {
-    this.nodeLodCache ??= wgslFn(NODE_LOD_WGSL, [this.grids.module, this.nodeAverageFn()] as never) as unknown as (...a: unknown[]) => VDBTslNode;
+    this.nodeLodCache ??= wgslFn(nodeLodWgsl(this.fastTrilinear ? "vdbSampleFast" : "vdbSample"), [this.grids.module, this.nodeAverageFn()] as never) as unknown as (...a: unknown[]) => VDBTslNode;
     return this.nodeLodCache;
+  }
+
+  /** `vdbFrameSample(g, xyz) -> f32`: level 0 (index space) as configured (`fastTrilinear`, `cacheAccessor`). */
+  sampleFn(): (...a: unknown[]) => VDBTslNode {
+    this.sampleCache ??= wgslFn(sampleWgsl(this.fastTrilinear, this.cacheAccessor), (this.cacheAccessor ? [this.grids.module, code(SAMPLE_CACHE_WGSL, [this.grids.module])] : [this.grids.module]) as never) as unknown as (
+      ...a: unknown[]
+    ) => VDBTslNode;
+    return this.sampleCache;
   }
 
   skipEmptyFn(): (...a: unknown[]) => VDBTslNode {
@@ -504,7 +635,11 @@ class SparseSource implements VDBThreeSparseSource {
     const boxUniform = (bx: VDBIndexBox | null) =>
       bx ? { min: uniform(new THREE.Vector3(...bx.min)), size: uniform(new THREE.Vector3(bx.max[0] - bx.min[0] + 1, bx.max[1] - bx.min[1] + 1, bx.max[2] - bx.min[2] + 1)) } : null;
     const levels = uniform(this.lodLevels);
-    const densityScaleU = uniform(vdbDensityScaleOf(this, densityScale, normalize));
+    // K3.2e: the mean follows the density image (refreshStats reads a replaced image back); applied per render.
+    const densityScaleU = uniform(vdbDensityScaleOf(this, densityScale, normalize)).onRenderUpdate(() => {
+      void this.refreshStats();
+      return vdbDensityScaleOf(this, densityScale, normalize);
+    });
     const pyr = this.pyramid;
     const u: VDBSparseVolumeUniforms = {
       worldScale: uniform(p.worldScale ?? 1.0),
@@ -549,7 +684,8 @@ class SparseSource implements VDBThreeSparseSource {
     // uvw → sample index space, clamped to the voxels (his clamp-to-edge).
     const samplePos = (box: { min: VDBTslNode; size: VDBTslNode }, uvw: VDBTslNode) =>
       clamp(box.min.add(uvw.mul(box.size)).sub(0.5), box.min, box.min.add(box.size).sub(1.0));
-    const level0 = (id: number, p: VDBTslNode) => vdbSample(grids, id, p, { space: "index" });
+    const level0 =
+      this.fastTrilinear || this.cacheAccessor ? (id: number, p: VDBTslNode) => this.sampleFn()(uint(id), p) : (id: number, p: VDBTslNode) => vdbSample(grids, id, p, { space: "index" });
 
     const densityAt = (uvw: VDBTslNode, lodIn: VDBTslNode): VDBTslNode => {
       const p = samplePos(u.boxes.density!, uvw).toVar();
@@ -563,11 +699,16 @@ class SparseSource implements VDBThreeSparseSource {
       const pyrMip = pyr.mip ? texture3D(pyr.mip) : null;
       const { sampleMipmapped } = vdbMipSampler(u.pyramidTexels, u.pyramidAtlasSize);
       const coarse = (rel: VDBTslNode) => (pyrMip ? sampleMipmapped(pyrMap, pyrMip, u.pyramidLevels, uvw, rel).r : pyrMap.sample(uvw).level(float(0.0)).r);
+      // K3.2d: one level-0 call site (each inlines the whole tree walk), shared by the two branches below.
+      const fine = float(0.0).toVar();
+      If(l.lessThan(u.pyramidLevel), () => {
+        fine.assign(level0(ids.density, p));
+      });
       If(l.lessThanEqual(0.0), () => {
-        r.assign(level0(ids.density, p));
+        r.assign(fine);
       })
         .ElseIf(l.lessThan(u.pyramidLevel), () => {
-          r.assign(mix(level0(ids.density, p), coarse(float(0.0)), l.div(u.pyramidLevel)));
+          r.assign(mix(fine, coarse(float(0.0)), l.div(u.pyramidLevel)));
         })
         .Else(() => {
           r.assign(coarse(l.sub(u.pyramidLevel)));

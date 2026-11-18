@@ -14,7 +14,8 @@
  *
  * Variants (`?variants=`, comma separated): `dense`, `none`, `node`, `pyramid` (sparse LOD
  * strategies), each sparse one optionally with `-nohdda` (no empty-space skipping in the shadow
- * march). Each renders the same camera into a linear HalfFloat target → sRGB → RGBA8.
+ * march) and/or `-taps` (the K3.2 level-0 sampler: a fresh accessor and `vdbSample` per sample, instead of
+ * the K3.2d defaults; the image must be bit-identical). Each renders the same camera into a linear HalfFloat target → sRGB → RGBA8.
  *
  * Other query: `?w=&h=`, `?froxels=WxHxD`, `?substeps=`, `?shadowSteps=`, `?dist=` (camera distance
  * multiplier), `?extinction=`, `?orbit=N&orbitDeg=d` (N more frames, the camera turning d degrees
@@ -243,7 +244,7 @@ async function main(): Promise<void> {
   const id = pool.add(asset.image);
   pool.flush();
   await pool.settled();
-  const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage"] });
+  const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"] });
   const gridInfo = pool.info(id);
 
   const frameRenderer = new VDBFrameRenderer();
@@ -270,14 +271,17 @@ async function main(): Promise<void> {
     asset.identical && STATS === "dense" && asset.dense ? { meanNonZero: asset.dense.meanDensity, max: asset.dense.maxDensity, activeVoxels: asset.dense.activeTexels } : undefined;
 
   const sources = new Map<string, VDBThreeVolumeSource>();
-  const sourceFor = (lod: VDBSparseLod): VDBThreeVolumeSource => {
-    let s = sources.get(lod);
+  // `taps`: the K3.2 level-0 sampler (a fresh accessor and vdbSample per sample) instead of the defaults (K3.2d).
+  const sourceFor = (lod: VDBSparseLod, taps = false): VDBThreeVolumeSource => {
+    const key = `${lod}${taps ? "-taps" : ""}`;
+    let s = sources.get(key);
     if (!s) {
       s = vdbSparseSource(
         grids,
         { density: id },
         {
           lod,
+          ...(taps ? { fastTrilinear: false, cacheAccessor: false } : {}),
           images: { density: asset.image },
           ...(statsOverride ? { stats: statsOverride } : {}),
           ...(asset.indexBox ? { indexBox: asset.indexBox } : {}),
@@ -286,7 +290,7 @@ async function main(): Promise<void> {
           ...(PYRAMID_MAX !== undefined ? { pyramidMax: PYRAMID_MAX } : {}),
         },
       );
-      sources.set(lod, s);
+      sources.set(key, s);
     }
     return s;
   };
@@ -341,17 +345,17 @@ async function main(): Promise<void> {
 
   for (const variant of VARIANTS) {
     const wall0 = performance.now();
-    const [kind, flag] = variant.split("-");
+    const [kind, ...flags] = variant.split("-");
     let source: VDBThreeVolumeSource;
     if (kind === "dense") {
       if (!denseSource) throw new Error("no dense volume for this asset");
       source = denseSource;
     } else {
       const lod = LOD_OF[kind!];
-      if (!lod) throw new Error(`unknown variant ${variant}; use dense, none, node, pyramid (+ -nohdda)`);
-      source = sourceFor(lod);
+      if (!lod) throw new Error(`unknown variant ${variant}; use dense, none, node, pyramid (+ -nohdda, -taps)`);
+      source = sourceFor(lod, flags.includes("taps"));
     }
-    const volume = new VDBFrameVolume(source, { ...volumeProps, hdda: flag !== "nohdda", ...(asset.bbox || kind === "dense" ? { bbox: bbox.clone() } : {}) });
+    const volume = new VDBFrameVolume(source, { ...volumeProps, hdda: !flags.includes("nohdda"), ...(asset.bbox || kind === "dense" ? { bbox: bbox.clone() } : {}) });
     const scene = new THREE.Scene();
     scene.background = BACKGROUND.clone();
     scene.add(volume);

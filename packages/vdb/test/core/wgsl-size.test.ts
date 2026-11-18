@@ -20,7 +20,7 @@ const VARIANTS: { id: string; options: VDBModuleOptions }[] = variantMatrix();
 function budgetBytes(options: VDBModuleOptions): number {
   const helpers = [...(options.helpers ?? [])];
   const key = helpers.includes("nodeAverage")
-    ? `${options.profile}+nodeAverage`
+    ? `${options.profile}+nodeAverage${helpers.includes("fastTrilinear") ? "+fastTrilinear" : ""}`
     : helpers.length > 0
       ? `${options.profile}+helpers`
       : options.profile === "read" && options.isActive === false ? "read.isActive=false" : options.profile;

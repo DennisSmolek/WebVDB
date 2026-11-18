@@ -179,3 +179,12 @@ From v1; details in docs/handoffs/.
   Chrome quantizes `timestamp-query` to 100 µs unless started with `--enable-webgpu-developer-features`.
 - A `playwright install` in another worktree removes other headless-shell revisions from the shared cache: point
   `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` at the revision your `@playwright/test` expects (`browsers.json`; 1228 for 1.61.1).
+- SIMD divergence decides GPU sampler speed: a per-lane "fast path, else fallback" runs both paths in every SIMD group
+  whose lanes disagree. K1-core §9.5's same-leaf trilinear fast path (1/3 of lanes fall back) was 10–25% *slower* on
+  the Apple GPU; `vdbSampleFast` (K3.2d) gives every lane the same per-tap work (lower-node lookups) and is 1.5–2×
+  faster. Time candidates in the real pass (`time-hardware.mjs --only=sampling`), not only in a compute microbench.
+- WGSL can't pass a `ptr<private, T>` where the API takes `ptr<function, VdbAccessor>`: copy the private accessor into
+  a local, call, copy it back (the sparse source's `cacheAccessor`).
+- Vite serves `packages/vdb/src` and `examples/src` live: editing them while `scripts/k3/time-hardware.mjs` runs mixes
+  code versions across its page loads (and a reload can land mid-run). Two runs with the same `--port` share one Vite
+  server, and the first to finish kills it. Use a distinct port per run and don't edit sources while timing.

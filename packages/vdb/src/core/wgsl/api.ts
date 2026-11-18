@@ -399,6 +399,53 @@ function helperFunctions(o: ApiOptions): string[] {
     return min(min((*h).next.x, (*h).next.y), min((*h).next.z, (*h).tmax));
 }`);
   }
+  if (o.helpers.includes("fastTrilinear")) {
+    // Only trilinear has 8 taps to share (the generator rejects the helper with 'nearest').
+    const inside = carriesBBox(1, o) ? " || any(b < (*acc).lo) || any(b >= (*acc).hi)" : "";
+    // Uniform per-tap work (no per-lane choice between a leaf read and a descent: lanes of a SIMD group that
+    // disagree would run both). All 8 taps lie in the base voxel's lower node (128-block) unless the base is
+    // on its +x/+y/+z face; each tap is then one lower-node child lookup (the same words for taps in the same
+    // leaf), never a tree walk. The vendored taps instead thrash the accessor's one-leaf cache when the cell
+    // straddles leaves (x-fastest tap order alternates them).
+    // A tap: one lower-node child lookup (the caching variant the accessor already uses, on a scratch cache).
+    // vdbSampleFast: the lower node holding the base is the accessor's cached one, else a descent (which caches
+    // it); at level 2+ the base's 128-block, which holds all 8 taps, is one tile (or the background): one value.
+    // c0 holds taps 0-3 (z = 0), c1 taps 4-7 (z = 1), x fastest: the vendored c000, c100, c010, c110, c001, ...
+    // No comments inside the WGSL: generated modules carry only the banner.
+    out.push(`fn vdb_lower_tap(t: u32, buf: vdb_buf_t, node: vdb_lower_handle_t, b: vec3i, k: u32) -> f32 {
+    let ijk = b + vec3i(vec3u(k & 1u, (k >> 1u) & 1u, k >> 2u));
+    var s: vdb_readaccessor_t;
+    let al = vdb_lower_get_value_address_and_level_and_cache(t, buf, node, ijk, &s);
+    return vdb_read_float_typed(t, buf, al.address, ijk, al.level);
+}`);
+    const taps = (from: number) => [0, 1, 2, 3].map((k) => `vdb_lower_tap(t, buf, n, b, ${from + k}u)`).join(", ");
+    out.push(`fn vdbSampleFast(acc: ptr<function, VdbAccessor>, xyz: vec3f) -> f32 {
+    let b = vec3i(floor(xyz));
+    if !(*acc).ok || any((b & vec3i(127)) == vec3i(127))${inside} {
+        return vdbSample(acc, xyz);
+    }
+    let t = (*acc).gridType;
+    let buf = (*acc).buf;
+    var inner = (*acc).inner;
+    var lower = vdb_readaccessor_iscached1(&inner, vdb_readaccessor_computedirty(&inner, b));
+    var v = 0.0;
+    if !lower {
+        let al = vdb_readaccessor_get_value_address_and_level(t, buf, &inner, b);
+        lower = al.level <= 1u;
+        v = vdb_read_float_typed(t, buf, al.address, b, al.level);
+    }
+    (*acc).inner = inner;
+    var c0 = vec4f(v);
+    var c1 = vec4f(v);
+    if lower {
+        let n = inner.lower;
+        c0 = vec4f(${taps(0)});
+        c1 = vec4f(${taps(4)});
+    }
+    let u = xyz - vec3f(b);
+    return mix(mix(mix(c0.x, c0.y, u.x), mix(c0.z, c0.w, u.x), u.y), mix(mix(c1.x, c1.y, u.x), mix(c1.z, c1.w, u.x), u.y), u.z);
+}`);
+  }
   if (o.helpers.includes("nodeAverage")) {
     out.push(`fn vdbNodeAverage(acc: ptr<function, VdbAccessor>, ijk: vec3i, dim: u32) -> f32 {
     if !(*acc).ok {
