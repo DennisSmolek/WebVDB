@@ -63,3 +63,21 @@ Every in-tree change to `pnanovdb.wgsl` gets one row here, newest first.
 | 2026-07-11 | Add world↔index map: `map_get_vecf`, `map_apply{,_inverse,_jacobi,_inverse_jacobi}`, `grid_{world_to_index,index_to_world}{,_dir}f`. Reuses the fork's mat3x3f getter via WGSL vector*matrix (`src * M`) since the vendored getter loads PNanoVDB row-major matf into mat columns. | Ray/gradient transforms between world and index space. | Yes (transliteration). |
 | 2026-07-11 | Add per-grid-type value dispatch (WebVDB extension): `read_float_typed` + `readaccessor_get_value_float` — single runtime `grid_type` switch feeding the FP decoders; the public sample API specializes as thin wrappers over it. | Decode FLOAT/Fp8/Fpn voxels to f32 in one accessor call. | No (WebVDB; wraps upstream). |
 | 2026-07-11 | Add Fp4/Fp8/Fp16/FpN leaf decoders: `leaf_fp_read_float` (shared) + `leaf_fp{4,8,16,n}_read_float` + `root_fp{4,8,16,n}_read_float` (level-aware), and helpers `address_offset_neg`, `uint32_to_float`. Transliterated from PNanoVDB.h §"Leaf FP Types"; cross-checked against `src/cpu/read-value.ts` (657/657 validated). | Quantized grid support required by the renderer. | Yes (transliteration). |
+
+## Generation transforms
+
+`core/wgsl/generate.ts` builds each WGSL module from a declaration table that
+`scripts/extract-wgsl-chunks.mjs` extracts from the **unmodified** vendored
+file (`src/core/wgsl/pnanovdb.chunks.generated.ts`; sync test
+`test/core/wgsl-chunks.test.ts`). These transforms are applied to generated
+output only: they are not edits to `pnanovdb.wgsl`, its SHA-256 or the diff log
+above. One row per transform (design note `docs/design/K1-core.md` §3.3).
+
+| Since | Declaration | Becomes | Why |
+|---|---|---|---|
+| 2026-11-18 (K1.4a) | every declaration | dropped unless reachable from the profile's API layer (dependency closure); comments removed at extraction | Unused features compile out (D10); the closure is the profile. |
+| 2026-11-18 (K1.4a) | `pnanovdb_buf_read_uint32` | `return vdb_load((buf.byte_offset >> 2u) + (byte_offset >> 2u));` (same arithmetic as `/ 4u`) | The module's one buffer access site; `vdb_load` reads the `slot` binding or the host's `buffer` expression (§2, §3.1). |
+| 2026-11-18 (K1.4a) | `pnanovdb_grid_type_constants` (27-row const array) and its `[grid_type]` call sites | `fn vdb_gtc(grid_type: u32)` returning only the compiled types' rows; fields no emitted declaration reads are written `0u`, and types whose rows are then equal share one branch (one distinct row: a constant, no branch). Call sites become `vdb_gtc(grid_type)`. | The array is 5.3 KB minified and dynamically indexed; FXC/DXC materialize dynamically indexed const arrays. Row values are copied from the vendored table at generation. |
+| 2026-11-18 (K1.4a) | `pnanovdb_read_float_typed` | only the compiled Fp types' branches; Float is the fallthrough, or, with no Float, the last compiled Fp type is | Decoders of types not compiled drop out of the closure. Reads of other types never get here (`VdbAccessor.ok`). |
+| 2026-11-18 (K1.4a) | `pnanovdb_sample_trilinear_{float,fp8,fpn}` | not emitted (unreachable) | The API layer's `vdbSample` calls `pnanovdb_sample_trilinear_typed` with the grid's runtime type. |
+| 2026-11-18 (K1.4a) | every `pnanovdb_` / `PNANOVDB_` identifier | `vdb_` / `VDB_` | One prefix for the whole module (D10, D17). |
