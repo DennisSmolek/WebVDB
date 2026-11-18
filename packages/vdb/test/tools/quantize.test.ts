@@ -8,8 +8,8 @@
  *   2. The native `sphere_fog_float.nvdb` fixture: re-encode to Fp8 and compare
  *      to the native `sphere_fog_fp8.nvdb` at its 73 sidecar coordinates — they
  *      must agree exactly (same round-to-nearest encode rule). We also confirm
- *      the FpN per-leaf bit-width distribution matches native's for the real
- *      (non-tile) leaves.
+ *      the FpN per-leaf bit-width distribution matches native's (active tiles
+ *      are kept as tiles since K4.1, so the leaf sets coincide).
  *
  * Encode authority: NanoVDB.h `LeafFnBase`/`LeafData<Fp8|FpN>` + CreateNanoGrid.h
  * `processLeafs`. Rounding is `floor(x + 0.5)` (native's dithering-off constant).
@@ -139,14 +139,14 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     // Same round-to-nearest encode rule as native => bit-identical decoded values.
     expect(maxVsNative).toBe(0);
     expect(activeMismatch).toBe(0);
-    // Active-voxel count is preserved (tiles expanded into leaves, so all
-    // active voxels survive the leaf-only re-layout).
+    // Active-voxel count and topology are preserved (active tiles stay tiles).
     expect(inspect(myFp8).voxelCount).toBe(inspect(floatImg).voxelCount);
+    expect(inspect(myFp8).nodeCounts).toEqual(inspect(floatImg).nodeCounts);
     },
   );
 
   it.skipIf(!nativeFixturesPresent)(
-    "FpN per-leaf bit-width distribution matches native for the real (non-tile) leaves",
+    "FpN per-leaf bit-width distribution matches native",
     () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFpn = loadPrimitive("sphere_fog_fpn.nvdb");
@@ -169,12 +169,9 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
 
     const nat = dist(nativeFpn);
     const mine = dist(myFpn);
-    // Native's real leaves resolve to 2/4/8-bit widths; ours must match those
-    // counts exactly (mine additionally has 1-bit leaves from expanded constant
-    // tiles, which native stored as tiles rather than leaves).
-    for (const bits of [2, 4, 8]) {
-      expect(mine[bits] ?? 0).toBe(nat[bits] ?? 0);
-    }
+    // Native's leaves resolve to 2/4/8-bit widths; with active tiles kept as
+    // tiles (K4.1) ours is the same leaf set, so the whole distribution matches.
+    expect(mine).toEqual(nat);
     // The FpN image is self-consistent: cumulative variable-size leaves reach
     // exactly mGridSize.
     const v = new DataView(myFpn.buffer, myFpn.byteOffset, myFpn.byteLength);

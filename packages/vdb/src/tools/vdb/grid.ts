@@ -1,27 +1,25 @@
 /**
- * grid.ts — the parsed `VdbGrid`: a flat leaf table plus O(1) lookup by
- * (rounded-down) leaf origin, backing `readValue`/`iterLeaves`.
+ * grid.ts — the parsed `VdbGrid`: a flat leaf table and a flat active-tile
+ * table, each with O(1) lookup by (rounded-down) origin, backing
+ * `readValue`/`iterLeaves`/`iterTiles`.
  *
- * `readValue` outside any stored leaf returns the grid's background value
- * (this parser doesn't retain internal-node tile values, which are
- * rejected as active but silently dropped when inactive/background-only —
- * see tree.ts). That's exactly the samples this parser targets (narrow-band
- * level sets / fully leaf-resolved fog volumes) and is documented as a
- * scope limit rather than silently wrong: the required correctness check
- * (leaf-interior `readValue` against `iterLeaves`' own values) never
- * exercises the fallback path.
+ * `readValue` resolves a coordinate the way an OpenVDB accessor would for the
+ * data this parser keeps: a stored leaf first, then an enclosing active tile
+ * (lower 8^3, upper 128^3, root 4096^3), then the background. Inactive
+ * internal-node tiles are not retained (see tree.ts), so a coordinate inside
+ * one reads as background/inactive even when the file stored another inactive
+ * value there (e.g. a level set's interior `-background`).
  */
 
-import { LEAF_DIM } from "./tree.js";
-import type { LeafData } from "./tree.js";
-import type { VdbBBox, VdbGrid, VdbLeaf, VdbTransformInfo } from "./types.js";
+import { LEAF_DIM, LOWER_TILE_DIM, ROOT_TILE_DIM, UPPER_TILE_DIM } from "./tree.js";
+import type { LeafData, TileData } from "./tree.js";
+import type { VdbBBox, VdbGrid, VdbLeaf, VdbTile, VdbTransformInfo } from "./types.js";
 
-function floorDiv8(n: number): number {
-  // `n & 7` is the correct (non-negative) remainder for any 32-bit-safe
-  // integer, positive or negative, since JS `&` operates on the two's
-  // complement bit pattern — so this rounds down to the nearest multiple
-  // of 8 without a float division.
-  return n - (n & (LEAF_DIM - 1));
+/** Rounds down to a multiple of `dim` (a power of two). `n & (dim - 1)` is the
+ *  non-negative remainder for any 32-bit integer, negative ones included,
+ *  since JS `&` works on the two's-complement bit pattern. */
+function floorTo(n: number, dim: number): number {
+  return n - (n & (dim - 1));
 }
 
 function leafKey(x: number, y: number, z: number): string {
@@ -37,6 +35,8 @@ export interface GridInit {
   activeVoxelCount: number;
   background: number;
   leaves: LeafData[];
+  /** Active tiles; omitted means none. */
+  tiles?: TileData[];
 }
 
 export class VdbGridImpl implements VdbGrid {
@@ -50,6 +50,9 @@ export class VdbGridImpl implements VdbGrid {
 
   private readonly leaves: LeafData[];
   private readonly leafByOrigin: Map<string, LeafData>;
+  private readonly tiles: TileData[];
+  /** One origin -> tile map per tile size, smallest first (8, 128, 4096). */
+  private readonly tileByOrigin: ReadonlyArray<{ dim: number; map: Map<string, TileData> }>;
 
   constructor(init: GridInit) {
     this.name = init.name;
@@ -64,13 +67,28 @@ export class VdbGridImpl implements VdbGrid {
     for (const leaf of this.leaves) {
       this.leafByOrigin.set(leafKey(leaf.origin[0], leaf.origin[1], leaf.origin[2]), leaf);
     }
+    this.tiles = init.tiles ?? [];
+    const levels = [LOWER_TILE_DIM, UPPER_TILE_DIM, ROOT_TILE_DIM].map((dim) => ({
+      dim,
+      map: new Map<string, TileData>(),
+    }));
+    for (const tile of this.tiles) {
+      const level = levels.find((l) => l.dim === tile.dim)!;
+      level.map.set(leafKey(tile.origin[0], tile.origin[1], tile.origin[2]), tile);
+    }
+    this.tileByOrigin = levels;
   }
 
   readValue(ijk: [number, number, number]): { value: number; active: boolean } {
     const [x, y, z] = ijk;
-    const origin = leafKey(floorDiv8(x), floorDiv8(y), floorDiv8(z));
+    const origin = leafKey(floorTo(x, LEAF_DIM), floorTo(y, LEAF_DIM), floorTo(z, LEAF_DIM));
     const leaf = this.leafByOrigin.get(origin);
     if (!leaf) {
+      for (const { dim, map } of this.tileByOrigin) {
+        if (map.size === 0) continue;
+        const tile = map.get(leafKey(floorTo(x, dim), floorTo(y, dim), floorTo(z, dim)));
+        if (tile) return { value: tile.value, active: true };
+      }
       return { value: this.background, active: false };
     }
     const lx = x & (LEAF_DIM - 1);
@@ -86,6 +104,12 @@ export class VdbGridImpl implements VdbGrid {
   *iterLeaves(): Iterable<VdbLeaf> {
     for (const leaf of this.leaves) {
       yield { origin: leaf.origin, values: leaf.values, valueMask: leaf.valueMask };
+    }
+  }
+
+  *iterTiles(): Iterable<VdbTile> {
+    for (const tile of this.tiles) {
+      yield { origin: tile.origin, dim: tile.dim, value: tile.value };
     }
   }
 }

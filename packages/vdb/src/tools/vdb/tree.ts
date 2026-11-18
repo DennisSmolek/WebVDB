@@ -23,10 +23,20 @@
  * point of this parser (handing Phase 5b's serializer real floats) — the
  * two-phase buffer reading here is lifted from `vdb-rs` instead.
  *
+ * ## Active tiles (K4.1)
+ *
+ * Root, upper and lower nodes may hold *active tiles*: a slot whose child bit
+ * is clear and whose value-mask bit is set stands for a uniform, active block
+ * of `childDim^3` voxels (lower slot: one 8^3 leaf; upper slot: one 128^3 lower
+ * node; root tile: one 4096^3 upper node). They are read from the formats'
+ * own topology fields (OpenVDB `RootNode::readTopology` /
+ * `InternalNode::readTopology`) and returned as {@link TileData}, so
+ * `buildFromVdb` can emit them as NanoVDB tiles rather than expanding them.
+ * Inactive tiles are still dropped (they read back as the grid background),
+ * as before.
+ *
  * Scope limits (throw `VdbUnsupportedError`, not silently wrong data):
- * active tiles above leaf resolution (root, upper, or lower level) and
- * multi-buffer trees. Narrow-band level sets and fully-leaf-resolved fog
- * volumes — the samples this parser targets — have neither.
+ * multi-buffer trees.
  */
 
 import { countBits, countZeroBits, iterOnes, testBit } from "./bit-utils.js";
@@ -47,15 +57,32 @@ const UPPER_NUM_VALUES = 1 << (3 * UPPER_LOG2DIM); // 32768
 const LOWER_TOTAL = LEAF_LOG2DIM; // 3
 const UPPER_TOTAL = LEAF_LOG2DIM + LOWER_LOG2DIM; // 7
 
+/** Edge length, in voxels, of an active tile at each level. */
+export const LOWER_TILE_DIM = 8; // 1 << LOWER_TOTAL: a lower-node tile covers one leaf
+export const UPPER_TILE_DIM = 128; // 1 << UPPER_TOTAL: an upper-node tile covers one lower node
+export const ROOT_TILE_DIM = 4096; // 1 << (3 + 4 + 5): a root tile covers one upper node
+
 export interface LeafData {
   origin: [number, number, number];
   values: Float32Array; // length 512
   valueMask: Uint32Array; // 16 x u32 = 512 bits
 }
 
+/** One active tile above leaf level: `dim^3` voxels, all active, all `value`. */
+export interface TileData {
+  /** Index-space min corner, a multiple of `dim`. */
+  origin: [number, number, number];
+  /** Edge length in voxels: 8 (lower-node tile), 128 (upper-node tile) or 4096 (root tile). */
+  dim: 8 | 128 | 4096;
+  value: number;
+}
+
 export interface TreeReadResult {
   background: number;
   leaves: LeafData[];
+  /** Active tiles at root, upper and lower level (inactive tiles are dropped). */
+  tiles: TileData[];
+  /** Active voxels in leaves plus `dim^3` per active tile. */
   activeVoxelCount: number;
 }
 
@@ -65,6 +92,8 @@ interface TreeCtx {
   compression: CompressionFlags;
   useHalf: boolean;
   background: number;
+  /** Active tiles collected during the topology pass. */
+  tiles: TileData[];
 }
 
 function offsetToLocalCoord(offset: number, log2dim: number): [number, number, number] {
@@ -85,37 +114,27 @@ function offsetToGlobalCoord(
   return [origin[0] + (lx << total), origin[1] + (ly << total), origin[2] + (lz << total)];
 }
 
-function assertNoActiveTiles(
-  childMask: Uint32Array,
-  valueMask: Uint32Array,
-  fullNumValues: number,
-  label: string,
-): void {
-  for (let i = 0; i < fullNumValues; i++) {
-    if (!testBit(childMask, i) && testBit(valueMask, i)) {
-      throw new VdbUnsupportedError(
-        `active tile in ${label} at slot ${i} — constant-value regions above leaf resolution are not ` +
-          "supported by this scope-limited FloatGrid parser; re-export as a fully leaf-resolved grid",
-      );
-    }
-  }
-}
-
-/** Reads `(childMask, valueMask, tileValues)` for an upper/lower node and
- *  advances the stream correctly, discarding the tile values themselves
- *  (out of scope — see module docs) after confirming none are active. */
+/**
+ * Reads `(childMask, valueMask, tileValues)` for an upper/lower node and
+ * appends every active tile (child bit clear, value bit set) to `ctx.tiles`.
+ *
+ * Tile-value layout follows OpenVDB `InternalNode::readTopology`: from file
+ * version 222 (node-mask compression) the stream holds a value for every slot,
+ * indexed by slot; before 222 it holds one value per child-*off* slot, packed
+ * in slot order.
+ */
 function readInternalNodeTopology(
   ctx: TreeCtx,
+  origin: readonly [number, number, number],
   log2dim: number,
+  childTotal: number,
   fullNumValues: number,
-  label: string,
 ): { childMask: Uint32Array; valueMask: Uint32Array } {
   const childMask = ctx.reader.maskWords(fullNumValues);
   const valueMask = ctx.reader.maskWords(fullNumValues);
-  const numValuesForStream =
-    ctx.fileVersion < 222 ? countZeroBits(childMask, fullNumValues) : fullNumValues;
-  // Consumed for correct stream position only — see module docs.
-  readCompressedValues(ctx.reader, {
+  const packed = ctx.fileVersion < 222;
+  const numValuesForStream = packed ? countZeroBits(childMask, fullNumValues) : fullNumValues;
+  const values = readCompressedValues(ctx.reader, {
     fileVersion: ctx.fileVersion,
     compression: ctx.compression,
     useHalf: ctx.useHalf,
@@ -123,8 +142,14 @@ function readInternalNodeTopology(
     numValues: numValuesForStream,
     valueMask,
   });
-  assertNoActiveTiles(childMask, valueMask, fullNumValues, label);
-  void log2dim;
+  const dim = (1 << childTotal) as TileData["dim"];
+  let packedIdx = 0;
+  for (let i = 0; i < fullNumValues; i++) {
+    if (testBit(childMask, i)) continue;
+    const value = packed ? values[packedIdx++]! : values[i]!;
+    if (!testBit(valueMask, i)) continue;
+    ctx.tiles.push({ origin: offsetToGlobalCoord(i, log2dim, childTotal, origin), dim, value });
+  }
   return { childMask, valueMask };
 }
 
@@ -145,7 +170,7 @@ interface UpperNode {
 }
 
 function readLowerTopology(ctx: TreeCtx, origin: [number, number, number]): LowerNode {
-  const { childMask } = readInternalNodeTopology(ctx, LOWER_LOG2DIM, LOWER_NUM_VALUES, "lower (16^3)");
+  const { childMask } = readInternalNodeTopology(ctx, origin, LOWER_LOG2DIM, LOWER_TOTAL, LOWER_NUM_VALUES);
   const leaves = new Map<number, LeafPlaceholder>();
   for (const idx of iterOnes(childMask, LOWER_NUM_VALUES)) {
     const leafOrigin = offsetToGlobalCoord(idx, LOWER_LOG2DIM, LOWER_TOTAL, origin);
@@ -157,7 +182,7 @@ function readLowerTopology(ctx: TreeCtx, origin: [number, number, number]): Lowe
 }
 
 function readUpperTopology(ctx: TreeCtx, origin: [number, number, number]): UpperNode {
-  const { childMask } = readInternalNodeTopology(ctx, UPPER_LOG2DIM, UPPER_NUM_VALUES, "upper (32^3)");
+  const { childMask } = readInternalNodeTopology(ctx, origin, UPPER_LOG2DIM, UPPER_TOTAL, UPPER_NUM_VALUES);
   const lowers = new Map<number, LowerNode>();
   for (const idx of iterOnes(childMask, UPPER_NUM_VALUES)) {
     const lowerOrigin = offsetToGlobalCoord(idx, UPPER_LOG2DIM, UPPER_TOTAL, origin);
@@ -201,21 +226,30 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
   }
 
   const background = reader.f32();
-  const ctx: TreeCtx = { reader, fileVersion: options.fileVersion, compression: options.compression, useHalf: options.useHalf, background };
+  const tiles: TileData[] = [];
+  const ctx: TreeCtx = {
+    reader,
+    fileVersion: options.fileVersion,
+    compression: options.compression,
+    useHalf: options.useHalf,
+    background,
+    tiles,
+  };
 
   const numTiles = reader.u32();
   const numRootChildren = reader.u32();
 
+  // Root tiles: origin, value (always full-width ValueType, never half — see
+  // OpenVDB `RootNode::readTopology`), active flag. Inactive tiles are dropped.
   for (let i = 0; i < numTiles; i++) {
-    reader.vec3i(); // origin
-    reader.f32(); // value
+    const origin = reader.vec3i();
+    const value = reader.f32();
     const active = reader.bool();
-    if (active) {
-      throw new VdbUnsupportedError(
-        "active root-level tile — constant-value regions above leaf resolution are not supported " +
-          "by this scope-limited FloatGrid parser; re-export as a fully leaf-resolved grid",
-      );
+    if (!active) continue;
+    if (origin.some((c) => c % ROOT_TILE_DIM !== 0)) {
+      throw new VdbFormatError(`root tile origin [${origin.join(", ")}] is not ${ROOT_TILE_DIM}-aligned`);
     }
+    tiles.push({ origin, dim: ROOT_TILE_DIM, value });
   }
 
   const uppers: UpperNode[] = [];
@@ -236,5 +270,7 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
     }
   }
 
-  return { background, leaves, activeVoxelCount };
+  for (const tile of tiles) activeVoxelCount += tile.dim ** 3;
+
+  return { background, leaves, tiles, activeVoxelCount };
 }

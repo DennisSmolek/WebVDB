@@ -162,7 +162,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
     }
 
     const transform = readTransform(reader);
-    const { background, leaves, activeVoxelCount } = readTree(reader, { fileVersion, compression, useHalf });
+    const { background, leaves, tiles, activeVoxelCount } = readTree(reader, { fileVersion, compression, useHalf });
 
     grids.push(
       new VdbGridImpl({
@@ -174,6 +174,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
         activeVoxelCount,
         background,
         leaves,
+        tiles,
       }),
     );
 

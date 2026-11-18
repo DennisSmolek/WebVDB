@@ -14,7 +14,8 @@
 
 import { countBits, testBit } from "./bit-utils.js";
 import type { ByteReader } from "./byte-reader.js";
-import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+import { decompressBlosc } from "./blosc.js";
+import { VdbFormatError } from "./errors.js";
 import { halfToFloat } from "./half-float.js";
 import { inflateZlib } from "./inflate.js";
 
@@ -78,10 +79,13 @@ function readRawValues(
       const rawCount = -numCompressedBytes / elementSize;
       return readPlain(rawCount);
     }
-    reader.bytes_(numCompressedBytes); // consume so any sibling grid stays in sync
-    throw new VdbUnsupportedError(
-      "blosc-compressed .vdb input is not supported — re-export the file with zlib or no compression (per SPEC §4)",
-    );
+    // OpenVDB pads buffers shorter than Blosc's 48-byte minimum before
+    // compressing, so the frame can decode to more than `count` values.
+    const decoded = decompressBlosc(reader.bytes_(numCompressedBytes));
+    if (decoded.length < count * elementSize) {
+      throw new VdbFormatError(`blosc frame decoded to ${decoded.length} bytes, expected ${count * elementSize}`);
+    }
+    return decodeBytes(decoded.subarray(0, count * elementSize), count);
   }
 
   if (compression.zip) {

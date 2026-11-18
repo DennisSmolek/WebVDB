@@ -3,9 +3,8 @@
  * `tools/GridStats.h` does: min/max are the extrema of *active* voxel values in
  * a node's subtree, `ave` is their arithmetic mean, and `stddev` is the
  * *population* standard deviation (divide by N, not N-1). A parent node's stats
- * are the exact aggregate of its children's — because every active voxel in the
- * `buildFromDense` output lives in a leaf (this builder never emits active
- * tiles), aggregation is a straight sum of leaf accumulators.
+ * are the exact aggregate of its children's plus its own active tiles, each
+ * tile counted with GridStats' weight (see {@link StatsAccumulator.addTile}).
  *
  * The accumulator keeps N, sum and sum-of-squares in f64 so that ave/stddev are
  * computed at full precision before being narrowed to the f32 stored in the
@@ -41,6 +40,29 @@ export class StatsAccumulator {
     if (x > this.bboxMax[0]) this.bboxMax[0] = x;
     if (y > this.bboxMax[1]) this.bboxMax[1] = y;
     if (z > this.bboxMax[2]) this.bboxMax[2] = z;
+  }
+
+  /**
+   * Adds an active tile: `value` counted `weight` times, with the tile's
+   * inclusive index bbox. NanoVDB GridStats passes the child node type's slot
+   * count as the weight, so once tiles are involved `count` is a stats weight,
+   * not a voxel count.
+   */
+  addTile(
+    value: number,
+    weight: number,
+    bboxMin: readonly [number, number, number],
+    bboxMax: readonly [number, number, number],
+  ): void {
+    this.count += weight;
+    this.sum += value * weight;
+    this.sumSq += value * value * weight;
+    if (value < this.min) this.min = value;
+    if (value > this.max) this.max = value;
+    for (let a = 0; a < 3; a++) {
+      if (bboxMin[a]! < this.bboxMin[a]!) this.bboxMin[a] = bboxMin[a]!;
+      if (bboxMax[a]! > this.bboxMax[a]!) this.bboxMax[a] = bboxMax[a]!;
+    }
   }
 
   /** Merges a child accumulator's totals into this one. */

@@ -4,9 +4,10 @@
  * Quantization is a leaf-value-representation change only: topology, masks,
  * internal-node tables/stats, GridData and the transform are unchanged. So
  * `quantize` reads the source FLOAT image's leaves (each: 8-aligned origin,
- * all 512 values, value mask) and its GridData transform/background, then re-runs
- * the leaf-iterator build path ({@link buildFromLeavesDetailed}) with the chosen
- * quantizing {@link LeafCodec}. The result satisfies the repo's proven decoders
+ * all 512 values, value mask), its active tiles (root, upper, lower; kept as
+ * tiles since K4.1 — tile values stay plain f32 in Fp8/FpN grids) and its
+ * GridData transform/background, then re-runs the leaf-iterator build path
+ * ({@link buildFromLeavesDetailed}) with the chosen quantizing {@link LeafCodec}. The result satisfies the repo's proven decoders
  * (`read-value.ts` `leafFp*ReadFloat`, `pnanovdb.wgsl`).
  *
  * - `fp8` — fixed 8-bit codes; per-leaf quantum = (max-min)/255.
@@ -35,6 +36,7 @@ import {
   NODE_OFF_VALUE_MASK,
   ROOT_OFF_TABLE_SIZE,
   ROOT_TILE_OFF_CHILD,
+  ROOT_TILE_OFF_KEY,
   ROOT_TILE_OFF_STATE,
   TREE_OFF_NODE_OFFSET_ROOT,
   UPPER_OFF_CHILD_MASK,
@@ -42,7 +44,7 @@ import {
 } from "./bytes.js";
 import { FP8_LEAF_CODEC, makeFpNLeafCodec, type LeafCodec } from "./leaf-codec.js";
 import { buildFromLeavesDetailed, type BuiltGrid } from "./serialize.js";
-import type { LeafInput } from "./tree.js";
+import type { LeafInput, TileInput } from "./tree.js";
 
 export type QuantizeMode = "fp8" | "fpn";
 
@@ -71,6 +73,7 @@ export function quantizeDetailed(
     gridName: src.gridName,
     gridClass:
       src.gridClassId === 1 ? "LevelSet" : src.gridClassId === 2 ? "FogVolume" : "Unknown",
+    tiles: src.tiles,
   });
 }
 
@@ -81,6 +84,7 @@ interface FloatGridView {
   gridName: string;
   gridClassId: number;
   leaves: Iterable<LeafInput>;
+  tiles: TileInput[];
 }
 
 function floorDiv(v: number, block: number): number {
@@ -119,8 +123,10 @@ function readFloatGrid(image: Uint32Array): FloatGridView {
   const rootOff = treeOff + Number(view.getBigUint64(treeOff + TREE_OFF_NODE_OFFSET_ROOT, true));
   const background = effectiveBackground(view, rootOff);
 
+  const tiles: TileInput[] = [];
+  collectFloatTiles(view, rootOff, tiles);
   const leaves = traverseFloatLeaves(view, rootOff);
-  return { voxelSize, translation, background, gridName, gridClassId, leaves };
+  return { voxelSize, translation, background, gridName, gridClassId, leaves, tiles };
 }
 
 /**
@@ -165,82 +171,112 @@ function effectiveBackground(view: DataView, rootOff: number): number {
   return upperInactive ?? rootBg;
 }
 
-/**
- * Walks root -> upper -> lower -> leaf, yielding one {@link LeafInput} per real
- * leaf AND per active internal-node *tile* — a uniform active region native
- * `nanovdb_convert` collapsed into a tile is expanded back into constant-valued
- * leaves so its voxels survive the leaf-only re-layout (values, not topology,
- * are preserved). Grids we build ourselves have no active tiles, so this reduces
- * to a plain leaf walk for them.
- */
-function* traverseFloatLeaves(view: DataView, rootOff: number): Iterable<LeafInput> {
+/** Child-node offset (relative to `rootOff`) of each root-table entry that has a child. */
+function* rootChildren(view: DataView, rootOff: number): Iterable<number> {
   const L = FLOAT_LAYOUT;
   const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
   for (let t = 0; t < nTiles; t++) {
     const tileOff = rootOff + L.rootSize + t * L.rootTileSize;
     const child = readI64(view, tileOff + ROOT_TILE_OFF_CHILD);
-    if (child === 0) {
-      const active = view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) !== 0;
-      if (active) {
-        throw new Error(
-          "quantize: source grid has an active root-level tile (a 4096^3 uniform region); " +
-            "v1 tile expansion covers upper/lower tiles only. Re-export without root-tile compression.",
-        );
-      }
-      continue;
-    }
-    yield* traverseUpper(view, rootOff + child);
+    if (child !== 0) yield child;
   }
 }
 
-function* traverseUpper(view: DataView, upperOff: number): Iterable<LeafInput> {
-  const L = FLOAT_LAYOUT;
-  const upperOrigin: [number, number, number] = [
-    floorDiv(view.getInt32(upperOff, true), 4096),
-    floorDiv(view.getInt32(upperOff + 4, true), 4096),
-    floorDiv(view.getInt32(upperOff + 8, true), 4096),
+/** Index-space min corner of an internal node, from its bbox min. */
+function nodeOrigin(view: DataView, nodeOff: number, dim: number): [number, number, number] {
+  return [
+    floorDiv(view.getInt32(nodeOff, true), dim),
+    floorDiv(view.getInt32(nodeOff + 4, true), dim),
+    floorDiv(view.getInt32(nodeOff + 8, true), dim),
   ];
-  for (let n = 0; n < UPPER_TABLE_COUNT; n++) {
-    const slotOff = upperOff + L.upperOffTable + n * L.tableStride;
-    if (maskBit(view, upperOff + UPPER_OFF_CHILD_MASK, n)) {
+}
+
+/**
+ * Collects every active tile of a FLOAT image: root tiles (state on, no
+ * child), and upper/lower table slots whose value-mask bit is on and child bit
+ * off. They are re-emitted as tiles, so the quantized grid keeps the source
+ * topology (no expansion into constant leaves).
+ */
+function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): void {
+  const L = FLOAT_LAYOUT;
+  const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
+  for (let t = 0; t < nTiles; t++) {
+    const tileOff = rootOff + L.rootSize + t * L.rootTileSize;
+    if (readI64(view, tileOff + ROOT_TILE_OFF_CHILD) !== 0) continue;
+    if (view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) === 0) continue;
+    const key = view.getBigUint64(tileOff + ROOT_TILE_OFF_KEY, true);
+    out.push({ origin: keyToOrigin(key), dim: 4096, value: view.getFloat32(tileOff + L.rootTileOffValue, true) });
+  }
+  for (const child of rootChildren(view, rootOff)) {
+    const upperOff = rootOff + child;
+    const upperOrigin = nodeOrigin(view, upperOff, 4096);
+    for (let n = 0; n < UPPER_TABLE_COUNT; n++) {
+      const slotOff = upperOff + L.upperOffTable + n * L.tableStride;
+      if (maskBit(view, upperOff + UPPER_OFF_CHILD_MASK, n)) {
+        const lowerOff = upperOff + readI64(view, slotOff);
+        const lowerOrigin = nodeOrigin(view, lowerOff, 128);
+        for (let m = 0; m < LOWER_TABLE_COUNT; m++) {
+          if (maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, m)) continue;
+          if (!maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, m)) continue;
+          out.push({
+            origin: [
+              lowerOrigin[0] + (((m >> 8) & 15) << 3),
+              lowerOrigin[1] + (((m >> 4) & 15) << 3),
+              lowerOrigin[2] + ((m & 15) << 3),
+            ],
+            dim: 8,
+            value: view.getFloat32(lowerOff + L.lowerOffTable + m * L.tableStride, true),
+          });
+        }
+      } else if (maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n)) {
+        out.push({
+          origin: [
+            upperOrigin[0] + (((n >> 10) & 31) << 7),
+            upperOrigin[1] + (((n >> 5) & 31) << 7),
+            upperOrigin[2] + ((n & 31) << 7),
+          ],
+          dim: 128,
+          value: view.getFloat32(slotOff, true),
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Inverse of `coordToKey`: each 21-bit field holds `u32(c) >>> 12`, so
+ * shifting it back up by 12 in 32-bit arithmetic restores the signed,
+ * 4096-aligned coordinate.
+ */
+function keyToOrigin(key: bigint): [number, number, number] {
+  const axis = (shift: bigint): number => Number((key >> shift) & 0xfffffn) << 12;
+  return [axis(42n), axis(21n), axis(0n)];
+}
+
+/** Walks root -> upper -> lower -> leaf, yielding one {@link LeafInput} per real leaf. */
+function* traverseFloatLeaves(view: DataView, rootOff: number): Iterable<LeafInput> {
+  for (const child of rootChildren(view, rootOff)) {
+    const upperOff = rootOff + child;
+    for (let n = 0; n < UPPER_TABLE_COUNT; n++) {
+      if (!maskBit(view, upperOff + UPPER_OFF_CHILD_MASK, n)) continue;
+      const slotOff = upperOff + FLOAT_LAYOUT.upperOffTable + n * FLOAT_LAYOUT.tableStride;
       yield* traverseLower(view, upperOff + readI64(view, slotOff));
-    } else if (maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n)) {
-      // Active upper tile: a 128^3 region uniformly `value`. Expand its 16^3 leaves.
-      const value = view.getFloat32(slotOff, true);
-      const base: [number, number, number] = [
-        upperOrigin[0] + (((n >> 10) & 31) << 7),
-        upperOrigin[1] + (((n >> 5) & 31) << 7),
-        upperOrigin[2] + ((n & 31) << 7),
-      ];
-      for (let lx = 0; lx < 16; lx++)
-        for (let ly = 0; ly < 16; ly++)
-          for (let lz = 0; lz < 16; lz++) {
-            yield constantLeaf([base[0] + lx * 8, base[1] + ly * 8, base[2] + lz * 8], value);
-          }
     }
   }
 }
 
 function* traverseLower(view: DataView, lowerOff: number): Iterable<LeafInput> {
   const L = FLOAT_LAYOUT;
-  const lowerOrigin: [number, number, number] = [
-    floorDiv(view.getInt32(lowerOff, true), 128),
-    floorDiv(view.getInt32(lowerOff + 4, true), 128),
-    floorDiv(view.getInt32(lowerOff + 8, true), 128),
-  ];
+  const lowerOrigin = nodeOrigin(view, lowerOff, 128);
   for (let n = 0; n < LOWER_TABLE_COUNT; n++) {
+    if (!maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, n)) continue;
     const slotOff = lowerOff + L.lowerOffTable + n * L.tableStride;
     const origin: [number, number, number] = [
       lowerOrigin[0] + (((n >> 8) & 15) << 3),
       lowerOrigin[1] + (((n >> 4) & 15) << 3),
       lowerOrigin[2] + ((n & 15) << 3),
     ];
-    if (maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, n)) {
-      yield readLeaf(view, lowerOff + readI64(view, slotOff), origin);
-    } else if (maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, n)) {
-      // Active lower tile: one 8^3 leaf uniformly `value`.
-      yield constantLeaf(origin, view.getFloat32(slotOff, true));
-    }
+    yield readLeaf(view, lowerOff + readI64(view, slotOff), origin);
   }
 }
 
@@ -251,13 +287,6 @@ function readLeaf(view: DataView, leafOff: number, origin: [number, number, numb
   for (let w = 0; w < 16; w++) valueMask[w] = view.getUint32(leafOff + LEAF_OFF_VALUE_MASK + w * 4, true);
   const values = new Float32Array(LEAF_TABLE_COUNT);
   for (let n = 0; n < LEAF_TABLE_COUNT; n++) values[n] = view.getFloat32(leafOff + tableOff + n * 4, true);
-  return { origin, values, valueMask };
-}
-
-/** Synthesises a leaf whose 512 voxels are all active and equal to `value`. */
-function constantLeaf(origin: [number, number, number], value: number): LeafInput {
-  const values = new Float32Array(LEAF_TABLE_COUNT).fill(value);
-  const valueMask = new Uint32Array(16).fill(0xffffffff);
   return { origin, values, valueMask };
 }
 

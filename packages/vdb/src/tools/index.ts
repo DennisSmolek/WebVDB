@@ -8,7 +8,7 @@
  * WASM is an optional escalation rung (W1), never the foundation.
  */
 
-export type { VdbBBox, VdbFile, VdbGrid, VdbLeaf, VdbTransformInfo } from "./vdb/index.js";
+export type { VdbBBox, VdbFile, VdbGrid, VdbLeaf, VdbTile, VdbTransformInfo } from "./vdb/index.js";
 export { VdbFormatError, VdbUnsupportedError } from "./vdb/index.js";
 
 /**
