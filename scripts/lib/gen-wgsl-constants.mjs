@@ -4,9 +4,9 @@ export function generateWgslConstants(tables) {
   // Header
   const abi = tables.$meta.abi;
   lines.push("// GENERATED FILE — do not edit by hand.");
-  lines.push(`// Source: packages/nanovdb-wgsl/vendor/stride-tables.json (NanoVDB ABI ${abi})`);
+  lines.push(`// Source: packages/vdb/vendor/stride-tables.json (NanoVDB ABI ${abi})`);
   lines.push("// Regenerate: node scripts/gen-wgsl-constants.mjs");
-  lines.push("// Guarded by: packages/nanovdb-wgsl/test/wgsl-constants.test.ts");
+  lines.push("// Guarded by: packages/vdb/test/core/wgsl-constants.test.ts");
   lines.push("");
 
   // Defines section

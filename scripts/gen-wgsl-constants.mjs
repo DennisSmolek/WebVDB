@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Regenerates packages/nanovdb-wgsl/src/wgsl/pnanovdb-constants.generated.wgsl
-// from packages/nanovdb-wgsl/vendor/stride-tables.json
+// Regenerates packages/vdb/src/core/wgsl/pnanovdb-constants.generated.wgsl
+// from packages/vdb/vendor/stride-tables.json
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 import { generateWgslConstants } from "./lib/gen-wgsl-constants.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const IN = path.join(ROOT, "packages/nanovdb-wgsl/vendor/stride-tables.json");
-const OUT = path.join(ROOT, "packages/nanovdb-wgsl/src/wgsl/pnanovdb-constants.generated.wgsl");
+const IN = path.join(ROOT, "packages/vdb/vendor/stride-tables.json");
+const OUT = path.join(ROOT, "packages/vdb/src/core/wgsl/pnanovdb-constants.generated.wgsl");
 
 const jsonText = await readFile(IN, "utf8");
 const tables = JSON.parse(jsonText);

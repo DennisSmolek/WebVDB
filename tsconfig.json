@@ -1,9 +1,7 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/nanovdb-wgsl" },
-    { "path": "packages/three-nanovdb" },
-    { "path": "packages/vdb-web-tools" },
+    { "path": "packages/vdb" },
     { "path": "examples" }
   ]
 }

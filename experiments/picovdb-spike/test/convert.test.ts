@@ -16,7 +16,7 @@ import { convertToPicoVDB } from "../src/convert.js";
 import { PicoVDBView } from "../src/reader.js";
 import { loadPrimitive, primitivesAvailable, samplesAvailable } from "../src/fixtures.js";
 import { converted, corpus, variants } from "./helpers.js";
-import { NanoVDBFile } from "../../../packages/nanovdb-wgsl/src/nvdb-file.js";
+import { NanoVDBFile } from "../../../packages/vdb/src/tools/nvdb-file.js";
 
 const golden = JSON.parse(readFileSync(new URL("./native-golden.json", import.meta.url), "utf8")) as Record<
   string,

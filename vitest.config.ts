@@ -5,22 +5,16 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^nanovdb-wgsl$/,
-        replacement: fileURLToPath(
-          new URL("./packages/nanovdb-wgsl/src/index.ts", import.meta.url),
-        ),
+        find: /^@pmndrs\/vdb\/tools$/,
+        replacement: fileURLToPath(new URL("./packages/vdb/src/tools/index.ts", import.meta.url)),
       },
       {
-        find: /^three-nanovdb$/,
-        replacement: fileURLToPath(
-          new URL("./packages/three-nanovdb/src/index.ts", import.meta.url),
-        ),
+        find: /^@pmndrs\/vdb\/three$/,
+        replacement: fileURLToPath(new URL("./packages/vdb/src/three/index.ts", import.meta.url)),
       },
       {
-        find: /^vdb-web-tools$/,
-        replacement: fileURLToPath(
-          new URL("./packages/vdb-web-tools/src/index.ts", import.meta.url),
-        ),
+        find: /^@pmndrs\/vdb$/,
+        replacement: fileURLToPath(new URL("./packages/vdb/src/core/index.ts", import.meta.url)),
       },
     ],
   },

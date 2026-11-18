@@ -7,10 +7,10 @@
     // dist, including consumers that enable Node's `development` condition.
     "baseUrl": ".",
     "paths": {
-      "nanovdb-wgsl": ["packages/nanovdb-wgsl/src/index.ts"],
-      "nanovdb-wgsl/pnanovdb.wgsl": ["packages/nanovdb-wgsl/vendor/pnanovdb.wgsl"],
-      "three-nanovdb": ["packages/three-nanovdb/src/index.ts"],
-      "vdb-web-tools": ["packages/vdb-web-tools/src/index.ts"]
+      "@pmndrs/vdb": ["packages/vdb/src/core/index.ts"],
+      "@pmndrs/vdb/tools": ["packages/vdb/src/tools/index.ts"],
+      "@pmndrs/vdb/three": ["packages/vdb/src/three/index.ts"],
+      "@pmndrs/vdb/pnanovdb.wgsl": ["packages/vdb/vendor/pnanovdb.wgsl"]
     },
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["@webgpu/types"],

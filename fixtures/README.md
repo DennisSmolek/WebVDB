@@ -45,7 +45,7 @@ bakes fog-volume sphere/torus/box in Float/Fp8/FpN (nine grids) into
 pinned to the same OpenVDB commit as the vendored `PNanoVDB.h`
 (`a532de55`). The `.nvdb` files are git-ignored; the `.sidecar.json`
 files (tree stats + 73 deterministic value probes each) **are committed**
-and guarded by `packages/nanovdb-wgsl/test/sidecars.test.ts`.
+and guarded by `packages/vdb/test/tools/sidecars.test.ts`.
 
 The script prefers the reproducible Docker route
 (`docker/fixture-bake/Dockerfile` — a full OpenVDB+NanoVDB tools build

@@ -20,7 +20,7 @@
  *   4. Read the outputs back, compare against the sidecar in JS, render a
  *      pass/fail table, and publish `window.__DEMO01__` for the e2e gate.
  */
-import { NanoVDBFile } from "nanovdb-wgsl";
+import { NanoVDBFile } from "@pmndrs/vdb/tools";
 import { WebGPURenderer, StorageBufferAttribute } from "three/webgpu";
 import { Fn, instanceIndex, ivec3, storage, uint, vec2, wgslFn } from "three/tsl";
 

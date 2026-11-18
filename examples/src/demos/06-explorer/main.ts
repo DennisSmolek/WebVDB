@@ -23,7 +23,7 @@
  * Offscreen `RenderTarget` -> `readRenderTargetPixelsAsync` -> 2D-canvas blit
  * (canvas *presentation* drops the Dawn instance under this sandbox's
  * SwiftShader — see docs/handoffs/PHASE-3.md), the same r185 swizzle-string
- * shim + adapter keep-alive shim, and `nanovdb-wgsl`'s own package-exported
+ * shim + adapter keep-alive shim, and `@pmndrs/vdb/tools`'s own package-exported
  * `readValue` (its `cpu/*` used to load `stride-tables.json` via `node:fs` —
  * not importable into a Vite page; see docs/handoffs/PHASE-5.md's "Known
  * debts" for the dedup that fixed this). `NodeMaterial` still needs >=1
@@ -40,13 +40,13 @@
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile, readValue } from "nanovdb-wgsl";
-import type { GridMetadata } from "nanovdb-wgsl";
-import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer, gridStats } from "three-nanovdb";
+import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
+import type { GridMetadata } from "@pmndrs/vdb/tools";
+import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
+import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer, gridStats } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
-import { buildFromVdbDetailed, inspect, parseVdb } from "vdb-web-tools";
-import type { InspectReport } from "vdb-web-tools";
+import { buildFromVdbDetailed, inspect, parseVdb } from "@pmndrs/vdb/tools";
+import type { InspectReport } from "@pmndrs/vdb/tools";
 
 import { walkLeafOrigins } from "./leaf-walk";
 

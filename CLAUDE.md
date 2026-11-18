@@ -23,9 +23,9 @@ in DIVERGES.md with the reason.
 
 - **Workspace resolution:** published exports point at `dist/` only; in-repo imports reach source through
   tsconfig `paths` and Vite/Vitest aliases. Never add a `development` export condition.
-- **The core is engine-free.** `packages/core` and `packages/tools` never import `three` or any engine (lint
-  enforced, K0.3). The core takes the host's `GPUDevice`, records into the host's encoder, and frees only what it
-  allocated.
+- **The core is engine-free.** `packages/vdb/src/core` and `src/tools` never import `three` or any engine, and
+  `tools` never imports `core` (D20; enforced by `test/boundaries.test.ts`). The core takes the host's
+  `GPUDevice`, records into the host's encoder, and frees only what it allocated.
 - **One storage buffer per kernel** at a host-chosen slot; generated WGSL with the `vdb` prefix; features
   compile out (D10). Grow the WGSL size table (K1.5) only on purpose.
 - **Correctness before timing.** Every WGSL entry has a CPU twin in `tools`; parity tests come first.

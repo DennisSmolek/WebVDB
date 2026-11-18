@@ -27,7 +27,7 @@ import {
   TREE_OFF_VOXEL_COUNT,
   UPPER_OFF_CHILD_MASK,
   UPPER_TABLE_COUNT,
-} from "../../packages/vdb-web-tools/dist/nanovdb/bytes.js";
+} from "../../packages/vdb/dist/tools/nanovdb/bytes.js";
 
 const GRID_TYPE_FLOAT = 1;
 const GRID_TYPE_FP8 = 14;

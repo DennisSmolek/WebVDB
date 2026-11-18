@@ -2,7 +2,7 @@
  * Demo 07 — builder: in-browser NanoVDB authoring round-trip (Phase 5/8 demo
  * gate half 2, docs/PLAN.md — "dense -> TS-build -> render round-trip").
  *
- * Pipeline (SPEC §3.3/§4, all pure-TS `vdb-web-tools`):
+ * Pipeline (SPEC §3.3/§4, all pure-TS `@pmndrs/vdb/tools`):
  *
  *   generate a deterministic 96^3 dense fog field
  *     -> `buildFromDenseDetailed` (FLOAT NanoVDB grid image)
@@ -28,7 +28,7 @@
  *       toggle exercises that path too, just not under the strict test-mode
  *       assertions.
  *   (b) `probesOk` — 20 deterministic, active (`value !== background`)
- *       coordinates, read back from the re-parsed image via `nanovdb-wgsl`'s
+ *       coordinates, read back from the re-parsed image via `@pmndrs/vdb/tools`'s
  *       package-exported `readValue`, match the SOURCE dense array's f32
  *       values exactly (`===`) — FLOAT is a lossless bit-for-bit
  *       representation through this entire pipeline, so exact equality (not
@@ -42,12 +42,12 @@
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile, readValue } from "nanovdb-wgsl";
-import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "three-nanovdb";
+import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
+import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
+import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
-import { buildFromDenseDetailed, quantize, writeNvdb } from "vdb-web-tools";
-import type { BuiltGrid } from "vdb-web-tools";
+import { buildFromDenseDetailed, quantize, writeNvdb } from "@pmndrs/vdb/tools";
+import type { BuiltGrid } from "@pmndrs/vdb/tools";
 
 interface Demo07State {
   ready: boolean;

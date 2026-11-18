@@ -1,9 +1,9 @@
 /**
  * GPU parity harness — the Phase 2 gate (docs/PLAN.md): replay thousands of
  * deterministic voxel probes and trilinear samples across all nine fixtures
- * through the extended vendored WGSL module (`nanovdb-wgsl/pnanovdb.wgsl`),
- * comparing against the CPU reference (`nanovdb-wgsl`'s own `readValue`/
- * `sampleTrilinear` — Phase 1-proven `packages/nanovdb-wgsl/src/cpu/*`
+ * through the extended vendored WGSL module (`@pmndrs/vdb/pnanovdb.wgsl`),
+ * comparing against the CPU reference (`@pmndrs/vdb/tools`'s own `readValue`/
+ * `sampleTrilinear` — Phase 1-proven `packages/vdb/src/tools/cpu/*`
  * descent, package-exported since Phase 5's dedup, see
  * docs/handoffs/PHASE-5.md's "Known debts").
  *
@@ -29,7 +29,7 @@
  *     of the grid image (byte PNANOVDB_GRID_OFF_GRID_TYPE) rather than
  *     trusting a name string.
  *   - Generate 2000 deterministic integer probes + 500 continuous trilinear
- *     points (`nanovdb-wgsl`'s `probeCoords`/`probePoints`, seed = fixture
+ *     points (`@pmndrs/vdb/tools`'s `probeCoords`/`probePoints`, seed = fixture
  *     index).
  *   - Compute CPU-truth values/active flags in-page.
  *   - Dispatch both entry points, read back, compare
@@ -39,8 +39,8 @@
  *     `window.__GPU_PARITY__` (the e2e gate's read channel) and an on-page
  *     table.
  */
-import { NanoVDBFile, defineNumber, probeCoords, probePoints, readValue, sampleTrilinear } from "nanovdb-wgsl";
-import pnanovdbWgsl from "nanovdb-wgsl/pnanovdb.wgsl?raw";
+import { NanoVDBFile, defineNumber, probeCoords, probePoints, readValue, sampleTrilinear } from "@pmndrs/vdb/tools";
+import pnanovdbWgsl from "@pmndrs/vdb/pnanovdb.wgsl?raw";
 
 import { HARNESS_FOOTER_WGSL } from "./shader-footer";
 
@@ -261,7 +261,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   // 1. Layout constants for the byte this harness reads straight out of every
   //    grid image (the numeric grid-type id, for logging + the GPU
-  //    `harness_grid_type` buffer). `nanovdb-wgsl`'s own `readValue`/
+  //    `harness_grid_type` buffer). `@pmndrs/vdb/tools`'s own `readValue`/
   //    `sampleTrilinear` (used below as this harness's CPU truth) detect the
   //    grid type themselves from the same bytes, so this is the only offset
   //    this file needs directly.

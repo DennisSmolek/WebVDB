@@ -1,0 +1,80 @@
+{
+  "name": "@pmndrs/vdb",
+  "version": "0.0.0",
+  "description": "Sparse NanoVDB volumes on WebGPU: engine-free WGSL core, pure-TS CPU tools, three.js adapter",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/DennisSmolek/WebVDB#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DennisSmolek/WebVDB.git",
+    "directory": "packages/vdb"
+  },
+  "bugs": {
+    "url": "https://github.com/DennisSmolek/WebVDB/issues"
+  },
+  "keywords": [
+    "nanovdb",
+    "openvdb",
+    "webgpu",
+    "wgsl",
+    "three",
+    "threejs",
+    "volume"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/core/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "default": "./dist/core/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js",
+      "default": "./dist/tools/index.js"
+    },
+    "./three": {
+      "types": "./dist/three/index.d.ts",
+      "import": "./dist/three/index.js",
+      "default": "./dist/three/index.js"
+    },
+    "./pnanovdb.wgsl": "./vendor/pnanovdb.wgsl"
+  },
+  "files": [
+    "dist",
+    "vendor/pnanovdb.wgsl",
+    "vendor/NOTICE",
+    "vendor/LICENSE",
+    "vendor/VENDOR.md"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "prepack": "tsc --build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  },
+  "peerDependencies": {
+    "three": ">=0.178.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "three": "^0.185.1",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.11"
+  }
+}

@@ -8,7 +8,7 @@
  * ## Frames: synthetic here, EmberGen on a network-open machine
  *
  * In-sandbox there is no EmberGen download, so frames are authored with the
- * project's own serializer (`frames.ts` -> `vdb-web-tools.buildFromDense`). Two
+ * project's own serializer (`frames.ts` -> `@pmndrs/vdb/tools.buildFromDense`). Two
  * real loader paths are exercised:
  *
  *   - Interactive default: an in-memory `loader` override hands the sequence
@@ -42,12 +42,12 @@
  */
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile } from "nanovdb-wgsl";
-import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBSequence, NanoVDBVolumeMaterial, createVolumeRenderer } from "three-nanovdb";
-import type { FrameLoader, NanoVDBSequenceStats } from "three-nanovdb";
+import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
+import { NanoVDBGrid, NanoVDBSequence, NanoVDBVolumeMaterial, createVolumeRenderer } from "@pmndrs/vdb/three";
+import type { FrameLoader, NanoVDBSequenceStats } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
-import { writeNvdb } from "vdb-web-tools";
+import { writeNvdb } from "@pmndrs/vdb/tools";
 import { FRAME_COUNT, domainExtent, makeFrame } from "./frames";
 
 interface Demo05State {

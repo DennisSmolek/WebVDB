@@ -5,13 +5,13 @@
  * A grid-type-independent tree walk: root tile -> upper node (skip if no
  * child) -> lower node (skip if no child) -> LEAF. Node layout (bbox-min
  * field position, table strides, child-mask bit offsets) is shared across
- * FLOAT/Fp8/FpN — `packages/vdb-web-tools/src/nanovdb/inspect.ts` relies on
+ * FLOAT/Fp8/FpN — `packages/vdb/src/tools/nanovdb/inspect.ts` relies on
  * the same fact ("root/tile/upper/lower strides are shared across grid
- * types") — so this walk only needs `nanovdb-wgsl`'s package-exported
+ * types") — so this walk only needs `@pmndrs/vdb/tools`'s package-exported
  * `defineNumber`/`gridTypeConstantsForId` (the same layout-constant
  * accessors `readValue` is built on — `gridTypeConstantsForId` is the
  * "any grid type, not just FLOAT/FP8/FPN" variant this generic walk needs,
- * see its doc comment in `packages/nanovdb-wgsl/src/cpu/stride-tables.ts`).
+ * see its doc comment in `packages/vdb/src/tools/cpu/stride-tables.ts`).
  *
  * Three numbers below are structural (identical for every grid type, not
  * looked up from the layout tables) — the same convention `read-value.ts`
@@ -27,7 +27,7 @@
  *
  * Uniform ACTIVE TILES (a solid region an encoder collapsed into one
  * upper/lower table slot instead of a real leaf — see
- * `packages/vdb-web-tools/src/nanovdb/quantize.ts`'s `traverseUpper`/
+ * `packages/vdb/src/tools/nanovdb/quantize.ts`'s `traverseUpper`/
  * `traverseLower` for the same case) are intentionally NOT expanded into
  * synthetic per-voxel leaf boxes here: they aren't leaves, and this panel is
  * "leaf-level bboxes" specifically. Grids this project builds itself never
@@ -35,7 +35,7 @@
  * docs/handoffs/PHASE-4.md's demo 04 notes on `box_fog_float`) — those
  * regions are simply absent from the wireframe, a documented, minor gap.
  */
-import { defineNumber, gridTypeConstantsForId } from "nanovdb-wgsl";
+import { defineNumber, gridTypeConstantsForId } from "@pmndrs/vdb/tools";
 
 export type IndexCoord = readonly [number, number, number];
 
@@ -43,7 +43,7 @@ const NODE_OFF_BBOX_MIN = 0;
 const UPPER_TABLE_COUNT = 32768;
 const LOWER_TABLE_COUNT = 4096;
 
-// ------------------------- layout constants (via nanovdb-wgsl) -------------
+// ------------------------- layout constants (via @pmndrs/vdb/tools) -------------
 const GRID_SIZE = defineNumber("PNANOVDB_GRID_SIZE");
 const TREE_OFF_NODE_OFFSET_ROOT = defineNumber("PNANOVDB_TREE_OFF_NODE_OFFSET_ROOT");
 const ROOT_OFF_TABLE_SIZE = defineNumber("PNANOVDB_ROOT_OFF_TABLE_SIZE");

@@ -27,9 +27,9 @@
  * exercises both `gridStats` (full CPU cross-check, cheap at this size) and
  * `valueTransform` (sidecar-sample cross-check) instead.
  *
- * ## CPU truth: `nanovdb-wgsl`'s package-exported CPU reference
+ * ## CPU truth: `@pmndrs/vdb/tools`'s package-exported CPU reference
  *
- * `packages/nanovdb-wgsl/src/cpu/*` used to pull its layout constants from
+ * `packages/vdb/src/tools/cpu/*` used to pull its layout constants from
  * `vendor/stride-tables.json` via `node:fs`, which has no browser
  * equivalent (a documented debt — see docs/handoffs/PHASE-5.md's "Known
  * debts"). It now reads a baked, browser-safe generated module instead, so
@@ -50,9 +50,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Fn, storage, texture3D, uniform, wgslFn } from "three/tsl";
 import { StorageBufferAttribute, VolumeNodeMaterial } from "three/webgpu";
 import type { Node, WebGPURenderer } from "three/webgpu";
-import { NanoVDBFile, readValue } from "nanovdb-wgsl";
-import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, buildComputeShaderSource, createVolumeRenderer, decodeToAtlas, gridStats, valueTransform } from "three-nanovdb";
+import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
+import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
+import { NanoVDBGrid, buildComputeShaderSource, createVolumeRenderer, decodeToAtlas, gridStats, valueTransform } from "@pmndrs/vdb/three";
 
 /**
  * Hand-rolled trilinear sample over the `decodeToAtlas` output, packed 4
@@ -432,7 +432,7 @@ async function run(): Promise<void> {
   //   - LEAF-resolved (level 0): value doubles (valueTransform touched it).
   //   - tile/background-resolved (level >= 1): value is BYTE-IDENTICAL
   //     (valueTransform intentionally skips shared tile storage — see its
-  //     doc comment in packages/three-nanovdb/src/compute.ts).
+  //     doc comment in packages/vdb/src/three/compute.ts).
   // Both branches are asserted, which also positively proves the
   // leaf-vs-tile distinction is enforced rather than merely documented.
   // -------------------------------------------------------------------------

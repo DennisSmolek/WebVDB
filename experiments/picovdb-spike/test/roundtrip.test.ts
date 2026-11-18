@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import { comparePico, enumerateActive, type Coord } from "../src/compare.js";
 import { primitivesAvailable, samplesAvailable } from "../src/fixtures.js";
-import { probeCoords } from "../../../packages/nanovdb-wgsl/src/cpu/probe-coords.js";
+import { probeCoords } from "../../../packages/vdb/src/tools/cpu/probe-coords.js";
 import { converted, corpus, variants } from "./helpers.js";
 
 const haveCorpus = primitivesAvailable() && samplesAvailable();
@@ -80,7 +80,7 @@ describe.skipIf(!haveCorpus)("round-trip vs NanoVDB readValue", () => {
 
 describe("WGSL root search reads the even-count padding root (upstream defect)", () => {
   it("a 1-root grid away from the origin resolves [0,4096)^3 lookups through a nonexistent upper[1]", async () => {
-    const { buildFromDense } = await import("../../../packages/vdb-web-tools/src/index.js");
+    const { buildFromDense } = await import("../../../packages/vdb/src/tools/index.js");
     const { convertToPicoVDB } = await import("../src/convert.js");
     const { PicoVDBAccessor, PicoVDBView } = await import("../src/reader.js");
     const image = buildFromDense(new Float32Array(512).fill(0.5), [8, 8, 8], { origin: [-100, -100, -100] });

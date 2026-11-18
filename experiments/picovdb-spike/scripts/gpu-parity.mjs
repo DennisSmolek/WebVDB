@@ -1,7 +1,7 @@
 // GPU parity for upstream's WGSL read accessor (vendor/picovdb.wgsl, verbatim).
 //
 // For each fixture x variant: convert with src/convert.ts, draw deterministic
-// probes with probeCoords (packages/nanovdb-wgsl/src/cpu/probe-coords.ts),
+// probes with probeCoords (packages/vdb/src/tools/cpu/probe-coords.ts),
 // run picovdbReadAccessorGetLevelIndex + picovdbGetValue on a real WebGPU
 // device (headless Chromium, SwiftShader Vulkan), and compare against:
 //   (1) the CPU NanoVDB reference `readValue` on the SOURCE grid, mapped
@@ -84,8 +84,8 @@ async function main() {
   const cv = await ts.load("src/convert.ts");
   const cmp = await ts.load("src/compare.ts");
   const rd = await ts.load("src/reader.ts");
-  const { readValue } = await ts.load("../../packages/nanovdb-wgsl/src/cpu/read-value.ts");
-  const { probeCoords } = await ts.load("../../packages/nanovdb-wgsl/src/cpu/probe-coords.ts");
+  const { readValue } = await ts.load("../../packages/vdb/src/tools/cpu/read-value.ts");
+  const { probeCoords } = await ts.load("../../packages/vdb/src/tools/cpu/probe-coords.ts");
 
   // Build every case up front (CPU side).
   const cases = [];
@@ -112,7 +112,7 @@ async function main() {
   // root search (arrayLength of the padded roots binding) and index upper[1],
   // which does not exist.
   if (!ONLY || "hazard/padding-root".includes(ONLY)) {
-    const { buildFromDense } = await ts.load("../../packages/vdb-web-tools/src/index.ts");
+    const { buildFromDense } = await ts.load("../../packages/vdb/src/tools/index.ts");
     const image = buildFromDense(new Float32Array(512).fill(0.5), [8, 8, 8], { origin: [-100, -100, -100] });
     const f = { id: "hazard/padding-root", kind: "fog", image, voxelSize: 1, gridClassId: 2 };
     const coords = [];

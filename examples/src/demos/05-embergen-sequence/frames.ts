@@ -2,7 +2,7 @@
  * Synthetic animated-fog frames for demo 05 — a self-contained stand-in for a
  * real EmberGen `.nvdb` sequence, so the whole sequence-playback pipeline is
  * exercised end-to-end in-sandbox (no network, no EmberGen download). Authored
- * with the project's OWN serializer (`vdb-web-tools.buildFromDense`), so every
+ * with the project's OWN serializer (`@pmndrs/vdb/tools.buildFromDense`), so every
  * frame is a genuine, loader-parseable NanoVDB FLOAT grid — the same contract a
  * real pack satisfies.
  *
@@ -16,7 +16,7 @@
  *
  * Shared by the demo (in-memory + Blob-URL paths) and any node-side script.
  */
-import { buildFromDense } from "vdb-web-tools";
+import { buildFromDense } from "@pmndrs/vdb/tools";
 
 /** Voxel resolution of the (fixed) animation domain. */
 export const FRAME_DIM = 64;

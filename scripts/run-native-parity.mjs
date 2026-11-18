@@ -9,14 +9,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { NanoVDBFile, readValue } from "../packages/nanovdb-wgsl/dist/index.js";
-import { readLeafQuantum } from "../packages/nanovdb-wgsl/dist/cpu/read-value.js";
+import { NanoVDBFile, readValue } from "../packages/vdb/dist/tools/index.js";
+import { readLeafQuantum } from "../packages/vdb/dist/tools/cpu/read-value.js";
 import {
   buildFromVdb,
   parseVdb,
   quantize,
   writeNvdb,
-} from "../packages/vdb-web-tools/dist/index.js";
+} from "../packages/vdb/dist/tools/index.js";
 import { createParityAccumulator, overallPassed } from "./lib/parity-report.mjs";
 import {
   activeCoordinates,

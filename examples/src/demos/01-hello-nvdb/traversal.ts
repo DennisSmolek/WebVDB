@@ -7,12 +7,12 @@
  * via `wgslFn` with a `ptr<storage, array<u32>, read>` parameter.
  *
  * It is a faithful transliteration of the CPU reference descent in
- * `packages/nanovdb-wgsl/src/cpu/read-value.ts` (itself validated 657/657
+ * `packages/vdb/src/tools/cpu/read-value.ts` (itself validated 657/657
  * against native NanoVDB sidecars) and the vendored port
- * `packages/nanovdb-wgsl/vendor/pnanovdb.wgsl`, restricted to the FLOAT
+ * `packages/vdb/vendor/pnanovdb.wgsl`, restricted to the FLOAT
  * grid type (id 1). Every magic byte offset is annotated with its
  * `PNANOVDB_*` name from
- * `packages/nanovdb-wgsl/src/wgsl/pnanovdb-constants.generated.wgsl`
+ * `packages/vdb/src/core/wgsl/pnanovdb-constants.generated.wgsl`
  * (equivalently `vendor/stride-tables.json`, ABI 32.9.1).
  *
  * ## Layout constants inlined below (FLOAT grid type)

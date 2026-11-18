@@ -27,8 +27,8 @@
  *   FOG_FLOAT, so the GPU reads garbage. Here it throws.
  */
 
-import { defineNumber, gridTypeConstantsFor } from "../../../packages/nanovdb-wgsl/src/cpu/stride-tables.js";
-import { readValue } from "../../../packages/nanovdb-wgsl/src/cpu/read-value.js";
+import { defineNumber, gridTypeConstantsFor } from "../../../packages/vdb/src/tools/cpu/stride-tables.js";
+import { readValue } from "../../../packages/vdb/src/tools/cpu/read-value.js";
 
 // ---- PicoVDB format constants (src/picovdb.zig / ts/picovdb.ts) ----------
 export const PICOVDB_MAGIC = [0x6f636950, 0x30424456] as const; // "PicoVDB0"

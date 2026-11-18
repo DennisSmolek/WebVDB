@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Regenerates packages/nanovdb-wgsl/vendor/stride-tables.json from the
+// Regenerates packages/vdb/vendor/stride-tables.json from the
 // vendored PNanoVDB.h. Run after bumping the vendored header; the vendor
 // test suite fails if the JSON drifts out of sync.
 
@@ -11,9 +11,9 @@ import { generateStrideTablesTs } from "./lib/gen-stride-tables-ts.mjs";
 import { extractStrideTables } from "./lib/pnanovdb-extract.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const HEADER = path.join(ROOT, "packages/nanovdb-wgsl/vendor/upstream/PNanoVDB.h");
-const OUT = path.join(ROOT, "packages/nanovdb-wgsl/vendor/stride-tables.json");
-const OUT_TS = path.join(ROOT, "packages/nanovdb-wgsl/src/cpu/stride-tables.generated.ts");
+const HEADER = path.join(ROOT, "packages/vdb/vendor/upstream/PNanoVDB.h");
+const OUT = path.join(ROOT, "packages/vdb/vendor/stride-tables.json");
+const OUT_TS = path.join(ROOT, "packages/vdb/src/tools/cpu/stride-tables.generated.ts");
 
 // Provenance for the vendored header — update alongside vendor/VENDOR.md.
 const UPSTREAM = {
@@ -34,7 +34,7 @@ console.error(
 );
 
 // Browser-safe TS mirror of the same data (see gen-stride-tables-ts.mjs) —
-// this is what `nanovdb-wgsl/src/cpu/stride-tables.ts` actually imports, so
+// this is what `packages/vdb/src/tools/cpu/stride-tables.ts` actually imports, so
 // `src/cpu/*` (readValue/sampleTrilinear/probeCoords) never touches `node:fs`.
 await writeFile(OUT_TS, generateStrideTablesTs(tables));
 console.error(`✓ wrote ${path.relative(ROOT, OUT_TS)}`);

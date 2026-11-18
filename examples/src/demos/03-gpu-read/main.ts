@@ -15,13 +15,13 @@
  *
  *   1. What a NanoVDB grid IS — a single flat buffer, no pointers.
  *   2. What a `.nvdb` FILE adds around that grid, and how we get the grid
- *      back out of it (using the `NanoVDBFile` loader from `nanovdb-wgsl`
+ *      back out of it (using the `NanoVDBFile` loader from `@pmndrs/vdb/tools`
  *      — we teach its API here, we do not reimplement it).
  *   3. How those bytes reach the GPU: unchanged, in one copy.
  *   4. How a WGSL function walks the grid's 4-level tree to read one voxel.
  *   5. Wiring it into an actual compute dispatch, and checking the answers.
  */
-import { NanoVDBFile } from "nanovdb-wgsl";
+import { NanoVDBFile } from "@pmndrs/vdb/tools";
 
 // ---------------------------------------------------------------------------
 // Types shared with the e2e harness (window.__DEMO03__) and the page table.
@@ -73,7 +73,7 @@ function log(text: string, cls = ""): void {
 // of a sparse volume where every "this points to that" relationship is a
 // plain byte offset, not a pointer. Compact ASCII map of the layout (full
 // version: docs/FEASIBILITY.md §3; authoritative byte offsets:
-// packages/nanovdb-wgsl/vendor/upstream/PNanoVDB.h):
+// packages/vdb/vendor/upstream/PNanoVDB.h):
 //
 //   byte 0                                                          byte N
 //   +----------+----------+------------------+-----------+-----------+------+
@@ -113,8 +113,8 @@ function log(text: string, cls = ""): void {
 // (optionally zlib-compressed) bytes.
 //
 // None of that parsing happens in this file — that's the job of
-// `NanoVDBFile` (packages/nanovdb-wgsl/src/nvdb-file.ts, exported as
-// `nanovdb-wgsl`). This demo is about the traversal, not the container
+// `NanoVDBFile` (packages/vdb/src/tools/nvdb-file.ts, exported as
+// `@pmndrs/vdb/tools`). This demo is about the traversal, not the container
 // format, so we just call it:
 //
 //     const file = await NanoVDBFile.fromURL(url);
@@ -157,8 +157,8 @@ function log(text: string, cls = ""): void {
 // This is the whole algorithm, hand-written, restricted on purpose to FLOAT
 // grids (the fixture used below is one). It is a direct transliteration of
 // the audited reference in `examples/src/demos/01-hello-nvdb/traversal.ts`
-// and the vendored, generated module `packages/nanovdb-wgsl/vendor/
-// pnanovdb.wgsl` (imported as `nanovdb-wgsl/pnanovdb.wgsl?raw` in demos
+// and the vendored, generated module `packages/vdb/vendor/
+// pnanovdb.wgsl` (imported as `@pmndrs/vdb/pnanovdb.wgsl?raw` in demos
 // 01/02), restricted here to one grid type and stripped of caching, HDDA
 // raymarching, trilinear sampling and quantized (Fp4/8/16/FpN) decoding —
 // none of which a first read needs. For the real thing, import the vendored

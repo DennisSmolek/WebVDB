@@ -15,8 +15,8 @@
  *   drops by design), which is separate from a reader/converter mismatch.
  */
 
-import { readValue } from "../../../packages/nanovdb-wgsl/src/cpu/read-value.js";
-import { defineNumber, gridTypeConstantsFor } from "../../../packages/nanovdb-wgsl/src/cpu/stride-tables.js";
+import { readValue } from "../../../packages/vdb/src/tools/cpu/read-value.js";
+import { defineNumber, gridTypeConstantsFor } from "../../../packages/vdb/src/tools/cpu/stride-tables.js";
 import { GRID_TYPE_FOG_FLOAT, GRID_TYPE_SDF_UINT8 } from "./convert.js";
 import { PicoVDBAccessor, PicoVDBView } from "./reader.js";
 

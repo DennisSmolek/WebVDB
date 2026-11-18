@@ -23,10 +23,10 @@ Research: R1 (renderer port plan) runs during K1/K2 and feeds K3.
 Rename to `@pmndrs/vdb` (D17) and reshape the repo into core plus adapters (D8). **No behaviour changes:** this
 phase moves code, it does not rewrite it.
 
-- Workspace: `packages/core` (WebGPU, from `nanovdb-wgsl` minus the loader), `packages/tools` (CPU: the loader,
-  parser, serializer, CPU oracle; from `vdb-web-tools` plus the CPU half of `nanovdb-wgsl`), `packages/three`
-  (from `three-nanovdb`). Published as one package, `@pmndrs/vdb`, with subpaths `.`, `./tools`, `./three`.
-- A lint rule: `core` and `tools` may not import `three`.
+- Workspace (D20): one package, `packages/vdb`, with `src/core` (WebGPU/WGSL), `src/tools` (CPU: the loader,
+  parser, serializer, CPU oracle; from `vdb-web-tools` plus the CPU half of `nanovdb-wgsl`) and `src/three`
+  (from `three-nanovdb`), built by one `tsc`. Published as `@pmndrs/vdb` with subpaths `.`, `./tools`, `./three`.
+- A boundary test: `core` never imports `three`; `tools` never imports `core` or `three`.
 - Workspace source resolution stays as v1 finished it: published exports point at `dist/` only, and in-repo
   imports resolve to source through tsconfig `paths` and Vite/Vitest aliases. Do **not** reintroduce a
   `development` export condition (a consumer running with `--conditions=development` would resolve to unpublished

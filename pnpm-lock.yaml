@@ -26,18 +26,12 @@ importers:
 
   examples:
     dependencies:
-      nanovdb-wgsl:
+      '@pmndrs/vdb':
         specifier: workspace:*
-        version: link:../packages/nanovdb-wgsl
+        version: link:../packages/vdb
       three:
         specifier: ^0.185.1
         version: 0.185.1
-      three-nanovdb:
-        specifier: workspace:*
-        version: link:../packages/three-nanovdb
-      vdb-web-tools:
-        specifier: workspace:*
-        version: link:../packages/vdb-web-tools
     devDependencies:
       '@types/three':
         specifier: ^0.185.1
@@ -49,39 +43,18 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6
 
-  packages/nanovdb-wgsl:
+  packages/vdb:
     dependencies:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
     devDependencies:
-      typescript:
-        specifier: ^5.8.0
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.11
-        version: 4.1.11(vite@7.3.6)
-
-  packages/three-nanovdb:
-    devDependencies:
       '@types/three':
         specifier: ^0.185.1
         version: 0.185.1
-      nanovdb-wgsl:
-        specifier: ^0.1.0
-        version: link:../nanovdb-wgsl
       three:
         specifier: ^0.185.1
         version: 0.185.1
-      typescript:
-        specifier: ^5.8.0
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.11
-        version: 4.1.11(vite@7.3.6)
-
-  packages/vdb-web-tools:
-    devDependencies:
       typescript:
         specifier: ^5.8.0
         version: 5.9.3

@@ -17,7 +17,7 @@ try {
   const fx = await ts.load("src/fixtures.ts");
   const cv = await ts.load("src/convert.ts");
   const cmp = await ts.load("src/compare.ts");
-  const { inspect, quantize, writeNvdb } = await ts.load("../../packages/vdb-web-tools/src/index.ts");
+  const { inspect, quantize, writeNvdb } = await ts.load("../../packages/vdb/src/tools/index.ts");
   const gz = (b) => gzipSync(b, { level: 6 }).byteLength;
 
   for (const f of fx.loadAll()) {

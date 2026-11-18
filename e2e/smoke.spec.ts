@@ -8,7 +8,7 @@ test("examples app boots and reports WebGPU capability", async ({ page }) => {
   await expect(page).toHaveTitle("WebVDB Examples");
 
   const report = page.getByTestId("webgpu-report");
-  // main.ts imported constants from nanovdb-wgsl — proves workspace wiring.
+  // main.ts imported constants from @pmndrs/vdb/tools — proves workspace wiring.
   await expect(report).toContainText("workspace ok");
   await expect(report).toContainText("Float, Fp8, FpN");
   // The probe always sets data-webgpu, whatever the environment offers.

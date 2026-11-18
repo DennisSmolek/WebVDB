@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const WGSL_URL = new URL(
-  "../packages/nanovdb-wgsl/vendor/pnanovdb.wgsl",
+  "../packages/vdb/vendor/pnanovdb.wgsl",
   import.meta.url,
 );
 const CHROMIUM_EXECUTABLE =

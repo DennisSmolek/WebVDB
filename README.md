@@ -21,9 +21,9 @@ machine" line.
 
 | Package | What it is |
 |---|---|
-| [`nanovdb-wgsl`](./packages/nanovdb-wgsl) | Renderer-agnostic NanoVDB traversal/sampling WGSL module (vendored Apache-2.0 fork of [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb)'s `pnanovdb.wgsl`, pinned + audited) and the TS `.nvdb` loader |
-| [`three-nanovdb`](./packages/three-nanovdb) | TSL/three.js layer: `NanoVDBGrid`, volume materials, compute utilities, device-first renderer bootstrap |
-| [`vdb-web-tools`](./packages/vdb-web-tools) | Pure-TS CPU tooling: `.vdb` parse, NanoVDB build, Fp8/FpN quantize, affine transform, inspect (WASM only as an opt-in escalation) |
+| [`@pmndrs/vdb`](./packages/vdb) (core, `src/core`) | Renderer-agnostic NanoVDB traversal/sampling WGSL module (vendored Apache-2.0 fork of [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb)'s `pnanovdb.wgsl`, pinned + audited) |
+| `@pmndrs/vdb/three` ([`src/three`](./packages/vdb/src/three)) | TSL/three.js layer: `NanoVDBGrid`, volume materials, compute utilities, device-first renderer bootstrap |
+| `@pmndrs/vdb/tools` ([`src/tools`](./packages/vdb/src/tools)) | Pure-TS CPU tooling: the TS `.nvdb` loader and CPU oracle, `.vdb` parse, NanoVDB build, Fp8/FpN quantize, affine transform, inspect (WASM only as an opt-in escalation) |
 | [`examples/`](./examples) | Vite demo site — one demo per phase gate |
 
 ## Demos
@@ -39,7 +39,7 @@ Each demo is a phase gate (see [docs/SPEC.md §5](./docs/SPEC.md)); run
 | 04 | [`atlas-fallback`](./examples/src/demos/04-atlas-fallback) — same style of volume through compute → dense atlas → stock volume material | mobile/compat path |
 | 05 | [`embergen-sequence`](./examples/src/demos/05-embergen-sequence) — animated volume playback via `NanoVDBSequence`'s `rebindGrid` | animation |
 | 06 | [`explorer`](./examples/src/demos/06-explorer) — drag-drop `.nvdb`/`.vdb`: metadata panel, node-bbox wireframes, slice view, histogram, memory breakdown | technical tool |
-| 07 | [`builder`](./examples/src/demos/07-builder) — author a grid in-browser (procedural dense → `vdb-web-tools` build → render, byte-verified round trip) | `vdb-web-tools` v1 round-trip |
+| 07 | [`builder`](./examples/src/demos/07-builder) — author a grid in-browser (procedural dense → `@pmndrs/vdb/tools` build → render, byte-verified round trip) | `@pmndrs/vdb/tools` v1 round-trip |
 
 ## Founding documents
 
@@ -59,14 +59,13 @@ pnpm test         # Vitest across the workspace (234 unit tests)
 pnpm test:e2e     # Playwright against the examples app (11 e2e specs)
 pnpm dev          # examples dev server → http://localhost:5173
 pnpm build        # tsc --build each package's dist/ (for publishing)
-pnpm pack:dry     # npm pack --dry-run in each package, tarball contents only
+pnpm pack:dry     # npm pack --dry-run of @pmndrs/vdb, tarball contents only
 pnpm fixtures     # download test volumes into fixtures/ (git-ignored)
 ```
 
-`typecheck`/`test`/`dev` all resolve cross-package imports (`nanovdb-wgsl`,
-`three-nanovdb`, `vdb-web-tools`) straight to TypeScript source via each
-package's `"development"` export condition — no build step needed for
-day-to-day work. `pnpm build` is only needed to produce the `dist/` a
+`typecheck`/`test`/`dev` all resolve cross-package imports (`@pmndrs/vdb`,
+`@pmndrs/vdb/tools`, `@pmndrs/vdb/three`) straight to TypeScript source via tsconfig `paths` and
+Vite/Vitest aliases — no build step needed for day-to-day work. `pnpm build` is only needed to produce the `dist/` a
 published package ships (see each package's README "packaging note").
 
 Fixtures (WDAS cloud, EmberGen free pack) are **never committed** — see
@@ -76,4 +75,4 @@ Fixtures (WDAS cloud, EmberGen free pack) are **never committed** — see
 
 Project code: Apache-2.0. Vendored third-party code keeps its upstream
 license and attribution — see
-[`packages/nanovdb-wgsl/vendor/NOTICE`](./packages/nanovdb-wgsl/vendor/NOTICE).
+[`packages/vdb/vendor/NOTICE`](./packages/vdb/vendor/NOTICE).

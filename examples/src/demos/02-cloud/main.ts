@@ -26,9 +26,9 @@
  */
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile } from "nanovdb-wgsl";
-import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "three-nanovdb";
+import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
+import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
 
 interface Demo02State {

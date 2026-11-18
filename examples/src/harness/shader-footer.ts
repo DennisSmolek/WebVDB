@@ -5,7 +5,7 @@
  * (`nanovdb_buffer`), plus two `@compute` entry points that drive
  * `pnanovdb_readaccessor_get_value_float` / `pnanovdb_readaccessor_is_active`
  * / `pnanovdb_sample_trilinear_typed` over flat coordinate buffers, so the
- * CPU reference (`nanovdb-wgsl`'s package-exported `readValue`/
+ * CPU reference (`@pmndrs/vdb/tools`'s package-exported `readValue`/
  * `sampleTrilinear`, see `main.ts`) and the GPU shader can be compared
  * value-for-value.
  *

@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
  * Demo 05 — embergen-sequence: the Phase 7 gate (docs/PLAN.md, SPEC §3.5).
  *
  * Everything is generated in-page (no external fixture): synthetic animated fog
- * frames authored with `vdb-web-tools.buildFromDense`, written to `.nvdb`, and
+ * frames authored with `@pmndrs/vdb/tools.buildFromDense`, written to `.nvdb`, and
  * served as Blob URLs so the real `NanoVDBFile.fromURL` fetch+parse path runs.
  * In `?test=1` the sequence scheduler is driven by a fixed timestep to play
  * exactly 6 frames, each swapped into ONE material via `rebindGrid`. The demo

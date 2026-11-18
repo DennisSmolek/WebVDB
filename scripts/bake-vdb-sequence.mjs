@@ -7,7 +7,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { NanoVDBFile } from "../packages/nanovdb-wgsl/dist/nvdb-file.js";
+import { NanoVDBFile } from "../packages/vdb/dist/tools/nvdb-file.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = path.join(ROOT, "fixtures");
