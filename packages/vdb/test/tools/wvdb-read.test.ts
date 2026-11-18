@@ -326,9 +326,18 @@ describe.skipIf(extra.some(([, p]) => !p))("readWvdb — his other committed fil
         expect(s.meanDensity).toBe(g.meanDensity);
       }
     }
-    // source.sha256 matches the source .vdb where we have it
-    const src = vdbSample(file.source.file);
-    if (src) expect(createHash("sha256").update(readBytes(src)).digest("hex")).toBe(file.source.sha256);
+    // source.sha256 names the .vdb he baked from. His checkout's copy is that file and must
+    // match. Ours (fixtures/vdb-samples, fetched from openvdb.org) can be a different
+    // revision of the sample (sphere_points and bunny_cloud are), so it is compared only
+    // when it is the same file.
+    const sha = (p: string): string => createHash("sha256").update(readBytes(p)).digest("hex");
+    const his = hisAsset(file.source.file);
+    const ours = vdbSample(file.source.file);
+    if (his) {
+      expect(sha(his)).toBe(file.source.sha256);
+    } else if (ours && sha(ours) !== file.source.sha256) {
+      console.info(`${name}: our ${file.source.file} is not the file he baked from; source checksum not compared`);
+    }
   });
 
   it("level sets: every decoded value is in [-b, b]; outside the band it is exactly ±b (§8)", () => {
@@ -338,10 +347,11 @@ describe.skipIf(extra.some(([, p]) => !p))("readWvdb — his other committed fil
       expect(g.class).toBe("level set");
       const b = g.background[0]!;
       expect(wvdbFinestDimensions(g.bbox, 128)).toEqual(g.levels[2]!.dimensions);
-      for (const v of g.levels[2]!.values) {
-        expect(Math.abs(v)).toBeLessThanOrEqual(b);
-        if (Math.abs(v) >= b) expect(Math.abs(v)).toBe(b);
-      }
+      // One assertion per file, not one per value: millions of expect() calls took ~7 s under
+      // load. |v| <= b (NaN fails it) also means a value at the band edge is exactly ±b.
+      let outOfBand = 0;
+      for (const v of g.levels[2]!.values) if (!(Math.abs(v) <= b)) outOfBand++;
+      expect({ name, outOfBand }).toEqual({ name, outOfBand: 0 });
     }
   });
 

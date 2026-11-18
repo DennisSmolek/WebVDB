@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readWvdb, writeWvdb, type WvdbGridInput, type WvdbVec3, type WvdbVolumeGrid, type WriteWvdbOptions } from "../../src/tools/index.js";
-import { fixture } from "./wvdb-helpers.js";
+import { bytesEqual, fixture } from "./wvdb-helpers.js";
 
 /*
  * K4.3 gate "a .wvdb we write loads in his WVDBLoader" — STATIC conformance.
@@ -277,6 +277,10 @@ describe("static conformance with his WVDBLoader parse path (75e7345)", () => {
     const bytes = fixture("ground_explosion_0010.wvdb");
     const mirror = await hisLoaderMirror(bytes);
     const ours = readWvdb(bytes);
-    expect(mirror.levels[0]![2]).toEqual((ours.grids[0] as WvdbVolumeGrid).levels[2]!.values);
+    // A loop, not toEqual: toEqual on this many values took ~4 s (over the 5 s timeout under load).
+    const want = (ours.grids[0] as WvdbVolumeGrid).levels[2]!.values;
+    const got = mirror.levels[0]![2]!;
+    expect(got.length).toBe(want.length);
+    expect(bytesEqual(got, want)).toBe(true);
   });
 });

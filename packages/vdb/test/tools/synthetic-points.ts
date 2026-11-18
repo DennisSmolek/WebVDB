@@ -52,6 +52,32 @@ export interface SynthPointSpec {
   voxelBlosc?: boolean;
   /** Write the descriptor once, flagged shared (header bit 1). Default true. */
   sharedDescriptor?: boolean;
+  /** Hooks that corrupt fields as they are written (points-hostile.test.ts). */
+  tamper?: SynthPointTamper;
+}
+
+/** One attribute array's metadata, as `TypedAttributeArray::writeMetadata` writes it. */
+export interface SynthArrayMeta {
+  /** The u64 byte count: 2 flag bytes + the u32 size + the stored bytes. */
+  total: bigint;
+  flags: number;
+  serialization: number;
+  size: number;
+  /** Written when `serialization` has the strided bit. */
+  stride: number;
+}
+
+export interface SynthPointTamper {
+  /** The u16 pass count (default `4 + 2 * attributes`). */
+  numPasses?: number;
+  /** Rewrites one leaf's array metadata. */
+  arrayMeta?: (leaf: number, attr: number, meta: SynthArrayMeta) => SynthArrayMeta;
+  /** Rewrites one attribute's page headers (`[-raw]` or `[compressed, uncompressed]` per page). */
+  pageHeaders?: (attr: number, headers: number[][]) => number[][];
+  /** Writes leaf `leaf`'s descriptor block (header byte included) instead of the real one. */
+  descriptor?: (w: Writer, leaf: number) => void;
+  /** Rewrites a leaf's end offsets as stored in its voxel buffer (the mask keeps the real ones). */
+  storedOffsets?: (leaf: number, offsets: Uint32Array) => Uint32Array;
 }
 
 const FLAG_CONSTANT_STRIDE = 0x8;
@@ -59,7 +85,7 @@ const WRITE_STRIDED = 0x1;
 const WRITE_UNIFORM = 0x2;
 const WRITE_PAGED = 0x8;
 
-function writeDescriptor(w: Writer, attrs: SynthPointAttr[], groups: { name: string; offset: number }[]): void {
+export function writeDescriptor(w: Writer, attrs: SynthPointAttr[], groups: { name: string; offset: number }[]): void {
   w.u64(attrs.length);
   for (const a of attrs) {
     w.string(a.type);
@@ -186,8 +212,10 @@ export function writeSyntheticPoints(spec: SynthPointSpec): ArrayBuffer {
   for (const m of masks) w.words(m);
 
   // Voxel buffers as stored.
-  const voxelBuffers = leaves.map((l) => {
-    const raw = new Uint8Array(l.offsets.buffer.slice(l.offsets.byteOffset, l.offsets.byteOffset + 2048));
+  const tamper = spec.tamper ?? {};
+  const voxelBuffers = leaves.map((l, i) => {
+    const offsets = tamper.storedOffsets ? tamper.storedOffsets(i, l.offsets.slice()) : l.offsets;
+    const raw = new Uint8Array(offsets.buffer.slice(offsets.byteOffset, offsets.byteOffset + 2048));
     if (paged && spec.voxelBlosc) {
       const frame = bloscFrame(raw, 4);
       return { size: frame.length, bytes: frame };
@@ -206,11 +234,14 @@ export function writeSyntheticPoints(spec: SynthPointSpec): ArrayBuffer {
 
   const n = spec.attributes.length;
   const numPasses = 4 + 2 * n;
-  w.u16(numPasses);
+  w.u16(tamper.numPasses ?? numPasses);
   for (let pass = 0; pass < numPasses; pass++) {
     if (pass >= 2 && pass < n + 2) {
       // Page headers of attribute (pass - 2).
-      if (paged) for (const p of pages[pass - 2]!) for (const h of p.header) w.i32(h);
+      const a = pass - 2;
+      let headers = pages[a]!.map((p) => p.header);
+      if (tamper.pageHeaders) headers = tamper.pageHeaders(a, headers);
+      if (paged) for (const h of headers.flat()) w.i32(h);
       continue;
     }
     if (pass >= n + 3 && pass < 2 * n + 3) {
@@ -230,18 +261,30 @@ export function writeSyntheticPoints(spec: SynthPointSpec): ArrayBuffer {
         w.u16(voxelBuffers[i]!.size);
       } else if (pass === 1) {
         if (i === 0 || !shared) {
-          w.u8(shared ? 1 : 0);
-          writeDescriptor(w, spec.attributes, spec.groups ?? []);
+          if (tamper.descriptor) {
+            tamper.descriptor(w, i);
+          } else {
+            w.u8(shared ? 1 : 0);
+            writeDescriptor(w, spec.attributes, spec.groups ?? []);
+          }
         }
         const count = leaf.offsets[511]!;
         spec.attributes.forEach((attr, a) => {
           const stride = attr.stride ?? 1;
           const bytes = leaf.arrays[a]!.length;
-          w.u64(2 + 4 + bytes);
-          w.u8(FLAG_CONSTANT_STRIDE);
-          w.u8((stride !== 1 ? WRITE_STRIDED : 0) | (attr.uniform ? WRITE_UNIFORM : 0) | (paged ? WRITE_PAGED : 0));
-          w.u32(count);
-          if (stride !== 1) w.u32(stride);
+          let meta: SynthArrayMeta = {
+            total: BigInt(2 + 4 + bytes),
+            flags: FLAG_CONSTANT_STRIDE,
+            serialization: (stride !== 1 ? WRITE_STRIDED : 0) | (attr.uniform ? WRITE_UNIFORM : 0) | (paged ? WRITE_PAGED : 0),
+            size: count,
+            stride,
+          };
+          if (tamper.arrayMeta) meta = tamper.arrayMeta(i, a, meta);
+          w.u64(meta.total);
+          w.u8(meta.flags);
+          w.u8(meta.serialization);
+          w.u32(meta.size);
+          if (meta.serialization & WRITE_STRIDED) w.u32(meta.stride);
         });
       } else if (pass === n + 2) {
         w.words(masks[i]!);

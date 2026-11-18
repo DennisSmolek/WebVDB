@@ -108,7 +108,7 @@ export class Writer {
     this.view.setInt32(this.pos, v, true);
     this.pos += 4;
   }
-  u64(v: number): void {
+  u64(v: number | bigint): void {
     this.ensure(8);
     this.view.setBigUint64(this.pos, BigInt(v), true);
     this.pos += 8;
