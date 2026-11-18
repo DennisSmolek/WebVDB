@@ -53,7 +53,8 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { NanoVDBFile } from "@pmndrs/vdb/tools";
-import { VDBGridNode, VDBSequence, VDBVolumeMaterial, createVolumeRenderer, getDevice } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBSequence, VDBVolumeMaterial, getDevice } from "@pmndrs/vdb/three";
+import { createDeviceRenderer } from "../device-renderer.js";
 import type { VDBFrameLoader, VDBSequenceStats } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
 import { writeNvdb } from "@pmndrs/vdb/tools";
@@ -208,11 +209,9 @@ let nodeRebinds = 0;
 
 async function initRenderer(): Promise<void> {
   const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
-  const created = await createVolumeRenderer(directCanvas ? { canvas: directCanvas } : {});
+  const created = await createDeviceRenderer(directCanvas ? { canvas: directCanvas } : {});
   renderer = created.renderer;
-  adapter =
-    [created.report.adapterInfo?.vendor, created.report.adapterInfo?.architecture].filter(Boolean).join(" ") ||
-    adapter;
+  adapter = created.adapterName || adapter;
   pool = await VDBGridPool.create(getDevice(renderer), { label: "demo 05 pool" });
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x10131f);

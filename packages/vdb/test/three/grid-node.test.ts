@@ -7,88 +7,13 @@
  * themselves run on a GPU in e2e/three-grid-node.spec.ts.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { VDBGridPool, VDBError, vdbModuleWgsl } from "../../src/core/index.js";
 import { VDBGridNode, getDevice, getGPUTexture, vdbReadValue, vdbSample } from "../../src/three/index.js";
+import { resetThreeRevisionWarning, warnThreeRevision } from "../../src/three/grid-node.js";
 import { FakeDevice } from "../core/fake-gpu.js";
 import { makeImage } from "../core/synthetic-image.js";
-
-const scope = globalThis as unknown as Record<string, unknown>;
-scope.GPUBufferUsage ??= { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 };
-scope.GPUShaderStage ??= { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
-
-type ThreeAttributes = { update(attribute: object, type: number): void; has(attribute: object): boolean; dispose(): void };
-const attributesModule = "three/src/renderers/common/Attributes.js";
-const utilsModule = "three/src/renderers/webgpu/utils/WebGPUAttributeUtils.js";
-const constantsModule = "three/src/renderers/common/Constants.js";
-const { default: Attributes } = (await import(attributesModule)) as { default: new (backend: object, info: object) => ThreeAttributes };
-const { default: WebGPUAttributeUtils } = (await import(utilsModule)) as {
-  default: new (backend: object) => { createAttribute(attribute: object, usage: number): void; destroyAttribute(attribute: object): void };
-};
-const { AttributeType } = (await import(constantsModule)) as { AttributeType: { STORAGE: number } };
-
-interface TestBuffer {
-  label: string;
-  destroyed: boolean;
-  destroy(): void;
-  getMappedRange(): ArrayBuffer;
-  unmap(): void;
-}
-
-function makeBuffer(label: string): TestBuffer {
-  const b: TestBuffer = {
-    label,
-    destroyed: false,
-    destroy: () => {
-      b.destroyed = true;
-    },
-    getMappedRange: () => new ArrayBuffer(16),
-    unmap: () => {},
-  };
-  return b;
-}
-
-/** A WebGPURenderer stand-in whose attribute paths are three's own (r187). */
-function fakeRenderer(device?: object) {
-  let data = new WeakMap<object, Record<string, unknown> & { buffer?: GPUBuffer }>();
-  const created: TestBuffer[] = [];
-  // A real fake device (pool tests), else a recorder of three's / the destroy guard's buffers.
-  device ??= {
-    createBuffer: (d: GPUBufferDescriptor) => {
-      const b = makeBuffer(d.label ?? "");
-      created.push(b);
-      return b;
-    },
-  };
-  const backend = {
-    isWebGPUBackend: true,
-    device,
-    get(object: object) {
-      let entry = data.get(object);
-      if (!entry) data.set(object, (entry = {}));
-      return entry;
-    },
-    delete(object: object) {
-      data.delete(object);
-    },
-    getBufferAttribute: (attribute: object) => attribute,
-    createStorageAttribute(attribute: object) {
-      utils.createAttribute(attribute, 0x80);
-    },
-    destroyAttribute(attribute: object) {
-      utils.destroyAttribute(attribute);
-    },
-    forget() {
-      data = new WeakMap();
-    },
-  };
-  const utils = new WebGPUAttributeUtils(backend);
-  const attributes = new Attributes(backend, { createStorageAttribute() {}, destroyAttribute() {} });
-  const renderer = { backend, _attributes: attributes };
-  /** What three does when a shader binds a storage node: make (or take) the attribute's buffer. */
-  const use = (attribute: object) => attributes.update(attribute, AttributeType.STORAGE);
-  return { renderer, backend, device, created, attributes, use };
-}
+import { SELF_TEST_LABEL, fakeRenderer, makeBuffer, type TestBuffer } from "./fake-three.js";
 
 /** The pool surface VDBGridNode reads, as a plain object. */
 function fakePool(device: object, types: string[] = ["float"]) {
@@ -135,15 +60,21 @@ describe("getDevice / getGPUTexture (K2.1)", () => {
 
 describe("VDBGridNode (K2.2)", () => {
   it("binds the pool buffer, rebinds on a new version, never destroys pool buffers", () => {
-    const { renderer, backend, use, created } = fakeRenderer();
+    const { renderer, backend, use, created: all } = fakeRenderer();
     const pool = fakePool(backend.device);
     const grids = new VDBGridNode(renderer, pool);
+    // The self-test: its buffer, and the throwaway the guard swapped in for it; both destroyed.
+    expect(all.map((b) => [b.label, b.destroyed])).toEqual([
+      [SELF_TEST_LABEL, true],
+      ["@pmndrs/vdb/three retired stand-in", true],
+    ]);
+    const made = () => all.slice(2); // buffers after the self-test's
     expect(boundBuffer(backend, grids)).toBe(pool.buffer);
     expect(grids.version).toBe(1);
     expect(grids.update()).toBe(false);
 
     use(grids.storage.value as object);
-    expect(created).toHaveLength(0); // three took the pool's buffer as made
+    expect(made()).toHaveLength(0); // three took the pool's buffer as made
     expect(grids.update()).toBe(false); // verified, nothing changed
 
     const first = grids.storage.value;
@@ -157,7 +88,7 @@ describe("VDBGridNode (K2.2)", () => {
     expect(grids.update()).toBe(false);
     // The old stand-in was retired through three (Attributes.delete -> destroyAttribute): a throwaway died, not the pool's buffer.
     expect((old as unknown as TestBuffer).destroyed).toBe(false);
-    expect(created.map((b) => [b.label, b.destroyed])).toEqual([["@pmndrs/vdb/three retired stand-in", true]]);
+    expect(made().map((b) => [b.label, b.destroyed])).toEqual([["@pmndrs/vdb/three retired stand-in", true]]);
 
     // A rollback (version bump back to an older buffer object) rebinds too.
     pool.buffer = old;
@@ -172,22 +103,23 @@ describe("VDBGridNode (K2.2)", () => {
   });
 
   it("survives renderer.dispose() (Attributes.dispose) and a stand-in's dispose()", () => {
-    const { renderer, backend, use, attributes, created } = fakeRenderer();
+    const { renderer, backend, use, attributes, created: all } = fakeRenderer();
     const pool = fakePool(backend.device);
     const a = new VDBGridNode(renderer, pool);
     const b = new VDBGridNode(renderer, pool, { name: "vdbPoolB" });
+    const made = () => all.slice(2); // buffers after the self-test's
     use(a.storage.value as object);
     use(b.storage.value as object);
-    expect(created).toHaveLength(0);
+    expect(made()).toHaveLength(0);
 
     (a.storage.value as { dispose(): void }).dispose();
     expect((pool.buffer as unknown as TestBuffer).destroyed).toBe(false);
-    expect(created).toHaveLength(1);
+    expect(made()).toHaveLength(1);
 
     attributes.dispose(); // what renderer.dispose() runs
     expect((pool.buffer as unknown as TestBuffer).destroyed).toBe(false);
-    expect(created).toHaveLength(2);
-    expect(created.every((t) => t.destroyed)).toBe(true);
+    expect(made()).toHaveLength(2);
+    expect(made().every((t) => t.destroyed)).toBe(true);
   });
 
   it("follows a real VDBGridPool growth on a fake device", async () => {
@@ -303,5 +235,118 @@ describe("VDBGridNode (K2.2)", () => {
     expect((vdbSample(grids, 0, null, { space: "index" }) as typeof call).functionNode).not.toBe(call.functionNode);
     expect((vdbReadValue(grids, 0, null) as typeof call).isNode).toBe(true);
     expect(grids.helper("readValue")).toBe(grids.helper("readValue"));
+  });
+});
+
+describe("VDBGridNode guards (K2 review)", () => {
+  /** The module node's per-shader check, called the way `generate` calls it first. */
+  type ModuleNode = { checkBuild(builder: object): void; generate(builder: object): string; vdbPool: { build: unknown } };
+  const moduleOf = (grids: VDBGridNode) => grids.module as unknown as ModuleNode;
+
+  it("refuses a shader another renderer builds (two renderers, one device): one VDBGridNode per renderer", () => {
+    const a = fakeRenderer();
+    const b = fakeRenderer(a.device);
+    const pool = fakePool(a.device);
+    const grids = new VDBGridNode(a.renderer, pool);
+    expect(grids.renderer).toBe(a.renderer);
+    const mod = moduleOf(grids);
+    expect(() => mod.checkBuild({ renderer: b.renderer })).toThrow(/another renderer.*one VDBGridNode per renderer/);
+    expect(code(() => mod.checkBuild({ renderer: b.renderer }))).toBe("VDB_BAD_OPTION");
+    expect(code(() => mod.checkBuild({ renderer: a.renderer }))).toBeUndefined();
+    // generate() checks before it builds anything (the stubbed build would throw "built").
+    mod.vdbPool.build = () => {
+      throw new Error("built");
+    };
+    expect(code(() => mod.generate({ renderer: b.renderer }))).toBe("VDB_BAD_OPTION");
+    expect(code(() => mod.generate({ renderer: a.renderer }))).toBe("not a VDBError: Error: built");
+  });
+
+  it("refuses a second VDB module in one shader; the same node twice is fine", () => {
+    const { renderer, backend } = fakeRenderer();
+    const pool = fakePool(backend.device);
+    const one = moduleOf(new VDBGridNode(renderer, pool));
+    const two = moduleOf(new VDBGridNode(renderer, pool, { name: "vdbPool2" }));
+    const shader = { renderer };
+    one.checkBuild(shader);
+    one.checkBuild(shader); // same module again (another stage, another include)
+    expect(() => two.checkBuild(shader)).toThrow(/two VDB modules.*One VDB module per shader/);
+    expect(code(() => two.checkBuild(shader))).toBe("VDB_BAD_OPTION");
+    expect(code(() => two.checkBuild({ renderer }))).toBeUndefined(); // another shader
+  });
+
+  it("self-tests three's attribute path once per backend before binding the pool", () => {
+    const { renderer, backend, created } = fakeRenderer();
+    const pool = fakePool(backend.device);
+    new VDBGridNode(renderer, pool);
+    expect(created.map((b) => b.label)).toEqual([SELF_TEST_LABEL, "@pmndrs/vdb/three retired stand-in"]);
+    expect(created.every((b) => b.destroyed)).toBe(true); // the dummy is destroyed by the test itself, after it passed
+    new VDBGridNode(renderer, pool);
+    expect(created).toHaveLength(2); // cached per backend
+    new VDBGridNode(fakeRenderer(backend.device).renderer, pool);
+    expect(created.filter((b) => b.label === SELF_TEST_LABEL)).toHaveLength(2); // another backend, another test
+  });
+
+  it("throws VDB_ENGINE_MISMATCH before exposing the pool buffer when three destroys behind the guard", () => {
+    const { renderer, backend, attributes, utils, created } = fakeRenderer();
+    // A three whose Attributes.delete destroys the buffer itself instead of calling backend.destroyAttribute.
+    attributes.delete = (attribute: object) => {
+      utils.destroyAttribute(attribute);
+      return null;
+    };
+    const records: object[] = [];
+    const get = backend.get.bind(backend);
+    backend.get = (object: object) => {
+      records.push(object);
+      return get(object);
+    };
+    const pool = fakePool(backend.device);
+    expect(() => new VDBGridNode(renderer, pool)).toThrow(/destroyed a storage attribute's GPUBuffer without going through backend.destroyAttribute/);
+    expect(code(() => new VDBGridNode(renderer, pool))).toBe("VDB_ENGINE_MISMATCH"); // cached
+    expect(created.filter((b) => b.label === SELF_TEST_LABEL)).toHaveLength(1);
+    // The pool's buffer never reached a backend record, and was not destroyed.
+    expect(records.some((o) => get(o).buffer === pool.buffer)).toBe(false);
+    expect((pool.buffer as unknown as TestBuffer).destroyed).toBe(false);
+  });
+
+  it("throws VDB_ENGINE_MISMATCH when three makes its own buffer for a stand-in", () => {
+    const { renderer, backend } = fakeRenderer();
+    backend.createStorageAttribute = (attribute: object) => {
+      backend.get(attribute).buffer = makeBuffer("three's own") as unknown as GPUBuffer;
+    };
+    expect(() => new VDBGridNode(renderer, fakePool(backend.device))).toThrow(/made its own GPUBuffer/);
+  });
+
+  it("warns once about an unsupported three revision", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      resetThreeRevisionWarning();
+      expect(warnThreeRevision("187")).toBe(false);
+      expect(warnThreeRevision("188")).toBe(true);
+      expect(warnThreeRevision("189")).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/three r188 is outside the supported range \(r187/);
+    } finally {
+      resetThreeRevisionWarning();
+      warn.mockRestore();
+    }
+  });
+
+  it("warns once per backend when the renderer owns its device (renderer.dispose() destroys the pool's buffer)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const own = fakeRenderer(undefined, { parameters: {} });
+      const pool = fakePool(own.device);
+      new VDBGridNode(own.renderer, pool);
+      new VDBGridNode(own.renderer, pool);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/created its own GPUDevice.*renderer.dispose\(\) destroys/);
+      const given = fakeRenderer(undefined, { parameters: { device: {} } });
+      new VDBGridNode(given.renderer, fakePool(given.device));
+      const plain = fakeRenderer(); // no parameters: nothing to tell
+      new VDBGridNode(plain.renderer, fakePool(plain.device));
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -48,7 +48,7 @@ import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
 import type { GridMetadata } from "@pmndrs/vdb/tools";
 import { VDBGridPool } from "@pmndrs/vdb";
 import type { VDBGridInfo } from "@pmndrs/vdb";
-import { VDBGridNode, VDBVolumeMaterial, getDevice, gridStats, vdbProxyGeometry } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbGridStats, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import { WebGPURenderer } from "three/webgpu";
 import { buildFromVdbDetailed, inspect, parseVdb } from "@pmndrs/vdb/tools";
 import type { InspectReport } from "@pmndrs/vdb/tools";
@@ -329,7 +329,7 @@ function cpuHistogramFallback(grid: ExplorerGrid): Uint32Array {
 async function computeHistogram(grid: ExplorerGrid): Promise<{ histogram: Uint32Array; from: "gpu" | "cpu" }> {
   if (renderer && pool && gridId !== undefined) {
     try {
-      const result = await gridStats(renderer, pool, gridId, { histogramBins: HISTOGRAM_BINS });
+      const result = await vdbGridStats(renderer, pool, gridId, { histogramBins: HISTOGRAM_BINS });
       return { histogram: result.histogram, from: "gpu" };
     } catch (err) {
       // Fall through to the CPU sampler below (defensive; gridStats is

@@ -2,12 +2,12 @@
  * Demo 04 — atlas-fallback: the compute toolset end to end (SPEC §3.3/§5;
  * K2.3 port onto the engine-free core + three adapter).
  *
- * `decodeToAtlas` (core compute on a `VDBGridPool`, through the three
+ * `vdbDecodeToAtlas` (core compute on a `VDBGridPool`, through the three
  * wrapper) turns `sphere_fog_fp8.nvdb` into a dense `Data3DTexture`, rendered
  * with three's OWN stock `VolumeNodeMaterial` (not the sparse raymarch) — the
  * mobile/compat fallback path for a GPU that doesn't need (or can't do) the
- * full storage-buffer traversal every fragment. `gridStats` and
- * `valueTransform` run against a second (Float) fixture and are checked
+ * full storage-buffer traversal every fragment. `vdbGridStats` and
+ * `applyValueTransform` run against a second (Float) fixture and are checked
  * against the `tools` CPU twins, publishing verification booleans.
  *
  * ## Atlas sampling: the stock 3D texture (K2.5, DIVERGES V8 closed)
@@ -21,11 +21,11 @@
  *
  * ## Why a second fixture for stats/transform
  *
- * `valueTransform` is Float-only (re-encoding quantized leaves is out of scope)
+ * `applyValueTransform` is Float-only (re-encoding quantized leaves is out of scope)
  * and the atlas fixture (`sphere_fog_fp8`) is Fp8, so `box_fog_float.nvdb` —
  * small (81 x 41 x 61 index bbox, every voxel active, ~200K voxels) —
- * exercises `gridStats` (against `gridStatsCpu` and the sidecar) and
- * `valueTransform` (on the CPU since K2.3, staged with `pool.replace`).
+ * exercises `vdbGridStats` (against `gridStatsCpu` and the sidecar) and
+ * `applyValueTransform` (on the CPU since K2.3, staged with `pool.replace`).
  *
  * ## Presentation & determinism
  *
@@ -42,9 +42,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Fn, texture3D, uniform } from "three/tsl";
 import { VolumeNodeMaterial, WebGPURenderer } from "three/webgpu";
 import type { Node } from "three/webgpu";
-import { VDBGridPool } from "@pmndrs/vdb";
+import { VDBGridPool, applyValueTransform } from "@pmndrs/vdb";
 import { NanoVDBFile, getDim, gridStatsCpu, readValueF32 } from "@pmndrs/vdb/tools";
-import { decodeToAtlas, getDevice, gridStats, valueTransform } from "@pmndrs/vdb/three";
+import { getDevice, vdbDecodeToAtlas, vdbGridStats } from "@pmndrs/vdb/three";
 
 interface Demo04State {
   ready: boolean;
@@ -208,7 +208,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   // gridStats: GPU result vs. the CPU twin (gridStatsCpu) and the sidecar.
   // -------------------------------------------------------------------------
-  const gpuStats = await gridStats(renderer, pool, statsId);
+  const gpuStats = await vdbGridStats(renderer, pool, statsId);
   const cpuStats = gridStatsCpu(statsImage);
   const statsOk =
     gpuStats.activeVoxelCount === sidecar.grid.activeVoxelCount &&
@@ -219,7 +219,7 @@ async function run(): Promise<void> {
     gpuStats.histogram.reduce((a, b) => a + b, 0) === gpuStats.activeVoxelCount;
 
   // -------------------------------------------------------------------------
-  // valueTransform "double" (CPU, staged with pool.replace), then check the
+  // applyValueTransform "double" (CPU, staged with pool.replace), then check the
   // result at up to 50 active sidecar coords. `box_fog_float`'s solid
   // interior is constant LOWER-level tiles even though every bbox voxel is
   // active, so per sample:
@@ -230,7 +230,7 @@ async function run(): Promise<void> {
   // match the twin on the transformed image (the pool wrote it in place).
   // -------------------------------------------------------------------------
   const versionBefore = pool.version;
-  const transformedImage = valueTransform(pool, statsId, statsImage, "double");
+  const transformedImage = applyValueTransform(pool, statsId, statsImage, "double");
   pool.flush();
   const activeSamples = sidecar.samples.filter((s) => s.active).slice(0, MAX_TRANSFORM_SAMPLES);
   let sawLeaf = false;
@@ -246,14 +246,14 @@ async function run(): Promise<void> {
   }
   // A vacuously-true result (no leaf samples, nothing exercised) doesn't count.
   if (!sawLeaf) transformOk = false;
-  const transformedStats = await gridStats(renderer, pool, statsId);
+  const transformedStats = await vdbGridStats(renderer, pool, statsId);
   if (transformedStats.max !== gridStatsCpu(transformedImage).max) transformOk = false;
 
   // -------------------------------------------------------------------------
   // decodeToAtlas -> VolumeNodeMaterial (the fallback path). The wrapper
   // returns the bytes and a ready `Data3DTexture` (RedFormat, uint8, linear).
   // -------------------------------------------------------------------------
-  const atlas = await decodeToAtlas(renderer, pool, atlasId, {
+  const atlas = await vdbDecodeToAtlas(renderer, pool, atlasId, {
     maxDim: ATLAS_MAX_DIM,
     filter: ATLAS_FILTER,
     format: ATLAS_FORMAT,

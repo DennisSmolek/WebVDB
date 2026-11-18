@@ -6,7 +6,13 @@
  * `VDBGridPool` into three's node system (`vdbSample`, `vdbReadValue`, or the
  * module as a `wgslFn` include). `VDBVolumeMaterial` raymarches one pooled
  * grid; `VDBSequence` plays a frame sequence into one pool id with
- * `pool.replace`.
+ * `pool.replace`. `vdbGridStats` / `vdbDecodeToAtlas` run the core compute
+ * tools through the renderer's device.
+ *
+ * There is no renderer bootstrap: create the device yourself
+ * (`adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) })`)
+ * and pass it, `new WebGPURenderer({ device })`, so the pool outlives
+ * `renderer.dispose()`.
  */
 
 // K2.1/K2.2: the adapter over the engine-free core (docs/design/K1-core.md §6).
@@ -23,7 +29,7 @@ export {
   VDB_VOLUME_SHADOW_STEPS_CAP,
   VDB_VOLUME_SAMPLE_BUDGET_CAP,
 } from "./material.js";
-export type { VDBVolumeMaterialParameters, VDBProxyGridInfo } from "./material.js";
+export type { VDBVolumeMaterialParameters, VDBProxyGridInfo, VDBUintUniform } from "./material.js";
 export { VDBSequence } from "./sequence.js";
 export type {
   VDBSequenceOptions,
@@ -33,10 +39,8 @@ export type {
   VDBFrameLoader,
 } from "./sequence.js";
 
-// Convenience bootstrap (a renderer on a device the caller's code creates; D8 allows it in an adapter).
-export { createVolumeRenderer, computeRequiredLimits, nextPow2 } from "./renderer.js";
-export type { VolumeRendererOptions, CapabilityReport, RequiredLimits } from "./renderer.js";
-
-// K2.3: compute wrappers over the core tools (renderer in, promise out).
-export { gridStats, decodeToAtlas, valueTransform } from "./compute.js";
-export type { GridStatsOptions, GridStatsResult, DecodeToAtlasOptions, DecodeToAtlasResult } from "./compute.js";
+// K2.3: compute wrappers over the core tools (renderer in, promise out). The
+// core's `gridStats` / `decodeToAtlas` take a device and an encoder; the value
+// transform is the core's `applyValueTransform` (CPU).
+export { vdbGridStats, vdbDecodeToAtlas } from "./compute.js";
+export type { VDBThreeGridStatsOptions, VDBGridStatsResult, VDBThreeDecodeToAtlasOptions, VDBDecodeToAtlasResult } from "./compute.js";

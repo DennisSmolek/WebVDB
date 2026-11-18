@@ -74,8 +74,19 @@ From v1; details in docs/handoffs/.
   and lower stats stay f32. Use the fork's `*_get_*_float` readers or `tools` `nodeStats`.
 - One VDB module per shader: generated symbols are declared once, so two modules (two profiles or two pools) in
   one shader redeclare everything. Generate the largest profile you need; several grids share one module by id.
+  `VDBGridNode` throws `VDB_BAD_OPTION` at shader build for a second module (raw WGSL hosts still get the WGSL
+  redeclaration error).
+- A `VDBGridNode` belongs to one renderer: the stand-in's buffer is set in that renderer's backend record, so a
+  second renderer (even on the same device) would make its own empty buffer and read 0. It throws `VDB_BAD_OPTION`
+  at shader build; make one node per renderer.
+- Core compute tools with a host `encoder`: submit, then `job.submitted().read()`. `read()` before `submitted()`
+  rejects; mapping before the submit would fail the submit ("used in submit while destroyed").
 - A `WebGPURenderer` built without `{ device }` destroys its own device in `renderer.dispose()`, and every
-  pool buffer on it. Create the device yourself and pass it when a pool must outlive the renderer.
+  pool buffer on it. Create the device yourself and pass it when a pool must outlive the renderer (`VDBGridNode`
+  warns once per such renderer). The package has no renderer bootstrap; demos use
+  `examples/src/demos/device-renderer.ts`.
+- `VDBGridNode`'s first construction on a backend makes a 4-byte "@pmndrs/vdb/three self-test" buffer and a
+  "retired stand-in" throwaway (both destroyed). Tests that count buffers on a fake device must skip those two.
 - `@types/three` r187's `Backend` doesn't declare `get`: type renderers structurally as `{ backend: object }`
   and check the internals at runtime (`three/device.ts`), or a real `WebGPURenderer` won't type-check.
 - Node stats bound ACTIVE values only. A trilinear sample reads one voxel past its cell, so the cell's own max

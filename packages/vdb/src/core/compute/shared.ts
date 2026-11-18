@@ -189,14 +189,37 @@ export function workgroups(size: readonly [number, number, number]): [number, nu
  * Pending GPU work with a CPU result. Created by `gridStats` / `decodeToAtlas`
  * after their passes are recorded.
  *
- * Call {@link read} after the encoder holding the work was submitted (when
- * the tool created its own encoder, it already was). `read()` maps the
- * readback, frees every buffer the tool allocated and resolves with the
- * result; keep it outside timed regions. Call {@link dispose} instead to drop
- * the work without reading it (after its submit, or with the encoder
- * discarded).
+ * Order of calls:
+ * - **No `encoder` option** (the tool created and submitted its own): call
+ *   {@link read} at any time.
+ * - **Host `encoder`**: the work sits in the host's encoder until the host
+ *   submits it. Submit, then call {@link submitted}, then {@link read}:
+ *
+ *       const job = gridStats(device, pool, id, { encoder });
+ *       device.queue.submit([encoder.finish()]);
+ *       const stats = await job.submitted().read();
+ *
+ *   `read()` before `submitted()` rejects with `VDB_BAD_OPTION` and touches
+ *   nothing: mapping (or freeing) the tool's buffers before the submit would
+ *   make that submit fail validation ("used in submit while destroyed" /
+ *   "mapped").
+ *
+ * `read()` maps the readback, frees every buffer the tool allocated and
+ * resolves with the result; keep it outside timed regions. Call
+ * {@link dispose} instead to drop the work without reading it (after its
+ * submit, or with the encoder discarded).
  */
 export interface VDBReadback<T> {
+  /**
+   * Tells the job the host submitted the encoder it recorded into; returns
+   * the job (`job.submitted().read()`). A no-op for work the tool submitted
+   * itself.
+   */
+  submitted(): this;
+  /**
+   * Maps the result and frees the tool's buffers. With a host `encoder`,
+   * call {@link submitted} first (else rejects with `VDB_BAD_OPTION`).
+   */
   read(): Promise<T>;
   dispose(): void;
 }
@@ -210,6 +233,8 @@ export class ComputeJob<T> implements VDBReadback<T> {
   readonly #where: string;
   #result: Promise<T> | null = null;
   #disposed = false;
+  /** False until the host says it submitted its encoder; true when the tool submitted its own. */
+  #submitted: boolean;
 
   constructor(
     where: string,
@@ -217,17 +242,33 @@ export class ComputeJob<T> implements VDBReadback<T> {
     staging: GPUBuffer | null,
     error: Promise<GPUError | null>,
     finish: (bytes: ArrayBuffer) => T,
+    selfSubmitted = true,
   ) {
     this.#where = where;
     this.#owned = owned;
     this.#staging = staging;
     this.#error = error;
     this.#finish = finish;
+    this.#submitted = selfSubmitted;
+  }
+
+  submitted(): this {
+    this.#submitted = true;
+    return this;
   }
 
   read(): Promise<T> {
     if (this.#result) return this.#result;
     if (this.#disposed) return Promise.reject(new VDBError("VDB_DISPOSED", `${this.#where}: this result was disposed before read().`));
+    if (!this.#submitted) {
+      return Promise.reject(
+        new VDBError(
+          "VDB_BAD_OPTION",
+          `${this.#where}: read() before the host submitted its encoder. The work was recorded into your encoder: ` +
+            "device.queue.submit([encoder.finish()]), then job.submitted().read(). (Nothing was mapped or freed.)",
+        ),
+      );
+    }
     this.#result = this.#read();
     return this.#result;
   }
@@ -257,10 +298,14 @@ export class ComputeJob<T> implements VDBReadback<T> {
 }
 
 /** Creates an encoder when the host gave none; `submit` submits it only then. */
-export function hostEncoder(device: GPUDevice, given: GPUCommandEncoder | undefined, label: string): { encoder: GPUCommandEncoder; submit(): void } {
-  if (given) return { encoder: given, submit() {} };
+export function hostEncoder(
+  device: GPUDevice,
+  given: GPUCommandEncoder | undefined,
+  label: string,
+): { encoder: GPUCommandEncoder; submit(): void; readonly selfSubmitted: boolean } {
+  if (given) return { encoder: given, submit() {}, selfSubmitted: false };
   const encoder = device.createCommandEncoder({ label });
-  return { encoder, submit: () => device.queue.submit([encoder.finish()]) };
+  return { encoder, submit: () => device.queue.submit([encoder.finish()]), selfSubmitted: true };
 }
 
 export { MAP_MODE_READ };

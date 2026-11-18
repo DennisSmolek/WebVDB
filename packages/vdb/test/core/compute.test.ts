@@ -91,9 +91,54 @@ describe("gridStats", () => {
     const copies = (encoder as unknown as { copies: { size: number }[] }).copies;
     expect(copies.slice(-2).map((c) => c.size)).toEqual([8 * 8 * 8 * 4, 8 * 8 * 8 * 4]);
     device.queue.submit([encoder.finish()]);
-    const r = await job.read();
+    const r = await job.submitted().read();
     expect(r.usedAtomicFastPath).toBe(false);
     expect(r.activeVoxelCount).toBe(0);
+  });
+
+  it("with a host encoder, read() before submitted() rejects and maps or frees nothing", async () => {
+    const id = pool.add(makeImage({ gridType: 1 }));
+    pool.flush();
+    const before = new Set(fake.buffers);
+    const encoder = device.createCommandEncoder();
+    const job = gridStats(device, pool, id, { encoder });
+    const mine = fake.buffers.filter((b) => !before.has(b));
+    let mapped = 0;
+    for (const b of mine) {
+      const map = b.mapAsync.bind(b);
+      b.mapAsync = (...args: Parameters<FakeBuffer["mapAsync"]>) => (mapped++, map(...args));
+    }
+    await expect(job.read()).rejects.toMatchObject({ code: "VDB_BAD_OPTION", message: expect.stringMatching(/submit.*job.submitted\(\).read\(\)/) });
+    expect(mapped).toBe(0);
+    expect(mine.some((b) => b.destroyed)).toBe(false); // the host's submit can still use them
+    device.queue.submit([encoder.finish()]);
+    expect(job.submitted()).toBe(job);
+    const r = await job.read();
+    expect(r.histogram).toHaveLength(256);
+    expect(mapped).toBe(1);
+    expect(mine.every((b) => b.destroyed)).toBe(true);
+    // Same contract on decodeToAtlas; without an encoder, read() needs no submitted().
+    const atlasEncoder = device.createCommandEncoder();
+    const atlas = decodeToAtlas(device, pool, id, { encoder: atlasEncoder });
+    await expect(atlas.read()).rejects.toMatchObject({ code: "VDB_BAD_OPTION" });
+    device.queue.submit([atlasEncoder.finish()]);
+    expect((await atlas.submitted().read()).dims).toEqual(atlas.dims);
+    expect((await decodeToAtlas(device, pool, id).read()).dims).toEqual(atlas.dims);
+  });
+
+  it("dump path: refuses a bbox over the device's binding / buffer limits before making any buffer", () => {
+    const id = pool.add(makeImage({ gridType: 1, rootMin: -1, rootMax: 1, bboxMin: [0, 0, 0], bboxMax: [63, 63, 63] }));
+    pool.flush();
+    const limits = fake.limits as { maxStorageBufferBindingSize: number; maxBufferSize: number };
+    const made = fake.buffers.length;
+    limits.maxStorageBufferBindingSize = 512 << 10; // each output is 64^3 * 4 = 1 MiB
+    expectCode(() => gridStats(device, pool, id), "VDB_BAD_OPTION", /dump path.*262144 voxels.*maxStorageBufferBindingSize 524288.*gridStatsCpu/);
+    limits.maxStorageBufferBindingSize = 128 << 20;
+    limits.maxBufferSize = 1536 << 10; // the 2 MiB readback does not fit
+    expectCode(() => gridStats(device, pool, id), "VDB_BAD_OPTION", /2097152 B of readback/);
+    expect(fake.buffers.length).toBe(made);
+    limits.maxBufferSize = 256 << 20;
+    expect(() => gridStats(device, pool, id).dispose()).not.toThrow();
   });
 
   it("dispose() frees the buffers and makes read() reject", async () => {

@@ -36,6 +36,19 @@
  * The grid is a `uint` uniform too when the constructor got a number
  * (`material.gridId.value = otherId`), so one material can show any grid of
  * the types its `VDBGridNode` compiles without a rebuild.
+ *
+ * Units and assumptions:
+ * - The march runs in the grid's **index space**: `stepSize` is in index
+ *   voxels, and `densityScale` integrates per index voxel. Opacity therefore
+ *   does not change with the world size of the grid: `pool.setTransform` (or
+ *   a NanoVDB map) that scales the grid scales its footprint, not how opaque
+ *   it looks.
+ * - The proxy mesh is not tied to the grid: after `material.gridId.value = id`
+ *   or `pool.setTransform(id, ...)`, build a new `vdbProxyGeometry(pool.info(id))`
+ *   for the mesh, or fragments outside the old box are never rasterized.
+ * - The view ray is `positionWorld - cameraPosition`: a perspective camera.
+ *   An orthographic camera's rays are parallel and do not start at
+ *   `cameraPosition`, so it renders wrongly.
  */
 
 import * as THREE from "three";
@@ -97,6 +110,8 @@ const DEFAULTS = {
 type ScalarUniform = ReturnType<typeof uniform> & { value: number };
 type Vec3Uniform = ReturnType<typeof uniform> & { value: THREE.Vector3 };
 type ColorUniform = ReturnType<typeof uniform> & { value: THREE.Color };
+/** The `uint` uniform `VDBVolumeMaterial` makes for a numeric grid id (`material.gridId.value = otherId`). */
+export type VDBUintUniform = ReturnType<typeof uniform> & { value: number };
 
 /** Entry name of the march `wgslFn`. */
 const ENTRY = "vdbThreeVolumeMarch";
@@ -147,6 +162,7 @@ function marchWgsl(maxStepsCap: number, shadowStepsCap: number, sampleBudgetCap:
     if !vdbRayClipSupport(grid_id, o_idx, d_idx, &span) {
         return vec4f(0.0);
     }
+    // t0 >= 0: no sample behind the eye (camera inside the support box).
     let t0 = max(span.x, 0.0);
     let t1 = span.y;
 
@@ -166,6 +182,12 @@ function marchWgsl(maxStepsCap: number, shadowStepsCap: number, sampleBudgetCap:
         t = anchor - ceil((anchor - t0) / step_size) * step_size;
     }
     t += step_size * jitter * vdbThreeHash12(pix);
+    // The lattice can start before t0 (the anchor is stepped back in whole
+    // steps, plus jitter). Skip those steps on the lattice: they are behind the
+    // eye (camera in the support shell) or outside the support box.
+    if t < t0 {
+        t += ceil((t0 - t) / step_size) * step_size;
+    }
     var transmittance = 1.0;
     var color = vec3f(0.0);
     let max_i = i32(clamp(max_steps, 1.0, ${maxStepsCap}.0));
@@ -213,45 +235,84 @@ function positiveInt(name: string, value: number | undefined, fallback: number):
   return v;
 }
 
-export class VDBVolumeMaterial extends NodeMaterial {
+/**
+ * A fragment raymarch of one grid of a `VDBGridPool` (see the file comment for
+ * the march). Put it on a `vdbProxyGeometry(pool.info(id))` mesh; each frame
+ * run `pool.update(encoder)` (or `pool.flush()`), then `grids.update()`, then
+ * render.
+ *
+ *   const grids = new VDBGridNode(renderer, pool, { helpers: ['rayClipSupport'] });
+ *   const material = new VDBVolumeMaterial(renderer, grids, id, { densityScale: 40 });
+ *   const mesh = new Mesh(vdbProxyGeometry(pool.info(id)), material);
+ *
+ * - `stepSize` is in index voxels and `densityScale` integrates per index
+ *   voxel, so opacity ignores the grid's world scale (`setTransform` scaling
+ *   changes the size on screen, not the opacity).
+ * - After `gridId.value = otherId` or `pool.setTransform(id, ...)`, give the
+ *   mesh a new `vdbProxyGeometry(pool.info(id))`.
+ * - Perspective cameras only (the ray starts at `cameraPosition`).
+ * - The material must be rendered by the renderer `grids` was made with.
+ *
+ * @typeParam TGridId What the constructor got as the id: a number (default)
+ *   makes {@link gridId} a `uint` uniform; a node is kept as given.
+ */
+export class VDBVolumeMaterial<TGridId extends number | VDBTslNode = number> extends NodeMaterial {
   readonly isVDBVolumeMaterial = true;
 
   /** The pool node this material reads (its `module` is the march's include). */
   readonly grids: VDBGridNode;
   /**
    * The grid id: a `uint` uniform when the constructor got a number
-   * (`material.gridId.value = otherId`), else the caller's node.
+   * (`material.gridId.value = otherId`; then give the mesh a new
+   * `vdbProxyGeometry`), else the caller's node.
    */
-  readonly gridId: VDBTslNode;
+  readonly gridId: TGridId extends number ? VDBUintUniform : VDBTslNode;
   /** The entry `fn` text (for inspection and tests). */
   readonly entrySource: string;
 
+  /** Extinction per index voxel at density 1 (opacity of a step: `1 - exp(-density * densityScale * stepSize)`). Default 40. */
   readonly densityScale: ScalarUniform;
+  /** March step in index voxels (live; the lattice re-anchors per fragment). Default 0.75. */
   readonly stepSize: ScalarUniform;
+  /** Primary march steps, clamped to `[1, maxStepsCap]`. Default 512. */
   readonly maxSteps: ScalarUniform;
+  /** Direction toward the sun, world space (normalized at construction; keep it normalized). */
   readonly sunDirection: Vec3Uniform;
+  /** Sun colour (linear). Default (1, 0.95, 0.9). */
   readonly sunColor: ColorUniform;
+  /** Sun intensity. Default 3. */
   readonly sunIntensity: ScalarUniform;
+  /** Henyey-Greenstein anisotropy g in (-1, 1). Default 0.3. */
   readonly anisotropy: ScalarUniform;
+  /** Shadow-ray steps toward the sun per lit sample, clamped to `[0, shadowStepsCap]`. Default 12. */
   readonly shadowSteps: ScalarUniform;
+  /** Density multiplier along the shadow ray only. Default 1. */
   readonly shadowDensity: ScalarUniform;
+  /** Constant ambient term added to the sun light. Default 0.15. */
   readonly ambient: ScalarUniform;
-  /** 1 = jitter on, 0 = off. */
+  /** 1 = per-pixel jitter of the first sample on, 0 = off. */
   readonly jitter: ScalarUniform;
 
   /**
    * @param renderer The initialized `WebGPURenderer` the pool and `grids` live on.
-   * @param grids A `VDBGridNode` with profile `sample` or `march` and
-   *   `helpers: ['rayClipSupport']`. Share one per pool: one module per shader.
+   * @param grids A `VDBGridNode` made on this same renderer, with profile
+   *   `sample` or `march` and `helpers: ['rayClipSupport']`. Share one per
+   *   pool: one module per shader.
    * @param gridId The grid's pool id (a number, made a `uint` uniform) or a `uint` node.
-   * @throws VDBError `VDB_BAD_OPTION` for a `grids` this material can't use, a
-   *   bad id or cap; `VDB_UNSUPPORTED_DEVICE` for an uninitialized renderer.
+   * @throws VDBError `VDB_BAD_OPTION` for a `grids` this material can't use
+   *   (another renderer, profile, helpers), a bad id or cap;
+   *   `VDB_UNSUPPORTED_DEVICE` for an uninitialized renderer.
    */
-  constructor(renderer: ThreeRendererLike, grids: VDBGridNode, gridId: number | VDBTslNode, params: VDBVolumeMaterialParameters = {}) {
+  constructor(renderer: ThreeRendererLike, grids: VDBGridNode, gridId: TGridId, params: VDBVolumeMaterialParameters = {}) {
     super();
     if (!(grids instanceof VDBGridNode)) throw bad("grids must be a VDBGridNode.");
-    if (getDevice(renderer) !== grids.pool.device) {
-      throw bad("grids was made for a pool on another GPUDevice than this renderer's.");
+    getDevice(renderer); // VDB_UNSUPPORTED_DEVICE before init
+    if (grids.renderer !== renderer) {
+      throw bad(
+        "grids was made for another renderer. A VDBGridNode binds the pool through the renderer it was made with " +
+          "(another renderer, even on the same GPUDevice, would read 0): create one VDBGridNode per renderer " +
+          "(new VDBGridNode(renderer, pool, { helpers: ['rayClipSupport'] })).",
+      );
     }
     if (grids.options.profile === "read") {
       throw bad("grids needs profile 'sample' or 'march' (vdbSample); this VDBGridNode was made with profile 'read'.");
@@ -269,7 +330,7 @@ export class VDBVolumeMaterial extends NodeMaterial {
     const sampleBudgetCap = positiveInt("sampleBudgetCap", params.sampleBudgetCap, VDB_VOLUME_SAMPLE_BUDGET_CAP);
 
     this.grids = grids;
-    this.gridId = typeof gridId === "number" ? uniform(gridId, "uint") : gridId;
+    this.gridId = (typeof gridId === "number" ? uniform(gridId, "uint") : gridId) as this["gridId"];
     this.entrySource = marchWgsl(maxStepsCap, shadowStepsCap, sampleBudgetCap);
 
     this.densityScale = uniform(params.densityScale ?? DEFAULTS.densityScale) as ScalarUniform;

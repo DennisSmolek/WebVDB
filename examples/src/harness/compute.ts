@@ -55,6 +55,8 @@ interface TransformCheck {
 }
 
 interface ComputeReport {
+  /** A host-encoder job read before the submit: the rejection code, the submit's validation error, the read after `submitted()`. */
+  readBeforeSubmit?: { earlyRead: string; submitValidation: string | null; readAfterSubmittedOk: boolean };
   done: boolean;
   error?: string;
   missing?: string[];
@@ -142,6 +144,7 @@ async function run(): Promise<ComputeReport> {
       pool.update(encoder);
       job = gridStats(device, pool, ids[k]!, { histogramBins, encoder });
       device.queue.submit([encoder.finish()]);
+      job.submitted();
     } else {
       pool.flush();
       job = gridStats(device, pool, ids[k]!, { histogramBins });
@@ -181,6 +184,7 @@ async function run(): Promise<ComputeReport> {
         const encoder = device.createCommandEncoder();
         job = decodeToAtlas(device, pool, ids[k]!, { ...options, encoder });
         device.queue.submit([encoder.finish()]);
+        job.submitted();
       } else {
         job = decodeToAtlas(device, pool, ids[k]!, options);
       }
@@ -214,6 +218,26 @@ async function run(): Promise<ComputeReport> {
       () => false,
       () => true,
     );
+  }
+
+  // Host encoder: read() before the host's submit must reject and touch nothing
+  // (mapping the staging buffer first would fail that submit's validation).
+  {
+    const encoder = device.createCommandEncoder();
+    const job = gridStats(device, pool, ids[0]!, { encoder });
+    const early = await job.read().then(
+      () => "resolved",
+      (e: unknown) => (e as { code?: string }).code ?? String(e),
+    );
+    device.pushErrorScope("validation");
+    device.queue.submit([encoder.finish()]);
+    const submitError = await device.popErrorScope();
+    const stats = await job.submitted().read();
+    report.readBeforeSubmit = {
+      earlyRead: early,
+      submitValidation: submitError ? submitError.message : null,
+      readAfterSubmittedOk: stats.activeVoxelCount === gridStatsCpu(images[0]!).activeVoxelCount,
+    };
   }
 
   // applyValueTransform on box Float: leaf values double, tiles stay, in place.

@@ -45,7 +45,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
-import { VDBGridNode, VDBVolumeMaterial, createVolumeRenderer, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
+import { createDeviceRenderer } from "../device-renderer.js";
 import type { WebGPURenderer } from "three/webgpu";
 import { buildFromDenseDetailed, quantize, writeNvdb } from "@pmndrs/vdb/tools";
 import type { BuiltGrid, GridMetadata } from "@pmndrs/vdb/tools";
@@ -230,7 +231,7 @@ let downloadUrl: string | undefined;
 
 async function initRenderer(): Promise<void> {
   const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
-  ({ renderer } = await createVolumeRenderer(directCanvas ? { canvas: directCanvas } : {}));
+  ({ renderer } = await createDeviceRenderer(directCanvas ? { canvas: directCanvas } : {}));
   pool = await VDBGridPool.create(getDevice(renderer), { label: "demo 07 pool" });
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x14101f);

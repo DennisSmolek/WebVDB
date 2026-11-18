@@ -26,7 +26,8 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { NanoVDBFile } from "@pmndrs/vdb/tools";
-import { VDBGridNode, VDBVolumeMaterial, createVolumeRenderer, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
+import { createDeviceRenderer } from "../device-renderer.js";
 import type { WebGPURenderer } from "three/webgpu";
 
 interface Demo02State {
@@ -161,16 +162,12 @@ async function run(): Promise<void> {
   // deterministic SwiftShader runs retain the readback path.
   let renderer: WebGPURenderer;
   let adapter = "unreported adapter";
-  const created = await createVolumeRenderer({
-    gridBytes: image.byteLength,
+  const created = await createDeviceRenderer({
     ...(directCanvas ? { canvas: directCanvas } : {}),
     trackTimestamp: PERF_MODE,
   });
   renderer = created.renderer;
-  if (created.report.adapterInfo)
-    adapter = [created.report.adapterInfo.vendor, created.report.adapterInfo.architecture]
-      .filter(Boolean)
-      .join(" ");
+  if (created.adapterName) adapter = created.adapterName;
 
   const display = directCanvas ?? document.createElement("canvas");
   display.id = "view";
@@ -290,7 +287,7 @@ async function run(): Promise<void> {
     setViewport(1920, 1080);
     placeCamera(Math.PI * 0.25, Math.PI * 0.18, 1.8);
 
-    const timestampQuery = created.report.grantedFeatures.includes("timestamp-query");
+    const timestampQuery = created.features.includes("timestamp-query");
     const measure = async (frameCount: number): Promise<{ fps: number; frameMs: number; gpuMs?: number }> => {
       const started = performance.now();
       for (let frame = 0; frame < frameCount; frame++) await presentFrame();

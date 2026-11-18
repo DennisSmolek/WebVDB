@@ -4,10 +4,21 @@
  * `three/compute.ts`). CPU twin: `decodeToAtlasCpu` + `atlasFromRaw` in
  * `@pmndrs/vdb/tools`.
  *
- * One thread per output voxel samples the index bbox at the cell centre
- * `min + (i + 0.5) / dims * size` with `vdbReadValue(floor(p + 0.5))`
+ * One thread per output voxel samples the index bbox at
+ * `p = min + (i + 0.5) / dims * size` with `vdbReadValue(floor(p + 0.5))`
  * (`'nearest'`) or `vdbSample` (`'trilinear'`, the vendored trilinear,
- * `outside: 'background'`). The GPU writes raw f32; normalizing and
+ * `outside: 'background'`).
+ *
+ * **Half-voxel convention (v1's, kept for parity).** NanoVDB voxel centres
+ * sit at integer index coordinates, but `p` treats the bbox as cells
+ * `[min, max + 1)` with centres at `+ 0.5`, so every sample is half a voxel
+ * past a voxel centre: at full resolution (`dims == size`), `p = min + i +
+ * 0.5`, `'nearest'` reads voxel `min + i + 1` (rounding up) and
+ * `'trilinear'` averages voxels `min + i` and `min + i + 1` on each axis. The
+ * atlas is therefore shifted by +0.5 voxel against a voxel-centred one;
+ * sample it as a texture over the cell box `[min, max + 1]` and it lines up
+ * with v1. Moving to voxel centres (`min - 0.5 + ...`) is TASKS K2.6. The GPU
+ * writes raw f32; normalizing and
  * quantizing to `uint8` happen on the CPU after readback, exactly as in v1,
  * so `read()` returns v1's bytes.
  *
@@ -76,7 +87,11 @@ export interface VDBDecodeToAtlasOptions {
   normalize?: boolean;
   /** Normalization range. Default: the grid's root min/max statistics (`pool.info(id).rootMin/rootMax`). */
   range?: { min: number; max: number };
-  /** Record into this encoder (the host submits it, then calls `read()`). Omitted: the tool submits its own. */
+  /**
+   * Record into this encoder. The host submits it, then calls
+   * `job.submitted().read()` (`read()` before `submitted()` rejects with
+   * `VDB_BAD_OPTION`). Omitted: the tool submits its own.
+   */
   encoder?: GPUCommandEncoder;
   /** `false`: no readback; keep `buffer` for GPU use and `dispose()` it. Default `true`. */
   readback?: boolean;
@@ -116,7 +131,9 @@ function checkAtlasOptions(o: VDBDecodeToAtlasOptions): void {
 
 /**
  * Records the decode of grid `gridId` of `pool` and returns a
- * {@link VDBAtlasReadback}: `const { data, dims } = await decodeToAtlas(device, pool, id).read()`.
+ * {@link VDBAtlasReadback}: `const { data, dims } = await decodeToAtlas(device, pool, id).read()`
+ * (with a host encoder: submit it, then `await job.submitted().read()`).
+ * Samples sit half a voxel past the voxel centres (see the file comment).
  *
  * The grid must be resident and the pool must live on `device` (as for
  * `gridStats`). The tool frees only its own parameter, output and readback
@@ -159,7 +176,7 @@ export function decodeToAtlas(device: GPUDevice, pool: VDBGridPool, gridId: numb
   host.submit();
 
   const finish = (raw: ArrayBuffer): VDBAtlas => ({ data: atlasFromRaw(new Float32Array(raw), { format, normalize, range }), dims: [...dims], range });
-  return new AtlasJob([params, out], staging, cached.error, finish, dims, range, out);
+  return new AtlasJob([params, out], staging, cached.error, finish, dims, range, out, host.selfSubmitted);
 }
 
 class AtlasJob extends ComputeJob<VDBAtlas> implements VDBAtlasReadback {
@@ -171,7 +188,8 @@ class AtlasJob extends ComputeJob<VDBAtlas> implements VDBAtlasReadback {
     readonly dims: [number, number, number],
     readonly range: { min: number; max: number },
     readonly buffer: GPUBuffer,
+    selfSubmitted: boolean,
   ) {
-    super(WHERE, owned, staging, error, finish);
+    super(WHERE, owned, staging, error, finish, selfSubmitted);
   }
 }

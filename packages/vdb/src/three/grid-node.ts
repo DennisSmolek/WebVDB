@@ -45,9 +45,18 @@
  * destroys it. (A renderer that created its own device still destroys that
  * device in `renderer.dispose()`; see `device.ts`.)
  *
+ * **One renderer, one module per shader.** A `VDBGridNode` binds through one
+ * renderer's backend: build a second node for a second renderer (even on the
+ * same device). A shader holds at most one VDB module, so every grid one
+ * shader reads goes through one `VDBGridNode`. Both are checked when three
+ * builds a shader (`VDB_BAD_OPTION`).
+ *
  * This file reaches into three's WebGPU backend, which is not public API. It
  * is written against three r187 (peer range >=0.187.0 <0.188.0, D23), and
- * every internal it uses is listed in `threeInternals` and checked loudly.
+ * every internal it uses is listed in `threeInternals` and checked loudly:
+ * another three revision warns once, and the first `VDBGridNode` on a backend
+ * runs a self-test of the disposal path before any pool buffer reaches three
+ * (`VDB_ENGINE_MISMATCH` if three would destroy a buffer behind the guard).
  */
 
 import { CodeNode, REVISION, StorageBufferAttribute, type Node, type NodeBuilder } from "three/webgpu";
@@ -90,12 +99,14 @@ export interface VDBGridNodeOptions {
 /** The parts of three's `WebGPURenderer` this file uses (see {@link threeInternals}). */
 interface RendererLike {
   readonly backend: BackendLike;
-  readonly _attributes?: { has(attribute: object): boolean };
+  readonly _attributes?: { has(attribute: object): boolean; update(attribute: object, type: number): void };
 }
 
 interface BackendLike {
   readonly isWebGPUBackend?: boolean;
   readonly device?: GPUDevice | null;
+  /** The renderer's constructor parameters; `device` is undefined when the renderer made its own device. */
+  readonly parameters?: { readonly device?: GPUDevice };
   get(object: object): Record<string, unknown> & { buffer?: GPUBuffer };
   destroyAttribute?(attribute: object): void;
 }
@@ -119,6 +130,41 @@ const unsupported = (what: string): VDBError =>
 
 /** Stand-ins per backend whose buffer is a pool's: `destroyAttribute` swaps in a throwaway for them. */
 const guarded = new WeakMap<BackendLike, WeakSet<object>>();
+/** Self-test result per backend: true, or the error every later construction rethrows. */
+const selfTested = new WeakMap<BackendLike, true | VDBError>();
+/** Backends already warned about owning their device. */
+const ownDeviceWarned = new WeakSet<BackendLike>();
+/** The VDB module each shader build has generated (one per shader). */
+const moduleOfBuild = new WeakMap<object, VDBModuleNode>();
+
+/** three r187's `AttributeType.STORAGE` (`renderers/common/Constants.js`; not exported from `three/webgpu`). */
+const ATTRIBUTE_TYPE_STORAGE = 3;
+/** The three revision this adapter is written against. */
+export const VDB_THREE_REVISION = "187";
+/** Label of the self-test buffer (4 bytes, once per backend). */
+export const VDB_THREE_SELF_TEST_LABEL = "@pmndrs/vdb/three self-test";
+
+let revisionWarned = false;
+
+/**
+ * @internal Warns once per page when `revision` is not the three revision this
+ * adapter is written against. Returns true when it warned.
+ */
+export function warnThreeRevision(revision: string): boolean {
+  if (revision === VDB_THREE_REVISION || revisionWarned) return false;
+  revisionWarned = true;
+  console.warn(
+    `@pmndrs/vdb/three: three r${revision} is outside the supported range (r${VDB_THREE_REVISION}; peer >=0.187.0 <0.188.0). ` +
+      "VDBGridNode binds the pool's buffer through three's WebGPU backend internals; it self-tests them and throws " +
+      "VDB_ENGINE_MISMATCH when they differ, but other internals may have changed too.",
+  );
+  return true;
+}
+
+/** @internal Resets the once-per-page revision warning (tests). */
+export function resetThreeRevisionWarning(): void {
+  revisionWarned = false;
+}
 
 /**
  * Every three internal VDBGridNode relies on, checked against three r187's source:
@@ -134,14 +180,72 @@ const guarded = new WeakMap<BackendLike, WeakSet<object>>();
  * 3. `renderer._attributes.has(attribute)` is true once three used the attribute.
  * 4. `Bindings` rebuilds a storage binding's bind group when the storage node's
  *    value (`NodeStorageBuffer.attribute`) is a different attribute.
+ * 5. `renderer._attributes.update(attribute, AttributeType.STORAGE)` is how
+ *    three first uses a storage attribute (`createStorageAttribute`, which
+ *    keeps a buffer already in the record), and registers the attribute's
+ *    `dispose` event to `Attributes.delete`.
+ * 6. `NodeBuilder.renderer` is the renderer building the shader.
  *
- * The constructor checks 2 and 3 exist; `update()` checks 1 for every stand-in
- * three used (its buffer is still the pool's, and three made no other).
+ * The constructor checks 2, 3 and 5 exist, then (once per backend) runs
+ * {@link threeInternals.selfTest}: a 4-byte buffer goes through 1, 5 and 2
+ * as a stand-in would, and must come out undestroyed. `update()` checks 1 for
+ * every stand-in three used (its buffer is still the pool's, and three made
+ * no other). The module node checks 6 per shader.
  */
 const threeInternals = {
   check(renderer: RendererLike): void {
     if (typeof renderer.backend.destroyAttribute !== "function") throw unsupported("has no backend.destroyAttribute");
-    if (typeof renderer._attributes?.has !== "function") throw unsupported("has no renderer._attributes");
+    if (typeof renderer._attributes?.has !== "function" || typeof renderer._attributes.update !== "function") {
+      throw unsupported("has no renderer._attributes (has/update)");
+    }
+  },
+  /**
+   * Puts a 4-byte buffer through three's attribute path exactly as a stand-in
+   * goes (bind, guard, `_attributes.update(attr, STORAGE)`, `attr.dispose()`)
+   * and checks three took it as made and never destroyed it. Its instance
+   * `destroy` only records the call until the test ends. Cached per backend;
+   * a failure is rethrown on every later construction on that backend.
+   *
+   * @throws VDBError `VDB_ENGINE_MISMATCH` when three bypasses the guard (or
+   *   makes its own buffer, or keeps a disposed attribute).
+   */
+  selfTest(renderer: RendererLike): void {
+    const backend = renderer.backend;
+    const cached = selfTested.get(backend);
+    if (cached === true) return;
+    if (cached) throw cached;
+    let error: VDBError | null = null;
+    const dummy = backend.device!.createBuffer({ label: VDB_THREE_SELF_TEST_LABEL, size: 4, usage: 0x80 /* GPUBufferUsage.STORAGE */ });
+    const realDestroy = dummy.destroy;
+    let destroyedByThree = false;
+    (dummy as { destroy: () => void }).destroy = () => {
+      destroyedByThree = true;
+    };
+    try {
+      const attribute = new StorageBufferAttribute(new Uint32Array(1), 1);
+      attribute.name = VDB_THREE_SELF_TEST_LABEL;
+      this.bind(backend, attribute, dummy);
+      this.guardDestroy(backend, attribute);
+      renderer._attributes!.update(attribute, ATTRIBUTE_TYPE_STORAGE);
+      if (!this.usedByThree(renderer, attribute)) {
+        error = unsupported("did not track a storage attribute in renderer._attributes after _attributes.update");
+      } else if (this.bufferOf(backend, attribute) !== dummy || this.otherBuffer(backend, attribute, dummy)) {
+        error = unsupported("made its own GPUBuffer for a storage attribute whose backend record already held one");
+      }
+      attribute.dispose(); // three: Attributes.delete -> backend.destroyAttribute (the guard swaps a throwaway in)
+      if (!error && destroyedByThree) {
+        error = unsupported("destroyed a storage attribute's GPUBuffer without going through backend.destroyAttribute (the destroy guard)");
+      } else if (!error && this.usedByThree(renderer, attribute)) {
+        error = unsupported("kept a disposed storage attribute in renderer._attributes");
+      }
+    } catch (e) {
+      error = e instanceof VDBError ? e : unsupported(`failed the adapter's attribute self-test (${e instanceof Error ? e.message : String(e)})`);
+    } finally {
+      (dummy as { destroy: () => void }).destroy = realDestroy;
+      dummy.destroy();
+    }
+    selfTested.set(backend, error ?? true);
+    if (error) throw error;
   },
   bufferOf(backend: BackendLike, attribute: object): GPUBuffer | undefined {
     return backend.get(attribute).buffer;
@@ -200,11 +304,38 @@ class VDBModuleNode extends CodeNode {
   vdbPool: StorageNode;
   private readonly _options: ModuleOptions;
   private readonly _byRef = new Map<string, string>();
+  /** The backend the stand-ins are bound through; a shader built by another renderer would bind nothing. */
+  private readonly _backend: object;
 
-  constructor(storageNode: StorageNode, options: ModuleOptions) {
+  constructor(storageNode: StorageNode, options: ModuleOptions, backend: object) {
     super("", [], "wgsl");
     this.vdbPool = storageNode;
     this._options = options;
+    this._backend = backend;
+  }
+
+  /**
+   * The per-shader checks, before anything is emitted: the shader is built by
+   * the renderer this node binds through, and it holds no other VDB module.
+   */
+  checkBuild(builder: NodeBuilder): void {
+    const backend = (builder as unknown as { renderer?: { backend?: object } }).renderer?.backend;
+    if (backend !== this._backend) {
+      throw bad(
+        "a shader built by another renderer uses this node. A VDBGridNode binds the pool's buffer through the renderer " +
+          "it was made with; on any other renderer it would bind nothing and read 0. Create one VDBGridNode per renderer " +
+          "(new VDBGridNode(otherRenderer, pool, options)).",
+      );
+    }
+    const first = moduleOfBuild.get(builder);
+    if (first !== undefined && first !== this) {
+      throw bad(
+        "two VDB modules (two VDBGridNodes) in one shader. One VDB module per shader: generated symbols are declared " +
+          "once, so a second module redeclares them. Read every grid of the shader through one VDBGridNode (by id), " +
+          "made with the largest profile, types and helpers the shader needs.",
+      );
+    }
+    moduleOfBuild.set(builder, this);
   }
 
   /** The module for a buffer reference (`'vdbPool.value'` in three r187). Memoized per reference. */
@@ -218,6 +349,7 @@ class VDBModuleNode extends CodeNode {
   }
 
   override generate(builder: NodeBuilder): string {
+    this.checkBuild(builder);
     const ref = this.vdbPool.build(builder, "property");
     if (typeof ref !== "string") throw unsupported("built the pool storage node to a non-string property reference");
     const text = this.moduleFor(ref);
@@ -228,6 +360,21 @@ class VDBModuleNode extends CodeNode {
     nodeCode.code = text;
     return text;
   }
+}
+
+/**
+ * Warns once per backend when the renderer made its own device (no `device`
+ * parameter): `renderer.dispose()` then destroys that device, and with it the
+ * pool's buffer.
+ */
+function warnOwnDevice(backend: BackendLike): void {
+  if (backend.parameters === undefined || backend.parameters.device !== undefined || ownDeviceWarned.has(backend)) return;
+  ownDeviceWarned.add(backend);
+  console.warn(
+    "@pmndrs/vdb/three: this WebGPURenderer created its own GPUDevice, so renderer.dispose() destroys that device and every " +
+      "buffer on it, the VDBGridPool's included. For a pool that outlives the renderer, create the device yourself " +
+      "(adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) })) and pass new WebGPURenderer({ device }).",
+  );
 }
 
 type HelperKind = "sampleWorld" | "sampleIndex" | "readValue";
@@ -261,8 +408,13 @@ export class VDBGridNode {
   readonly options: Readonly<ModuleOptions>;
   /** Name of the storage binding three emits. */
   readonly name: string;
+  /**
+   * The renderer this node binds through. Only shaders this renderer builds
+   * may use the node; make one `VDBGridNode` per renderer.
+   */
+  readonly renderer: ThreeRendererLike;
 
-  private readonly renderer: RendererLike;
+  private readonly three: RendererLike;
   private boundVersion: number;
   private bound: GPUBuffer;
   private disposed = false;
@@ -275,8 +427,10 @@ export class VDBGridNode {
     options: VDBGridNodeOptions = {},
   ) {
     const backend = webgpuBackendOf(renderer, "VDBGridNode");
-    this.renderer = renderer as unknown as RendererLike;
-    threeInternals.check(this.renderer);
+    warnThreeRevision(REVISION);
+    this.renderer = renderer;
+    this.three = renderer as unknown as RendererLike;
+    threeInternals.check(this.three);
     if (pool === null || typeof pool !== "object" || typeof pool.version !== "number") {
       throw bad("pool must be a VDBGridPool (or an object with device, buffer, version, layoutVersion, types).");
     }
@@ -330,12 +484,16 @@ export class VDBGridNode {
       ...(raw.helpers !== undefined ? { helpers: Object.freeze([...new Set(raw.helpers)].sort()) as readonly VDBModuleHelper[] } : {}),
     });
 
+    // Before any pool buffer reaches three: the destroy guard must hold on this backend.
+    threeInternals.selfTest(this.three);
+    warnOwnDevice(this.three.backend);
+
     this.bound = pool.buffer;
     this.boundVersion = pool.version;
     const node = storage(this.standIn(this.bound), "uint", 0).toReadOnly() as unknown as StorageNode;
     node.setName(name);
     this.storage = node;
-    this.module = new VDBModuleNode(node, this.options);
+    this.module = new VDBModuleNode(node, this.options, this.three.backend);
   }
 
   /** The pool version bound now (the pool's at construction or the last {@link update} that rebound). */
@@ -398,8 +556,8 @@ export class VDBGridNode {
   /** The stand-in three used still has the pool's buffer, and three made none of its own. */
   private checkBinding(): void {
     const attribute = this.storage.value as StorageBufferAttribute;
-    if (this.verified.has(attribute) || !threeInternals.usedByThree(this.renderer, attribute)) return;
-    const backend = this.renderer.backend;
+    if (this.verified.has(attribute) || !threeInternals.usedByThree(this.three, attribute)) return;
+    const backend = this.three.backend;
     if (threeInternals.bufferOf(backend, attribute) !== this.bound || threeInternals.otherBuffer(backend, attribute, this.bound)) {
       throw unsupported("did not bind the pool buffer VDBGridNode set (backend.get(attribute).buffer)");
     }
@@ -410,8 +568,8 @@ export class VDBGridNode {
   private standIn(buffer: GPUBuffer): StorageBufferAttribute {
     const attribute = new StorageBufferAttribute(new Uint32Array(1), 1);
     attribute.name = buffer.label || this.name;
-    threeInternals.bind(this.renderer.backend, attribute, buffer);
-    threeInternals.guardDestroy(this.renderer.backend, attribute);
+    threeInternals.bind(this.three.backend, attribute, buffer);
+    threeInternals.guardDestroy(this.three.backend, attribute);
     return attribute;
   }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Data3DTexture, FloatType, LinearFilter, RedFormat, UnsignedByteType } from "three";
 import { VDBGridPool } from "../../src/core/index.js";
-import { decodeToAtlas, gridStats, valueTransform } from "../../src/three/compute.js";
+import { vdbDecodeToAtlas, vdbGridStats } from "../../src/three/compute.js";
 import * as three from "../../src/three/index.js";
 import { computeFake } from "../core/fake-compute.js";
 import { makeImage } from "../core/synthetic-image.js";
@@ -23,27 +23,27 @@ async function setup() {
 }
 
 describe("@pmndrs/vdb/three compute wrappers", () => {
-  it("are exported from the barrel; the v1 shader-assembly helpers are gone", () => {
-    expect(three.gridStats).toBe(gridStats);
-    expect(three.decodeToAtlas).toBe(decodeToAtlas);
-    expect(three.valueTransform).toBe(valueTransform);
-    for (const gone of ["buildComputeShaderSource", "buildValueTransformShaderSource", "resolveTransformBody", "VALUE_TRANSFORM_PRESETS"]) {
-      expect(gone in three).toBe(false);
+  it("are exported from the barrel as vdb*; the core names, the alias and the v1 helpers are not", () => {
+    expect(three.vdbGridStats).toBe(vdbGridStats);
+    expect(three.vdbDecodeToAtlas).toBe(vdbDecodeToAtlas);
+    // gridStats / decodeToAtlas are the core's (device + encoder); valueTransform is the core's applyValueTransform.
+    for (const gone of ["gridStats", "decodeToAtlas", "valueTransform", "buildComputeShaderSource", "buildValueTransformShaderSource", "resolveTransformBody", "VALUE_TRANSFORM_PRESETS"]) {
+      expect(gone in three, gone).toBe(false);
     }
   });
 
-  it("gridStats resolves through the renderer's device, and rejects (not throws) for an uninitialized renderer", async () => {
+  it("vdbGridStats resolves through the renderer's device, and rejects (not throws) for an uninitialized renderer", async () => {
     const { pool, id, renderer } = await setup();
-    const r = await gridStats(renderer, pool, id, { histogramBins: 8 });
+    const r = await vdbGridStats(renderer, pool, id, { histogramBins: 8 });
     expect(r.histogram).toHaveLength(8);
     expect(r.range).toEqual({ min: 0, max: 1 });
-    const pending = gridStats(fakeRenderer(null), pool, id);
+    const pending = vdbGridStats(fakeRenderer(null), pool, id);
     await expect(pending).rejects.toMatchObject({ code: "VDB_UNSUPPORTED_DEVICE" });
   });
 
-  it("decodeToAtlas returns v1's result plus a ready Data3DTexture", async () => {
+  it("vdbDecodeToAtlas returns v1's result plus a ready Data3DTexture", async () => {
     const { pool, id, renderer } = await setup();
-    const a = await decodeToAtlas(renderer, pool, id, { maxDim: 4 });
+    const a = await vdbDecodeToAtlas(renderer, pool, id, { maxDim: 4 });
     expect(a.dims).toEqual([4, 4, 2]);
     expect(a.data).toBeInstanceOf(Uint8Array);
     expect(a.texture).toBeInstanceOf(Data3DTexture);
@@ -55,13 +55,8 @@ describe("@pmndrs/vdb/three compute wrappers", () => {
       LinearFilter,
       1,
     ]);
-    const f = await decodeToAtlas(renderer, pool, id, { format: "float32" });
+    const f = await vdbDecodeToAtlas(renderer, pool, id, { format: "float32" });
     expect(f.data).toBeInstanceOf(Float32Array);
     expect(f.texture.type).toBe(FloatType);
-  });
-
-  it("valueTransform is the CPU path (no renderer): Float grids only", async () => {
-    const { pool, id } = await setup();
-    expect(() => valueTransform(pool, id, new Uint32Array(256), "double")).toThrow(/Float/);
   });
 });

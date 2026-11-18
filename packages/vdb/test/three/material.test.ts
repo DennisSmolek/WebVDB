@@ -19,26 +19,7 @@ import {
 } from "../../src/three/index.js";
 import { FakeDevice } from "../core/fake-gpu.js";
 import { makeImage } from "../core/synthetic-image.js";
-
-const scope = globalThis as unknown as Record<string, unknown>;
-scope.GPUBufferUsage ??= { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 };
-scope.GPUShaderStage ??= { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
-
-/** The renderer surface VDBGridNode and the material read (see grid-node.test.ts for three's own paths). */
-function fakeRenderer(device: object = {}) {
-  const data = new WeakMap<object, Record<string, unknown>>();
-  const backend = {
-    isWebGPUBackend: true,
-    device,
-    get(object: object) {
-      let entry = data.get(object);
-      if (!entry) data.set(object, (entry = {}));
-      return entry;
-    },
-    destroyAttribute() {},
-  };
-  return { backend, _attributes: { has: () => false } };
-}
+import { fakeRenderer } from "./fake-three.js";
 
 function fakePool(device: object, types: string[] = ["float"]) {
   return {
@@ -50,7 +31,7 @@ function fakePool(device: object, types: string[] = ["float"]) {
   };
 }
 
-const shared = fakeRenderer();
+const shared = fakeRenderer().renderer;
 
 /** A node on the shared stand-in renderer (one device for every node). */
 function setup(options: object = { helpers: ["rayClipSupport"] }) {
@@ -116,6 +97,9 @@ describe("VDBVolumeMaterial (K2.3)", () => {
     expect(src).toContain(`clamp(max_steps, 1.0, ${VDB_VOLUME_MAX_STEPS_CAP}.0)`);
     expect(src).toContain(`clamp(shadow_steps, 0.0, ${VDB_VOLUME_SHADOW_STEPS_CAP}.0)`);
     expect(src).toContain(`let budget = ${VDB_VOLUME_SAMPLE_BUDGET_CAP};`);
+    // The first sample is never before t0 = max(entry, 0) (behind the eye), and stays on the lattice.
+    expect(src).toContain("let t0 = max(span.x, 0.0);");
+    expect(src).toMatch(/t \+= step_size \* jitter \* vdbThreeHash12\(pix\);\s*\/\/[^]*?if t < t0 \{\s*t \+= ceil\(\(t0 - t\) \/ step_size\) \* step_size;\s*\}/);
     // Every sample counts against the budget, and both loops stop on it.
     expect(src.match(/samples\+\+/g)).toHaveLength(2);
     expect(src.match(/samples >= budget/g)).toHaveLength(2);
@@ -138,8 +122,11 @@ describe("VDBVolumeMaterial (K2.3)", () => {
     expect(code(() => new VDBVolumeMaterial(renderer, setup({ profile: "read", helpers: [] }).grids, 0))).toBe("VDB_BAD_OPTION");
     expect(() => new VDBVolumeMaterial(renderer, setup({ profile: "read" }).grids, 0)).toThrow(/profile 'sample' or 'march'/);
     expect(code(() => new VDBVolumeMaterial(renderer, setup({ profile: "march", helpers: ["rayClipSupport", "hddaCellEnd"] }).grids, 0))).toBeUndefined();
-    // Another renderer's device.
-    expect(code(() => new VDBVolumeMaterial(fakeRenderer({}), grids, 0))).toBe("VDB_BAD_OPTION");
+    // Another renderer, on another device or on the same one: one VDBGridNode per renderer.
+    expect(code(() => new VDBVolumeMaterial(fakeRenderer().renderer, grids, 0))).toBe("VDB_BAD_OPTION");
+    const sameDevice = fakeRenderer(shared.backend.device).renderer;
+    expect(() => new VDBVolumeMaterial(sameDevice, grids, 0)).toThrow(/another renderer.*one VDBGridNode per renderer/);
+    expect(code(() => new VDBVolumeMaterial(sameDevice, new VDBGridNode(sameDevice, fakePool(shared.backend.device), { helpers: ["rayClipSupport"] }), 0))).toBeUndefined();
     expect(code(() => new VDBVolumeMaterial({ backend: { isWebGPUBackend: true, device: null } } as never, grids, 0))).toBe("VDB_UNSUPPORTED_DEVICE");
     for (const id of [-1, 1.5, Number.NaN, "0", null]) {
       expect(code(() => new VDBVolumeMaterial(renderer, grids, id as never))).toBe("VDB_BAD_OPTION");

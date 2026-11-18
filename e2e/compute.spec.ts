@@ -38,6 +38,7 @@ interface ComputeReport {
   };
   readbackFalseOk?: boolean;
   disposeRejects?: boolean;
+  readBeforeSubmit?: { earlyRead: string; submitValidation: string | null; readAfterSubmittedOk: boolean };
   uncaptured: string[];
   lastError?: string;
 }
@@ -90,6 +91,8 @@ test("core compute tools match their CPU twins on the GPU", async ({ page }) => 
 
   expect(r.readbackFalseOk, detail).toBe(true);
   expect(r.disposeRejects, detail).toBe(true);
+  // Host encoder: read() before submitted() rejects without mapping, so the host's submit stays valid.
+  expect(r.readBeforeSubmit, detail).toEqual({ earlyRead: "VDB_BAD_OPTION", submitValidation: null, readAfterSubmittedOk: true });
 
   // SwiftShader rounds every f32 op like the twins (no FMA, exact division): bit-exact there
   // (measured 2026-11-18: every count, extreme, mean, bin and atlas value). Hardware keeps the tolerances above.

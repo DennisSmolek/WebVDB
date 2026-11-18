@@ -23,6 +23,7 @@
  * (stale stats) breaks the atomics path's min/max.
  */
 import type { VDBGridPool } from "../pool/pool.js";
+import { VDBError } from "../errors.js";
 import {
   checkPositiveInt,
   checkTarget,
@@ -109,8 +110,9 @@ export interface VDBGridStatsOptions {
   /** Histogram bins over `[rootMin, rootMax]`. Default 256. */
   histogramBins?: number;
   /**
-   * Record into this encoder (the host submits it, then calls `read()`).
-   * Omitted: the tool creates and submits its own encoder.
+   * Record into this encoder. The host submits it, then calls
+   * `job.submitted().read()`; `read()` before `submitted()` rejects
+   * (`VDB_BAD_OPTION`). Omitted: the tool creates and submits its own encoder.
    */
   encoder?: GPUCommandEncoder;
 }
@@ -136,12 +138,18 @@ const WHERE = "gridStats";
 
 /**
  * Records the statistics passes for grid `gridId` of `pool` and returns a
- * {@link VDBReadback}: `await gridStats(device, pool, id).read()`.
+ * {@link VDBReadback}: `await gridStats(device, pool, id).read()`, or with a
+ * host encoder `submit`, then `await job.submitted().read()`.
  *
  * The grid must be resident (`pool.update(encoder)` / `pool.flush()` ran
  * after its `add`), and the pool must live on `device`. The tool allocates
  * its own parameter, output and readback buffers and frees them in `read()`
  * or `dispose()`; it never touches the pool's buffer beyond binding it.
+ *
+ * @throws VDBError `VDB_BAD_OPTION` for bad options, a pool on another
+ *   device, a non-resident grid, or (root min < 0, the dump path) a bbox whose
+ *   per-voxel outputs (`voxels * 4` bytes each, `voxels * 8` to read back)
+ *   exceed `device.limits.maxStorageBufferBindingSize` / `maxBufferSize`.
  */
 export function gridStats(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBGridStatsOptions = {}): VDBReadback<VDBGridStats> {
   const bins = options.histogramBins ?? DEFAULT_BINS;
@@ -151,6 +159,7 @@ export function gridStats(device: GPUDevice, pool: VDBGridPool, gridId: number, 
   const regionMin = info.indexBBox.min;
   const size = bboxSize(info.indexBBox);
   const fast = range.min >= 0;
+  if (!fast) checkDumpSize(device, gridId, size);
   const kernel = fast ? STATS_FAST : STATS_DUMP;
   const cached = kernelPipeline(device, kernel, info.type);
 
@@ -184,9 +193,36 @@ export function gridStats(device: GPUDevice, pool: VDBGridPool, gridId: number, 
   host.submit();
 
   const splitAt = outA.size;
-  return new ComputeJob(WHERE, [params, outA, outB], staging, cached.error, (bytes) =>
-    fast ? reduceFast(bytes, bins, range) : reduceDump(bytes, splitAt, bins, range),
+  return new ComputeJob(
+    WHERE,
+    [params, outA, outB],
+    staging,
+    cached.error,
+    (bytes) => (fast ? reduceFast(bytes, bins, range) : reduceDump(bytes, splitAt, bins, range)),
+    host.selfSubmitted,
   );
+}
+
+/**
+ * The dump path writes 4 B of value and 4 B of active flag per bbox voxel and
+ * reads both back (8 B per voxel); refuse a bbox the device can't hold before
+ * any buffer is made.
+ */
+function checkDumpSize(device: GPUDevice, gridId: number, size: readonly [number, number, number]): void {
+  const voxels = size[0] * size[1] * size[2];
+  const each = voxels * 4;
+  const limits = device.limits as Partial<GPUSupportedLimits> | undefined;
+  const binding = limits?.maxStorageBufferBindingSize ?? Infinity;
+  const total = limits?.maxBufferSize ?? Infinity;
+  if (each > binding || each * 2 > total) {
+    throw new VDBError(
+      "VDB_BAD_OPTION",
+      `${WHERE}: grid ${gridId} has a negative root min, so its stats take the dump path (8 B per bbox voxel): ` +
+        `${size.join(" x ")} = ${voxels} voxels needs ${each} B per output binding and ${each * 2} B of readback, over this device's ` +
+        `maxStorageBufferBindingSize ${binding} / maxBufferSize ${total}. Raise the limits (VDBGridPool.requiredLimits(adapter)) ` +
+        "or compute the stats on the CPU (gridStatsCpu in @pmndrs/vdb/tools).",
+    );
+  }
 }
 
 function reduceFast(bytes: ArrayBuffer, bins: number, range: { min: number; max: number }): VDBGridStats {

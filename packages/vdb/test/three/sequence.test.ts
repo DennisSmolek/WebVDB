@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { VDBError } from "../../src/core/errors.js";
 import { VDBSequence } from "../../src/three/sequence.js";
 import type { VDBFrameLoader, VDBSequenceTarget } from "../../src/three/sequence.js";
 
@@ -347,5 +348,91 @@ describe("VDBSequence — the pool target", () => {
     expect(() => seq.start({ replace() {} } as never, 0)).toThrow(/\{ pool, id \}/);
     expect(() => seq.start({ pool: { replace() {} }, id: -1 }, 0)).toThrow(/grid id/);
     expect(() => seq.start({ pool: {} as never, id: 0 }, 0)).toThrow(/replace/);
+  });
+});
+
+describe("VDBSequence — failed frames and disposal (K2 review)", () => {
+  it("does not retry a failed frame on every update; seek and start retry it", async () => {
+    const calls = new Map<number, number>();
+    let failFrame1 = true;
+    const errors: number[] = [];
+    const loader: VDBFrameLoader = (_url, i) => {
+      calls.set(i, (calls.get(i) ?? 0) + 1);
+      return i === 1 && failFrame1 ? Promise.reject(new Error("boom")) : Promise.resolve(grid(i));
+    };
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 2, loader, onError: (_e, i) => errors.push(i) });
+    await seq.preload(3);
+    await tick();
+    expect(errors).toEqual([1]);
+    expect(seq.stats.failed).toBe(1);
+    const target = makeTarget();
+    seq.start(target, 0); // start clears the failed set: frame 1 is retried once
+    await tick();
+    expect(calls.get(1)).toBe(2);
+    expect(errors).toEqual([1, 1]);
+    // Many updates while the clock points at frame 1: no further loader calls, no onError storm.
+    for (let t = 100; t < 200; t += 5) seq.update(t);
+    await tick();
+    expect(calls.get(1)).toBe(2);
+    expect(errors).toEqual([1, 1]);
+    expect(seq.stats.frame).toBe(0); // held
+    // The clock moves past it: playback continues with frame 2.
+    seq.update(200);
+    expect(seq.stats.frame).toBe(2);
+    // seek retries (and this time the frame decodes).
+    failFrame1 = false;
+    seq.seek(1, 300);
+    await tick();
+    expect(calls.get(1)).toBe(3);
+    expect(seq.stats.failed).toBe(0);
+    seq.update(300);
+    expect(seq.stats.frame).toBe(1);
+  });
+
+  it("a loader that throws synchronously is a failed frame too", async () => {
+    const errors: number[] = [];
+    const seq = new VDBSequence({
+      urls: urls(2),
+      prefetch: 1,
+      loader: (_u, i) => {
+        if (i === 1) throw new Error("sync");
+        return Promise.resolve(grid(i));
+      },
+      onError: (_e, i) => errors.push(i),
+    });
+    await seq.preload(2);
+    expect(errors).toEqual([1]);
+    expect(seq.stats.failed).toBe(1);
+  });
+
+  it("drops decodes that settle after dispose(), and refuses start/seek/resume/preload", async () => {
+    const { loader, resolve, reject } = deferredLoader();
+    const errors: number[] = [];
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 2, loader, onError: (_e, i) => errors.push(i) });
+    const target = makeTarget();
+    seq.start(target, 0); // frames 0..2 in flight
+    seq.dispose();
+    resolve(0);
+    resolve(1);
+    reject(2, new Error("late"));
+    await tick();
+    expect(seq.stats.decodedAhead).toBe(0);
+    expect(seq.stats.failed).toBe(0);
+    expect(errors).toEqual([]); // the late failure is dropped, not reported
+    expect(target.calls).toEqual([]);
+    expect(seq.update(500)).toBe(-1);
+    const disposed = (fn: () => unknown) => {
+      try {
+        fn();
+      } catch (e) {
+        return e instanceof VDBError ? e.code : String(e);
+      }
+      return undefined;
+    };
+    expect(disposed(() => seq.start(target, 0))).toBe("VDB_DISPOSED");
+    expect(disposed(() => seq.seek(1, 0))).toBe("VDB_DISPOSED");
+    expect(disposed(() => seq.resume(0))).toBe("VDB_DISPOSED");
+    await expect(seq.preload(1)).rejects.toMatchObject({ code: "VDB_DISPOSED" });
+    seq.dispose(); // idempotent
   });
 });

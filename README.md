@@ -24,7 +24,7 @@ machine" line.
 | Package | What it is |
 |---|---|
 | [`@pmndrs/vdb`](./packages/vdb) (core, `src/core`) | Renderer-agnostic NanoVDB traversal/sampling WGSL module (vendored Apache-2.0 fork of [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb)'s `pnanovdb.wgsl`, pinned + audited) |
-| `@pmndrs/vdb/three` ([`src/three`](./packages/vdb/src/three)) | TSL/three.js layer: `VDBGridNode`, `VDBVolumeMaterial`, `VDBSequence`, compute utilities, device-first renderer bootstrap |
+| `@pmndrs/vdb/three` ([`src/three`](./packages/vdb/src/three)) | TSL/three.js layer: `VDBGridNode`, `VDBVolumeMaterial`, `VDBSequence`, `vdbGridStats` / `vdbDecodeToAtlas`, `getDevice` |
 | `@pmndrs/vdb/tools` ([`src/tools`](./packages/vdb/src/tools)) | Pure-TS CPU tooling: the TS `.nvdb` loader and CPU oracle, `.vdb` parse, NanoVDB build, Fp8/FpN quantize, affine transform, inspect (WASM only as an opt-in escalation) |
 | [`examples/`](./examples) | Vite demo site — one demo per phase gate |
 

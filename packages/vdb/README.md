@@ -235,8 +235,8 @@ const pool = await VDBGridPool.create(getDevice(renderer));
 const id = pool.add(file.gridImage(0));
 pool.flush(); // writes the grid (or record pool.update(encoder) into your own encoder)
 
-// One VDBGridNode per pool and shader (one WGSL module per shader). The
-// material needs the support-box ray clip helper.
+// One VDBGridNode per pool, renderer and shader (one WGSL module per shader).
+// The material needs the support-box ray clip helper.
 const grids = new VDBGridNode(renderer, pool, { helpers: ["rayClipSupport"] });
 const material = new VDBVolumeMaterial(renderer, grids, id, { densityScale: 40 });
 const scene = new THREE.Scene();
@@ -254,7 +254,14 @@ await renderer.renderAsync(scene, camera);
   `VDB_ALL_SCALAR_TYPES`) when the pool fills later. TSL helpers:
   `vdbSample(grids, id, position, { space: 'world' | 'index' })` and
   `vdbReadValue(grids, id, ijk)`; or call the WGSL API from your own
-  `wgslFn(src, [grids.module])` (demo 01 does both).
+  `wgslFn(src, [grids.module])` (demo 01 does both). A node binds through the
+  renderer it was made with: a shader another renderer builds, or a shader
+  holding a second node's module, throws `VDB_BAD_OPTION` (make one node per
+  renderer; read every grid of a shader through one node, by id). The first
+  node on a renderer self-tests three's attribute internals before the pool's
+  buffer reaches three (`VDB_ENGINE_MISMATCH` if three would destroy it); a
+  three other than r187 warns once, and so does a renderer that made its own
+  device (its `dispose()` destroys the pool's buffer).
 - **`VDBVolumeMaterial(renderer, grids, gridId, params)`**: needs a node with
   profile `sample` or `march` and `helpers: ['rayClipSupport']`. The march is
   one `wgslFn` over the public API: world ray to index space through the pool
@@ -265,18 +272,23 @@ await renderer.renderAsync(scene, camera);
   `maxSteps`, `sunDirection`, `sunColor`, `sunIntensity`, `anisotropy`,
   `shadowSteps`, `shadowDensity`, `ambient`, `jitter`); `gridId` is a `uint`
   uniform when given as a number, so `material.gridId.value = other` switches
-  grids without a rebuild. Caps (`maxStepsCap`, `shadowStepsCap`,
-  `sampleBudgetCap`) are compiled in.
+  grids without a rebuild (give the mesh a new `vdbProxyGeometry` for the
+  other grid, and after `pool.setTransform`). Caps (`maxStepsCap`,
+  `shadowStepsCap`, `sampleBudgetCap`) are compiled in. The march runs in index
+  space: `stepSize` is in index voxels and opacity integrates per index voxel,
+  so scaling a grid with `setTransform` changes its size on screen, not its
+  opacity. Perspective cameras only. `grids` must come from the same renderer.
 - **`vdbProxyGeometry(pool.info(id), { pad? })`**: the world box to put the
   material on (add the mesh with an identity transform). `pad: 1` also covers
   the min-side half voxel of the trilinear support.
 - **`getDevice(renderer)`, `getGPUTexture(renderer, texture)`**: the raw
   WebGPU handles, as in `@pmndrs/upscaler` and `@pmndrs/denoiser`.
-- `createVolumeRenderer` remains as a convenience bootstrap (it creates the
-  device itself, with limits for one grid).
 - Gone since v1: `NanoVDBGrid` (use `pool.info(id)` and `vdbProxyGeometry`),
   `NanoVDBVolumeMaterial` (use `VDBVolumeMaterial`), `NanoVDBSequence` (use
-  `VDBSequence`), `assembleVolumeWgsl`/`rewriteBufferGlobal`.
+  `VDBSequence`), `assembleVolumeWgsl`/`rewriteBufferGlobal`, and the
+  `createVolumeRenderer` bootstrap with `computeRequiredLimits`/`nextPow2`
+  (create the device yourself with `VDBGridPool.requiredLimits(adapter)`, as
+  in the quickstart).
 
 ### Compute utilities
 
@@ -292,24 +304,32 @@ pool.update(encoder); // or pool.flush()
 const stats = gridStats(device, pool, id, { encoder, histogramBins: 256 });
 const atlas = decodeToAtlas(device, pool, id, { encoder, maxDim: 128, format: "uint8" });
 device.queue.submit([encoder.finish()]);
-await stats.read();  // { min, max, mean, histogram, activeVoxelCount, usedAtomicFastPath, range }
-await atlas.read();  // { data: Uint8Array | Float32Array, dims, range }; atlas.buffer is the raw f32 GPU output
+// With your encoder, say it was submitted before reading (read() earlier rejects with VDB_BAD_OPTION):
+await stats.submitted().read();  // { min, max, mean, histogram, activeVoxelCount, usedAtomicFastPath, range }
+await atlas.submitted().read();  // { data: Uint8Array | Float32Array, dims, range }; atlas.buffer is the raw f32 GPU output
 
 // Per-voxel edits run on the CPU (the pool is read-only to shaders) and are staged with pool.replace:
 applyValueTransform(pool, id, image, "double"); // or (v) => v * 2; Float grids only
 ```
 
 ```ts
-import { gridStats, decodeToAtlas, valueTransform } from "@pmndrs/vdb/three";
+import { vdbGridStats, vdbDecodeToAtlas } from "@pmndrs/vdb/three";
 
-const stats = await gridStats(renderer, pool, id);
-const { data, dims, range, texture } = await decodeToAtlas(renderer, pool, id, { maxDim: 128 }); // texture: Data3DTexture
-const newImage = valueTransform(pool, id, image, "double");
+const stats = await vdbGridStats(renderer, pool, id);
+const { data, dims, range, texture } = await vdbDecodeToAtlas(renderer, pool, id, { maxDim: 128 }); // texture: Data3DTexture
 ```
 
+The three wrappers submit their own encoder. The value transform has no three
+wrapper: call the core `applyValueTransform`.
+
 Each tool frees only the buffers it allocated (in `read()` or `dispose()`).
-`gridStats` bins over the grid's root min/max statistics; `decodeToAtlas`
-normalizes to them by default. `applyValueTransform` rewrites leaf values
+`gridStats` bins over the grid's root min/max statistics (a grid with a
+negative root min takes the dump path, 8 B per bbox voxel, and is refused up
+front when that exceeds the device's buffer limits); `decodeToAtlas`
+normalizes to them by default. The atlas keeps v1's sample positions,
+`min + (i + 0.5) / dims * size` in index space, which is half a voxel past the
+voxel centres (texel `i` at full resolution sits between voxels `min + i` and
+`min + i + 1`): sample it over the cell box `[min, max + 1]`. `applyValueTransform` rewrites leaf values
 (not tiles) and does not recompute the image's statistics. CPU twins live in
 `@pmndrs/vdb/tools` (`gridStatsCpu`, `decodeToAtlasCpu`, `atlasFromRaw`,
 `transformLeafValues`). See
@@ -348,7 +368,11 @@ A frame larger than the reserved capacity still plays: the pool moves it and
 may grow, which is why `grids.update()` runs after the pool's update every
 frame. The sequence never blocks the render loop: if a frame isn't decoded
 when its time comes, it holds the last frame, counts a stall, and keeps going
-(`sequence.stats`: `frame`, `decodedAhead`, `stalls`, `swaps`, `replaceMs`).
+(`sequence.stats`: `frame`, `decodedAhead`, `stalls`, `swaps`, `replaceMs`,
+`failed`). A frame whose loader rejects fires `onError` once and is not
+retried until `seek()` or `start()`; playback skips it. After `dispose()`,
+late decodes are dropped and `start`/`seek`/`resume`/`preload` throw
+`VDB_DISPOSED`.
 
 Frame arrays are held by reference: the pool keeps an image until the update
 that writes it, and until `pool.settled()` resolves while a growth is

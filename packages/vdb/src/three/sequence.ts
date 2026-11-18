@@ -42,6 +42,23 @@
  * continues in the background; the next `update()` that finds the frame ready
  * advances to wherever the clock now points (intermediate frames are dropped:
  * real-time catch-up, not slow motion).
+ *
+ * ## Failed frames: no retry until `seek` / `start`
+ *
+ * A frame whose loader rejects goes into a failed set: `onError` fires once,
+ * and the player does not ask the loader for it again (no retry storm from
+ * the per-frame prefetch). While the clock points at it, `update()` holds the
+ * last frame and counts stalls; playback moves on when the clock reaches the
+ * next decodable frame. `seek()` and `start()` clear the set, so they retry
+ * every failed frame (call `seek(stats.frame)` to retry in place).
+ * `stats.failed` counts the frames in the set.
+ *
+ * ## Disposal
+ *
+ * `dispose()` drops the ring and the in-flight tracking and bumps a
+ * generation token: decodes that finish later are dropped (no ring entry, no
+ * `onError`). `start`, `seek`, `resume` and `preload` after `dispose()` throw
+ * (or reject with) `VDB_DISPOSED`; `update` returns the last frame.
  */
 
 import { VDBError } from "../core/errors.js";
@@ -82,7 +99,10 @@ export interface VDBSequenceOptions {
   now?: () => number;
   /** Fired whenever a NEW frame is shown (after its `pool.replace`). */
   onFrame?: (stats: Readonly<VDBSequenceStats>) => void;
-  /** Fired if a frame fails to decode. Playback continues (that frame stays a stall). */
+  /**
+   * Fired once when a frame fails to decode. The frame is not retried until
+   * `seek` or `start`; playback skips it (a stall while the clock points at it).
+   */
   onError?: (error: unknown, index: number) => void;
 }
 
@@ -97,6 +117,8 @@ export interface VDBSequenceStats {
   replaceMs: number;
   /** `pool.replace` calls since `start` (the initial frame 0 included). */
   swaps: number;
+  /** Frames whose decode failed and that wait for a `seek` / `start` to be retried. */
+  failed: number;
 }
 
 /** Default loader: real fetch + parse of grid 0. */
@@ -105,6 +127,17 @@ async function defaultLoader(url: string): Promise<Uint32Array> {
   return file.gridImage(0);
 }
 
+/**
+ * Plays a frame sequence into ONE pool grid: decodes frames ahead into a
+ * bounded ring and `pool.replace`s the due one, driven by your clock. See the
+ * file comment for the pool contract, the stall policy, failed frames and
+ * disposal.
+ *
+ *   const id = pool.add(firstFrame, { capacity: largestFrameBytes });
+ *   const sequence = new VDBSequence({ urls, fps: 24 });
+ *   sequence.start({ pool, id });
+ *   // per frame: sequence.update(performance.now()); pool.update(encoder); grids.update(); render
+ */
 export class VDBSequence {
   readonly frameCount: number;
   readonly fps: number;
@@ -122,6 +155,11 @@ export class VDBSequence {
   private readonly ring = new Map<number, Uint32Array>();
   /** In-flight decode promises by frame index (dedupe + stall detection). */
   private readonly inflight = new Map<number, Promise<void>>();
+  /** Frames whose decode failed: not retried until `seek` / `start`. */
+  private readonly failed = new Set<number>();
+  /** Bumped by `dispose()`: a decode that finishes under an older generation is dropped. */
+  private generation = 0;
+  private disposed = false;
 
   private target: VDBSequenceTarget | undefined;
   private playing = false;
@@ -163,6 +201,7 @@ export class VDBSequence {
       stalls: this._stalls,
       replaceMs: this._replaceMs,
       swaps: this._swaps,
+      failed: this.failed.size,
     };
   }
 
@@ -199,24 +238,42 @@ export class VDBSequence {
     }
   }
 
-  /** Start (or return) the decode of one frame; resolves into the ring. */
+  /**
+   * Start (or return) the decode of one frame; resolves into the ring. A
+   * failed frame is not retried (see the file comment); a decode that settles
+   * after `dispose()` is dropped.
+   */
   private decodeFrame(index: number): Promise<void> {
-    if (this.ring.has(index)) return Promise.resolve();
+    if (this.ring.has(index) || this.failed.has(index)) return Promise.resolve();
     const existing = this.inflight.get(index);
     if (existing) return existing;
 
-    const p = this.loader(this.urlFor(index), index)
+    const generation = this.generation;
+    const current = (): boolean => generation === this.generation;
+    let load: Promise<Uint32Array>;
+    try {
+      load = Promise.resolve(this.loader(this.urlFor(index), index));
+    } catch (err) {
+      load = Promise.reject(err);
+    }
+    const p = load
       .then((image) => {
-        this.ring.set(index, image);
+        if (current()) this.ring.set(index, image);
       })
       .catch((err) => {
+        if (!current()) return;
+        this.failed.add(index);
         this.onError?.(err, index);
       })
       .finally(() => {
-        this.inflight.delete(index);
+        if (current()) this.inflight.delete(index);
       });
     this.inflight.set(index, p);
     return p;
+  }
+
+  private assertLive(what: string): void {
+    if (this.disposed) throw new VDBError("VDB_DISPOSED", `VDBSequence: ${what} after dispose(). Create a new VDBSequence.`);
   }
 
   private decodedAhead(): number {
@@ -236,6 +293,7 @@ export class VDBSequence {
    * zero stalls). Does not start playback.
    */
   async preload(count = Math.min(this.frameCount, this.prefetch + 1)): Promise<void> {
+    this.assertLive("preload()");
     const n = Math.min(count, this.frameCount);
     const ps: Promise<void>[] = [];
     for (let i = 0; i < n; i++) ps.push(this.decodeFrame(this.wrap(i)));
@@ -247,8 +305,12 @@ export class VDBSequence {
    * frame 0 at once if that is decoded (else the first `update` that finds it
    * ready does), kicks off prefetch, and anchors the clock at `now` (defaults
    * to the injected clock). Call `update(now)` every animation frame thereafter.
+   * Clears the failed set (failed frames are retried).
+   *
+   * @throws VDBError `VDB_DISPOSED` after `dispose()`; `VDB_BAD_OPTION` for a bad target.
    */
   start(target: VDBSequenceTarget, now: number = this.now()): void {
+    this.assertLive("start()");
     if (target === null || typeof target !== "object" || typeof target.pool?.replace !== "function" || !Number.isInteger(target.id) || target.id < 0) {
       throw new VDBError(
         "VDB_BAD_OPTION",
@@ -262,6 +324,7 @@ export class VDBSequence {
     this._stalls = 0;
     this._replaceMs = 0;
     this._swaps = 0;
+    this.failed.clear();
     this.ensurePrefetch(0);
     this.showFrame(0);
   }
@@ -275,16 +338,26 @@ export class VDBSequence {
    * Resume after `stop()` WITHOUT resetting to frame 0 or clearing stats:
    * re-anchors the clock at `now` from the currently-shown frame so playback
    * continues from where it paused. No-op if `start()` was never called.
+   *
+   * @throws VDBError `VDB_DISPOSED` after `dispose()`.
    */
   resume(now: number = this.now()): void {
+    this.assertLive("resume()");
     if (!this.target) return;
     this.playing = true;
     this.startNow = now;
     this.startFrame = this._frame < 0 ? 0 : this._frame;
   }
 
-  /** Jump to `index`, re-anchoring the clock there so playback continues from it. */
+  /**
+   * Jump to `index`, re-anchoring the clock there so playback continues from
+   * it. Clears the failed set (failed frames are retried).
+   *
+   * @throws VDBError `VDB_DISPOSED` after `dispose()`.
+   */
   seek(index: number, now: number = this.now()): void {
+    this.assertLive("seek()");
+    this.failed.clear();
     const frame = this.wrap(Math.trunc(index));
     this.startNow = now;
     this.startFrame = frame;
@@ -345,10 +418,19 @@ export class VDBSequence {
     this.onFrame?.(this.stats);
   }
 
-  /** Drop all decoded frames and in-flight tracking (playback state kept). The pool keeps the grid. */
+  /**
+   * Stops playback and drops all decoded frames and in-flight tracking; later
+   * decodes are dropped when they settle. The pool keeps the grid (and the
+   * frame it shows). Further `start` / `seek` / `resume` / `preload` throw
+   * `VDB_DISPOSED`. Idempotent.
+   */
   dispose(): void {
+    this.disposed = true;
+    this.generation++;
     this.playing = false;
+    this.target = undefined;
     this.ring.clear();
     this.inflight.clear();
+    this.failed.clear();
   }
 }
