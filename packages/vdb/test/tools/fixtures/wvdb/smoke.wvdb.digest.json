@@ -1,0 +1,163 @@
+{
+  "about": "Digest of mjurczyk/openvdb src/docs/examples/public/assets/smoke.wvdb at commit 75e7345 (MIT repo; smoke.vdb is an openvdb.org sample, CC BY-SA 4.0). The .wvdb itself is not committed (808,752 bytes). Header with chunk offsets/lengths zeroed, and the SHA-256 of each inflated chunk in spec section 9 order.",
+  "fileBytes": 808752,
+  "fileSha256": "abcd1e7f672534f688547e6fa79b350cb19cb857b1daa61b898b7fc554339a4e",
+  "headerWithoutOffsets": {
+    "version": 1,
+    "source": {
+      "file": "smoke.vdb",
+      "sha256": "09e5727dab14d1ef46532b9b731a8d2de4c1de333a97c443516fd8ae8ca8c03b"
+    },
+    "bake": {
+      "grids": null,
+      "resolution": 128,
+      "lods": 3,
+      "bits": 8,
+      "layout": "sparse",
+      "pageBricks": 1024,
+      "bbox": null
+    },
+    "brickDim": 8,
+    "grids": [
+      {
+        "name": "density",
+        "class": "fog volume",
+        "channels": 1,
+        "background": 0,
+        "bbox": [
+          [
+            -33.571428571428505,
+            -12.142857142857146,
+            -25.952380952380917
+          ],
+          [
+            18.80952380952369,
+            93.0952380952377,
+            26.904761904761752
+          ]
+        ],
+        "meanDensity": 0.17101917383994694,
+        "nonZeroVoxels": 570069,
+        "lods": [
+          {
+            "dimensions": [
+              32,
+              32,
+              32
+            ],
+            "bricks": 60,
+            "mask": {
+              "offset": 0,
+              "length": 0
+            },
+            "pages": [
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 60
+              }
+            ]
+          },
+          {
+            "dimensions": [
+              64,
+              64,
+              64
+            ],
+            "bricks": 371,
+            "mask": {
+              "offset": 0,
+              "length": 0
+            },
+            "pages": [
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 371
+              }
+            ]
+          },
+          {
+            "dimensions": [
+              128,
+              128,
+              128
+            ],
+            "bricks": 2407,
+            "mask": {
+              "offset": 0,
+              "length": 0
+            },
+            "pages": [
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 1024
+              },
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 1024
+              },
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 359
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "chunks": [
+    {
+      "lod": 0,
+      "kind": "mask",
+      "inflatedBytes": 8,
+      "inflatedSha256": "ea345902f881c1f62ef10fcf24ac4e9248b7994847224520c25f4db45535bbb2"
+    },
+    {
+      "lod": 0,
+      "kind": "page",
+      "inflatedBytes": 31444,
+      "inflatedSha256": "f8244afba2c9f17f4c6fe6025c6bfd6b8f06697eac82cec9770c49ba95d7d92e"
+    },
+    {
+      "lod": 1,
+      "kind": "mask",
+      "inflatedBytes": 64,
+      "inflatedSha256": "4cc8c8d29cf83a9f20de67604a38a87b11067c24e6e55af1123a19dd753eb370"
+    },
+    {
+      "lod": 1,
+      "kind": "page",
+      "inflatedBytes": 194408,
+      "inflatedSha256": "80ead95ebe7c63e91d9dde01865fc76da88673c47a34072d3bd824b14407c6c6"
+    },
+    {
+      "lod": 2,
+      "kind": "mask",
+      "inflatedBytes": 512,
+      "inflatedSha256": "3b98145911af8287a8214205f97858c1ac1ac2c1358d6056f25cb7e47675924a"
+    },
+    {
+      "lod": 2,
+      "kind": "page",
+      "inflatedBytes": 536580,
+      "inflatedSha256": "217bb5f66958ba0a60a5159ab9c76f7bbd0039a25618a9cf079bcf998369ac43"
+    },
+    {
+      "lod": 2,
+      "kind": "page",
+      "inflatedBytes": 536580,
+      "inflatedSha256": "6f587f08a0fc115b8f8531febafda9db880b18773f86d286acf7cf7ba8cc8d88"
+    },
+    {
+      "lod": 2,
+      "kind": "page",
+      "inflatedBytes": 188120,
+      "inflatedSha256": "77904f02448d72a996ab012ed7a7f71f76a89b2a2bc17c02ea7e9f12421fcd8e"
+    }
+  ]
+}
