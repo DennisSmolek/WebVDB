@@ -48,21 +48,21 @@ function spec(fileVersion: 221 | 222): SynthSpec {
     background: 0,
     rootTiles: [
       { ...ROOT_TILE, active: true },
-      { origin: [8192, 0, 0], value: 9, active: false }, // inactive: dropped
+      { origin: [8192, 0, 0], value: 9, active: false }, // inactive: kept (K4.9)
     ],
     uppers: [
       {
         origin: [0, 0, 0],
         tiles: [
           { ...UPPER_TILE, active: true },
-          { origin: [256, 0, 0], value: 7, active: false }, // inactive: dropped
+          { origin: [256, 0, 0], value: 7, active: false }, // inactive: kept (K4.9)
         ],
         lowers: [
           {
             origin: [0, 0, 0],
             tiles: [
               { ...LOWER_TILE, active: true },
-              { origin: [16, 0, 0], value: 3, active: false }, // inactive: dropped
+              { origin: [16, 0, 0], value: 3, active: false }, // inactive: kept (K4.9)
             ],
             leaves: [LEAF_A],
           },
@@ -141,10 +141,12 @@ describe.each([222, 221] as const)("parseVdb — active tiles (file version %i)"
       const ijk: Coord = [(n >> 6) & 7, (n >> 3) & 7, n & 7];
       expect(grid.readValue(ijk)).toEqual({ value: LEAF_A.values[n], active: n % 3 === 0 });
     }
-    // Inactive tiles and empty space read as background.
-    for (const ijk of [[8192, 5, 5], [256 + 3, 1, 1], [16 + 2, 0, 0], [0, 4096 * 2, 0]] as Coord[]) {
-      expect(grid.readValue(ijk)).toEqual({ value: 0, active: false });
+    // Inactive tiles keep their stored value (K4.9); empty space reads as background.
+    for (const [ijk, value] of [[[8192, 5, 5], 9], [[256 + 3, 1, 1], 7], [[16 + 2, 0, 0], 3]] as [Coord, number][]) {
+      expect(grid.readValue(ijk)).toEqual({ value, active: false });
     }
+    expect(grid.readValue([0, 4096 * 2, 0])).toEqual({ value: 0, active: false });
+    expect([...grid.iterInactiveTiles()].map((t) => [t.dim, t.value]).sort()).toEqual([[128, 7], [4096, 9], [8, 3]].sort());
   });
 });
 
@@ -169,19 +171,25 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
 
   it("writes the root tile as state-on, child-less, holding its value, in origin order", () => {
     const rootOff = TREE + Number(dv.getBigUint64(TREE + 24, true));
-    expect(dv.getUint32(rootOff + 24, true)).toBe(3); // table size: tile + 2 children
-    const entries = [0, 1, 2].map((i) => {
+    expect(dv.getUint32(rootOff + 24, true)).toBe(4); // table size: 2 tiles (one inactive) + 2 children
+    const entries = [0, 1, 2, 3].map((i) => {
       const t = rootOff + 64 + i * 32;
       return {
+        key: dv.getBigUint64(t, true),
         child: dv.getBigInt64(t + 8, true),
         state: dv.getUint32(t + 16, true),
         value: dv.getFloat32(t + 20, true),
       };
     });
-    // Sorted by origin: [-4096,0,0] (tile), [0,-4096,0], [0,0,0].
-    expect(entries[0]).toEqual({ child: 0n, state: 1, value: 0.25 });
-    expect(entries[1]!.child).not.toBe(0n);
-    expect(entries[2]!.child).not.toBe(0n);
+    // Sorted by unsigned NanoVDB key (K4.12): [0,0,0] < [0,-4096,0] < [-4096,0,0] < [8192,0,0].
+    // Keys are z | y<<21 | x<<42 over the coordinate >>> 12 (as u32).
+    const byKey = new Map(entries.map((e) => [e.key, e]));
+    expect(entries.map((e) => e.key)).toEqual([...entries.map((e) => e.key)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    expect(byKey.size).toBe(4);
+    const tiles = entries.filter((e) => e.child === 0n);
+    expect(tiles).toContainEqual(expect.objectContaining({ state: 1, value: 0.25 }));
+    expect(tiles).toContainEqual(expect.objectContaining({ state: 0, value: 9 })); // inactive root tile
+    expect(entries.filter((e) => e.child !== 0n)).toHaveLength(2);
     // Root bbox covers the root tile's full extent, the upper tile and the negative leaf/tile.
     expect([0, 4, 8].map((o) => dv.getInt32(rootOff + o, true))).toEqual([-4096, -8, 0]);
     expect([12, 16, 20].map((o) => dv.getInt32(rootOff + o, true))).toEqual([255, 4095, 4095]);
@@ -204,8 +212,8 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
         expect(readValue(image, ijk)).toEqual({ value: leaf.values[n], active });
       }
     }
-    for (const ijk of [[8192, 5, 5], [259, 1, 1], [18, 0, 0], [0, 8192, 0]] as Coord[]) {
-      expect(readValue(image, ijk)).toEqual({ value: 0, active: false });
+    for (const [ijk, value] of [[[8192, 5, 5], 9], [[259, 1, 1], 7], [[18, 0, 0], 3], [[0, 8192, 0], 0]] as [Coord, number][]) {
+      expect(readValue(image, ijk)).toEqual({ value, active: false });
     }
   });
 

@@ -253,7 +253,7 @@ describe("readCompressedValues hostile payloads (S1, S4, N7)", () => {
     fileVersion: 223,
     compression: { zip, activeMask: false, blosc },
     useHalf: false,
-    background: 0,
+    background: [0],
     numValues: 512,
     valueMask: maskAll,
   });

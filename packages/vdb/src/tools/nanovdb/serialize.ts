@@ -393,9 +393,9 @@ function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32A
       w.setU32(tileOff + ROOT_TILE_OFF_STATE, 0);
       // Child slot: the value field stays zero (the image is zero-filled).
     } else {
-      // Active root tile: no child (offset 0), state on, the tile's value.
+      // Root tile: no child (offset 0), state on (active) or off (inactive), the tile's value.
       w.setI64(tileOff + ROOT_TILE_OFF_CHILD, 0n);
-      w.setU32(tileOff + ROOT_TILE_OFF_STATE, 1);
+      w.setU32(tileOff + ROOT_TILE_OFF_STATE, tile.active ? 1 : 0);
       codec.writeConstant(w, tileOff + L.rootTileOffValue, tile.value);
     }
   });
@@ -476,6 +476,7 @@ function writeInternalNode(
   // is an inactive background tile carrying the background value.
   const childSlots = node.children;
   const tiles = node.tiles;
+  const inactiveTiles = node.inactiveTiles;
   const backgroundIsZero =
     typeof p.background === "number" ? p.background === 0 : p.background.every((c) => c === 0);
   for (let n = 0; n < p.tableCount; n++) {
@@ -488,6 +489,8 @@ function writeInternalNode(
     } else if (tileValue !== undefined) {
       w.setMaskBit(nodeOff + NODE_OFF_VALUE_MASK, n);
       p.codec.writeConstant(w, slotOff, tileValue);
+    } else if (inactiveTiles.size > 0 && inactiveTiles.has(n)) {
+      p.codec.writeConstant(w, slotOff, inactiveTiles.get(n)!);
     } else if (!backgroundIsZero) {
       // Skip when background is 0: the buffer is already zero-filled.
       p.codec.writeConstant(w, slotOff, p.background);

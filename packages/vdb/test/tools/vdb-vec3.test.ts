@@ -268,7 +268,7 @@ describe("buildFromVdb — Vec3f NanoVDB grid", () => {
     expect(built.tileCounts).toEqual({ lower: 1, upper: 1, root: 1 });
     expect(built.voxelCount).toBe(3 * 341 + 8 ** 3 + 128 ** 3 + 4096 ** 3);
     const L = VEC3F_LAYOUT;
-    const rootTiles = 3; // two uppers + one tile
+    const rootTiles = 4; // two uppers + one active tile + one inactive tile (K4.9)
     expect(image.byteLength).toBe(GRID_SIZE + 64 + L.rootSize + rootTiles * L.rootTileSize + 2 * L.upperSize + 2 * L.lowerSize + 3 * L.leafSize);
     expect(L.leafSize).toBe(128 + 512 * 12);
     const report = inspect(image);

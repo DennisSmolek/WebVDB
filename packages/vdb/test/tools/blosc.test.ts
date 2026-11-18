@@ -138,7 +138,7 @@ describe("readCompressedValues with blosc", () => {
       fileVersion: 223,
       compression: { zip: false, activeMask: true, blosc: true },
       useHalf: false,
-      background: 0,
+      background: [0],
       numValues: 512,
       valueMask,
     });
@@ -163,7 +163,7 @@ describe("readCompressedValues with blosc", () => {
       fileVersion: 223,
       compression: { zip: false, activeMask: true, blosc: true },
       useHalf: false,
-      background: 0,
+      background: [0],
       numValues: 2,
       valueMask: new Uint32Array(1).fill(3),
     });

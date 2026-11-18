@@ -240,21 +240,22 @@ export function readCompressedValues(reader: ByteReader, opts: ReadCompressedOpt
     meta = reader.u8() as NodeMetaData;
   }
 
-  // Inactive fill values. They default to 0 here, not to OpenVDB's
-  // `background` / `-background` (open issue K4.8); only `NoMaskAndMinusBg`
-  // uses the background.
-  let inactiveVal0: ArrayLike<number> = new Array<number>(comps).fill(0);
-  let inactiveVal1: ArrayLike<number> = inactiveVal0;
-  if (meta === NodeMetaData.NoMaskAndMinusBg) {
-    inactiveVal0 = Array.from({ length: comps }, (_, c) => -opts.background[c]!);
-  } else if (
+  // Inactive fill values, exactly as `io::readCompressedValues`:
+  //   inactiveVal1 = background
+  //   inactiveVal0 = (meta == NoMaskOrInactiveVals) ? background : -background
+  // then one or two values read from the stream override them (written at
+  // full `sizeof(ValueType)`, even for half-float grids). K4.8.
+  const bg = Array.from({ length: comps }, (_, c) => opts.background[c]!);
+  const negBg = bg.map((v) => -v);
+  let inactiveVal0: ArrayLike<number> = meta === NodeMetaData.NoMaskOrInactiveVals ? bg : negBg;
+  let inactiveVal1: ArrayLike<number> = bg;
+  if (
     meta === NodeMetaData.NoMaskAndOneInactiveVal ||
     meta === NodeMetaData.MaskAndOneInactiveVal ||
     meta === NodeMetaData.MaskAndTwoInactiveVals
   ) {
-    // Written at full `sizeof(ValueType)`, even for half-float grids.
     inactiveVal0 = readFullValue(reader, format);
-    inactiveVal1 = meta === NodeMetaData.MaskAndTwoInactiveVals ? readFullValue(reader, format) : inactiveVal0;
+    if (meta === NodeMetaData.MaskAndTwoInactiveVals) inactiveVal1 = readFullValue(reader, format);
   }
 
   let selectionMask: Uint32Array | null = null;

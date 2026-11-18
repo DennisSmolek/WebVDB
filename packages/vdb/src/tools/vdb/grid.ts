@@ -5,10 +5,9 @@
  *
  * `readValue` resolves a coordinate the way an OpenVDB accessor would for the
  * data this parser keeps: a stored leaf first, then an enclosing active tile
- * (lower 8^3, upper 128^3, root 4096^3), then the background. Inactive
- * internal-node tiles are not retained (see tree.ts), so a coordinate inside
- * one reads as background/inactive even when the file stored another inactive
- * value there (e.g. a level set's interior `-background`).
+ * (lower 8^3, upper 128^3, root 4096^3), then the background. Inactive tiles
+ * with a stored non-background value (e.g. a level set's interior
+ * `-background`) are kept and read back with `active: false` (K4.9).
  *
  * Values have `components` scalars (1, or 3 for vector grids, xyz
  * interleaved in the leaf arrays); vector values come back as `[x, y, z]`.
@@ -119,7 +118,7 @@ class VdbGridImpl {
       for (const { dim, map } of this.tileByOrigin) {
         if (map.size === 0) continue;
         const tile = map.get(leafKey(floorTo(x, dim), floorTo(y, dim), floorTo(z, dim)));
-        if (tile) return { value: this.toValue(tile.value), active: true };
+        if (tile) return { value: this.toValue(tile.value), active: tile.active };
       }
       return { value: this.components === 3 ? [...(this.background as Vec3Tuple)] : this.background, active: false };
     }
@@ -141,6 +140,14 @@ class VdbGridImpl {
 
   *iterTiles(): Iterable<VdbTile<Value>> {
     for (const tile of this.tiles) {
+      if (!tile.active) continue;
+      yield { origin: tile.origin, dim: tile.dim, value: this.toValue(tile.value) };
+    }
+  }
+
+  *iterInactiveTiles(): Iterable<VdbTile<Value>> {
+    for (const tile of this.tiles) {
+      if (tile.active) continue;
       yield { origin: tile.origin, dim: tile.dim, value: this.toValue(tile.value) };
     }
   }
