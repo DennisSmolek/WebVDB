@@ -49,6 +49,8 @@ interface Demo09State {
   presentation?: string;
   source?: string;
   totalBytes?: number;
+  /** The stream reader's own expected total (K4.20), derived from the file's FileMetaData. */
+  streamTotalBytes?: number | null;
   phases?: PhaseRecord[];
   sameId?: boolean;
   inPlace?: boolean;
@@ -257,13 +259,17 @@ async function run(): Promise<void> {
   // Phase bookkeeping and the on-screen counter.
   const phases: PhaseRecord[] = [];
   let transferred = 0;
+  // K4.20: the reader's own total (the grids' FileMetaData, once they have arrived) drives the counter; the
+  // Response total is only the fallback for the first chunks.
+  let streamTotal: number | null = null;
   const showCounter = (): void => {
-    const pct = source.total > 0 ? Math.min(100, (transferred / source.total) * 100) : 0;
+    const total = streamTotal ?? source.total;
+    const pct = total > 0 ? Math.min(100, (transferred / total) * 100) : 0;
     barEl.style.width = `${pct}%`;
     const first = phases[0];
     const full = phases[1];
     statsEl.textContent =
-      `received ${kib(transferred)}${source.total ? ` of ${kib(source.total)} (${pct.toFixed(0)}%)` : ""}\n` +
+      `received ${kib(transferred)}${total ? ` of ${kib(total)} (${pct.toFixed(0)}%)` : ""}\n` +
       `link ${SPEED_KIB} KiB/s${TEST_MODE ? " (test: unthrottled)" : ""}\n` +
       (first ? `preview drawn after ${kib(first.transferBytes)}\n` : "") +
       (full ? `full grid in after ${kib(full.transferBytes)}\n` : "") +
@@ -360,6 +366,10 @@ async function run(): Promise<void> {
   }
 
   const result = await vdbStreamCoarseFirst(pool, throttled, {
+    onProgress: (p) => {
+      streamTotal = p.bytesTotal;
+      state.streamTotalBytes = p.bytesTotal;
+    },
     onGrid: (e) => {
       held = (async () => {
         await showGrid(e);

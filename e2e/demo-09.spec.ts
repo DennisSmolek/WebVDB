@@ -64,6 +64,8 @@ test.describe("demo 09 — coarse-first streaming", () => {
 
     // The counter reached the end of the file.
     expect(state!.transferred, detail).toBe(state!.totalBytes);
+    // K4.20: the reader derived the same total from the file's FileMetaData (the throttled Response has no Content-Length).
+    expect(state!.streamTotalBytes, detail).toBe(state!.totalBytes);
     await expect(page.getByTestId("phase")).toHaveText("FULL · done");
     expect(consoleErrors, detail).toEqual([]);
 

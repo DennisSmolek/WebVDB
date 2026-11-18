@@ -36,6 +36,7 @@ import {
   FILE_HEADER_SIZE,
   FILE_METADATA_SIZE,
   GRID_DATA_SIZE,
+  NvdbFormatError,
   assertSafeGridSize,
   decodeCString,
   finishGridRecord,
@@ -50,20 +51,51 @@ import {
   type ParsedFileMetaData,
 } from "./nvdb-file.js";
 
-/** A malformed or truncated `.nvdb` stream. `instanceof VdbFormatError` holds. */
-export class NvdbFormatError extends VdbFormatError {
-  constructor(message: string) {
-    super(message);
-    this.name = "NvdbFormatError";
-    this.message = `@pmndrs/vdb/tools: malformed .nvdb: ${message}`;
-  }
-}
+export { NvdbFormatError };
 
 export interface NvdbStreamReaderOptions {
   /** Largest `gridSize` (decoded image bytes) the reader allocates. Default 1 GiB. */
   maxGridBytes?: number;
   /** Largest grid name (FileMetaData.nameSize). Default 64 KiB. */
   maxNameBytes?: number;
+  /**
+   * The whole stream's size in bytes when the caller knows it (a Response's
+   * Content-Length: see {@link nvdbResponseLength}). Takes precedence over the
+   * size derived from the grids' FileMetaData.
+   */
+  bytesTotal?: number;
+  /** Called after every `push` with the progress so far (not inside the push's error handling). */
+  onProgress?: (progress: NvdbProgress) => void;
+}
+
+/** Download progress of an {@link NvdbStreamReader}. */
+export interface NvdbProgress {
+  /** File bytes pushed so far (what the reader consumed; decoded bytes if the transport decompresses). */
+  bytesReceived: number;
+  /**
+   * The expected total, or null while unknown: the `bytesTotal` option when
+   * given, else the end of the latest segment whose FileMetaData have all
+   * arrived (header + every grid's metadata, name and `fileSize`). That is
+   * exact for a one-segment file and a lower bound while a later segment is
+   * still ahead. Null until the first segment's metadata is in.
+   */
+  bytesTotal: number | null;
+  /** Grids emitted so far. */
+  gridsEmitted: number;
+}
+
+/**
+ * The byte length of a `fetch` Response's body when the header says so: its
+ * Content-Length, unless a Content-Encoding makes the (decoded) bytes the
+ * reader sees differ from it. Null when unknown.
+ */
+export function nvdbResponseLength(response: { headers: { get(name: string): string | null } }): number | null {
+  const encoding = response.headers.get("content-encoding");
+  if (encoding !== null && encoding.trim() !== "" && encoding.trim().toLowerCase() !== "identity") return null;
+  const raw = response.headers.get("content-length");
+  if (raw === null || !/^\d+$/.test(raw.trim())) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 /** One grid, emitted by {@link NvdbStreamReader.push} as soon as its data is complete. */
@@ -75,6 +107,8 @@ export interface NvdbStreamGrid {
   image: Uint32Array;
   /** File bytes pushed when this grid completed (the end of its data). */
   bytesReceived: number;
+  /** The expected file size when this grid completed, or null if unknown (see {@link NvdbProgress.bytesTotal}). */
+  bytesTotal: number | null;
   /** The preview level from a `<name>.lod<N>` name, or null for a full grid. */
   lod: number | null;
   /** The name without its `.lod<N>` suffix (the full grid's name). */
@@ -120,6 +154,10 @@ interface PendingGrid {
 export class NvdbStreamReader {
   readonly #maxGridBytes: number;
   readonly #maxNameBytes: number;
+  readonly #onProgress: ((progress: NvdbProgress) => void) | undefined;
+  readonly #declaredTotal: number | null;
+  #segmentStart = 0;
+  #knownEnd: number | null = null;
 
   /** Small fixed-size fields (FileHeader, FileMetaData, ZIP prefix) and names. */
   #scratch = new Uint8Array(FILE_METADATA_SIZE);
@@ -148,7 +186,22 @@ export class NvdbStreamReader {
     if (!Number.isSafeInteger(this.#maxNameBytes) || this.#maxNameBytes < 1) {
       throw new Error("NvdbStreamReader: maxNameBytes must be a positive integer");
     }
+    this.#onProgress = options.onProgress;
+    this.#declaredTotal = options.bytesTotal ?? null;
+    if (this.#declaredTotal !== null && (!Number.isSafeInteger(this.#declaredTotal) || this.#declaredTotal < 0)) {
+      throw new Error("NvdbStreamReader: bytesTotal must be a non-negative integer");
+    }
     this.#target = this.#scratch.subarray(0, FILE_HEADER_SIZE);
+  }
+
+  /** The expected file size in bytes, or null while unknown (see {@link NvdbProgress.bytesTotal}). */
+  get bytesTotal(): number | null {
+    return this.#declaredTotal ?? this.#knownEnd;
+  }
+
+  /** Progress so far. */
+  get progress(): NvdbProgress {
+    return { bytesReceived: this.#received, bytesTotal: this.bytesTotal, gridsEmitted: this.#emitted };
   }
 
   /** File bytes pushed so far. */
@@ -196,6 +249,7 @@ export class NvdbStreamReader {
       this.#failed = err instanceof VdbFormatError || err instanceof VdbUnsupportedError ? err : new NvdbFormatError((err as Error).message);
       throw this.#failed;
     }
+    if (this.#onProgress && chunk.byteLength > 0) this.#onProgress(this.progress);
     return out;
   }
 
@@ -262,6 +316,7 @@ export class NvdbStreamReader {
         this.#codec = header.codec;
         this.#segmentGrids = header.gridCount;
         this.#segments++;
+        this.#segmentStart = this.#received - FILE_HEADER_SIZE;
         this.#pending = [];
         this.#gridInSegment = 0;
         this.#expect("meta", this.#scratch.subarray(0, FILE_METADATA_SIZE));
@@ -308,7 +363,12 @@ export class NvdbStreamReader {
         });
         this.#nextMeta = null;
         if (this.#pending.length < this.#segmentGrids) this.#expect("meta", this.#scratch.subarray(0, FILE_METADATA_SIZE));
-        else this.#startGrid();
+        else {
+          let end = this.#segmentStart + FILE_HEADER_SIZE;
+          for (const g of this.#pending) end += FILE_METADATA_SIZE + g.meta.nameSize + g.meta.fileSize;
+          this.#knownEnd = Number.isSafeInteger(end) ? end : null;
+          this.#startGrid();
+        }
         return;
       }
       case "zipPrefix": {
@@ -332,7 +392,7 @@ export class NvdbStreamReader {
         const record = finishGridRecord(meta, name, index, bytes);
         this.#grids[index] = record.metadata;
         const { baseName, lod } = parseNvdbLodName(name);
-        out.push({ index, metadata: record.metadata, image: record.image, bytesReceived: this.#received, lod, baseName });
+        out.push({ index, metadata: record.metadata, image: record.image, bytesReceived: this.#received, bytesTotal: this.bytesTotal, lod, baseName });
         this.#emitted++;
         this.#gridInSegment++;
         if (this.#gridInSegment < this.#segmentGrids) this.#startGrid();
@@ -352,15 +412,31 @@ export class NvdbStreamReader {
   }
 }
 
+/** What {@link readNvdbStream} reads: a `fetch` Response (its Content-Length feeds `bytesTotal`), its body, or chunks. */
+export type NvdbStreamSource =
+  | { body: ReadableStream<Uint8Array> | null; headers: { get(name: string): string | null } }
+  | ReadableStream<Uint8Array>
+  | AsyncIterable<Uint8Array>;
+
+function isResponse(source: NvdbStreamSource): source is Extract<NvdbStreamSource, { headers: unknown }> {
+  return typeof (source as { headers?: unknown }).headers === "object" && "body" in source;
+}
+
 /**
- * Reads a byte stream (a `fetch` body, or any async iterable of chunks) through
+ * Reads a byte stream (a `fetch` Response or body, or any async iterable of chunks) through
  * an {@link NvdbStreamReader}, yielding each grid as it completes. Stops
  * reading (and cancels the stream) when the consumer breaks out of the loop.
  */
 export async function* readNvdbStream(
-  source: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+  source: NvdbStreamSource,
   options: NvdbStreamReaderOptions = {},
 ): AsyncGenerator<NvdbStreamGrid, void, undefined> {
+  if (isResponse(source)) {
+    const len = nvdbResponseLength(source);
+    if (source.body === null) throw new VdbFormatError("readNvdbStream: the response has no body.");
+    options = len !== null && options.bytesTotal === undefined ? { ...options, bytesTotal: len } : options;
+    source = source.body;
+  }
   const reader = new NvdbStreamReader(options);
   if (typeof (source as ReadableStream<Uint8Array>).getReader === "function") {
     const r = (source as ReadableStream<Uint8Array>).getReader();

@@ -120,8 +120,8 @@ export type { GridMetadata } from "./nvdb-file.js";
  */
 export { bakeCoarseFirst } from "./nanovdb/index.js";
 export type { BakeCoarseFirstOptions } from "./nanovdb/index.js";
-export { NvdbFormatError, NvdbStreamReader, nvdbLodName, parseNvdbLodName, readNvdbStream } from "./nvdb-stream.js";
-export type { NvdbStreamGrid, NvdbStreamReaderOptions } from "./nvdb-stream.js";
+export { NvdbFormatError, NvdbStreamReader, nvdbLodName, nvdbResponseLength, parseNvdbLodName, readNvdbStream } from "./nvdb-stream.js";
+export type { NvdbProgress, NvdbStreamGrid, NvdbStreamReaderOptions, NvdbStreamSource } from "./nvdb-stream.js";
 
 /**
  * Pure-TypeScript CPU reference for NanoVDB voxel lookup/sampling (Phase 1/2,

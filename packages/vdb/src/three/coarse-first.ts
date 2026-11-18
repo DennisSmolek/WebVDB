@@ -31,7 +31,15 @@
  */
 
 import { VDBError } from "../core/errors.js";
-import { NvdbStreamReader, parseNvdbLodName, type GridMetadata, type NvdbStreamGrid, type NvdbStreamReaderOptions } from "../tools/index.js";
+import {
+  NvdbStreamReader,
+  nvdbResponseLength,
+  parseNvdbLodName,
+  type GridMetadata,
+  type NvdbProgress,
+  type NvdbStreamGrid,
+  type NvdbStreamReaderOptions,
+} from "../tools/index.js";
 
 /** The part of a `VDBGridPool` the loader uses. */
 export interface VDBCoarseFirstPoolLike {
@@ -54,6 +62,8 @@ export interface VDBCoarseFirstEvent {
   action: "add" | "replace";
   /** File bytes received when the grid was shown (decoded bytes; see the e2e for compressed counts). */
   bytesReceived: number;
+  /** Expected file size when the grid was shown, or null if unknown (K4.20; see `NvdbProgress.bytesTotal`). */
+  bytesTotal: number | null;
   /** This grid's voxel size over the full grid's (x axis): 1 for the full grid, > 1 for a preview. */
   voxelRatio: number;
 }
@@ -67,6 +77,8 @@ export interface VDBCoarseFirstOptions {
   reader?: NvdbStreamReaderOptions;
   /** Called after each `pool.add` / `pool.replace` (preview, then finer grids, then the full grid). */
   onGrid?: (event: VDBCoarseFirstEvent) => void;
+  /** Called after every received chunk with the byte progress (K4.20). `bytesTotal` is the Response's Content-Length, else derived from the file's metadata. */
+  onProgress?: (progress: NvdbProgress) => void;
   /** Aborts the read (rejects with the signal's reason; the id, if added, stays in the pool). */
   signal?: AbortSignal;
 }
@@ -79,6 +91,8 @@ export interface VDBCoarseFirstResult {
   firstBytes: number;
   /** File bytes received when the full grid replaced the preview. */
   fullBytes: number;
+  /** Expected file size when the full grid arrived, or null if unknown. */
+  bytesTotal: number | null;
 }
 
 const familyOf = (name: string): string => parseNvdbLodName(name).baseName;
@@ -130,7 +144,12 @@ export async function vdbStreamCoarseFirst(
 ): Promise<VDBCoarseFirstResult> {
   const signal = options.signal;
   signal?.throwIfAborted();
-  const reader = new NvdbStreamReader(options.reader);
+  const wire = source instanceof Response ? nvdbResponseLength(source) : null;
+  const reader = new NvdbStreamReader({
+    ...options.reader,
+    ...(wire !== null && options.reader?.bytesTotal === undefined ? { bytesTotal: wire } : {}),
+    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+  });
   const { iterate, cancel } = chunks(source);
 
   let family = options.gridName ?? null;
@@ -161,12 +180,12 @@ export async function vdbStreamCoarseFirst(
           action = "replace";
         }
         current = grid;
-        const event: VDBCoarseFirstEvent = { id, grid, final, action, bytesReceived: grid.bytesReceived, voxelRatio: fullVoxel(grid) };
+        const event: VDBCoarseFirstEvent = { id, grid, final, action, bytesReceived: grid.bytesReceived, bytesTotal: grid.bytesTotal, voxelRatio: fullVoxel(grid) };
         shown.push(event);
         options.onGrid?.(event);
         if (final) {
           await cancel();
-          return { id, shown, firstBytes: shown[0]!.bytesReceived, fullBytes: grid.bytesReceived };
+          return { id, shown, firstBytes: shown[0]!.bytesReceived, fullBytes: grid.bytesReceived, bytesTotal: grid.bytesTotal };
         }
       }
     }
