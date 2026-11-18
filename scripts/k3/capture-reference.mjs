@@ -162,6 +162,40 @@ const SCENARIOS = [
   { name: "step7-venus-statue-surface-normals", step: 7, fields: { demo: "levelset", format: "vdb", render: "surface" }, sanity: null, isolate: "normals", parityOverrides: false },
   { name: "step7-sphere-points-asis", step: 7, fields: { demo: "points", model: "sphere_points", format: "vdb" }, sanity: "demo-7.jpg", parityOverrides: false },
   { name: "step7-sphere-points-isolated", step: 7, fields: { demo: "points", model: "sphere_points", format: "vdb" }, sanity: null, isolate: "points", parityOverrides: false },
+  // K3.6 (R1 §6 Step 6): volume shadows on meshes and the emission light, his tests/validation-set demo-1-cast-shadow*
+  // and demo-1-explosion-* fields. `*-asis`: as is (his 'environment' light setup; INFO, sanity vs his JPEG where the
+  // fields match). `*-dir-isolated` (`isolate: 'shadow'`): his sun only, scene.environment null, the grounded skybox and
+  // the light helpers hidden, every other mesh kept (his ShadowMaterial floor, the obstacle sphere, pillars and spheres),
+  // background 0x598eff: the strict gate, and a shadow-only diff on the floor. The explosion scenes use his 'planck'
+  // emission spectrum (his default 'approximate' is the Shadertoy blackbody, not ported: R1 §7) and `advanceFrames: 30`
+  // (his validation.spec.js: the paused clock moves 30 frames of 60 Hz, the sequence plays); `*-env-isolated`
+  // (`isolate: 'emission'`): no scene light and no environment, so the floor props are lit by the emission light only.
+  ...[
+    ["step6-cast-shadow", { castShadow: true }, "demo-1-cast-shadow.jpg"],
+    ["step6-cast-shadow-obstacle", { castShadow: true, showObstacle: true }, "demo-1-cast-shadow-obstacle.jpg"],
+    ["step6-cast-shadow-obstacle-cascades-4", { castShadow: true, showObstacle: true, castShadowCascades: 4 }, "demo-1-cast-shadow-obstacle-cascades-4.jpg"],
+    ["step6-cast-shadow-obstacle-coarse", { castShadow: true, showObstacle: true, castShadowCoarse: true }, "demo-1-cast-shadow-obstacle-coarse.jpg"],
+    ["step6-cast-shadow-two-bunnies", { castShadow: true, source: "twoBunnies" }, "demo-1-cast-shadow-two-bunnies.jpg"],
+  ].flatMap(([name, extra, sanity]) => [
+    { name: `${name}-asis`, step: 6, fields: { demo: "frame", ...extra }, sanity },
+    { name: `${name}-dir-isolated`, step: 6, fields: { demo: "frame", lightSetup: "dir", ...extra }, sanity: null, isolate: "shadow" },
+  ]),
+  ...[
+    ["step6-explosion-emission", {}],
+    ["step6-explosion-emission-cascades-4", { emissionCascades: 4 }],
+    ["step6-explosion-emission-probes-8", { emissionResolution: 8 }],
+  ].flatMap(([name, extra]) => [
+    { name: `${name}-asis`, step: 6, fields: { demo: "frame", source: "explosion", emissionSpectrum: "planck", ...extra, advanceFrames: 30 }, sanity: null },
+    { name: `${name}-env-isolated`, step: 6, fields: { demo: "frame", source: "explosion", emissionSpectrum: "planck", lightSetup: "none", showObstacle: true, ...extra, advanceFrames: 30 }, sanity: null, isolate: "emission" },
+  ]),
+  // The shadow-only diff (R1 §6): as `*-dir-isolated`, with every FrameVolume's proxy mesh hidden for the captured frame
+  // (`isolate: 'shadow-only'`): the volumes still cast (the grid and maps come from the receivers), only the floor, the
+  // props and their shadows are drawn.
+  { name: "step6-cast-shadow-shadow-only-dir-isolated", step: 6, fields: { demo: "frame", lightSetup: "dir", castShadow: true }, sanity: null, isolate: "shadow-only" },
+  { name: "step6-cast-shadow-obstacle-shadow-only-dir-isolated", step: 6, fields: { demo: "frame", lightSetup: "dir", castShadow: true, showObstacle: true }, sanity: null, isolate: "shadow-only" },
+  { name: "step6-cast-shadow-obstacle-cascades-4-shadow-only-dir-isolated", step: 6, fields: { demo: "frame", lightSetup: "dir", castShadow: true, showObstacle: true, castShadowCascades: 4 }, sanity: null, isolate: "shadow-only" },
+  // His own explosion JPEG (the 'approximate' spectrum): the capture rig's sanity check for the sequence only (INFO).
+  { name: "step6-source-explosion-approximate-asis", step: 6, fields: { demo: "frame", source: "explosion", advanceFrames: 30 }, sanity: "demo-1-source-explosion.jpg" },
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.
@@ -370,8 +404,47 @@ async function readMetadata(page) {
         : null;
       out.lights = [];
       scene.traverseVisible((o) => {
-        if (o.isLight) out.lights.push({ type: o.type, color: o.color?.toArray(), intensity: o.intensity, matrixWorld: o.matrixWorld.toArray() });
+        if (!o.isLight) return;
+        const light = { type: o.type, color: o.color?.toArray(), intensity: o.intensity, matrixWorld: o.matrixWorld.toArray() };
+        // K3.6: shadow casting (his volume shadows ride on each light's shadow) and the emission light's props
+        if (o.target) light.targetMatrixWorld = o.target.matrixWorld.toArray();
+        if (o.shadow) {
+          const c = o.shadow.camera;
+          light.castShadow = o.castShadow;
+          light.shadow = { mapSize: o.shadow.mapSize.toArray(), bias: o.shadow.bias, normalBias: o.shadow.normalBias, radius: o.shadow.radius, camera: { type: c.type, left: c.left, right: c.right, top: c.top, bottom: c.bottom, near: c.near, far: c.far, fov: c.fov } };
+        }
+        if (o.isFrameEmissionLight) Object.assign(light, { resolution: o.resolution, range: o.range, cascades: o.cascades, distance: o.distance, steps: o.steps });
+        if (o.type === "SpotLight") Object.assign(light, { angle: o.angle, penumbra: o.penumbra, distance: o.distance, decay: o.decay });
+        if (o.type === "PointLight") Object.assign(light, { distance: o.distance, decay: o.decay });
+        out.lights.push(light);
       });
+      // K3.6: the visible meshes outside the volumes (floor, obstacle, props): geometry, transform, material, shadow flags
+      out.meshes = [];
+      const { isEnvironmentObject } = await import("/src/utils/resources.js");
+      const outsideVolume = (o) => {
+        for (let p = o; p; p = p.parent) if (p.isFrameVolume || p.isLight) return false;
+        return true;
+      };
+      scene.traverseVisible((o) => {
+        if (!o.isMesh || !outsideVolume(o) || o.geometry?.type === "BufferGeometry" || isEnvironmentObject(o)) return;
+        const m = o.material;
+        out.meshes.push({
+          geometry: { type: o.geometry.type, parameters: o.geometry.parameters ?? null },
+          matrixWorld: o.matrixWorld.toArray(),
+          castShadow: o.castShadow,
+          receiveShadow: o.receiveShadow,
+          material: { type: m.type, color: m.color?.toArray() ?? null, opacity: m.opacity, transparent: m.transparent, roughness: m.roughness ?? null, metalness: m.metalness ?? null },
+        });
+      });
+      out.shadowMap = { enabled: renderer.shadowMap?.enabled, type: renderer.shadowMap?.type };
+      try {
+        // Vite dev resolves bare imports under /@id/ (his examples import three-openvdb by name)
+        const OpenVDB = await import("/@id/three-openvdb");
+        const st = OpenVDB.frameRenderer?.settings;
+        if (st) out.frameRenderer = Object.fromEntries(Object.entries(st).filter(([, v]) => v === null || ["number", "string", "boolean"].includes(typeof v)));
+      } catch (e) {
+        out.frameRendererError = String(e?.message ?? e);
+      }
       out.volumes = [];
       scene.updateMatrixWorld(true);
       // K3.7: his level sets (LevelSetSurface / LevelSetMesh: local space = the grid's world) and VDBPoints.
@@ -395,8 +468,22 @@ async function readMetadata(page) {
         }
       });
       scene.traverse((o) => {
+        // K3.6: his FrameVolumeAnimation (the explosion sequence): the frame it shows after advanceFrames
+        if (o.isFrameVolumeAnimation) {
+          out.animations = out.animations ?? [];
+          out.animations.push({ frame: o.currentFrame ?? o.frame, frames: o.frames?.length ?? null, fps: o.fps, matrixWorld: o.matrixWorld.toArray() });
+        }
         if (!o.isFrameVolume) return;
+        let shown = true;
+        for (let p = o; p; p = p.parent) if (!p.visible) shown = false;
         out.volumes.push({
+          visible: shown,
+          emissiveIntensity: o.emissiveIntensity,
+          temperatureRange: o.temperatureRange?.toArray?.() ?? null,
+          emissionSpectrum: o.emissionSpectrum,
+          sootExponent: o.sootExponent,
+          baseColor: o.baseColor?.toArray?.() ?? null,
+          absorbance: o.absorbance,
           matrixWorld: o.matrixWorld.toArray(),
           meanDensity: o.meanDensity,
           densityScale: o.getDensityScale?.(),
@@ -446,12 +533,18 @@ async function isolateVolumes(page, mode) {
       for (let p = o; p; p = p.parent) if (p.isFrameVolume) return true;
       return false;
     };
+    // K3.6 'shadow' / 'emission': keep the meshes that receive the volume shadows or the emission light (his floor, the
+    // obstacle sphere, pillars and spheres); hide only the grounded skybox and the light helper spheres
+    const keepMeshes = m === "shadow" || m === "shadow-only" || m === "emission";
+    const { isEnvironmentObject } = keepMeshes ? await import("/src/utils/resources.js") : { isEnvironmentObject: () => false };
     scene.traverse((o) => {
       if (o.isFrameVolume) {
         if (m === true) o.lights = DIRECTIONAL_ONLY;
+      } else if (keepMeshes) {
+        if (isEnvironmentObject(o) || ((o.isMesh || o.isSprite) && o.parent?.isLight)) o.visible = false;
       } else if ((o.isMesh || o.isPoints || o.isLine || o.isSprite) && !insideVolume(o)) o.visible = false;
     });
-    if (m === "frame") scene.environment = null;
+    if (m === "frame" || keepMeshes) scene.environment = null;
     scene.background = null;
     renderer.setClearColor(0x598eff, 1.0);
   }, mode);
@@ -534,9 +627,14 @@ async function capture(context, scenario, fields, type) {
   });
   await page.goto(baseURL);
   await page.waitForFunction(() => !!document.querySelector(".lil-gui"));
-  const { demo, ...rest } = fields;
+  const { demo, advanceFrames, ...rest } = fields;
   await setFields(page, { demo, ...rest });
   await waitForIdle(page, pending, errors);
+  // K3.6: his validation.spec.js `advanceFrames` (the paused clock moves N frames of 60 Hz, e.g. to play a sequence)
+  if (advanceFrames) {
+    await page.clock.runFor(advanceFrames * FRAME_TIME);
+    await waitForIdle(page, pending, errors);
+  }
   if (scenario.isolate === "normals" || scenario.isolate === "points") {
     await isolateStep7(page, scenario.isolate);
     await waitForIdle(page, pending, errors);
@@ -557,6 +655,15 @@ async function capture(context, scenario, fields, type) {
         await page.clock.runFor(FRAME_TIME);
         await page.waitForTimeout(150);
       }
+    }
+    // K3.6 shadow-only: the volumes' proxy meshes hidden (after the frames above put the volume shadow filters on)
+    if (scenario.isolate === "shadow-only") {
+      await page.evaluate(async () => {
+        const { scene } = await import("/src/main.jsx");
+        scene.traverse((o) => {
+          if (o.isMesh && o.parent?.isFrameVolume) o.visible = false;
+        });
+      });
     }
   }
   await page.clock.runFor(FRAME_TIME);

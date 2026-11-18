@@ -523,3 +523,50 @@ export type {
   VDBFrameInjectLightInputs,
 } from "./frame/spectral.js";
 export { vdbFrameDensityFroxelSteps } from "./frame/grid.js";
+
+/**
+ * K3.6: mjurczyk's volume shadows on meshes and emission light, engine-free: CPU twins of the Beer shadow map pass,
+ * the receiver lookup and the directional cascades; of the emission direction, reduce and probe passes, the probe
+ * cascades and the irradiance a lit surface reads; and the CIE 1931 'planck' / 'soot' emission colour table.
+ */
+export {
+  frameShadowMinOpticalDepth as vdbFrameShadowMinOpticalDepth,
+  frameShadowMaxOpticalDepth as vdbFrameShadowMaxOpticalDepth,
+  frameMaxCastShadowSteps as vdbFrameMaxCastShadowSteps,
+  frameMaxShadowMapCascades as vdbFrameMaxShadowMapCascades,
+  vdbFrameShadowDepth as vdbFrameShadowCameraDepth,
+  vdbFrameShadowPassRay,
+  vdbFrameShadowMapTexel,
+  vdbFrameShadowReceiver,
+  vdbFrameShadowCascadeBreaks,
+  vdbFrameShadowCascadeFar,
+  vdbFrameShadowCascadeIndex,
+  vdbFrameShadowCascadeUv,
+} from "./frame/shadows.js";
+export type { VDBFrameShadowRay } from "./frame/shadows.js";
+export {
+  frameEmissionDirections as vdbFrameEmissionDirections,
+  frameEmissionRays as vdbFrameEmissionRays,
+  frameEmissionMaxResolution as vdbFrameEmissionMaxResolution,
+  frameEmissionMaxCascades as vdbFrameEmissionMaxCascades,
+  frameEmissionAtlasSize as vdbFrameEmissionAtlasSize,
+  vdbFrameEmissionDirection,
+  vdbFrameBoxSegment,
+  vdbFrameEmitterBounds,
+  vdbFrameEmissionDirectionTexel,
+  vdbFrameEmissionReduce,
+  vdbFrameEmissionProbe,
+  vdbFrameEmissionIrradiance,
+  vdbFrameEmissionProbeGrid,
+  vdbFrameEmissionFalloff,
+  vdbFrameEmissionLookup,
+} from "./frame/emission.js";
+export type { VDBFrameEmitter, VDBFrameEmitterLight, VDBFrameEmissionGridSettings, VDBFrameEmissionGrid } from "./frame/emission.js";
+export {
+  vdbFrameBlackbodyRgb,
+  vdbFrameBlackbodyTable,
+  vdbFrameBlackbodyColor,
+  vdbFrameEmissionSpectrum,
+  frameBlackbodyTableSize as vdbFrameBlackbodyTableSize,
+  frameBlackbodyTableRows as vdbFrameBlackbodyTableRows,
+} from "./frame/blackbody.js";

@@ -21,10 +21,13 @@
 //   L908 (environment lights in both lighting modes), L973–1003 (the alpha targets of renderTemporal),
 //   L1030 (the inject pass reads the scene environment), L1079–1196 (the slot group loop and the spectral maps
 //   of renderFrameLighting), L1210–1231 (the spectral fields of the transmittance signature), L1303
-//   (spectral in the grid signature).
+//   (spectral in the grid signature);
+//   K3.6: L218–230 (the castShadow* settings), L269 and L456 (volumeShadows, updated before each frame), L340–350
+//   (gridRenderId / gridCamera, castVersion), L634–636 (usesShadowGrid with castShadows), L1250–1290
+//   (renderShadowDensity onlyLast), L1310–1345 (prepareShadowGrid), L1719 (dispose of the volume shadows).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; one inject, density and shadow density material per volume source (the
-// source is compiled into each; DIVERGES V30); mesh shadows and emission lights for K3.6; the neural
+// source is compiled into each; DIVERGES V30); mesh shadows (K3.6, volume-shadows.ts); the neural
 // network is a settable value (`neuralNetwork`; null: diffusion, with a warning); per-pass timing
 // hooks and a redraw-skip counter. Divergences: DIVERGES.md (K3.1, K3.3
 // and K3.4 rows), V23–V25, V30–V34.
@@ -87,6 +90,7 @@ import { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
 import { getFrameExtinctionSpectrum, getFrameSpectralGroups } from "./spectrum.js";
 import { VDBFrameTemporalMaterial } from "./temporal-material.js";
 import { VDBFrameTransmittanceMaterial, frameNeuralMipLevels, frameShadowLightSlots } from "./transmittance-material.js";
+import { VDBFrameVolumeShadows } from "./volume-shadows.js";
 import { FrameVolumeCollector, getFrameFadeRadius, getFroxelArea, getFroxelRect, getFroxelSliceRange, type FrameVolumeEntry, type FrameVolumeRecord } from "./view.js";
 import type { VDBFrameVolume } from "./volume.js";
 import type { VDBVolumeUniforms } from "../volume-source.js";
@@ -163,10 +167,29 @@ export interface VDBFrameRendererSettings {
    * target. `'neural'` runs as 1D diffusion (his `isNeural`). See `getFrameMediumProps` for measured media.
    */
   spectral: boolean;
+  /**
+   * K3.6 (his `castShadows`, default false): volumes cast shadows on meshes, for directional, point and spot lights
+   * with `castShadow` (and `renderer.shadowMap.enabled`; receivers need `receiveShadow`). Beer shadow maps from the
+   * world shadow grid's last cascade, multiplied into each light's shadow (`volume-shadows.ts`). Uses three r187
+   * internals, self-tested (VDB_ENGINE_MISMATCH on another three).
+   */
+  castShadows: boolean;
+  /** Texels on each side of a volume shadow map (each cascade tile and cube face; default 512). */
+  castShadowMapSize: number;
+  /** Directional lights: cascades of the volume shadow map (1–4, default 1). */
+  castShadowCascades: number;
+  /** Directional lights: the largest view distance the cascades cover (default 4000). */
+  castShadowDistance: number;
+  /** Grid samples on each light ray of a volume shadow map (1–256, default 32). */
+  castShadowSteps: number;
+  /** Map pieces drawn again in one render (a cascade tile or spot map 1, a cube map 6; default 1). */
+  castShadowUpdatesPerFrame: number;
+  /** Very small maps (64) and few samples (8): soft blob shadows at almost no cost (default false). */
+  castShadowCoarse: boolean;
 }
 
 /** Per-pass hook (D25: timings are provisional). */
-export type VDBFramePass = "froxels" | "inject" | "shadowDensity" | "gridMips" | "transmittance" | "environmentGrid" | "density" | "lighting" | "temporal";
+export type VDBFramePass = "froxels" | "inject" | "shadowDensity" | "gridMips" | "transmittance" | "environmentGrid" | "density" | "lighting" | "temporal" | "volumeShadows" | "emissionProbes";
 
 export interface VDBFramePassHook {
   begin?(pass: VDBFramePass, detail?: { volume: VDBFrameVolume }): void;
@@ -377,6 +400,13 @@ export class VDBFrameRenderer {
     scatteringOctaveContribution: 0.5,
     scatteringOctavePhase: 0.5,
     spectral: false,
+    castShadows: false,
+    castShadowMapSize: 512,
+    castShadowCascades: 1,
+    castShadowDistance: 4000,
+    castShadowSteps: 32,
+    castShadowUpdatesPerFrame: 1,
+    castShadowCoarse: false,
   };
 
   /**
@@ -489,8 +519,14 @@ export class VDBFrameRenderer {
 
   // NOTE Shadow grid state: cascades of the last update, signatures (tools/frame/grid.ts)
   readonly gridState: VDBFrameGridSignatureState = vdbFrameGridSignatureState();
+  // NOTE World shadow grid of the current render. Volume shadows make it before the first lit mesh; 'frame' lighting
+  // then uses it again (gridFreshCamera). gridState.castVersion changes when the last cascade (all volumes) changes.
+  gridRenderId = -1;
+  gridCamera: THREE.Camera | null = null;
   gridFreshCamera: THREE.Camera | null = null;
   gridReady = false;
+  /** K3.6: volume shadows on meshes (settings.castShadows). */
+  volumeShadows: VDBFrameVolumeShadows;
   // NOTE gridVersion and target of the last shadow density draw. The same version is not drawn again.
   shadowDrawnVersion = -1;
   shadowDrawnTarget: THREE.RenderTarget | null = null;
@@ -537,6 +573,7 @@ export class VDBFrameRenderer {
     this.temporalMaterial = new VDBFrameTemporalMaterial({ froxelUniforms: this.froxelUniforms, froxelTileUniforms: this.froxelTileUniforms, froxelAreaUniforms: this.froxelAreaUniforms });
     this.environmentGridMaterial = new VDBFrameEnvironmentGridMaterial({ gridUniforms: this.gridUniforms, environmentGridUniforms: this.environmentGridUniforms, lightUniforms: this.lightUniforms });
     this.environmentLights = new VDBFrameEnvironmentLights((renderer, scene) => this.renderEnvironmentMap(renderer, scene));
+    this.volumeShadows = new VDBFrameVolumeShadows(this);
 
     this.lightingMesh = new THREE.Mesh(this.areaGeometry, this.lightingMaterial);
     this.densityClearMesh = new THREE.Mesh(this.areaGeometry, this.densityClearMaterial);
@@ -599,6 +636,9 @@ export class VDBFrameRenderer {
       return;
     }
 
+    // NOTE Puts the volume shadow filter on new shadow lights (and frees the maps of removed ones)
+    this.volumeShadows.update(renderer, scene);
+
     if (this.holdFroxels && this.atlasTarget) {
       this.cachedFrame = frame;
       this.cachedCamera = camera;
@@ -648,9 +688,9 @@ export class VDBFrameRenderer {
     return this.settings.lighting === "frame";
   }
 
-  // NOTE The world shadow grid is used by 'frame' lighting (and by volume shadows on meshes, K3.6)
+  // NOTE The world shadow grid is used by 'frame' lighting and by volume shadows on meshes
   usesShadowGrid(): boolean {
-    return this.isFrameLighting();
+    return this.isFrameLighting() || this.settings.castShadows;
   }
 
   // NOTE Visible volumes and shadow casters, one time in a render (the render id of three.js NodeFrame, internal)
@@ -1351,27 +1391,35 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Extinction of all casters in the world shadow grid cascades. Returns false with no casters.
-  renderShadowDensity(renderer: RendererLike, camera: THREE.Camera, casters: FrameVolumeCollector<VDBFrameVolume>["casters"]): boolean {
+  // NOTE onlyLast: only the last cascade (all volumes), drawn only when castVersion changed. Volume shadows on meshes
+  // read only the last cascade; 'frame' lighting needs all cascades.
+  renderShadowDensity(renderer: RendererLike, camera: THREE.Camera, casters: FrameVolumeCollector<VDBFrameVolume>["casters"], onlyLast = false): boolean {
     const ready = casters.length > 0 && this.updateGrid(casters, camera);
-
-    this.updateGridVersion(ready ? casters : []);
+    const castChanged = this.updateGridVersion(ready ? casters : []);
 
     if (!ready) {
       return false;
     }
 
-    if (this.shadowDrawnVersion === this.gridState.gridVersion && this.shadowDrawnTarget === this.shadowDensityTarget) {
+    if (onlyLast && !castChanged) {
+      this.redrawStats.shadowDensity.skipped++;
+
+      return true;
+    }
+
+    if (!onlyLast && this.shadowDrawnVersion === this.gridState.gridVersion && this.shadowDrawnTarget === this.shadowDensityTarget) {
       this.redrawStats.shadowDensity.skipped++;
 
       return true;
     }
 
     this.redrawStats.shadowDensity.drawn++;
-    this.shadowDrawnVersion = this.gridState.gridVersion;
+    // NOTE The clear below empties every cascade, so a draw of the last one alone leaves no full grid to keep
+    this.shadowDrawnVersion = onlyLast ? -1 : this.gridState.gridVersion;
     this.shadowDrawnTarget = this.shadowDensityTarget;
 
     const count = this.gridUniforms.frameGridCount.value as number;
-    const cascadeCasters = vdbFrameCascadeCasters(casters, 0, count, this.cascadeCasterPool);
+    const cascadeCasters = vdbFrameCascadeCasters(casters, onlyLast ? count - 1 : 0, count, this.cascadeCasterPool);
 
     this.updatePool(this.shadowPool, this.shadowScene, cascadeCasters, camera, this.setupShadowEntry);
 
@@ -1382,7 +1430,50 @@ export class VDBFrameRenderer {
     return true;
   }
 
+  /**
+   * Makes the world shadow grid one time in a render, before the first lit mesh (the volume shadow maps need it).
+   * 'frame' lighting uses it again in the same render. Returns false with no casters. `renderId`: three's node frame
+   * render id (three-internals.ts).
+   */
+  prepareShadowGrid(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, renderId: number): boolean {
+    if (this.gridRenderId === renderId && this.gridCamera === camera) {
+      return this.gridReady;
+    }
+
+    this.gridRenderId = renderId;
+    this.gridCamera = camera;
+
+    const { casters } = this.collectVolumes(renderer, scene, camera);
+
+    const currentRenderTarget = renderer.getRenderTarget();
+    const currentActiveCubeFace = renderer.getActiveCubeFace();
+    const currentActiveMipmapLevel = renderer.getActiveMipmapLevel();
+    const currentAutoClear = renderer.autoClear;
+    const currentClearAlpha = renderer.getClearAlpha();
+    const currentScissorTest = renderer.getScissorTest();
+
+    renderer.getClearColor(clearColor);
+    renderer.autoClear = false;
+    renderer.setScissorTest(false);
+    renderer.setClearColor(0x000000, 0.0);
+
+    this.updateGridTargets();
+    this.passHook?.begin?.("shadowDensity");
+    // NOTE 'volume' lighting: only the last cascade, for the volume shadow maps
+    this.gridReady = this.renderShadowDensity(renderer, camera, casters, !this.isFrameLighting());
+    this.passHook?.end?.("shadowDensity");
+    this.gridFreshCamera = camera;
+
+    renderer.setScissorTest(currentScissorTest);
+    renderer.autoClear = currentAutoClear;
+    renderer.setClearColor(clearColor, currentClearAlpha);
+    renderer.setRenderTarget(currentRenderTarget, currentActiveCubeFace, currentActiveMipmapLevel);
+
+    return this.gridReady;
+  }
+
   // NOTE gridVersion changes when the cascades, a caster transform, a caster's data or a caster's shadow props change.
+  // castVersion changes only for the last cascade. Returns true when castVersion changed.
   updateGridVersion(casters: FrameVolumeCollector<VDBFrameVolume>["casters"]): boolean {
     const { frameGridMin, frameGridSize, frameGridCount, frameGridResolution } = this.gridUniforms;
 
@@ -1840,6 +1931,11 @@ export class VDBFrameRenderer {
   }
 
   dispose(): void {
+    // NOTE Puts back the shadow filter of each light; the new instance installs again on the next render
+    this.volumeShadows.dispose();
+    this.volumeShadows = new VDBFrameVolumeShadows(this);
+    this.gridRenderId = -1;
+    this.gridCamera = null;
     this.historyTargets.forEach((target) => target?.dispose());
     this.historyTargets = [null, null];
     this.historyValid = false;

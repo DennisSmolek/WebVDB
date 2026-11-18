@@ -41,3 +41,12 @@ export { frameSpectrumWavelengths, frameAngstromExponents, getFrameAngstromExpon
 export { FrameVolumeCollector, getFroxelSlice, getFroxelSliceRange, getFroxelRect, getFroxelArea, getFrameFadeRadius } from "./view.js";
 export type { FrameVolumeRecord, FroxelArea } from "./view.js";
 export * as vdbFrameChunks from "./chunks.js";
+// K3.6: volume shadows on meshes, the emission light, the CIE blackbody emission colour
+export { VDBFrameVolumeShadows, VDBFrameVolumeShadowNode, frameMaxShadowMapCascades } from "./volume-shadows.js";
+export type { VDBFrameShadowEntry } from "./volume-shadows.js";
+export { VDBFrameVolumeShadowMaterial, createShadowRayUniforms, frameShadowDepth, frameMaxCastShadowSteps } from "./volume-shadow-material.js";
+export { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameEmissionDirectionMaterial, VDBFrameEmissionReduceMaterial, VDBFrameEmissionProbeMaterial } from "./emission-light.js";
+export type { VDBFrameEmissionLightProps } from "./emission-light.js";
+export { vdbFrameBlackbodyEmission, getFrameBlackbodyMap, frameBlackbodyColor } from "./blackbody.js";
+export type { VDBFrameBlackbodyHook } from "./blackbody.js";
+export { vdbFrameCheckLightReset, VDB_FRAME_THREE_REVISION } from "./three-internals.js";
