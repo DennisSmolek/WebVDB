@@ -1,0 +1,147 @@
+# Third-party notices for `@pmndrs/vdb`
+
+`@pmndrs/vdb` is MIT licensed (see [LICENSE](./LICENSE)). The components below are third-party code, data or
+published formulas that the package contains, derives from or depends on, with their licences. The repository
+copy of this list is [THIRD_PARTY.md](https://github.com/pmndrs/vdb/blob/main/THIRD_PARTY.md).
+
+## mjurczyk/openvdb (MIT)
+
+Parts of the `.wvdb` reader, writer and baker, the dense and sparse volume sources, the froxel renderer, level sets
+and points are ported from [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) (pinned commit `75e7345`,
+v0.26.0). The upstream repository has no LICENSE file; its npm packages declare MIT and the author has confirmed the
+licence. This notice applies to the files listed below, each of which carries a header "Portions derived from
+mjurczyk/openvdb (MIT)" (or "derived from") naming its upstream paths.
+
+```
+MIT License
+
+Copyright (c) mjurczyk/openvdb contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+Source files in this package that derive from it (paths are in the source tree; the package ships them compiled
+under `dist/`):
+
+- `src/core/compute/pyramid.ts`
+- `src/core/source/dense.ts`
+- `src/core/wgsl/level-set.ts`
+- `src/three/frame/blackbody.ts`
+- `src/three/frame/chunks.ts`
+- `src/three/frame/density-material.ts`
+- `src/three/frame/emission-light.ts`
+- `src/three/frame/environment-grid-material.ts`
+- `src/three/frame/environment-material.ts`
+- `src/three/frame/grid-mip-material.ts`
+- `src/three/frame/inject-material.ts`
+- `src/three/frame/integrate-material.ts`
+- `src/three/frame/layout.ts`
+- `src/three/frame/lighting-material.ts`
+- `src/three/frame/lights.ts`
+- `src/three/frame/medium.ts`
+- `src/three/frame/neural.ts`
+- `src/three/frame/phase.ts`
+- `src/three/frame/renderer.ts`
+- `src/three/frame/shadow-density-material.ts`
+- `src/three/frame/spectrum.ts`
+- `src/three/frame/temporal-material.ts`
+- `src/three/frame/transmittance-material.ts`
+- `src/three/frame/view.ts`
+- `src/three/frame/volume-shadow-material.ts`
+- `src/three/frame/volume-shadows.ts`
+- `src/three/frame/volume.ts`
+- `src/three/level-set-material.ts`
+- `src/three/points.ts`
+- `src/three/sparse-source.ts`
+- `src/three/volume-source.ts`
+- `src/tools/cpu/level-set.ts`
+- `src/tools/frame/blackbody.ts`
+- `src/tools/frame/emission.ts`
+- `src/tools/frame/environment.ts`
+- `src/tools/frame/grid.ts`
+- `src/tools/frame/index.ts`
+- `src/tools/frame/medium.ts`
+- `src/tools/frame/mie.ts`
+- `src/tools/frame/neural.ts`
+- `src/tools/frame/pyramid-layout.ts`
+- `src/tools/frame/shadows.ts`
+- `src/tools/frame/sparse.ts`
+- `src/tools/frame/spectral.ts`
+- `src/tools/vdb/point-render-data.ts`
+- `src/tools/vdb/points.ts`
+- `src/tools/wvdb/bake.ts`
+- `src/tools/wvdb/dense.ts`
+- `src/tools/wvdb/format.ts`
+- `src/tools/wvdb/level-set.ts`
+- `src/tools/wvdb/read.ts`
+- `src/tools/wvdb/write.ts`
+- `src/tools/frame/neural-weights.ts` (data, see below)
+
+`src/tools/frame/mie-table.ts` is the output of our port of his Mie table generator (after Bohren and Huffman's
+BHMIE). The numbers are identical to his tables, but the file is generated, not copied.
+
+### Neural indirect-light weights
+
+`src/tools/frame/neural-weights.ts` holds the weights of his `multipleScattering: 'neural'` network, copied unchanged
+from `frameNeuralIndirect.js`. They are covered by the MIT notice above. **Training-data caveat:** his training set
+includes procedural media and example volumes (`bunny_cloud.wvdb`, `smoke.wvdb`) that derive from openvdb.org
+samples (CC BY-SA 4.0). The weights carry no separate licence. They live in their own module so you can swap them
+(`VDBFrameRenderer.neuralNetwork`) or leave them out (`null`: `'neural'` then runs as 1D diffusion).
+
+## @pmndrs/bvh (MIT)
+
+The WGSL name checker used by the tests, and the reserved-word list in `src/core/wgsl/reserved.ts` that it shares,
+follow `@pmndrs/bvh` (`src/wgsl-names.ts`).
+
+```
+MIT License
+
+Copyright (c) 2026 Dennis Smolek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+## Wyman, Sloan and Shirley, 2013 (published formula)
+
+Blackbody emission colours (`vdbCie1931Fit`, `src/tools/frame/blackbody.ts`) use the multi-lobe piecewise Gaussian
+fit of the CIE 1931 2-degree colour matching functions from C. Wyman, P.-P. Sloan and P. Shirley, "Simple Analytic
+Approximations to the CIE XYZ Color Matching Functions", Journal of Computer Graphics Techniques 2(2), 1-11, 2013
+(https://jcgt.org/published/0002/02/01/), Equation 4 and Table 1. Only the published formula and coefficients are
+used; no code or data was copied. The tabulated CIE data (CC BY-SA 4.0) is not part of this package.
+
+## Vendored `pnanovdb.wgsl` (Apache-2.0)
+
+`vendor/pnanovdb.wgsl` (also `@pmndrs/vdb/pnanovdb.wgsl`, and the source of the generated WGSL modules) is a
+vendored, extended fork of emcfarlane's WGSL port of NanoVDB's `PNanoVDB.h` (OpenVDB, Apache-2.0). The original
+copyright and attribution are in [vendor/NOTICE](./vendor/NOTICE), the licence text is
+[vendor/LICENSE](./vendor/LICENSE), and every local change is logged in [vendor/VENDOR.md](./vendor/VENDOR.md).
+These files must stay with any redistribution of the WGSL.
+
+## fflate (MIT, runtime dependency)
+
+[fflate](https://github.com/101arrowz/fflate), Copyright (c) 2023 Arjun Barrett, provides zlib in
+`@pmndrs/vdb/tools`. It is installed as a dependency, not bundled.

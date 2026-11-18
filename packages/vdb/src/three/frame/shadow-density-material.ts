@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/FrameShadowDensityMaterial.js L12–131 (K3.5: with the spectral
 //   outputs, setSpectral / rebuildNodes and the spectral branch L111–121).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; reads density only through `vdbVolumeNodes` (the VDBVolumeSource seam), so
 // one material is built per volume source (as the inject material, DIVERGES V30); with the sparse
 // source the grid voxel lod reads its coarse LOD (`'coarse-pyramid'`, D28). Divergences: DIVERGES.md (K3.3 rows), V23–V25, V30.

@@ -3,7 +3,7 @@
 //   transmittance pass; K3.4: the octave uniform, the two-sided back march and setNeural / the neural
 //   slot light); K3.5: L66–70 (absorption map, slot group uniform), L85–91 (setSpectral), L278–459
 //   (buildSpectralNodes: one pass per slot group).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; the network is a parameter of setNeural (VDBFrameNeuralNetwork). Source-free: the pass reads only the shadow grid (and its mips).
 // Divergences: DIVERGES.md (K3.3, K3.4 rows).
 

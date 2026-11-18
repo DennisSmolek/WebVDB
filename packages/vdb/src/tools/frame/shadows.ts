@@ -3,7 +3,7 @@
 //   L248–290 (getCascadeLookup), L344–372 (the receiver transmittance), L704–731 (the cascade far distance of
 //   fitCascades); src/three-openvdb/frame/webgpu/FrameVolumeShadowMaterial.js L27–48 (constants,
 //   frameShadowDepth), L90–172 (the Beer shadow map pass).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: engine-free TypeScript CPU twins (f64) of his mesh-shadow maths; matrices are column-major
 // arrays (three's `elements`). Divergences: none (twins of the ported TSL).
 

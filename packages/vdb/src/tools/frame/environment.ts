@@ -1,6 +1,6 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/core/frameEnvironment.js (all, 331 lines).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; `isFrameDiffusion` inlined (tools does not import the three adapter);
 // the readback promise may also resolve to a Uint16Array of half floats (decoded here). Same
 // directions, cells, colours and SH quadrature. Divergences: DIVERGES.md (K3.3 rows).

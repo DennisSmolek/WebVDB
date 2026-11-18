@@ -439,6 +439,14 @@ export function readFileHeader(view: DataView, offset: number): { gridCount: num
  * `gridSize` bytes, an oversized one is clamped to gridSize + 1 and rejected.
  */
 export function inflateZipGrid(compressed: Uint8Array, gridSize: number, i: number, name: string): Uint8Array {
+  // Cap the declared size before allocating: deflate cannot expand more than 1032:1, so a gridSize beyond
+  // that bound for this payload is a lie (a tiny file declaring a huge grid would otherwise allocate it).
+  if (gridSize > compressed.byteLength * 1032 + 64) {
+    throw new NvdbFormatError(
+      `NvdbFile: ZIP grid #${i} ("${name}") declares ${gridSize} bytes but its ${compressed.byteLength}-byte payload ` +
+        `cannot inflate to more than ${compressed.byteLength * 1032 + 64} (deflate expands at most 1032:1) — the file's metadata is untrustworthy.`,
+    );
+  }
   const outBound = new Uint8Array(gridSize + 1);
   let decompressed: Uint8Array;
   try {

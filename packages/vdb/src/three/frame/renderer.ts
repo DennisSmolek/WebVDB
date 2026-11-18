@@ -25,7 +25,7 @@
 //   K3.6: L218–230 (the castShadow* settings), L269 and L456 (volumeShadows, updated before each frame), L340–350
 //   (gridRenderId / gridCamera, castVersion), L634–636 (usesShadowGrid with castShadows), L1250–1290
 //   (renderShadowDensity onlyLast), L1310–1345 (prepareShadowGrid), L1719 (dispose of the volume shadows).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; one inject, density and shadow density material per volume source (the
 // source is compiled into each; DIVERGES V30); mesh shadows (K3.6, volume-shadows.ts); the neural
 // network is a settable value (`neuralNetwork`; null: diffusion, with a warning); per-pass timing
@@ -411,7 +411,7 @@ export class VDBFrameRenderer {
 
   /**
    * The network of multipleScattering `'neural'` (default: his trained weights, `@pmndrs/vdb/tools`
-   * `vdbFrameNeuralWeights`; see THIRD_PARTY.md for their provenance). Set another network of the same
+   * `vdbFrameNeuralWeights`; see THIRD_PARTY_NOTICES.md for their provenance). Set another network of the same
    * shape to swap it, or null to run `'neural'` as 1D diffusion (warns once). Not his (his is a module import).
    */
   neuralNetwork: VDBFrameNeuralNetwork | null = vdbFrameNeuralWeights;

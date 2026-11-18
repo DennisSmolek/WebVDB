@@ -14,7 +14,7 @@
  * inside), perspective and orthographic rays (so shadow passes work), the mask,
  * depth, received-shadow position and the `setupLighting` override that moves
  * `positionView` to the hit. Copyright (c) mjurczyk/openvdb contributors, MIT
- * (see THIRD_PARTY.md). Changes: the trace is the core's `vdbLevelSetHit` on
+ * (see THIRD_PARTY_NOTICES.md). Changes: the trace is the core's `vdbLevelSetHit` on
  * the sparse tree (HDDA skip, full-resolution trilinear SDF) instead of a
  * sphere trace of a dense 8-bit texture; the ray comes from the pixel through
  * the inverse projection, not from interpolated box positions; the normal is

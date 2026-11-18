@@ -10,7 +10,7 @@
 //   src/three-openvdb/frame/webgpu/FrameDensityMaterial.js L172–357 (the grey density pass),
 //   FrameLightingMaterial.js L296–436 (the grey lighting pass), FrameEnvironmentGridMaterial.js L92–281
 //   (the grey environment grid pass), as CPU twins.
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: engine-free (plain `{ x, y, z }` vectors and boxes instead of three's `Box3`/`Vector3`,
 // so `tools` stays free of three; the three adapter passes its own objects, which fit); the shader
 // maths as f64 CPU twins (test oracles of the `./three` 'frame' lighting passes); K3.4 adds the octave,

@@ -6,7 +6,7 @@
 //   src/three-openvdb/frame/webgpu/FrameInjectMaterial.js L193–232 (slice pre-integration);
 //   src/three-openvdb/frame/webgpu/FrameIntegrateMaterial.js L219–293 (slice march and composite);
 //   src/three-openvdb/frame/core/frameView.js L258–271 (getFroxelSlice, getFroxelSliceRange).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 //   K3.4: frameShaderChunks.js L196–203 (frameHenyeyGreensteinColor), L273–328 (the Lorenz-Mie branches
 //   of framePhaseWeight / framePhaseColor, framePhaseWeightScaled), L342–399 (octave march depth and
 //   transmittance, frameShadowOpticalDepth, frameOctaveLight), L416–462 (frameTwoSidedDiffusion,

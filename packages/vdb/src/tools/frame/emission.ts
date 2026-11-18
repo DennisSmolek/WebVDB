@@ -3,7 +3,7 @@
 //   L182–241 (updateProbeGrid); src/three-openvdb/frame/webgpu/FrameEmissionLight.js L59–60 (golden angle),
 //   L168–237 (the direction pass), L259–279 (the reduce pass), L310–364 (the probe pass), L457–519 (the light
 //   node's irradiance).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: engine-free TypeScript CPU twins (f64) of his emission-light maths; boxes and matrices are plain
 // arrays (column-major). Divergences: none (twins of the ported TSL).
 

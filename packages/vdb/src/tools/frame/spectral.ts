@@ -9,7 +9,7 @@
 //   FrameInjectMaterial.js L200–532 (the spectral pre-integration and march; the light-probe, environment and
 //   hemisphere terms in both modes), as CPU twins;
 //   three r187 `getShIrradianceAt` (MIT, three.js authors), the light-probe irradiance the passes call.
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: f64 CPU twins of the TSL (test oracles of the `./three` spectral passes and of the 'volume'-lighting
 // environment terms), engine-free (plain arrays). Divergences: DIVERGES.md (K3.5 rows).
 

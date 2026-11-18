@@ -8,13 +8,14 @@ name: Release
 # Prereleases publish under the dist-tag of their first identifier (beta, rc,
 # ...), never `latest`. The run: checks the tag is free and the version is not
 # on npm, stamps package.json in this checkout, runs the full gate (typecheck,
-# unit with fixtures required, build, wgsl:size, pack dry-run, packed-subpaths),
+# docs:check, unit with fixtures required, build, wgsl:size, pack dry-run, packed-subpaths),
 # publishes with provenance, then pushes the tag v<version>.
 #
 # OWNER ACTIONS before the first run (the workflow cannot do these):
 #   1. Move the repo to pmndrs/vdb (task K0.7). The package.json
 #      repository/homepage/bugs URLs must match the repo that publishes, or
 #      provenance verification fails.
+#   0. The FIRST publish is manual (RELEASING.md); this workflow is for later releases.
 #   2. On npmjs.com, configure @pmndrs/vdb for Trusted Publishing: publisher
 #      GitHub Actions, organization pmndrs, repository vdb, workflow filename
 #      `release.yml` (keep this filename), no environment. For a package that
@@ -83,6 +84,10 @@ jobs:
             echo "::error::'$VERSION' is not a SemVer version."
             exit 1
           fi
+          if [[ "$VERSION" == "0.0.0" ]]; then
+            echo "::error::Refusing to publish 0.0.0. Pass a version input, or bump packages/vdb/package.json (see RELEASING.md)."
+            exit 1
+          fi
           if git rev-parse --verify --quiet "refs/tags/v$VERSION" >/dev/null; then
             echo "::error::Tag v$VERSION already exists."
             exit 1
@@ -120,6 +125,9 @@ jobs:
       # --- Full gate (same checks as ci.yml, minus the browser e2e) ---------
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Docs snippets
+        run: pnpm docs:check
 
       - name: Build packages
         run: pnpm build

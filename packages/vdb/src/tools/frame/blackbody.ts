@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/core/frameBlackbody.js L1–172 (the 'planck' / 'soot' emission colour table: its Planck ×
 //   soot integration, XYZ → linear sRGB and normalization, and getFrameEmissionSpectrum);
 //   src/three-openvdb/frame/webgpu/frameShaderChunks.js L236–256 (frameBlackbodyColor, the table read).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript, engine-free; the table read is a CPU twin of the shader's. His 'approximate' spectrum (the
 // Shadertoy blackBody(), CC BY-NC-SA unless stated) is not ported (R1 §7): emission colour stays a caller hook,
 // and this table is the hook the three adapter offers (`vdbFrameBlackbodyEmission`).

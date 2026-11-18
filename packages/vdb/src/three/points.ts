@@ -12,7 +12,7 @@
  * the round alpha-tested disc, the attenuated size in pixels with a 1-pixel
  * minimum, `Cd` colours times the material colour, the default diameter of half
  * the mean spacing. Copyright (c) mjurczyk/openvdb contributors, MIT (see
- * THIRD_PARTY.md). Changes: takes the engine-free `vdbPointRenderData` (tools)
+ * THIRD_PARTY_NOTICES.md). Changes: takes the engine-free `vdbPointRenderData` (tools)
  * instead of decoding the grid itself; the pixel scale reads the render
  * target's height when one is set (DIVERGES.md).
  *

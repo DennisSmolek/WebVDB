@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/FrameVolumeShadowMaterial.js L27–173 (constants, createShadowRayUniforms,
 //   frameShadowDepth, the Beer shadow map pass with its spectral outputs).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; reads the world shadow grid through our grid chunks (`createGridNodes`); source-free, so one
 // material serves every volume source. CPU twin: `@pmndrs/vdb/tools` `vdbFrameShadowMapTexel`.
 // Divergences: none.

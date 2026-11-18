@@ -8,7 +8,7 @@
  * (`src/three-openvdb/levelset/webgpu/LevelSetSurfaceMaterial.js`: the sphere
  * trace with a minimum step, the secant step between the last outside and the
  * first inside sample, central-difference normals). Copyright (c)
- * mjurczyk/openvdb contributors, MIT (see THIRD_PARTY.md). Changes: traced on
+ * mjurczyk/openvdb contributors, MIT (see THIRD_PARTY_NOTICES.md). Changes: traced on
  * the sparse NanoVDB tree (trilinear `vdbSample`, full resolution) instead of
  * his dense 8-bit distance texture; an HDDA walk skips cells whose trilinear
  * support is all tiles or background above zero; bisection before the secant

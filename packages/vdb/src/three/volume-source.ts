@@ -4,7 +4,7 @@
 //   src/three-openvdb/frame/core/FrameVolume.js L14–22, L357–405 (Data3DTexture setup);
 //   src/three-openvdb/frame/webgpu/FrameRenderer.js L483–487 (configureTexture);
 //   src/three-openvdb/frame/webgpu/frameMipmaps.js L183–189 (mip atlas texture).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; absent channels compile to constants instead of runtime flags; the
 // Shadertoy blackbody is not ported (emission colour is a caller hook; his 'planck' / 'soot' table is
 // `vdbFrameBlackbodyEmission`, on an analytic CIE fit: D33).

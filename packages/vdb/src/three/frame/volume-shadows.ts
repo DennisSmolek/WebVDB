@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/webgpu/FrameVolumeShadows.js L34–1027 (targets, the light shadow reset, receiver
 //   uniforms, cascade lookup, FrameVolumeShadowNode, FrameVolumeShadows: entries, install, cameras, cascades,
 //   the budgeted map updates, dispose).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; every three r187 internal goes through `three-internals.ts`, which self-tests it and throws
 // VDB_ENGINE_MISMATCH (his: a warning, then no volume shadow); the receiver depth and cascade maths have CPU twins
 // (`@pmndrs/vdb/tools` `vdbFrameShadow*`). Divergences: DIVERGES.md (K3.6 rows).

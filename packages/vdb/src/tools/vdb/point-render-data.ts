@@ -7,7 +7,7 @@
  * Portions derived from mjurczyk/openvdb (MIT), commit 75e7345
  * (`src/openvdb/utils/points.js` `createPointData`: the stride rule, the count,
  * the spacing formula). Copyright (c) mjurczyk/openvdb contributors, MIT (see
- * THIRD_PARTY.md). Changes: built on our parsed `VdbPointDataGrid.points()`
+ * THIRD_PARTY_NOTICES.md). Changes: built on our parsed `VdbPointDataGrid.points()`
  * (K4.2) in one pass instead of a sliced generator; `Cd` of any decoded
  * 3-component real attribute (DIVERGES.md).
  */

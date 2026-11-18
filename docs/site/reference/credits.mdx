@@ -6,16 +6,18 @@ sourcecode: THIRD_PARTY.md
 ---
 
 `@pmndrs/vdb`'s own code is MIT. The third-party code and data below keep their licences. The full list, with
-file paths, is [THIRD_PARTY.md](https://github.com/pmndrs/vdb/blob/main/THIRD_PARTY.md).
+file paths, is [THIRD_PARTY.md](https://github.com/pmndrs/vdb/blob/main/THIRD_PARTY.md); the package ships the
+notices as `THIRD_PARTY_NOTICES.md`.
 
 | Work | Licence | Used for |
 | --- | --- | --- |
 | [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb) `pnanovdb.wgsl` | Apache-2.0 | The vendored traversal module (`@pmndrs/vdb/pnanovdb.wgsl`), extended in place with Fp decoders, the world/index map, trilinear sampling and stats readers. The generated modules derive from it. Its NOTICE ships in the package. |
-| [OpenVDB](https://github.com/AcademySoftwareFoundation/openvdb) and NanoVDB `PNanoVDB.h` | Apache-2.0 (the header) | The data model and the reference header the WGSL is audited against. It ships for reference with its licence. |
+| [OpenVDB](https://github.com/AcademySoftwareFoundation/openvdb) and NanoVDB `PNanoVDB.h` | Apache-2.0 (the header) | The data model and the reference header the WGSL is audited against. The header is in the repository only; it does not ship in the package. |
 | [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) (pinned `75e7345`) | MIT | The `.wvdb` reader, writer and baker, the dense volume source, and the froxel renderer, ported to TypeScript, WGSL and TSL. Each ported file carries a header naming its upstream path. |
 | mjurczyk's neural indirect weights | MIT with his repository | The `'neural'` multiple-scattering network. They live in their own module so they can be swapped. His training set includes samples derived from openvdb.org (CC BY-SA 4.0); the open question is recorded in THIRD_PARTY.md. |
 | mjurczyk's Mie table script, after Bohren and Huffman's BHMIE | MIT | Ported as the Lorenz-Mie phase table generator. |
 | [JangaFX](https://jangafx.com/) EmberGen and `.wvdb` test fixtures | CC0 1.0 | Test data, not shipped in the package. |
+| Wyman, Sloan and Shirley (2013) | Published formula | The analytic CIE 1931 colour matching fit behind blackbody emission colours. No data copied. |
 | [fflate](https://github.com/101arrowz/fflate) | MIT | zlib in the tools. |
 
 The OpenVDB sample files (`smoke.vdb` and others) are from openvdb.org under CC BY-SA 4.0 and are fetched for tests,

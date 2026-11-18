@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/webgpu/FrameDensityMaterial.js L45–361 (density shadow uniforms,
 //   environment modes, constructor, the grey `buildNodes`); K3.5: L66–67 (the sky transmittance maps),
 //   L101–137 (setSpectral), L363–537 (buildSpectralNodes).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; reads density only through `vdbVolumeNodes` (the VDBVolumeSource seam), so
 // one material is built per volume source (DIVERGES V30); K3.4: the octave uniform (L57–58) and its
 // frameShadowedLight / frameShadowTotal terms (L272–294, L344).

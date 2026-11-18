@@ -11,7 +11,7 @@
  * (`src/three-openvdb/levelset/webgpu/LevelSetSurfaceMaterial.js`): the sphere
  * trace with a minimum step, the secant step between the last outside and the
  * first inside sample, central-difference normals. Copyright (c)
- * mjurczyk/openvdb contributors, MIT (see THIRD_PARTY.md). Changes: sparse
+ * mjurczyk/openvdb contributors, MIT (see THIRD_PARTY_NOTICES.md). Changes: sparse
  * NanoVDB tree at full resolution, HDDA skip, bisection, normals through the
  * grid affine (DIVERGES.md).
  */
