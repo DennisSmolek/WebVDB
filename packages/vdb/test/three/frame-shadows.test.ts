@@ -9,6 +9,8 @@ import * as THREE from "three";
 import { LightsNode } from "three/webgpu";
 import { afterEach, describe, expect, it } from "vitest";
 import { readWvdb, wvdbDenseVolume, writeWvdb } from "../../src/tools/index.js";
+import { vdbCie1931Fit, vdbFrameBlackbodyTable, type VDBColorMatchingFunctions, type VDBFrameVec3 } from "../../src/tools/internal.js";
+import { getFrameBlackbodyMap } from "../../src/three/frame/blackbody.js";
 import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, VDBFrameVolume, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameCheckLightReset } from "../../src/three/internal.js";
 import { vdbFrameRegisterLightNode, vdbFrameRenderId, vdbFrameResetInternalsCache, vdbFrameCheckFilterInputs, vdbFramePrecompiling } from "../../src/three/frame/three-internals.js";
 
@@ -168,6 +170,26 @@ describe("K3.6 emission light host side", () => {
     expect(light.probeTarget.width).toBe(384);
     expect(light.probeTarget.textures.length).toBe(3);
     light.dispose();
+  });
+
+  it("the blackbody hook (D33): the analytic-fit table by default, the caller's colour matching functions when given", () => {
+    const planck = vdbFrameBlackbodyEmission("planck");
+    expect(planck.table).toBe(getFrameBlackbodyMap());
+    expect(planck.table.image.data).toBe(vdbFrameBlackbodyTable(vdbCie1931Fit));
+    expect(vdbFrameBlackbodyEmission("soot", 2).table).toBe(planck.table);
+    // e.g. the exact CIE table a parity harness injects (here: the fit with a red-shifted x̄)
+    const cmf: VDBColorMatchingFunctions = (w) => {
+      const [, y, z] = vdbCie1931Fit(w);
+      const shifted: VDBFrameVec3 = [vdbCie1931Fit(w - 5)[0], y, z];
+      return shifted;
+    };
+    const custom = vdbFrameBlackbodyEmission("soot", 1.39, { cmf });
+    expect(custom.table).not.toBe(planck.table);
+    expect(custom.table.image.data).toBe(vdbFrameBlackbodyTable(cmf));
+    expect(custom.table.image.data).not.toEqual(planck.table.image.data);
+    expect(vdbFrameBlackbodyEmission("planck", 0, { cmf }).table).toBe(custom.table);
+    expect(custom.spectrum).toBe("soot");
+    expect(custom.sootExponent.value).toBeCloseTo(1.39, 6);
   });
 
   it("emitters: visible volumes with an emission channel; keys change with the volume; cascades cover them", () => {

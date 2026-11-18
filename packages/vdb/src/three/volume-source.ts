@@ -6,7 +6,8 @@
 //   src/three-openvdb/frame/webgpu/frameMipmaps.js L183–189 (mip atlas texture).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; absent channels compile to constants instead of runtime flags; the
-// Shadertoy blackbody and the CIE table are not ported (emission colour is a caller hook).
+// Shadertoy blackbody is not ported (emission colour is a caller hook; his 'planck' / 'soot' table is
+// `vdbFrameBlackbodyEmission`, on an analytic CIE fit: D33).
 // Divergences: DIVERGES.md V23–V25.
 
 /**
@@ -306,7 +307,8 @@ export interface VDBVolumeNodesOptions {
   /**
    * Emission colour from temperature (Kelvin node) → vec3 node. Default: white.
    * His `'approximate'` blackbody is from Shadertoy (CC BY-NC-SA unless stated) and is not
-   * ported (R1 §7); his CIE `'planck'`/`'soot'` table is the hook `vdbFrameBlackbodyEmission` (K3.6).
+   * ported (R1 §7); his `'planck'`/`'soot'` table is the hook `vdbFrameBlackbodyEmission` (K3.6; its CIE 1931
+   * colour matching functions are the Wyman–Sloan–Shirley 2013 analytic fit, D33).
    */
   emissionColor?: (temperature: VDBTslNode) => VDBTslNode;
 }

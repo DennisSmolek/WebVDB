@@ -23,6 +23,7 @@
     "fixtures:wdas": "node scripts/fetch-wdas-cloud.mjs",
     "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs",
     "fixtures:vdb-samples": "node scripts/fetch-vdb-samples.mjs",
+    "fixtures:cie": "node scripts/fetch-cie-cmf.mjs",
     "fixtures:bake": "node scripts/bake-fixtures.mjs",
     "fixtures:bake-sequence": "node scripts/bake-vdb-sequence.mjs",
     "wgsl:chunks": "node scripts/extract-wgsl-chunks.mjs",

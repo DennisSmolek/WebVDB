@@ -80,7 +80,9 @@ import {
   vdbSrgbOetf,
   vdbSrgbEotf as vdbSrgbEotfLocal,
   wvdbDenseVolume,
+  type VDBColorMatchingFunctions,
   type VDBFrameFroxelSample,
+  type VDBFrameVec3,
 } from "../../../packages/vdb/src/tools/internal.js";
 import { probeSpectral, spectralDensityTwin, spectralEnvironmentGridTwin, spectralIntegrateTwin, spectralLightingTwin, spectralTransmittanceTwin } from "./k3-frame-spectral.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
@@ -213,6 +215,35 @@ const STEP5_SCENES: Record<string, SceneDef> = Object.fromEntries(
 // gate, with a shadow-only diff on his ShadowMaterial floor. `*-env-isolated`: the explosion lit by nothing, the props lit
 // by its emission light only (`isolate: 'emission'`). The explosion frame comes from fixtures/k3/ground_explosion/ (his
 // CC0 EmberGen sequence: copy the folder from his clone); the frame is the capture's `pinFrame` (K3.6b; default 30).
+// D33: the package's blackbody colour integrates the analytic CIE fit (Wyman et al. 2013); his integrates the CIE
+// 1931 table. The explosion scenes inject the exact table through the volume's emissionColor hook when the test-only
+// fixture is present (`node scripts/fetch-cie-cmf.mjs` → fixtures/cie/, CC BY-SA 4.0, never committed); without it
+// they render with the fit and do not gate.
+const STEP6_WHY_NO_CIE =
+  "D33: fixtures/cie/CIE_xyz_1931_2deg.csv absent (node scripts/fetch-cie-cmf.mjs), so the explosion's 'planck' colour uses the package's analytic CIE fit (Wyman et al. 2013) while his uses the CIE 1931 table (up to 0.021 per channel)";
+const CIE_CSV = "/fixtures/cie/CIE_xyz_1931_2deg.csv";
+
+/** D33: the exact CIE 1931 2° colour matching functions from the test-only fixture, or null when it is absent. */
+async function loadCieTable(): Promise<VDBColorMatchingFunctions | null> {
+  try {
+    const response = await fetch(CIE_CSV);
+    if (!response.ok) return null;
+    const rows = new Map<number, VDBFrameVec3>();
+    for (const line of (await response.text()).trim().split(/\r?\n/)) {
+      const [w, x, y, z] = line.split(",").map(Number);
+      if ([w, x, y, z].every((v) => Number.isFinite(v))) rows.set(w!, [x!, y!, z!]);
+    }
+    if (rows.size !== 471) return null; // 360–830 nm, 1 nm
+    return (wavelength) => {
+      const row = rows.get(wavelength);
+      if (!row) throw new Error(`${CIE_CSV}: no row at ${wavelength} nm`);
+      return row;
+    };
+  } catch {
+    return null;
+  }
+}
+
 const STEP6_WHY_EXPLOSION_ASIS = "his 'environment' light setup (scene lights from the HDR map, the map as scene.environment, the grounded skybox; not rendered here)";
 const step6 = (name: string, step: NonNullable<SceneDef["step6"]>, extra: Partial<SceneDef> = {}): SceneDef[] => [
   step3(`${name}-asis`, { lightSetup: "environment", multipleScattering: "neural", step6: step, ...extra }, false, step.explosion ? STEP6_WHY_EXPLOSION_ASIS : STEP3_WHY_ENV),
@@ -314,6 +345,8 @@ interface Result {
   densityScale?: number;
   /** K3.6b: the explosion frame loaded (the capture's pinned frame). */
   explosionFrame?: number | null;
+  /** D33: the colour matching functions of the explosion's 'planck' hook (the CIE table when fixtures/cie has it). */
+  emissionCmf?: "cie-1931-table" | "wyman-2013-fit";
   rgba?: string;
   /** Screen rectangle of the volume box in pixels (top-left origin): x0, y0, x1, y1. */
   volumeRect?: number[];
@@ -670,6 +703,17 @@ async function main(): Promise<void> {
     } else explosionFrame = 30;
   }
   result.explosionFrame = explosionFrame;
+  // D33: his 'planck' colours come from the CIE 1931 table; inject it through the hook when the fixture is present
+  let explosionColor: ReturnType<typeof vdbFrameBlackbodyEmission> | undefined;
+  if (explosionFrame !== null) {
+    const cie = await loadCieTable();
+    result.emissionCmf = cie ? "cie-1931-table" : "wyman-2013-fit";
+    explosionColor = vdbFrameBlackbodyEmission("planck", 1.39, cie ? { cmf: cie } : {});
+    if (!cie && result.parityExpected) {
+      result.parityExpected = false;
+      result.parityNote = STEP6_WHY_NO_CIE;
+    }
+  }
   const file = params.get("file") ?? (explosionFrame !== null ? `/fixtures/k3/ground_explosion/ground_explosion_${String(explosionFrame).padStart(4, "0")}.wvdb` : def.file);
   const response = await fetch(file);
   if (!response.ok) throw new Error(`fetch ${file}: ${response.status}${def.smoke ? "" : " (his .wvdb files are not committed: copy them from his clone into fixtures/k3/)"}`);
@@ -792,7 +836,7 @@ async function main(): Promise<void> {
     shadowSteps: SHADOW_STEPS,
     mipmaps: MIPS,
     // K3.6 explosion (frame.js L25–47, his 'planck' values): base colour #555555, 0–3000 K, emissive intensity 15
-    ...(explosionFrame !== null ? { baseColor: "#555555", temperatureRange: [0, 3000] as [number, number], emissiveIntensity: 15, emissionColor: vdbFrameBlackbodyEmission("planck") } : {}),
+    ...(explosionFrame !== null ? { baseColor: "#555555", temperatureRange: [0, 3000] as [number, number], emissiveIntensity: 15, emissionColor: explosionColor } : {}),
   });
 
   const scene = new THREE.Scene();

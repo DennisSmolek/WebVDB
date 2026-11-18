@@ -18,6 +18,7 @@ type VDBBakeCoarseFirstOptions
 type VDBBuildFromDenseOptions
 type VDBBuildFromLeavesOptions
 type VDBBuiltGrid
+type VDBColorMatchingFunctions
 type VDBDecodeToAtlasCpuOptions
 type VDBFrameMeasured
 type VDBFrameMediumMeasurement
@@ -134,6 +135,7 @@ value vdbBakeCoarseFirst
 value vdbBuildFromDense
 value vdbBuildFromDenseDetailed
 value vdbBuildFromLeavesDetailed
+value vdbCie1931Fit
 value vdbCollapseGrid
 value vdbDecodeToAtlasCpu
 value vdbFrameBlackbodyColor

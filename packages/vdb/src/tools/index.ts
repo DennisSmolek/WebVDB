@@ -217,5 +217,10 @@ export type {
  */
 export { vdbFrameMediumPresets, vdbFrameMediumNames, vdbFrameMediumProps, vdbFrameMediumFromMeasurements } from "./frame/medium.js";
 export type { VDBFrameMediumPreset, VDBFrameMediumProps, VDBFrameMediumMeasurement, VDBFrameMeasured } from "./frame/medium.js";
-/** K3.6: the CIE 1931 blackbody colour of a temperature (the emission colour the frame renderer's 'planck' / 'soot' hook uses). */
-export { vdbFrameBlackbodyColor } from "./frame/blackbody.js";
+/**
+ * K3.6: the blackbody colour of a temperature (the emission colour the frame renderer's 'planck' / 'soot' hook uses),
+ * and (D33) the CIE 1931 2° colour matching functions it integrates: by default the analytic fit of Wyman, Sloan &
+ * Shirley (JCGT 2(2), 2013), `vdbCie1931Fit`; any `VDBColorMatchingFunctions` may be passed instead.
+ */
+export { vdbFrameBlackbodyColor, vdbCie1931Fit } from "./frame/blackbody.js";
+export type { VDBColorMatchingFunctions } from "./frame/blackbody.js";
