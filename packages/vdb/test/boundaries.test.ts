@@ -27,9 +27,12 @@ function specifiers(source: string): string[] {
   const patterns = [
     /\b(?:import|export)\s+(?:type\s+)?(?:[\w*${}\s,]+?\s+from\s+)?["']([^"']+)["']/g,
     /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\bimport\s*\(\s*`([^`$]+)`\s*\)/g, // template literal without interpolation
     /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\brequire\s*\(\s*`([^`$]+)`\s*\)/g,
   ];
-  for (const re of patterns) for (const m of noComments.matchAll(re)) found.push(m[1]!);
+  // Bundler query suffixes (`three?raw`, `./x.wgsl?url`) name the same module.
+  for (const re of patterns) for (const m of noComments.matchAll(re)) found.push(m[1]!.split("?")[0]!);
   return found;
 }
 
@@ -84,5 +87,21 @@ describe("source boundaries (K0.3)", () => {
       '// import "three" in a comment is ignored',
     ].join("\n");
     expect(specifiers(sample)).toEqual(["three", "three/webgpu", "../three/grid.js", "three", "three"]);
+  });
+
+  it("strips query suffixes and catches template-literal dynamic imports", () => {
+    const sample = [
+      'import raw from "three?raw";',
+      'const a = await import(`three`);',
+      'const b = await import(`three/webgpu?url`);',
+      'const c = require(`../three/grid.js`);',
+      'const d = await import(`./${name}.js`);', // interpolated: not statically resolvable, ignored
+    ].join("\n");
+    expect(specifiers(sample)).toEqual(["three", "three", "three/webgpu", "../three/grid.js"]);
+  });
+
+  it("flags query-suffixed and template-literal three imports in core", () => {
+    expect(isThree(specifiers('import x from "three?raw";')[0]!)).toBe(true);
+    expect(isThree(specifiers("const y = import(`three`);")[0]!)).toBe(true);
   });
 });

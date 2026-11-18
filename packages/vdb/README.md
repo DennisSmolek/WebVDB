@@ -4,7 +4,7 @@ Sparse NanoVDB volumes on WebGPU, from the [WebVDB](../../README.md) repo. One p
 
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
-| `@pmndrs/vdb` | the engine-free core: the vendored `pnanovdb.wgsl` module and generated constants | no engine |
+| `@pmndrs/vdb` | the engine-free core: the vendored `pnanovdb.wgsl` module | no engine |
 | `@pmndrs/vdb/tools` | CPU side: `.nvdb` loader, CPU oracle (`readValue`, `sampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, writer | no |
 | `@pmndrs/vdb/three` | the three.js / TSL adapter: grid wrapper, volume material, compute utilities, sequences | `three` (optional peer, `>=0.178.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |

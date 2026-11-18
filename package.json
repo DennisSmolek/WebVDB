@@ -16,6 +16,7 @@
     "build": "pnpm -r --filter './packages/*' build",
     "typecheck": "tsc --build",
     "pack:dry": "pnpm --filter @pmndrs/vdb exec npm pack --dry-run",
+    "verify:packed-subpaths": "node scripts/verify-packed-subpaths.mjs",
     "fixtures": "node scripts/fetch-wdas-cloud.mjs && node scripts/fetch-embergen-pack.mjs && node scripts/fetch-vdb-samples.mjs",
     "fixtures:wdas": "node scripts/fetch-wdas-cloud.mjs",
     "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs",

@@ -1,14 +1,16 @@
-# WebVDB
+# @pmndrs/vdb
 
-OpenVDB/NanoVDB volumes on the web, **browser-first**: traverse and render
+Sparse NanoVDB volumes on WebGPU, **browser-first**: traverse and render
 sparse volumes directly in WGSL on WebGPU (three.js `WebGPURenderer` + TSL),
 with pure-TypeScript CPU tooling for parsing, building, and inspecting grids.
 No dense-bake tricks, no WASM in the default install.
 
+Part of the pmndrs rendering initiative. The repo is still named WebVDB until it moves to `pmndrs/vdb`.
+
 **Status: Phases 0–7 complete (CI scope)** — workspace scaffold, vendored
 WGSL fork, fixture pipeline, WebGPU traversal, TSL volume rendering,
 pure-TS CPU tooling (parse/build/quantize/transform/inspect), and
-sequence playback all ship and are e2e-gated on `main`. Suite: 234 unit /
+sequence playback all ship and are e2e-gated on `main`. Suite: 255 unit /
 11 e2e (goldens byte-stable) / clean tsc. See
 [STATUS.md](./STATUS.md) and [docs/PLAN.md](./docs/PLAN.md) for the phase
 gates, and [docs/handoffs/](./docs/handoffs) for the phase-by-phase
@@ -55,7 +57,7 @@ browser-parity retirement roadmap.
 ```sh
 pnpm install
 pnpm typecheck    # tsc --build across the workspace (project references)
-pnpm test         # Vitest across the workspace (234 unit tests)
+pnpm test         # Vitest across the workspace (255 unit tests)
 pnpm test:e2e     # Playwright against the examples app (11 e2e specs)
 pnpm dev          # examples dev server → http://localhost:5173
 pnpm build        # tsc --build each package's dist/ (for publishing)
@@ -66,7 +68,7 @@ pnpm fixtures     # download test volumes into fixtures/ (git-ignored)
 `typecheck`/`test`/`dev` all resolve cross-package imports (`@pmndrs/vdb`,
 `@pmndrs/vdb/tools`, `@pmndrs/vdb/three`) straight to TypeScript source via tsconfig `paths` and
 Vite/Vitest aliases — no build step needed for day-to-day work. `pnpm build` is only needed to produce the `dist/` a
-published package ships (see each package's README "packaging note").
+published package ships (see [packages/vdb/README.md](./packages/vdb/README.md) "packaging note").
 
 Fixtures (WDAS cloud, EmberGen free pack) are **never committed** — see
 [fixtures/README.md](./fixtures/README.md) for the pipeline and licenses.

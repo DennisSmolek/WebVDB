@@ -1,3 +1,5 @@
+> **Superseded (2026-11-18).** This is the frozen v1 document. Current plan: [PHASES.md](../PHASES.md); decisions: [DECISIONS.md](../DECISIONS.md); spec draft: [spec/SPEC-draft.md](../spec/SPEC-draft.md).
+
 # Decisions Log
 
 Resolved 2026-07-11 (review round 1). These supersede the corresponding

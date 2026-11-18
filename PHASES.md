@@ -18,7 +18,10 @@ K0 re-foundation ──► K1 core ──► K2 three adapter ──► K3 rende
 Research: R1 (renderer port plan) runs during K1/K2 and feeds K3.
 ```
 
-## K0 — Re-foundation ⬜
+## K0 — Re-foundation ✅
+
+Done 2026-11-18 ([docs/handoffs/K0.md](docs/handoffs/K0.md)), except two owner items: the licence (K0.6, waits on
+D13) and the repo move to `pmndrs/vdb` (K0.7).
 
 Rename to `@pmndrs/vdb` (D17) and reshape the repo into core plus adapters (D8). **No behaviour changes:** this
 phase moves code, it does not rewrite it.
@@ -41,7 +44,7 @@ phase moves code, it does not rewrite it.
 pack:dry` shows one tarball with `.`, `./tools` and `./three`; the packed tarball installs into a clean external
 consumer and all three subpaths import from `dist/`.
 
-## K1 — Engine-free WebGPU core ⬜
+## K1 — Engine-free WebGPU core 🟨
 
 Everything a WebGPU host needs to hold and read sparse grids, with no engine (D8, D10).
 
@@ -109,7 +112,7 @@ the WDAS quarter cloud runs at ≥ 60 fps at 1080p on the reference desktop **at
 104 fps used `stepSize=4`, `shadowSteps=4`; its quality preset ran at 16.8 fps); goldens per lighting mode; and
 the A/B results are recorded.
 
-## K4 — Tools and interop ⬜
+## K4 — Tools and interop 🟨
 
 CPU-side breadth, runnable in parallel from K0 since it touches no GPU code. His MIT `.vdb` reader is the
 reference for parser coverage.

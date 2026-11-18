@@ -1,3 +1,5 @@
+> **Superseded (2026-11-18).** This is the frozen v1 document. Current plan: [PHASES.md](../PHASES.md); decisions: [DECISIONS.md](../DECISIONS.md); spec draft: [spec/SPEC-draft.md](../spec/SPEC-draft.md).
+
 # Build Plan: VDB-on-the-Web
 
 **Status:** Draft for review · Executes [SPEC.md](./SPEC.md) if approved.

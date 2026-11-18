@@ -9,7 +9,7 @@
  * Every constant below is the ABI-32.9.1 value extracted into
  * `packages/vdb/vendor/stride-tables.json` (itself generated from the
  * vendored `PNanoVDB.h`). They are duplicated here as named literals rather than
- * read from that JSON at runtime on purpose: `vdb-web-tools` is the pure-TS,
+ * read from that JSON at runtime on purpose: `@pmndrs/vdb/tools` is the pure-TS,
  * browser-first CPU half (decision D3) and must not pull in `node:fs`. To keep
  * the two provably in lockstep, `test/bytes-constants.test.ts` reads
  * stride-tables.json and asserts each constant here equals the extracted value.

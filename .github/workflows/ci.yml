@@ -41,6 +41,9 @@ jobs:
       - name: Pack dry-run (publishable tarballs)
         run: pnpm pack:dry
 
+      - name: Packed subpaths resolve from a clean consumer
+        run: pnpm verify:packed-subpaths
+
       # Fixtures are git-ignored. The bake is deterministic (re-bakes
       # reproduce the committed sidecars byte-identically), so cache by
       # the inputs that define them.
