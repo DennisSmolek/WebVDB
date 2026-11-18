@@ -326,6 +326,12 @@ finding out later a grid doesn't fit. See
 [decision D4](../../docs/DECISIONS.md#d4--targets-and-device-creation).
 
 
+## Third-party code
+
+The vendored `pnanovdb.wgsl` and `PNanoVDB.h` are Apache-2.0. The `.wvdb` reader and writer port logic from
+mjurczyk/openvdb (MIT). Test fixtures are CC0, and `fflate` is an MIT runtime dependency. The full list, with
+licences and file locations, is in [THIRD_PARTY.md](https://github.com/DennisSmolek/WebVDB/blob/main/THIRD_PARTY.md).
+
 ## Packaging note (for contributors)
 
 The published export map points only at built `dist/` output (`dist/{core,tools,three}`, one `tsc` build).

@@ -32,13 +32,13 @@ Spec: [docs/design/K1-core.md](docs/design/K1-core.md) (§8 has the acceptance p
 |---|---|---|---|---|
 | K1.1 | WGSL size budget per profile | coord | ✅ | D21: budgets from measurement (K1-core §3.6). Compile-time column needs the owner's reference device. |
 | K1.2 | Design note | T3 | ✅ | docs/design/K1-core.md |
-| K1.3a | Pool layout: header + record encode/decode, `VDB_GPU_LAYOUT_VERSION`, WGSL record constants from one source | T3 | ✅ | |
-| K1.3b | `VDBGridPool`: create/add/replace/remove/setTransform/update/version/revision/dispose; host-buffer mode | T3 | ✅ | e2e readback of nine fixtures byte-identical. Review pending. |
-| K1.4a | WGSL generator: chunk extraction from the vendored file, `read` + `sample` profiles, slot/buffer modes, `checkModule` | T3 | ✅ | 72/72 variants compile. Review pending. |
-| K1.4b | `march` profile (HDDA, stats) + the Fp leaf-stats fix in the fork; `tools` twins (`hddaWalk`, `nodeStats`) | T3 | 🟨 | Majorant parts deferred (D22). |
-| K1.5 | Size snapshot + CI guard | T1 | ⬜ | Budgets in KiB (1024 B). |
-| K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | ⬜ | Fresh-eyes verification after (D11). |
-| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ⬜ | |
+| K1.3a | Pool layout: header + record encode/decode, `VDB_GPU_LAYOUT_VERSION`, WGSL record constants from one source | T3 | ✅ | Reviewed (Opus); fixes landed (pool lifecycle 616b850; generator fixes in K1.4b). |
+| K1.3b | `VDBGridPool`: create/add/replace/remove/setTransform/update/version/revision/dispose; host-buffer mode | T3 | ✅ | e2e readback of nine fixtures byte-identical. Reviewed (Opus); fixes landed (pool lifecycle 616b850; generator fixes in K1.4b). |
+| K1.4a | WGSL generator: chunk extraction from the vendored file, `read` + `sample` profiles, slot/buffer modes, `checkModule` | T3 | ✅ | 72/72 variants compile. Reviewed (Opus); fixes landed (pool lifecycle 616b850; generator fixes in K1.4b). |
+| K1.4b | `march` profile (HDDA, stats) + the Fp leaf-stats fix in the fork; `tools` twins (`hddaWalk`, `nodeStats`) | T3 | ✅ | 132/132 variants compile; GPU probe bit-exact; review fixes folded in. Majorant parts deferred (D22). |
+| K1.5 | Size snapshot + CI guard | T1 | 🟨 | Budgets in KiB (1024 B). Sizes measured for 132 variants (K1.4b handoff); snapshot not yet committed. |
+| K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | 🟨 | Fresh-eyes verification after (D11). `march` probe exists (`scripts/lib/march-probe.mjs`); the harness does not. |
+| K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | 🟨 | Pool readback harness exists (`examples/src/harness/pool.html`); the no-engine smoke does not. |
 | K1.8 | Optional `reader: 'lean'` (≤ 4 KB `read`/Float), A/B vs vendored accessor | T3 | ⬜ | Not gating (D21). |
 
 ## K2 — three.js adapter, v1 parity
@@ -73,15 +73,19 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K4.1 | Parse active tiles (`bunny_cloud.vdb`) | T3 | ✅ | Also added a pure-TS Blosc1 decoder (bunny_cloud is LZ4-compressed). 0 oracle mismatches over 19.2M voxels. Review pending. | mjurczyk's MIT reader is a reference; attribute anything ported. |
-| K4.2 | Vector grids, then point grids, then level-set specifics | T2 | ⬜ | |
-| K4.3 | `.wvdb` read and write per his spec (v0.5, plus points from his v0.25.0) | T3 | 🟨 | Prerequisite for K3.0. A decoder written from the spec already worked in the comparison report. |
+| K4.1 | Parse active tiles (`bunny_cloud.vdb`) | T3 | ✅ | Also added a pure-TS Blosc1 decoder (bunny_cloud is LZ4-compressed). 0 oracle mismatches over 19.2M voxels. Reviewed; Blosc/zlib hardened against hostile input (29 tests). mjurczyk's MIT reader is a reference; attribute anything ported. |
+| K4.2 | Vector grids, then point grids, then level-set specifics | T2 | 🟨 | Level-set inactive-value and tile work split out to K4.8 and K4.9. Vector and point grids still rejected by the parser. |
+| K4.3 | `.wvdb` read and write per his spec (v0.5, plus points from his v0.25.0) | T3 | ✅ | Prerequisite for K3.0. A decoder written from the spec already worked in the comparison report. Owner check: load our files in his `WVDBLoader` examples page; byte-identity vs his CLI under the same Node zlib. |
 | K4.4 | Resample-to-resolution bake | T2 | ⬜ | Measured: our FpN at his 128³ is 474 KiB against his 790 KiB. |
 | K4.5 | Coarse-first `.nvdb` delivery | T3 | ⬜ | Design first; his LOD0 is 14 KiB. |
 | K4.6 | Quantize keeps uniform regions as tiles (the ~12% Fp8 gap) | T2 | ⬜ | K4.1 made quantize keep source tiles: Fp8 sizes now equal native on the primitives. What remains: collapse uniform leaves in our own builds. |
 | K4.7 | Parse OpenVDB 12.1 half-float grids that omit empty value arrays (`bunny.vdb`, `icosahedron.vdb`, `fire.vdb` fail) | T2 | ⬜ | Found in K4.1. |
 | K4.8 | Level sets: inactive leaf values are ±background, not 0 (`compression.ts`) | T2 | ⬜ | Changes leaf bytes; check demo goldens. |
 | K4.9 | Keep inactive internal tiles (level-set interior −background) | T2 | ⬜ | |
+| K4.10 | Native reference values for `bunny_cloud` (pyopenvdb or `nanovdb_convert` via `run-native-parity`) | owner | ⬜ | Needs Docker. Bunny derivatives are outside the pinned-SHA manifest (`fixtures/ATTRIBUTION.md`). |
+| K4.11 | Document FpN size vs native (ours ~1.85× smaller: different tolerance) and decide | T2 | ⬜ | |
+| K4.12 | Root-tile key order: sort unsigned like NanoVDB keys | T1 | ⬜ | |
+| K4.13 | `.wvdb` follow-ups: prefiltered resample option (box/area; his bake is point-sampled, A/B per CLAUDE.md), port `sampleLevelSet`, page-by-page decode within a LOD (show a LOD before all its pages arrive, §12.2) | T2 | ⬜ | Wording from [docs/handoffs/K4-3.md](docs/handoffs/K4-3.md) (Follow-ups). |
 
 ## K5 — Release
 
