@@ -67,6 +67,21 @@ export type {
 export { quantize, quantizeDetailed } from "./nanovdb/index.js";
 export type { QuantizeMode } from "./nanovdb/index.js";
 
+/**
+ * Resample-to-resolution bake (K4.4): a NanoVDB image or parsed `.vdb` grid
+ * resampled over a world box with a point, box (default) or trilinear filter,
+ * sparse, optionally quantized; and the comparison report's error metric.
+ */
+export { resampleGrid, resampleError } from "./nanovdb/index.js";
+export type {
+  ResampleErrorOptions,
+  ResampleErrorResult,
+  ResampledGrid,
+  ResampleFilter,
+  ResampleOptions,
+  ResampleSource,
+} from "./nanovdb/index.js";
+
 /** Affine transform — a metadata-only Map edit, no voxel churn (uniform scale+translate). */
 export { transform } from "./nanovdb/index.js";
 export type { TransformInput, TransformSpec } from "./nanovdb/index.js";

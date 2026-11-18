@@ -78,7 +78,7 @@ export function quantizeDetailed(
 }
 
 interface FloatGridView {
-  voxelSize: number;
+  voxelSize: [number, number, number];
   translation: [number, number, number];
   background: number;
   gridName: string;
@@ -109,7 +109,12 @@ function readFloatGrid(image: Uint32Array): FloatGridView {
         `v1 quantizes float grids only (float -> fp8/fpn).`,
     );
   }
-  const voxelSize = view.getFloat64(GRID_OFF_VOXEL_SIZE, true);
+  // All three: a resampled grid can be anisotropic (K4.4), and the Map must survive quantization.
+  const voxelSize: [number, number, number] = [
+    view.getFloat64(GRID_OFF_VOXEL_SIZE, true),
+    view.getFloat64(GRID_OFF_VOXEL_SIZE + 8, true),
+    view.getFloat64(GRID_OFF_VOXEL_SIZE + 16, true),
+  ];
   const vecBase = GRID_OFF_MAP + MAP_OFF_VECD;
   const translation: [number, number, number] = [
     view.getFloat64(vecBase, true),
