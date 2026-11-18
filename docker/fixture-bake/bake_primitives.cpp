@@ -103,9 +103,13 @@ static void bakeOne(nanovdb::GridHandle<>&& handle,
     }
     emit(nanovdb::Coord((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2));
     for (int n = 0; n < 64; ++n) {
-        emit(nanovdb::Coord(rng.range(mn[0] - 4, mx[0] + 4),
-                            rng.range(mn[1] - 4, mx[1] + 4),
-                            rng.range(mn[2] - 4, mx[2] + 4)));
+        // Sequence the draws explicitly: C++ leaves function-argument
+        // evaluation order unspecified (GCC right-to-left, Clang
+        // left-to-right), which made sidecars differ by compiler.
+        const int32_t x = rng.range(mn[0] - 4, mx[0] + 4);
+        const int32_t y = rng.range(mn[1] - 4, mx[1] + 4);
+        const int32_t z = rng.range(mn[2] - 4, mx[2] + 4);
+        emit(nanovdb::Coord(x, y, z));
     }
     js << "\n  ]\n}\n";
 
