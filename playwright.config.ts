@@ -1,14 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const port = process.env.WEBVDB_E2E_PORT ?? "5173";
+const baseURL = `http://127.0.0.1:${port}`;
+
 // E2E runs against the examples app. Later phases add WebGPU-dependent
 // suites (traversal probes, golden-image SSIM) that need
 // --enable-unsafe-webgpu; the Phase 0 smoke passes without an adapter.
 export default defineConfig({
   testDir: "e2e",
+  snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}-{projectName}-linux{ext}",
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL,
     trace: "on-first-retry",
   },
   projects: [
@@ -36,8 +40,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm --filter @webvdb/examples dev",
-    url: "http://localhost:5173",
+    command: `pnpm --filter @webvdb/examples dev --host 127.0.0.1 --port ${port}`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },

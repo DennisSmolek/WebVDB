@@ -20,6 +20,8 @@ export interface VolumeRendererOptions {
   /** Grid bytes the device must be able to bind; raises `maxStorageBufferBindingSize`/`maxBufferSize`. */
   gridBytes?: number;
   canvas?: HTMLCanvasElement;
+  /** Enable three's render/compute timestamp queries when the adapter supports them. */
+  trackTimestamp?: boolean;
   /** Features to request (intersected with what the adapter actually supports). Defaults to shader-f16 + float32-filterable. */
   requiredFeatures?: GPUFeatureName[];
 }
@@ -96,6 +98,8 @@ export async function createVolumeRenderer(
   const requestedLimits = computeRequiredLimits(adapterLimits, opts.gridBytes ?? 0);
 
   const requestedFeatures = [...(opts.requiredFeatures ?? DEFAULT_REQUIRED_FEATURES)];
+  if (opts.trackTimestamp && !requestedFeatures.includes("timestamp-query"))
+    requestedFeatures.push("timestamp-query");
   const grantedFeatures = requestedFeatures.filter((f) => adapter.features.has(f));
 
   const device = await adapter.requestDevice({
@@ -103,7 +107,12 @@ export async function createVolumeRenderer(
     requiredFeatures: grantedFeatures,
   });
 
-  const renderer = new WebGPURenderer({ device, canvas: opts.canvas, antialias: false });
+  const renderer = new WebGPURenderer({
+    device,
+    canvas: opts.canvas,
+    antialias: false,
+    trackTimestamp: opts.trackTimestamp ?? false,
+  });
   await renderer.init();
 
   const report: CapabilityReport = {

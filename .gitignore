@@ -3,6 +3,7 @@ node_modules/
 dist/
 dist-types/
 *.tsbuildinfo
+artifacts/
 
 # Test output
 coverage/
@@ -17,6 +18,8 @@ fixtures/**/*.nvdb
 fixtures/**/*.zip
 fixtures/**/*.gz
 fixtures/downloads/
+fixtures/embergen/
+fixtures/parity/
 
 # Editor / OS
 .DS_Store

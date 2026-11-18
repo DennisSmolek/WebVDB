@@ -17,7 +17,10 @@ import { exists } from "./lib/download.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OPENVDB_COMMIT = "a532de5526ef791280b6483a872336a811a68542"; // = vendored PNanoVDB.h pin
-const OUT = path.join(ROOT, "fixtures");
+const OUT = process.env.BAKE_OUTPUT_DIR
+  ? path.resolve(ROOT, process.env.BAKE_OUTPUT_DIR)
+  : path.join(ROOT, "fixtures");
+const DOWNLOADS = path.join(ROOT, "fixtures", "downloads");
 const MODE = process.env.BAKE_MODE ?? "auto";
 
 const run = (cmd, args, opts = {}) =>
@@ -33,7 +36,7 @@ function bakeDocker() {
 
 async function bakeLocal() {
   console.error("• baking locally with g++ (NanoVDB headers are header-only)");
-  const clone = path.join(OUT, "downloads", "openvdb-sparse");
+  const clone = path.join(DOWNLOADS, "openvdb-sparse");
   if (!(await exists(path.join(clone, "nanovdb", "nanovdb", "NanoVDB.h")))) {
     await mkdir(path.dirname(clone), { recursive: true });
     console.error(`  cloning pinned NanoVDB headers (${OPENVDB_COMMIT.slice(0, 8)})…`);
@@ -48,7 +51,7 @@ async function bakeLocal() {
       if (run(cmd, args).status !== 0) return false;
     }
   }
-  const bin = path.join(OUT, "downloads", "bake_primitives");
+  const bin = path.join(DOWNLOADS, "bake_primitives");
   const gpp = run("g++", [
     "-std=c++17",
     "-O2",
@@ -71,4 +74,4 @@ else if (have("g++")) ok = await bakeLocal();
 else console.error("✗ neither a running docker daemon nor g++ found — install one and re-run.");
 
 if (!ok) process.exit(1);
-console.error("✓ primitives baked → fixtures/primitives/ (.nvdb git-ignored, sidecars committed)");
+console.error(`✓ primitives baked → ${path.relative(ROOT, path.join(OUT, "primitives"))}/`);

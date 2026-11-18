@@ -2,8 +2,7 @@
 // Fetch the classic openvdb.org sample `.vdb` models, hosted (MIT) by the
 // mjurczyk/openvdb pure-JS reader project — our Phase 5 parser fixture
 // corpus (docs/PLAN.md Phase 5, docs/handoffs/PHASE-3.md "Phase 4/5 entry
-// points": "mjurczyk/openvdb (MIT) commits the classic openvdb.org sample
-// .vdbs (sphere 0.8 MB ... bunny_cloud 80 MB)").
+// points": "mjurczyk/openvdb (MIT) commits the classic openvdb.org samples").
 //
 // Pinned commit (resolved via `git ls-remote https://github.com/mjurczyk/openvdb.git HEAD`
 // on 2026-07-12): 2173458e3b6d646deee5401ec6493079b09c091c
@@ -16,41 +15,38 @@
 //
 // Usage:
 //   node scripts/fetch-vdb-samples.mjs            # sphere/cube/smoke/utahteapot
-//   BUNNY=1 node scripts/fetch-vdb-samples.mjs     # + bunny_cloud.vdb (~80 MB)
-//   VDB_SAMPLES_SHA=<sha> node scripts/fetch-vdb-samples.mjs   # override the pin
 
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { download, exists } from "./lib/download.mjs";
+import { download, verifyFile } from "./lib/download.mjs";
+import { VDB_SAMPLES, VDB_SAMPLES_COMMIT } from "./lib/vdb-samples.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = path.join(ROOT, "fixtures", "vdb-samples");
 
-const PINNED_SHA =
-  process.env.VDB_SAMPLES_SHA ?? "2173458e3b6d646deee5401ec6493079b09c091c";
-const BASE_URL = `https://raw.githubusercontent.com/mjurczyk/openvdb/${PINNED_SHA}/examples/public/assets`;
-
-const SAMPLES = ["sphere.vdb", "cube.vdb", "smoke.vdb", "utahteapot.vdb"];
-if (process.env.BUNNY === "1") {
-  SAMPLES.push("bunny_cloud.vdb"); // ~80 MB — opt-in only.
-}
+const BASE_URL =
+  `https://raw.githubusercontent.com/mjurczyk/openvdb/${VDB_SAMPLES_COMMIT}` +
+  "/examples/public/assets";
 
 console.error("VDB sample-model fixtures (mjurczyk/openvdb, MIT-hosted; assets CC-BY-SA 4.0 openvdb.org)");
-console.error(`  pinned commit: ${PINNED_SHA}`);
-if (process.env.BUNNY !== "1") {
-  console.error("  (skipping bunny_cloud.vdb, ~80 MB — set BUNNY=1 to include it)");
-}
+console.error(`  pinned commit: ${VDB_SAMPLES_COMMIT}`);
+console.error("  Stanford bunny derivatives are intentionally excluded; see fixtures/ATTRIBUTION.md");
 
 let failures = 0;
-for (const name of SAMPLES) {
+for (const [name, expected] of Object.entries(VDB_SAMPLES)) {
   const dest = path.join(FIXTURES, name);
-  if (await exists(dest)) {
-    console.error(`  ✓ already present: fixtures/vdb-samples/${name}`);
-    continue;
-  }
   try {
-    await download(`${BASE_URL}/${name}`, dest);
+    await download(`${BASE_URL}/${name}`, dest, {
+      expectedBytes: expected.bytes,
+      expectedSha256: expected.sha256,
+    });
+    const verified = await verifyFile(dest, {
+      expectedBytes: expected.bytes,
+      expectedSha256: expected.sha256,
+    });
+    if (!verified.ok) throw new Error(`post-download integrity check failed for ${name}`);
+    console.error(`    sha256 ${verified.actualSha256}`);
   } catch (err) {
     failures++;
     console.error(`  ✗ failed to fetch ${name}: ${err.message}`);
@@ -69,4 +65,4 @@ if (failures > 0) {
   process.exit(1);
 }
 
-console.error(`  ✓ done — ${SAMPLES.length} file(s) in fixtures/vdb-samples/`);
+console.error(`  ✓ done — ${Object.keys(VDB_SAMPLES).length} verified file(s) in fixtures/vdb-samples/`);

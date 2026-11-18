@@ -34,7 +34,7 @@
  *
  * ## Deterministic test mode (`?test=1&sample=vdb|nvdb`)
  *
- * Auto-loads the named sample (`smoke.vdb` or `sphere_fog_fp8.nvdb`),
+ * Auto-loads the named sample (`sphere.vdb` or `sphere_fog_fp8.nvdb`),
  * renders one settled frame, fills every panel, and publishes
  * `window.__DEMO06__`.
  */
@@ -107,7 +107,7 @@ function installAdapterKeepAliveShim(): void {
 // ---------------------------------------------------------------------------
 
 const SAMPLE_URLS = {
-  vdb: "/fixtures/vdb-samples/smoke.vdb",
+  vdb: "/fixtures/vdb-samples/sphere.vdb",
   nvdb: "/fixtures/primitives/sphere_fog_fp8.nvdb",
 } as const;
 

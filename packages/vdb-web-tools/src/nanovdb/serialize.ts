@@ -39,6 +39,7 @@
 import {
   CHECKSUM_DISABLED,
   GRID_CLASS_FOG_VOLUME,
+  GRID_CLASS_LEVEL_SET,
   GRID_FLAGS_STATS_BBOX_BREADTH_FIRST,
   GRID_NAME_MAX,
   GRID_OFF_BLIND_METADATA_COUNT,
@@ -126,7 +127,7 @@ export interface BuildFromDenseOptions {
   /** Grid name (<256 bytes incl. NUL). Default "dense". */
   gridName?: string;
   /** Grid class. Default "FogVolume". */
-  gridClass?: "FogVolume" | "Unknown";
+  gridClass?: "FogVolume" | "LevelSet" | "Unknown";
 }
 
 /** Result of a build, exposing metadata alongside the raw image. */
@@ -142,6 +143,7 @@ export interface BuiltGrid {
 
 const GRID_CLASS_ID: Record<NonNullable<BuildFromDenseOptions["gridClass"]>, number> = {
   FogVolume: GRID_CLASS_FOG_VOLUME,
+  LevelSet: GRID_CLASS_LEVEL_SET,
   Unknown: 0,
 };
 
@@ -226,7 +228,7 @@ export interface BuildFromLeavesOptions {
   /** Grid name (<256 bytes incl. NUL). Default "grid". */
   gridName?: string;
   /** Grid class. Default "FogVolume". */
-  gridClass?: "FogVolume" | "Unknown";
+  gridClass?: "FogVolume" | "LevelSet" | "Unknown";
 }
 
 /**

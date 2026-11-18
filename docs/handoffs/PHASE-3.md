@@ -1,24 +1,40 @@
 # Handoff: Phase 3 — cloud material
 
-Gate: **PASSED in CI scope; hardware perf item deferred (see Residual).**
+Gate: **PASSED, including the 1080p hardware performance gate.**
 Demos 02 + 03 ship and are e2e-gated: two-pose golden images byte-stable
 across consecutive runs, demo 03 rated *publishable* by an independent
 editorial review that checked every byte-offset claim against upstream.
 Suite at close: 124 unit / 6 e2e / clean tsc.
 
-## Residual gate item (needs a real GPU + network)
+## 1080p WDAS hardware gate (2026-07-12)
 
-PLAN's Phase 3 gate line "WDAS cloud ≥60 fps/1080p desktop + perf budget
-table via GPU timestamps" cannot be executed in the authoring sandbox
-(no WDAS download — proxy-blocked; SwiftShader fps is meaningless).
-To finish it on a desktop machine:
-1. `pnpm fixtures:wdas` (downloads the quarter cloud; verify the URL —
-   unverified from the sandbox), bake fp8 via `nanovdb_convert --fp8`
-   (Docker image in `docker/fixture-bake/`, also unbuilt here).
-2. Open demo 02 — it fetch-probes `/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb`
-   and prefers it over the primitive fallback.
-3. Record fps at 1080p + a ms budget (march / shadow) via
-   `trackTimestamp`/GPU timestamps; append the table here.
+`pnpm hardware:perf` passed in stable Chrome 149 on the default Apple M5 Pro
+GPU (`apple metal-3`) at an explicit 1920×1080 viewport. The selected fixture
+was `wdas_cloud_quarter_fp8.nvdb`, rendered by the direct WebGPU canvas path.
+
+| Preset | FPS | Frame | Shadow=0 frame | Shadow delta | Result |
+|---|---:|---:|---:|---:|---|
+| `stepSize=4`, `shadowSteps=4`, `sampleBudgetCap=8192` | 103.96 | 9.62 ms | 7.97 ms | 1.65 ms | PASS |
+
+The original `stepSize=0.75`, `shadowSteps=12` preset measured 16.77 fps
+(59.62 ms/frame), so it was not retained for the 1080p gate. A refreshed
+`stepSize=3`, `shadowSteps=4` run measured 52.27 fps, so the default gate now
+uses `stepSize=4`; its screenshot remains a coherent full cloud without
+clipping. Evidence is in ignored `artifacts/hardware-report.json` and
+`artifacts/hardware/demo-02-wdas-1080p.png`.
+
+The gate now requires the published Demo 02 state to identify the WDAS FP8
+fixture, `apple metal-3` adapter, direct presentation, both shims disabled,
+1920×1080 resolution, and the exact three quality settings above. A 60 FPS
+result alone is not sufficient.
+
+Three r185 timestamp queries were enabled and Chrome granted the feature, but
+the returned durations were larger than the queue-synchronized wall time by
+orders of magnitude. Demo 02 now rejects those impossible values and records
+`gpuTimestampValid=false`; the table therefore uses queue-synchronized frame
+time and an alternating `shadowSteps=0` controlled delta rather than presenting
+invalid GPU numbers. HDDA node-skipping remains the v1.1 quality/performance
+lever.
 
 ## What exists
 
@@ -38,13 +54,13 @@ To finish it on a desktop machine:
   node at construction — sequence playback needs a grid-rebind API or a
   documented rebuild-per-frame pattern. Design Phase 7 with this in mind.
 
-## Environment workarounds (demo-scoped, NOT in the package)
+## Environment paths
 
-`examples/src/demos/02-cloud/main.ts` carries: r185 swizzle-string strip
-shim; adapter keep-alive; offscreen RenderTarget → readback → 2D-canvas
-blit (sandbox canvas presentation drops the Dawn instance under
-SwiftShader). Re-test plain canvas presentation on real hardware — the
-package itself has none of this.
+Demo 02 now has explicit `presentation=direct|readback` and compatibility
+switches. Stable Chrome hardware passed repeated direct-canvas startup,
+resize, and rendering with both shims disabled. Canonical SwiftShader E2E
+still selects readback and the shims explicitly; the package itself contains
+none of these demo-scoped workarounds.
 
 ## Phase 4/5 entry points
 
@@ -54,8 +70,9 @@ package itself has none of this.
   the input surface.
 - Phase 5 (pure-TS .vdb parser): fixtures identified and reachable
   in-sandbox — `mjurczyk/openvdb` (MIT) commits the classic openvdb.org
-  sample `.vdb`s (sphere 0.8 MB … bunny_cloud 80 MB); add a pinned-commit
-  fetch script to the fixtures pipeline. CPU-only lane, fully parallel
-  with Phase 4.
+  sample `.vdb`s. The release corpus pins sphere/cube/smoke/utahteapot by
+  commit, byte size, and SHA-256. Stanford bunny derivatives are excluded
+  because their non-commercial/product-sale terms differ; see
+  `fixtures/ATTRIBUTION.md`.
 - `NanoVDBGrid.indexToWorld()` is axis-aligned-only (documented);
   rotated/sheared Maps need the loader to surface `GridData.mMap`.

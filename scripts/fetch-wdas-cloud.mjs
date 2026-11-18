@@ -24,7 +24,7 @@ const DOWNLOADS = path.join(ROOT, "fixtures", "downloads");
 
 const ZIP_URL =
   process.env.WDAS_URL ??
-  "https://disneyanimation.com/media/technology/datasets/wdas_cloud.zip";
+  "https://assets.disneyanimation.com/wdas_cloud.zip";
 const VARIANTS = (process.env.WDAS_VARIANTS ?? "quarter").split(",").map((s) => s.trim());
 
 console.error("WDAS cloud fixture (CC-BY-SA 3.0, © Walt Disney Animation Studios)");
@@ -63,7 +63,27 @@ try {
 }
 
 await mkdir(FIXTURES, { recursive: true });
-const unzip = spawnSync("unzip", ["-o", "-j", zipPath, ...wanted, "-d", FIXTURES], {
+const listed = spawnSync("unzip", ["-Z1", zipPath], { encoding: "utf8" });
+if (listed.error?.code === "ENOENT") {
+  console.error(`  ✗ 'unzip' not found. Extract ${path.relative(ROOT, zipPath)} into fixtures/wdas/ manually.`);
+  process.exit(1);
+}
+if (listed.status !== 0) {
+  console.error(`  ✗ could not list archive members in ${path.relative(ROOT, zipPath)}`);
+  process.exit(listed.status ?? 1);
+}
+
+const members = String(listed.stdout)
+  .split(/\r?\n/)
+  .filter(Boolean);
+const wantedMembers = wanted.map((name) => members.find((member) => path.posix.basename(member) === name));
+if (wantedMembers.some((member) => member === undefined)) {
+  const absent = wanted.filter((_, index) => wantedMembers[index] === undefined);
+  console.error(`  ✗ archive is missing requested variant(s): ${absent.join(", ")}`);
+  process.exit(1);
+}
+
+const unzip = spawnSync("unzip", ["-o", "-j", zipPath, ...wantedMembers, "-d", FIXTURES], {
   stdio: "inherit",
 });
 if (unzip.error?.code === "ENOENT") {

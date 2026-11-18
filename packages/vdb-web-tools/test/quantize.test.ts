@@ -15,7 +15,7 @@
  * `processLeafs`. Rounding is `floor(x + 0.5)` (native's dithering-off constant).
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -28,9 +28,6 @@ import { NanoVDBFile } from "../../nanovdb-wgsl/src/nvdb-file.js";
 // ---------------------------------------------------------------------------
 
 
-// Native fixtures are git-ignored (`pnpm fixtures:bake`); synthetic tests below run regardless.
-const nativeFixtures = existsSync(fileURLToPath(new URL("../../../fixtures/primitives/sphere_fog_float.nvdb", import.meta.url)));
-
 function loadPrimitive(name: string): Uint32Array {
   const p = fileURLToPath(new URL(`../../../fixtures/primitives/${name}`, import.meta.url));
   const buf = readFileSync(p);
@@ -41,6 +38,13 @@ function loadPrimitive(name: string): Uint32Array {
 interface Sidecar {
   samples: { ijk: [number, number, number]; value: number; active: boolean }[];
 }
+
+const nativeFixturesPresent = [
+  "sphere_fog_float.nvdb",
+  "sphere_fog_fp8.nvdb",
+  "sphere_fog_fpn.nvdb",
+].every((name) => existsSync(new URL(`../../../fixtures/primitives/${name}`, import.meta.url)));
+
 function loadSidecar(name: string): Sidecar {
   return JSON.parse(
     readFileSync(fileURLToPath(new URL(`../../../fixtures/primitives/${name}`, import.meta.url)), "utf8"),
@@ -116,7 +120,9 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     expect(255 * quantum + min).toBeGreaterThanOrEqual(min);
   });
 
-  it.skipIf(!nativeFixtures)("re-encodes native sphere_fog_float -> fp8, exact vs native at all 73 sidecar coords", () => {
+  it.skipIf(!nativeFixturesPresent)(
+    "re-encodes native sphere_fog_float -> fp8, exact vs native at all 73 sidecar coords",
+    () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFp8 = loadPrimitive("sphere_fog_fp8.nvdb");
     const myFp8 = quantize(floatImg, "fp8");
@@ -136,9 +142,12 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     // Active-voxel count is preserved (tiles expanded into leaves, so all
     // active voxels survive the leaf-only re-layout).
     expect(inspect(myFp8).voxelCount).toBe(inspect(floatImg).voxelCount);
-  });
+    },
+  );
 
-  it.skipIf(!nativeFixtures)("FpN per-leaf bit-width distribution matches native for the real (non-tile) leaves", () => {
+  it.skipIf(!nativeFixturesPresent)(
+    "FpN per-leaf bit-width distribution matches native for the real (non-tile) leaves",
+    () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFpn = loadPrimitive("sphere_fog_fpn.nvdb");
     const myFpn = quantizeDetailed(floatImg, "fpn").image;
@@ -170,9 +179,10 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     // exactly mGridSize.
     const v = new DataView(myFpn.buffer, myFpn.byteOffset, myFpn.byteLength);
     expect(inspect(myFpn).memoryBreakdown.total).toBe(Number(v.getBigUint64(32, true)));
-  });
+    },
+  );
 
-  it.skipIf(!nativeFixtures)("throws clearly when the source grid is not FLOAT", () => {
+  it.skipIf(!nativeFixturesPresent)("throws clearly when the source grid is not FLOAT", () => {
     const fp8 = loadPrimitive("sphere_fog_fp8.nvdb");
     expect(() => quantize(fp8, "fp8")).toThrowError(/not FLOAT|float grids only/i);
   });

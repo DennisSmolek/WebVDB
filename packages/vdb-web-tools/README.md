@@ -103,7 +103,7 @@ CRC).
 
 ## Packaging note (for contributors)
 
-Like the other two WebVDB packages, this one's `"."` export has a
-`"development"` condition (`./src/index.ts`) for in-workspace resolution
-and `"import"`/`"types"` conditions pointing at the built `dist/` for
-published consumers.
+The published export map points only at built `dist/` output. Workspace
+Vite/Vitest/TypeScript configs alias this package to `src/index.ts` for
+source-level development without exposing TypeScript source paths to npm
+consumers.

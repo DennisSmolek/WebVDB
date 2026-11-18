@@ -370,3 +370,21 @@ export function readValue(gridWords: Uint32Array, ijk: [number, number, number])
 
   return { value, active: resolved.active };
 }
+
+/**
+ * Returns the encoded per-leaf quantization step at `ijk`, or zero when the
+ * value resolves to an unquantized FLOAT value or an internal/background tile.
+ */
+export function readLeafQuantum(gridWords: Uint32Array, ijk: [number, number, number]): number {
+  const gridTypeId = readU32(gridWords, GRID_OFF_GRID_TYPE);
+  const gridTypeName = gridTypeNameFor(gridTypeId);
+  if (gridTypeName === "FLOAT") return 0;
+
+  const gt = gridTypeConstantsFor(gridTypeName);
+  const treeAddress = GRID_SIZE;
+  const rootAddress = treeAddress + Number(readU64(gridWords, treeAddress + TREE_OFF_NODE_OFFSET_ROOT));
+  const resolved = descendRoot(gridWords, rootAddress, ijk, gt);
+  if (resolved.level !== 0) return 0;
+
+  return readF32(gridWords, resolved.valueAddress - LEAF_TABLE_NEG_OFF_QUANTUM);
+}

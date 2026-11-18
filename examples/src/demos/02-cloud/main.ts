@@ -6,7 +6,7 @@
  * hand-rolled range controls for the live material params. Publishes
  * `window.__DEMO02__` for the e2e gate.
  *
- * ## Presentation: offscreen → 2D canvas (not WebGPU canvas present)
+ * ## Presentation
  *
  * The volume is rendered into an offscreen `RenderTarget`, read back, and drawn
  * to an ordinary 2D `<canvas>`. This is deliberate: on headless SwiftShader
@@ -15,14 +15,16 @@
  * reference no longer exists") and nothing ever presents — whereas offscreen
  * render + `readRenderTargetPixelsAsync` works exactly as on real hardware
  * (demo 01's compute path never hit this). The blit path is portable across
- * both, at the cost of one GPU→CPU copy per frame. See docs/handoffs/PHASE-3.
+ * both, at the cost of one GPU→CPU copy per frame. Stable-Chrome hardware and
+ * performance checks use `?presentation=direct`; CI pins `presentation=readback`.
+ * See docs/handoffs/PHASE-3.
  *
  * ## Deterministic test mode (`?test=1`)
  *
  * Fixed camera pose (selectable with `?pose=N`), jitter OFF, fixed params —
  * renders exactly one settled frame, then stops. Screenshots are byte-stable.
  */
-import * as THREE from "three";
+import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { NanoVDBFile } from "nanovdb-wgsl";
 import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
@@ -34,6 +36,23 @@ interface Demo02State {
   error?: string;
   fixture?: string;
   gridType?: string;
+  adapter?: string;
+  presentation?: string;
+  swizzleShim?: boolean;
+  keepAliveShim?: boolean;
+  resolution?: string;
+  stepSize?: number;
+  shadowSteps?: number;
+  sampleBudgetCap?: number;
+  fps?: number;
+  frameMs?: number;
+  gpuMs?: number;
+  timestampQuery?: boolean;
+  gpuTimestampValid?: boolean;
+  shadowBaselineFrameMs?: number;
+  shadowDeltaFrameMs?: number;
+  shadowBaselineGpuMs?: number;
+  shadowDeltaGpuMs?: number;
 }
 
 declare global {
@@ -90,13 +109,6 @@ function installAdapterKeepAliveShim(): void {
   gpu.__keepAliveShim = true;
 }
 
-// Prefer the WDAS hero cloud when present, else the baked CI primitive (the
-// gate asset). Both are fetch-probed.
-const FIXTURE_CANDIDATES = [
-  "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb",
-  "/fixtures/primitives/sphere_fog_fp8.nvdb",
-];
-
 // Fixed camera presets for deterministic test mode: [azimuth, elevation, radiusFactor].
 const TEST_POSES: ReadonlyArray<readonly [number, number, number]> = [
   [Math.PI * 0.25, Math.PI * 0.16, 1.7],
@@ -105,7 +117,25 @@ const TEST_POSES: ReadonlyArray<readonly [number, number, number]> = [
 
 const params = new URLSearchParams(location.search);
 const TEST_MODE = params.get("test") === "1";
+const PERF_MODE = params.get("perf") === "1";
+const PRESENTATION = params.get("presentation") === "direct" ? "direct" : "readback";
+const SWIZZLE_SHIM = params.get("swizzle") !== "off";
+const KEEP_ALIVE_SHIM = params.get("keepAlive") !== "off";
+const FIXTURE = params.get("fixture") ?? (TEST_MODE ? "primitive" : "auto");
+const QUALITY_STEP_SIZE = Number(params.get("stepSize") ?? "0.75");
+const QUALITY_SHADOW_STEPS = Number(params.get("shadowSteps") ?? "12");
+const SAMPLE_BUDGET_CAP = Math.max(1, Number(params.get("sampleBudgetCap") ?? "8192") | 0);
 const POSE_INDEX = Math.max(0, Math.min(TEST_POSES.length - 1, Number(params.get("pose") ?? "0") | 0));
+
+function fixtureCandidates(): string[] {
+  if (FIXTURE === "primitive") return ["/fixtures/primitives/sphere_fog_fp8.nvdb"];
+  if (FIXTURE === "wdas") return ["/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb"];
+  if (FIXTURE !== "auto") throw new Error(`fixture must be primitive, wdas, or auto (got ${FIXTURE})`);
+  return [
+    "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb",
+    "/fixtures/primitives/sphere_fog_fp8.nvdb",
+  ];
+}
 
 const statsEl = document.querySelector<HTMLDivElement>("#stats")!;
 const controlsEl = document.querySelector<HTMLDivElement>("#controls")!;
@@ -120,7 +150,7 @@ function fail(message: string): void {
 }
 
 async function probeFixture(): Promise<{ url: string; buffer: ArrayBuffer } | null> {
-  for (const url of FIXTURE_CANDIDATES) {
+  for (const url of fixtureCandidates()) {
     try {
       const res = await fetch(url);
       if (res.ok) return { url, buffer: await res.arrayBuffer() };
@@ -162,12 +192,16 @@ async function run(): Promise<void> {
     fail("WebGPU unavailable (navigator.gpu undefined) — needs a secure context + adapter.");
     return;
   }
-  installSwizzleCompatShim();
-  installAdapterKeepAliveShim();
+  if (!Number.isFinite(QUALITY_STEP_SIZE) || QUALITY_STEP_SIZE <= 0)
+    throw new Error(`stepSize must be positive, got ${QUALITY_STEP_SIZE}`);
+  if (!Number.isFinite(QUALITY_SHADOW_STEPS) || QUALITY_SHADOW_STEPS < 0)
+    throw new Error(`shadowSteps must be non-negative, got ${QUALITY_SHADOW_STEPS}`);
+  if (SWIZZLE_SHIM) installSwizzleCompatShim();
+  if (KEEP_ALIVE_SHIM) installAdapterKeepAliveShim();
 
   const hit = await probeFixture();
   if (!hit) {
-    fail(`No fixture found. Tried:\n${FIXTURE_CANDIDATES.join("\n")}`);
+    fail(`No fixture found. Tried:\n${fixtureCandidates().join("\n")}`);
     return;
   }
 
@@ -175,19 +209,30 @@ async function run(): Promise<void> {
   const grid = NanoVDBGrid.fromFile(file, 0);
   const fixtureName = hit.url.split("/").pop() ?? hit.url;
 
-  // Device-first renderer (D4). Its own canvas is never presented to; we render
-  // offscreen and blit to a 2D canvas (see module header).
-  let renderer: WebGPURenderer;
-  ({ renderer } = await createVolumeRenderer({ gridBytes: grid.byteLength }));
+  const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
 
-  // Visible 2D canvas that we draw the read-back frames into.
-  const display = document.createElement("canvas");
+  // Device-first renderer (D4). Hardware runs can present its canvas directly;
+  // deterministic SwiftShader runs retain the readback path.
+  let renderer: WebGPURenderer;
+  let adapter = "unreported adapter";
+  const created = await createVolumeRenderer({
+    gridBytes: grid.byteLength,
+    ...(directCanvas ? { canvas: directCanvas } : {}),
+    trackTimestamp: PERF_MODE,
+  });
+  renderer = created.renderer;
+  if (created.report.adapterInfo)
+    adapter = [created.report.adapterInfo.vendor, created.report.adapterInfo.architecture]
+      .filter(Boolean)
+      .join(" ");
+
+  const display = directCanvas ?? document.createElement("canvas");
   display.id = "view";
   display.style.width = "100%";
   display.style.height = "100%";
   display.style.display = "block";
   appEl.appendChild(display);
-  const ctx = display.getContext("2d")!;
+  const ctx = PRESENTATION === "readback" ? display.getContext("2d") : null;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x223049);
@@ -199,7 +244,14 @@ async function run(): Promise<void> {
 
   const camera = new THREE.PerspectiveCamera(45, 1, 0.01, diag * 100);
 
-  const material = new NanoVDBVolumeMaterial({ grid, pnanovdbSource, jitter: !TEST_MODE });
+  const material = new NanoVDBVolumeMaterial({
+    grid,
+    pnanovdbSource,
+    jitter: !TEST_MODE,
+    stepSize: QUALITY_STEP_SIZE,
+    shadowSteps: QUALITY_SHADOW_STEPS,
+    sampleBudgetCap: SAMPLE_BUDGET_CAP,
+  });
   const mesh = new THREE.Mesh(grid.proxyGeometry(), material);
   scene.add(mesh);
 
@@ -219,10 +271,13 @@ async function run(): Promise<void> {
   function setViewport(w: number, h: number): void {
     vw = Math.max(1, w);
     vh = Math.max(1, h);
-    display.width = vw;
-    display.height = vh;
-    rt.setSize(vw, vh);
-    flip = new Uint8ClampedArray(vw * vh * 4);
+    if (PRESENTATION === "direct") renderer.setSize(vw, vh, false);
+    else {
+      display.width = vw;
+      display.height = vh;
+      rt.setSize(vw, vh);
+      flip = new Uint8ClampedArray(vw * vh * 4);
+    }
     camera.aspect = vw / vh;
     camera.updateProjectionMatrix();
   }
@@ -240,17 +295,122 @@ async function run(): Promise<void> {
 
   /** Render the scene to the offscreen RT, read it back, and blit to the 2D canvas. */
   async function presentFrame(): Promise<void> {
+    if (PRESENTATION === "direct") {
+      renderer.setRenderTarget(null);
+      renderer.render(scene, camera);
+      return;
+    }
+
     renderer.setRenderTarget(rt);
-    await renderer.renderAsync(scene, camera);
+    renderer.render(scene, camera);
     const pixels = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as Uint8Array;
     renderer.setRenderTarget(null);
-    // GPU readback is bottom-up; flip rows to screen orientation.
-    const stride = vw * 4;
+
+    // GPU readback is bottom-up and three r185 preserves WebGPU's 256-byte
+    // row alignment. Derive that padded source stride from the returned byte
+    // length, then copy only the tightly-packed RGBA8 pixels into ImageData.
+    const packedStride = vw * 4;
+    const sourceStride = vh > 1 ? (pixels.byteLength - packedStride) / (vh - 1) : packedStride;
+    if (!Number.isInteger(sourceStride) || sourceStride < packedStride)
+      throw new Error(
+        `Unexpected readback layout: ${pixels.byteLength} bytes for ${vw}x${vh} RGBA8 pixels`,
+      );
+
     for (let y = 0; y < vh; y++) {
-      const src = (vh - 1 - y) * stride;
-      flip.set(pixels.subarray(src, src + stride), y * stride);
+      const src = (vh - 1 - y) * sourceStride;
+      flip.set(pixels.subarray(src, src + packedStride), y * packedStride);
     }
-    ctx.putImageData(new ImageData(flip, vw, vh), 0, 0);
+    ctx!.putImageData(new ImageData(flip, vw, vh), 0, 0);
+  }
+
+  if (PERF_MODE) {
+    if (PRESENTATION !== "direct")
+      throw new Error("perf=1 requires presentation=direct so readback cost is excluded");
+    if (FIXTURE !== "wdas")
+      throw new Error("perf=1 requires fixture=wdas so the recorded gate cannot silently use a primitive");
+
+    panelEl.classList.add("test-hidden");
+    setViewport(1920, 1080);
+    placeCamera(Math.PI * 0.25, Math.PI * 0.18, 1.8);
+
+    const timestampQuery = created.report.grantedFeatures.includes("timestamp-query");
+    const measure = async (frameCount: number): Promise<{ fps: number; frameMs: number; gpuMs?: number }> => {
+      const started = performance.now();
+      for (let frame = 0; frame < frameCount; frame++) await presentFrame();
+      await created.device.queue.onSubmittedWorkDone();
+      const frameMs = (performance.now() - started) / frameCount;
+      const rawGpuMs = timestampQuery ? await renderer.resolveTimestampsAsync("render") : undefined;
+      const gpuMs =
+        rawGpuMs !== undefined && Number.isFinite(rawGpuMs) && rawGpuMs > 0 && rawGpuMs <= frameMs * 4
+          ? rawGpuMs
+          : undefined;
+      return { fps: 1000 / frameMs, frameMs, ...(gpuMs !== undefined ? { gpuMs } : {}) };
+    };
+    const measurePreset = async (shadowSteps: number): Promise<{ fps: number; frameMs: number; gpuMs?: number }> => {
+      material.shadowSteps.value = shadowSteps;
+      for (let frame = 0; frame < 60; frame++) await presentFrame();
+      return measure(180);
+    };
+    const average = (
+      first: { frameMs: number; gpuMs?: number },
+      second: { frameMs: number; gpuMs?: number },
+    ): { fps: number; frameMs: number; gpuMs?: number } => {
+      const frameMs = (first.frameMs + second.frameMs) / 2;
+      const gpuMs =
+        first.gpuMs !== undefined && second.gpuMs !== undefined
+          ? (first.gpuMs + second.gpuMs) / 2
+          : undefined;
+      return { fps: 1000 / frameMs, frameMs, ...(gpuMs !== undefined ? { gpuMs } : {}) };
+    };
+
+    for (let frame = 0; frame < 60; frame++) await presentFrame();
+    const configuredShadowSteps = material.shadowSteps.value;
+    const baselineFirst = await measurePreset(0);
+    const measuredFirst = await measurePreset(configuredShadowSteps);
+    const baselineSecond = await measurePreset(0);
+    const measuredSecond = await measurePreset(configuredShadowSteps);
+    const baseline = average(baselineFirst, baselineSecond);
+    const measured = average(measuredFirst, measuredSecond);
+    const shadowDeltaFrameMs = measured.frameMs - baseline.frameMs;
+    const shadowDeltaGpuMs =
+      measured.gpuMs !== undefined && baseline.gpuMs !== undefined
+        ? measured.gpuMs - baseline.gpuMs
+        : undefined;
+
+    statsEl.textContent =
+      `fixture: ${fixtureName} (${grid.metadata.gridType})\n` +
+      `adapter: ${adapter}\n` +
+      `resolution: 1920x1080  ·  presentation: direct\n` +
+      `stepSize: ${material.stepSize.value}  ·  shadowSteps: ${material.shadowSteps.value}  ·  ` +
+      `sampleBudgetCap: ${SAMPLE_BUDGET_CAP}\n` +
+      `fps: ${measured.fps.toFixed(2)}  ·  frame: ${measured.frameMs.toFixed(2)} ms  ·  ` +
+      `gpu: ${measured.gpuMs?.toFixed(2) ?? "unavailable"} ms\n` +
+      `shadow=0 frame: ${baseline.frameMs.toFixed(2)} ms  ·  frame delta: ${shadowDeltaFrameMs.toFixed(2)} ms\n` +
+      `shadow=0 gpu: ${baseline.gpuMs?.toFixed(2) ?? "unavailable"} ms  ·  ` +
+      `gpu delta: ${shadowDeltaGpuMs?.toFixed(2) ?? "unavailable"} ms`;
+    window.__DEMO02__ = {
+      ready: true,
+      fixture: fixtureName,
+      gridType: grid.metadata.gridType,
+      adapter,
+      presentation: PRESENTATION,
+      swizzleShim: SWIZZLE_SHIM,
+      keepAliveShim: KEEP_ALIVE_SHIM,
+      resolution: "1920x1080",
+      stepSize: material.stepSize.value,
+      shadowSteps: material.shadowSteps.value,
+      sampleBudgetCap: SAMPLE_BUDGET_CAP,
+      fps: measured.fps,
+      frameMs: measured.frameMs,
+      timestampQuery,
+      gpuTimestampValid: !timestampQuery || measured.gpuMs !== undefined,
+      shadowBaselineFrameMs: baseline.frameMs,
+      shadowDeltaFrameMs,
+      ...(measured.gpuMs !== undefined ? { gpuMs: measured.gpuMs } : {}),
+      ...(baseline.gpuMs !== undefined ? { shadowBaselineGpuMs: baseline.gpuMs } : {}),
+      ...(shadowDeltaGpuMs !== undefined ? { shadowDeltaGpuMs } : {}),
+    };
+    return;
   }
 
   if (TEST_MODE) {
@@ -272,7 +432,19 @@ async function run(): Promise<void> {
       // First render compiles the (large) shader; second settles a clean frame.
       await presentFrame();
       await presentFrame();
-      window.__DEMO02__ = { ready: true, fixture: fixtureName, gridType: grid.metadata.gridType };
+      window.__DEMO02__ = {
+        ready: true,
+        fixture: fixtureName,
+        gridType: grid.metadata.gridType,
+        adapter,
+        presentation: PRESENTATION,
+        swizzleShim: SWIZZLE_SHIM,
+        keepAliveShim: KEEP_ALIVE_SHIM,
+        resolution: "640x480",
+        stepSize: material.stepSize.value,
+        shadowSteps: material.shadowSteps.value,
+        sampleBudgetCap: SAMPLE_BUDGET_CAP,
+      };
     } catch (err) {
       fail(err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err));
     }
@@ -320,7 +492,19 @@ async function run(): Promise<void> {
         }
         if (!published) {
           published = true;
-          window.__DEMO02__ = { ready: true, fixture: fixtureName, gridType: grid.metadata.gridType };
+          window.__DEMO02__ = {
+            ready: true,
+            fixture: fixtureName,
+            gridType: grid.metadata.gridType,
+            adapter,
+            presentation: PRESENTATION,
+            swizzleShim: SWIZZLE_SHIM,
+            keepAliveShim: KEEP_ALIVE_SHIM,
+            resolution: `${vw}x${vh}`,
+            stepSize: material.stepSize.value,
+            shadowSteps: material.shadowSteps.value,
+            sampleBudgetCap: SAMPLE_BUDGET_CAP,
+          };
         }
       })
       .catch((err: unknown) => {

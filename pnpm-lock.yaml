@@ -68,7 +68,7 @@ importers:
         specifier: ^0.185.1
         version: 0.185.1
       nanovdb-wgsl:
-        specifier: workspace:*
+        specifier: ^0.1.0
         version: link:../nanovdb-wgsl
       three:
         specifier: ^0.185.1

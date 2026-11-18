@@ -95,8 +95,7 @@ fixes if the author engages. Full pin/hash/diff-log details:
 
 ## Packaging note (for contributors)
 
-This package exports both a `"development"` condition (`./src/index.ts`,
-used inside the WebVDB workspace by Vite/Vitest/tsc for fast, source-level
-resolution) and the usual `"import"`/`"types"` conditions pointing at the
-built `dist/`. `npm install nanovdb-wgsl` outside this workspace always
-gets `dist/`.
+The published export map points only at built `dist/` output. Workspace
+Vite/Vitest/TypeScript configs alias this package to `src/index.ts` for
+source-level development without exposing TypeScript source paths to npm
+consumers.

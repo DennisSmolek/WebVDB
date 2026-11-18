@@ -1,13 +1,34 @@
 {
   "name": "vdb-web-tools",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Pure-TypeScript CPU tooling for OpenVDB/NanoVDB: parse, build, quantize, transform, inspect (WASM only as optional escalation)",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/DennisSmolek/WebVDB#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DennisSmolek/WebVDB.git",
+    "directory": "packages/vdb-web-tools"
+  },
+  "bugs": {
+    "url": "https://github.com/DennisSmolek/WebVDB/issues"
+  },
+  "keywords": [
+    "nanovdb",
+    "openvdb",
+    "typescript",
+    "volume",
+    "voxel"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"

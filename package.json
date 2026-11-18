@@ -20,7 +20,11 @@
     "fixtures:wdas": "node scripts/fetch-wdas-cloud.mjs",
     "fixtures:embergen": "node scripts/fetch-embergen-pack.mjs",
     "fixtures:vdb-samples": "node scripts/fetch-vdb-samples.mjs",
-    "fixtures:bake": "node scripts/bake-fixtures.mjs"
+    "fixtures:bake": "node scripts/bake-fixtures.mjs",
+    "fixtures:bake-sequence": "node scripts/bake-vdb-sequence.mjs",
+    "parity:native": "node scripts/run-native-parity.mjs",
+    "hardware:smoke": "node scripts/run-hardware-checks.mjs",
+    "hardware:perf": "WEBVDB_PERF=1 node scripts/run-hardware-checks.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -33,5 +37,14 @@
     "typescript": "^5.8.0",
     "vite": "^7.0.0",
     "vitest": "^4.1.11"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DennisSmolek/WebVDB.git"
+  },
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/DennisSmolek/WebVDB/issues"
+  },
+  "homepage": "https://github.com/DennisSmolek/WebVDB#readme"
 }

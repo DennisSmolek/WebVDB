@@ -14,7 +14,7 @@
  * Plus a cross-check that bytes.ts constants match the extracted stride tables.
  */
 
-import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -284,12 +284,10 @@ describe("B. writeNvdb parses via NanoVDBFile", () => {
 // ---------------------------------------------------------------------------
 
 
-// Native fixtures are git-ignored (`pnpm fixtures:bake`); synthetic tests below run regardless.
-const nativeFixtures = existsSync(fileURLToPath(new URL("../../../fixtures/primitives/sphere_fog_float.nvdb", import.meta.url)));
-
 const FIXTURE = fileURLToPath(
   new URL("../../../fixtures/primitives/sphere_fog_float.nvdb", import.meta.url),
 );
+const fixturePresent = existsSync(FIXTURE);
 
 interface WalkResult {
   gridType: number;
@@ -409,7 +407,7 @@ function walkAndCheck(image: Uint32Array): WalkResult {
 }
 
 describe("C. structural conformance", () => {
-  it.skipIf(!nativeFixtures)("the native sphere_fog_float fixture passes the structural checker", () => {
+  it.skipIf(!fixturePresent)("the native sphere_fog_float fixture passes the structural checker", () => {
     const file = readFileSync(FIXTURE);
     const parsed = NanoVDBFile.fromArrayBuffer(
       file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength) as ArrayBuffer,

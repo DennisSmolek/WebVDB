@@ -24,8 +24,8 @@ import {
 export interface BuildFromVdbOptions {
   /** Grid name for the output image. Default: the source grid's name (or "grid"). */
   gridName?: string;
-  /** Grid class. Default "FogVolume". */
-  gridClass?: "FogVolume" | "Unknown";
+  /** Grid class. Default: mapped from source metadata. */
+  gridClass?: "FogVolume" | "LevelSet" | "Unknown";
 }
 
 /** Builds a FLOAT NanoVDB grid image from a parsed `.vdb` grid. */
@@ -41,9 +41,16 @@ export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = 
     worldOrigin: translation,
     background: grid.background,
     gridName: opts.gridName ?? grid.name ?? "grid",
-    gridClass: opts.gridClass ?? "FogVolume",
+    gridClass: opts.gridClass ?? sourceGridClass(grid),
   };
   return buildFromLeavesDetailed(grid.iterLeaves(), FLOAT_LEAF_CODEC, buildOpts);
+}
+
+function sourceGridClass(grid: VdbGrid): NonNullable<BuildFromVdbOptions["gridClass"]> {
+  const gridClass = typeof grid.metadata.class === "string" ? grid.metadata.class.toLowerCase() : "";
+  if (gridClass === "level set" || gridClass === "levelset") return "LevelSet";
+  if (gridClass === "fog volume" || gridClass === "fogvolume") return "FogVolume";
+  return "Unknown";
 }
 
 /**

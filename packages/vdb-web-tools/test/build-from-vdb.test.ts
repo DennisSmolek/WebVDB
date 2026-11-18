@@ -28,13 +28,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.resolve(__dirname, "../../../fixtures/vdb-samples");
 
 const SAMPLES = ["sphere.vdb", "cube.vdb", "smoke.vdb", "utahteapot.vdb"] as const;
-const fixturesAvailable = SAMPLES.every((n) => existsSync(path.join(FIXTURES_DIR, n)));
+const fixturePath = (name: (typeof SAMPLES)[number]): string => path.join(FIXTURES_DIR, name);
+const fixturesAvailable = SAMPLES.every((name) => existsSync(fixturePath(name)));
 
 /** Cap the exhaustive readback per grid so the teapot (7M voxels) stays fast. */
 const READBACK_CAP = 300_000;
 
-async function loadGrid(name: string): Promise<VdbGrid> {
-  const buf = await readFile(path.join(FIXTURES_DIR, name));
+async function loadGrid(name: (typeof SAMPLES)[number]): Promise<VdbGrid> {
+  const buf = await readFile(fixturePath(name));
   const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   return parseVdb(ab).grids[0]!;
 }
@@ -82,6 +83,7 @@ describe.skipIf(!fixturesAvailable)("buildFromVdb — real .vdb corpus round-tri
     const vs = grid.transform.voxelSize[0]!;
     expect(dv.getFloat64(608, true)).toBeCloseTo(vs, 9);
     expect(dv.getUint32(636, true)).toBe(1); // GRID_TYPE_FLOAT
+    expect(dv.getUint32(632, true)).toBe(grid.metadata.class === "level set" ? 1 : 2);
     // Map's f32 diagonal scale + translation match the .vdb transform.
     expect(dv.getFloat32(296, true)).toBeCloseTo(vs, 6); // Map matF[0]
     expect(dv.getFloat32(296 + 72, true)).toBeCloseTo(grid.transform.matrix[3]!, 6); // vecF[0] = tx

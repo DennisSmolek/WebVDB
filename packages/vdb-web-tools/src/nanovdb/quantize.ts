@@ -69,7 +69,8 @@ export function quantizeDetailed(
     worldOrigin: src.translation,
     background: src.background,
     gridName: src.gridName,
-    gridClass: src.gridClassId === 2 ? "FogVolume" : "Unknown",
+    gridClass:
+      src.gridClassId === 1 ? "LevelSet" : src.gridClassId === 2 ? "FogVolume" : "Unknown",
   });
 }
 

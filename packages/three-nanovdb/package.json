@@ -1,13 +1,34 @@
 {
   "name": "three-nanovdb",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Three.js TSL layer for NanoVDB: grid wrapper, volume materials, compute utilities",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/DennisSmolek/WebVDB#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DennisSmolek/WebVDB.git",
+    "directory": "packages/three-nanovdb"
+  },
+  "bugs": {
+    "url": "https://github.com/DennisSmolek/WebVDB/issues"
+  },
+  "keywords": [
+    "nanovdb",
+    "three",
+    "threejs",
+    "webgpu",
+    "volume"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
@@ -22,7 +43,7 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "nanovdb-wgsl": "workspace:*",
+    "nanovdb-wgsl": "^0.1.0",
     "three": ">=0.178.0"
   },
   "peerDependenciesMeta": {
@@ -32,7 +53,7 @@
   },
   "devDependencies": {
     "@types/three": "^0.185.1",
-    "nanovdb-wgsl": "workspace:*",
+    "nanovdb-wgsl": "^0.1.0",
     "three": "^0.185.1",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"

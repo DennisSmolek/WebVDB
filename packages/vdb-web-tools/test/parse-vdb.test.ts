@@ -76,7 +76,8 @@ const EXPECTATIONS = {
 } as const;
 
 const SAMPLE_NAMES = Object.keys(EXPECTATIONS) as (keyof typeof EXPECTATIONS)[];
-const fixturesAvailable = SAMPLE_NAMES.every((name) => existsSync(path.join(FIXTURES_DIR, name)));
+const fixturePath = (name: keyof typeof EXPECTATIONS): string => path.join(FIXTURES_DIR, name);
+const fixturesAvailable = SAMPLE_NAMES.every((name) => existsSync(fixturePath(name)));
 
 function popcount32(x: number): number {
   let v = x >>> 0;
@@ -87,7 +88,7 @@ function popcount32(x: number): number {
 }
 
 async function loadGrid(name: keyof typeof EXPECTATIONS): Promise<VdbGrid> {
-  const buf = await readFile(path.join(FIXTURES_DIR, name));
+  const buf = await readFile(fixturePath(name));
   const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   const file = parseVdb(ab);
   expect(file.grids).toHaveLength(1);

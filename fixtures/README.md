@@ -1,7 +1,7 @@
 # Fixtures
 
 Binary volume assets are **never committed** (see the repo `.gitignore`);
-every machine fetches them with the scripts below. Only this README and
+every machine fetches them with the scripts below. Only documentation and
 JSON sidecars (ground-truth samples, tree stats — produced by the bake
 step) are tracked in git.
 
@@ -17,13 +17,18 @@ pnpm fixtures:vdb-samples  # classic openvdb.org samples → fixtures/vdb-sample
 | Corpus | Source | License | Role |
 |---|---|---|---|
 | WDAS cloud (quarter; other variants via `WDAS_VARIANTS=`) | [disneyanimation.com/data-sets](https://disneyanimation.com/data-sets/) | CC-BY-SA 3.0, © Walt Disney Animation Studios | Stretch fixture: demo 02 hero cloud, perf gates (D4) |
-| EmberGen free VDB animation packs | [jangafx.com — free VDB animations](https://jangafx.com/software/embergen/download/free-vdb-animations) | Free packs from JangaFX — check page for current terms | Sequence playback corpus (Phase 7), typical single-frame sizes |
+| JangaFX EmberGen free VDB packs | [jangafx.com — free VDB downloads](https://jangafx.com/software/embergen/download/free-vdb-animations) | CC0 1.0; tracked terms and credit in [ATTRIBUTION.md](./ATTRIBUTION.md) | Fire temporal playback corpus; Cloud files are independent variants, not animation |
 | Procedural primitives (`sphere/torus/box` fog volumes × Float/Fp8/FpN) | `pnpm fixtures:bake`, see below | Apache-2.0 (ours) | Exact-ground-truth unit fixtures for the traversal suite |
-| Classic openvdb.org sample models (`sphere`, `cube`, `smoke`, `utahteapot`; `bunny_cloud` via `BUNNY=1`, ~80 MB) — hosted at a pinned commit of [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) | Assets: openvdb.org sample-model collection, CC-BY-SA 4.0. Hosting repo: MIT | Phase 5 `.vdb` parser corpus (`packages/vdb-web-tools/test/parse-vdb.test.ts`) — real-world FloatGrid 5-4-3 trees, zlib + half-float, level-set and fog-volume classes |
+| Classic openvdb.org sample models (`sphere`, `cube`, `smoke`, `utahteapot`) | Pinned commit of [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) | Assets: CC BY-SA 4.0; hosting repo: MIT | Phase 5 parser/parity corpus; exact sizes and SHA-256 values are enforced |
 
-The fetch scripts are idempotent (skip existing files), print a manual
-fallback if the upstream URL moves, and take URL overrides via
-`WDAS_URL=` / `EMBERGEN_URLS=` / `VDB_SAMPLES_SHA=`.
+Stanford `bunny.vdb`/`bunny_cloud.vdb` derivatives have separate
+non-commercial/product-sale restrictions. They are deliberately excluded from
+fetching, parity, and packages; see [ATTRIBUTION.md](./ATTRIBUTION.md).
+
+The fetch scripts are idempotent, print a manual fallback if the upstream URL
+moves, and take URL overrides via `WDAS_URL=` / `EMBERGEN_URLS=`. The four VDB
+sample files are immutable: existing files are size/hash-validated and replaced
+when they do not match the pinned revision.
 
 ## Baking `.nvdb` + sidecars
 
@@ -32,6 +37,7 @@ sampled ground-truth values (docs/SPEC.md §6):
 
 ```sh
 pnpm fixtures:bake
+pnpm fixtures:bake-sequence fixtures/embergen/<pack>
 ```
 
 bakes fog-volume sphere/torus/box in Float/Fp8/FpN (nine grids) into
@@ -55,6 +61,19 @@ docker run --rm -v "$PWD/fixtures:/out" webvdb-fixture-bake \
   nanovdb_convert --fp8 /out/wdas/wdas_cloud_quarter.vdb /out/wdas/wdas_cloud_quarter_fp8.nvdb
 ```
 
+`fixtures:bake-sequence` requires `SEQUENCE_TEMPORAL=1`, verifies distinct
+monotonically increasing frame numbers, converts every source frame deterministically,
+validates each generated NanoVDB, then atomically writes the pack's
+`manifest.json` and the EmberGen manifest index. Multi-grid packs can select
+one grid with `SEQUENCE_GRID=<name>`; use
+`SEQUENCE_START_INDEX=<non-negative index>` to omit an intentionally empty
+leading frame. The validated Fire pack command is:
+
+```sh
+SEQUENCE_TEMPORAL=1 SEQUENCE_GRID=flames SEQUENCE_START_INDEX=1 \
+  pnpm fixtures:bake-sequence fixtures/embergen/Fire_01
+```
+
 Layout convention:
 
 ```
@@ -63,5 +82,5 @@ fixtures/
   wdas/         # wdas_cloud_quarter.vdb → *.nvdb + *.sidecar.json
   embergen/     # <pack>/frame_####.vdb → *.nvdb sequences
   primitives/   # baked sphere/torus/box .nvdb + sidecars
-  vdb-samples/  # sphere.vdb, cube.vdb, smoke.vdb, utahteapot.vdb, [bunny_cloud.vdb]
+  vdb-samples/  # sphere.vdb, cube.vdb, smoke.vdb, utahteapot.vdb
 ```

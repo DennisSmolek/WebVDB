@@ -23,8 +23,7 @@ const FILE_METADATA_OFF_GRID_SIZE = 0;
 const FILE_METADATA_OFF_NAME_SIZE = 136;
 
 const fixturesDir = new URL("../../../fixtures/primitives/", import.meta.url);
-// Sidecars are committed, so the dir always exists — gate on the git-ignored .nvdb files (`pnpm fixtures:bake`).
-const fixturesPresent = ["sphere", "torus", "box"].flatMap((p) => ["float", "fp8", "fpn"].map((v) => `${p}_fog_${v}.nvdb`)).every((n) => existsSync(new URL(n, fixturesDir)));
+const fixturesPresent = existsSync(new URL("sphere_fog_float.nvdb", fixturesDir));
 
 interface Sample {
   ijk: [number, number, number];

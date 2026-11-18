@@ -1,15 +1,14 @@
 # Handoff: Phase 5 — CPU tools v1 (pure TS)
 
-Gate: **PASSED in CI scope** — drag-drop a `.vdb` and render it
+Gate: **PASSED, including the native parity anchor** — drag-drop a `.vdb` and render it
 (demo 06 core) and demo 07 dense→TS-build→render round-trip both ship,
-e2e-gated with byte-stable goldens. The `nanovdb_convert` byte/value
-parity anchor is deferred to a native machine (below) — but the
-strongest available in-sandbox evidence already exists: our Fp8
-re-encode of the native float sphere matches the native fp8 fixture
-**exactly** at all 73 sidecar coords, and FpN per-leaf bit-width
-selection matches native's oracle leaf-for-leaf.
+e2e-gated with byte-stable goldens. The native `nanovdb_convert`
+byte/value parity anchor now passes on all four samples in FLOAT and
+FP8 modes.
 
-Suite at close: 206 unit / 10 e2e / clean tsc.
+Current suite: 249 unit / 11 E2E functional gates / clean tsc. On macOS,
+10/11 also match the canonical Linux snapshots; Demo 06 has the documented
+3% cross-OS image diff.
 
 ## vdb-web-tools v1 API (all pure TS, zero deps, zero wasm — D3)
 
@@ -24,17 +23,59 @@ Suite at close: 206 unit / 10 e2e / clean tsc.
 | `writeNvdb` | NanoVDB2 segment files, loader round-trip byte-equal |
 | `readNvdb` | intentional stub — `nanovdb-wgsl`'s NanoVDBFile covers reading |
 
-## Native-machine checklist (the deferred anchor)
+## Native parity result (2026-07-12)
 
-1. Build `docker/fixture-bake/` → `nanovdb_convert` available.
-2. `nanovdb_convert` the four vdb-samples to float+fp8 `.nvdb`; diff
-   value-wise (CPU readValue sweep) against `buildFromVdb`+`quantize`
-   output. Expect value parity; byte parity will differ in three known
-   ways: active-tile compression, CRC (we write disabled sentinel),
-   trailing padding.
-3. Known semantic edge: native writes root background ≠ near-field
-   inactive-tile fill on some grids (observed 3 vs 0 on the sphere
-   fixture); our leaf-only relayout uses the effective near-field value.
+Run `pnpm parity:native` after building `webvdb-fixture-bake`. The command
+verifies raw source size/SHA-256, normalizes both conversion inputs, performs native and TypeScript
+FLOAT/FP8 conversions, independently enumerates both NanoVDB trees, merges the
+union of their active coordinates, and writes `fixtures/parity/report.json`.
+
+Pinned source SHA-256 values recorded in that report:
+
+- `sphere.vdb`: `27c266158458b52432795f6d8e72ac48524a65a8d2dc1721339ba287cdc2dba4`
+- `cube.vdb`: `e5ed2748c07bc64aa38b6df6812008bed840d7734ce460ad447d0f86ef5e6da4`
+- `smoke.vdb`: `09e5727dab14d1ef46532b9b731a8d2de4c1de333a97c443516fd8ae8ca8c03b`
+- `utahteapot.vdb`: `3808c6f3a6261f8b46ea156aa808186f8f615d5e96ee8160ac59855de156f1c9`
+
+| Sample | Mode | Union coordinates | Native-only | TS-only | Numeric failures | Topology | Result |
+|---|---|---:|---:|---:|---:|---|---|
+| sphere | FLOAT | 270,638 | 0 | 0 | 0 | exact | PASS |
+| sphere | FP8 | 270,638 | 0 | 0 | 0 | exact | PASS |
+| cube | FLOAT | 1,452,218 | 0 | 0 | 0 | exact | PASS |
+| cube | FP8 | 1,452,218 | 0 | 0 | 0 | exact | PASS |
+| smoke | FLOAT | 1,049,275 | 0 | 0 | 0 | exact | PASS |
+| smoke | FP8 | 1,049,275 | 0 | 0 | 0 | exact | PASS |
+| utahteapot | FLOAT | 6,960,047 | 0 | 0 | 0 | exact | PASS |
+| utahteapot | FP8 | 6,960,047 | 0 | 0 | 0 | exact | PASS |
+
+“Topology exact” means both outputs independently produced the same canonical
+root keys/states, upper/lower node origins and child/value masks, leaf origins
+and active masks, node counts, and active-voxel count. Reachability is checked
+against every declared physical node, and normalized parity rejects any
+remaining active root/internal tile. The active-coordinate merge therefore
+detects native-only and TypeScript-only voxels rather than trusting the source
+VDB as the coordinate oracle.
+
+FLOAT values are exact at every coordinate in that union. FP8 compares the two
+independently quantized images against a finite per-value bound: half the sum of
+both encoded leaf quantums plus float32 roundoff. Every differing byte offset
+is mapped through the proven node layout and masks before it can be classified.
+The current report contains only checksum, derived-statistic, mask-proven
+inactive internal/leaf payload, FP8 quantization-parameter, and bounded active
+FP8-code fields. It records category counts, first offsets, and a SHA-256 of the
+complete differing-offset sequence; unknown fields, structural differences,
+or unbounded active-code differences fail.
+
+This is intentionally not a claim that every inactive decoded value is equal.
+The previous broad `near-field/root-background` label was removed: no inactive
+value mismatch is relabeled semantically. The evidence is limited to exact
+topology/all active coordinates plus byte-field classification where the masks
+prove that a payload is inactive.
+
+The corrected pinned `smoke.vdb` and `utahteapot.vdb` parse directly in the
+pure-TypeScript fixture tests. The Docker `normalize_vdb` helper still writes a
+common active-mask-only representation before both parity conversions so
+compression/tile storage does not bias one implementation.
 
 ## Known debts
 
@@ -49,9 +90,10 @@ Suite at close: 206 unit / 10 e2e / clean tsc.
 ## What remains on PLAN after this phase
 
 Phase 6 (WASM escalation) — not triggered; no demonstrated need.
-Phase 6b (companion service) — untestable here (no Docker daemon).
-Phase 7 (sequences) — needs EmberGen assets (network-open machine) +
-the material grid-rebind API flagged in PHASE-3.md.
+Phase 6b (companion service) — native Docker toolchain is validated; a hosted
+service remains optional.
+Phase 7 (sequences) — complete on hardware with a 100-frame EmberGen manifest
+and the material grid-rebind API.
 Phase 8 (explorer polish, docs site, npm dry-run) — explorer core done
 early; polish items remain.
-Native/hardware items — PHASE-3.md (WDAS perf), above checklist.
+Native/hardware items — complete; see PHASE-3.md and the native result above.

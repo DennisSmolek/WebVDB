@@ -33,7 +33,7 @@ test.describe("demo 05 — embergen-sequence", () => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
 
-    await page.goto(`${DEMO_URL}?test=1`);
+    await page.goto(`${DEMO_URL}?test=1&presentation=readback&swizzle=on&keepAlive=on`);
     await page.waitForFunction(() => window.__DEMO05__ !== undefined, undefined, { timeout: 150_000 });
 
     const state = await page.evaluate(() => window.__DEMO05__);
@@ -46,6 +46,8 @@ test.describe("demo 05 — embergen-sequence", () => {
     expect(state!.rebinds, `should rebind once per frame:\n${detail}`).toBe(6);
     expect(state!.stalls, `should play stall-free (frames preloaded):\n${detail}`).toBe(0);
     expect(state!.framesDiffer, `rendered output must change across rebinds:\n${detail}`).toBe(true);
+    expect(state!.presentation, `CI must retain deterministic readback:\n${detail}`).toBe("readback");
+    expect(state!.adapter, `canonical goldens require SwiftShader:\n${detail}`).toMatch(/swiftshader/i);
 
     await expect(page).toHaveScreenshot("demo-05-sequence.png", { maxDiffPixelRatio: 0.02 });
   });

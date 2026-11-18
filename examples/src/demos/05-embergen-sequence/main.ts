@@ -13,21 +13,23 @@
  *
  *   - Interactive default: an in-memory `loader` override hands the sequence
  *     pre-built grids (no fetch) — the fast path a memory-resident pack uses.
- *   - `?test=1` (and the EmberGen path): frames are written to `.nvdb` and
- *     served as Blob URLs, so the DEFAULT loader's real
- *     `NanoVDBFile.fromURL` fetch+parse pipeline is what actually runs.
+ *   - `?test=1`: frames are written to `.nvdb` and served as Blob URLs.
+ *   - EmberGen manifests resolve real fixture URLs. Both paths exercise
+ *     `NanoVDBFile.fromURL` fetch+parse before playback.
  *
  * Pass `?src=embergen` to probe `/fixtures/embergen/<pack>/manifest.json`
- * (a JSON `{ fps, frames: [...] }`). It 404s in the sandbox -> the demo shows
+ * (a JSON `{ kind: "temporal-sequence", fps, frames: [...] }`). If unavailable, the demo shows
  * the "run pnpm fixtures:embergen" note and falls back to synthetic frames; on
  * a machine with a baked pack it plays the real sequence over the same code.
  *
  * ## Presentation + shims
  *
- * Demo 02's recipe verbatim: offscreen `RenderTarget` ->
- * `readRenderTargetPixelsAsync` -> 2D-canvas blit (canvas presentation drops
- * the Dawn instance under SwiftShader — see docs/handoffs/PHASE-3.md), plus the
- * r185 swizzle-string shim and the adapter keep-alive shim.
+ * The default remains Demo 02's deterministic offscreen `RenderTarget` ->
+ * `readRenderTargetPixelsAsync` -> 2D-canvas blit. Hardware checks select
+ * `?presentation=direct&swizzle=off&keepAlive=off` to exercise native canvas
+ * presentation independently from both compatibility shims.
+ * `?validate=cycle` preloads a real manifest, advances a fixed clock through
+ * every frame and back to frame 0, then publishes the full-cycle evidence.
  *
  * ## `?test=1` — deterministic 6-frame gate
  *
@@ -38,7 +40,7 @@
  * actually changed across rebinds — the real GPU proof that the buffer swap
  * reached the shader.
  */
-import * as THREE from "three";
+import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { NanoVDBFile } from "nanovdb-wgsl";
 import pnanovdbSource from "nanovdb-wgsl/pnanovdb.wgsl?raw";
@@ -54,9 +56,18 @@ interface Demo05State {
   rebinds?: number;
   stalls?: number;
   framesDiffer?: boolean;
+  frameCount?: number;
+  framesValidated?: number;
+  cyclesCompleted?: number;
+  finalFrame?: number;
+  validationMode?: string;
   uploadMs?: number;
   maxGridBytes?: number;
   source?: string;
+  adapter?: string;
+  presentation?: string;
+  swizzleShim?: boolean;
+  keepAliveShim?: boolean;
   error?: string;
 }
 
@@ -113,7 +124,11 @@ function installAdapterKeepAliveShim(): void {
 
 const params = new URLSearchParams(location.search);
 const TEST_MODE = params.get("test") === "1";
-const WANT_EMBERGEN = params.get("src") === "embergen";
+const WANT_EMBERGEN = params.get("src") === "embergen" || params.has("manifest");
+const VALIDATE_CYCLE = params.get("validate") === "cycle";
+const PRESENTATION = params.get("presentation") === "direct" ? "direct" : "readback";
+const SWIZZLE_SHIM = params.get("swizzle") !== "off";
+const KEEP_ALIVE_SHIM = params.get("keepAlive") !== "off";
 
 const appEl = document.querySelector<HTMLDivElement>("#app")!;
 const panelEl = document.querySelector<HTMLDivElement>("#panel")!;
@@ -131,35 +146,68 @@ function fail(message: string): void {
 
 // ---------------------------------------------------------------------------
 // EmberGen manifest (on-device path). Format:
-//   /fixtures/embergen/<pack>/manifest.json = { "fps": 24, "frames": ["f0001.nvdb", ...] }
+//   /fixtures/embergen/<pack>/manifest.json =
+//     { "kind": "temporal-sequence", "fps": 24, "frames": ["f0001.nvdb", ...] }
 // frame paths are resolved relative to the manifest's directory.
 // ---------------------------------------------------------------------------
 
 interface EmberGenManifest {
   fps: number;
   urls: string[];
+  manifestUrl: string;
 }
 
 async function probeEmberGen(): Promise<EmberGenManifest | null> {
-  // A few conventional locations; all 404 in-sandbox.
-  const candidates = [
+  const requestedManifest = params.get("manifest");
+  const candidates = requestedManifest ? [requestedManifest] : [];
+
+  // Sequence baking writes an index so the browser does not need directory
+  // listing support from the fixture server.
+  try {
+    const response = await fetch("/fixtures/embergen/index.json");
+    if (response.ok) {
+      const index = (await response.json()) as { manifests?: unknown };
+      if (Array.isArray(index.manifests)) {
+        for (const manifest of index.manifests) {
+          if (typeof manifest === "string") candidates.push(`/fixtures/embergen/${manifest}`);
+        }
+      }
+    }
+  } catch {
+    // Conventional paths below remain useful for manually prepared packs.
+  }
+
+  candidates.push(
     "/fixtures/embergen/manifest.json",
     "/fixtures/embergen/smoke/manifest.json",
     "/fixtures/embergen/explosion/manifest.json",
-  ];
-  for (const manifestUrl of candidates) {
+  );
+
+  for (const candidate of [...new Set(candidates)]) {
+    const manifestUrl = new URL(candidate, location.href).href;
     try {
       const res = await fetch(manifestUrl);
       if (!res.ok) continue;
-      const json = (await res.json()) as { fps?: number; frames?: string[] };
-      if (!Array.isArray(json.frames) || json.frames.length === 0) continue;
-      const dir = manifestUrl.slice(0, manifestUrl.lastIndexOf("/") + 1);
+      const json = (await res.json()) as { kind?: unknown; fps?: unknown; frames?: unknown };
+      if (json.kind !== "temporal-sequence")
+        throw new Error(`manifest must declare kind "temporal-sequence": ${manifestUrl}`);
+      if (!Number.isFinite(json.fps) || Number(json.fps) <= 0)
+        throw new Error(`manifest fps must be positive: ${manifestUrl}`);
+      if (!Array.isArray(json.frames) || json.frames.length === 0)
+        throw new Error(`manifest frames must be a non-empty array: ${manifestUrl}`);
+      if (!json.frames.every((frame) => typeof frame === "string" && frame.length > 0))
+        throw new Error(`manifest contains an invalid frame path: ${manifestUrl}`);
+
       return {
-        fps: json.fps ?? FPS,
-        urls: json.frames.map((f) => (f.startsWith("/") ? f : dir + f)),
+        fps: Number(json.fps),
+        urls: json.frames.map((frame) => new URL(frame, manifestUrl).href),
+        manifestUrl,
       };
-    } catch {
-      /* try next */
+    } catch (error) {
+      if (requestedManifest)
+        throw new Error(
+          `Could not load requested EmberGen manifest ${manifestUrl}: ${error instanceof Error ? error.message : String(error)}`,
+        );
     }
   }
   return null;
@@ -174,25 +222,31 @@ let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let controls: OrbitControls;
 let display: HTMLCanvasElement;
-let ctx2d: CanvasRenderingContext2D;
+let ctx2d: CanvasRenderingContext2D | null;
 let rt: THREE.RenderTarget;
 let flip = new Uint8ClampedArray(0);
 let vw = 0;
 let vh = 0;
+let adapter = "unreported adapter";
 
 async function initRenderer(): Promise<void> {
-  ({ renderer } = await createVolumeRenderer({}));
+  const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
+  const created = await createVolumeRenderer(directCanvas ? { canvas: directCanvas } : {});
+  renderer = created.renderer;
+  adapter =
+    [created.report.adapterInfo?.vendor, created.report.adapterInfo?.architecture].filter(Boolean).join(" ") ||
+    adapter;
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x10131f);
   camera = new THREE.PerspectiveCamera(45, 1, 0.01, 4000);
 
-  display = document.createElement("canvas");
+  display = directCanvas ?? document.createElement("canvas");
   display.id = "view";
   display.style.width = "100%";
   display.style.height = "100%";
   display.style.display = "block";
   appEl.appendChild(display);
-  ctx2d = display.getContext("2d")!;
+  ctx2d = PRESENTATION === "readback" ? display.getContext("2d") : null;
 
   controls = new OrbitControls(camera, display);
   controls.enableDamping = !TEST_MODE;
@@ -204,10 +258,13 @@ async function initRenderer(): Promise<void> {
 function setViewport(w: number, h: number): void {
   vw = Math.max(1, w);
   vh = Math.max(1, h);
-  display.width = vw;
-  display.height = vh;
-  rt.setSize(vw, vh);
-  flip = new Uint8ClampedArray(vw * vh * 4);
+  if (PRESENTATION === "direct") renderer.setSize(vw, vh, false);
+  else {
+    display.width = vw;
+    display.height = vh;
+    rt.setSize(vw, vh);
+    flip = new Uint8ClampedArray(vw * vh * 4);
+  }
   camera.aspect = vw / vh;
   camera.updateProjectionMatrix();
 }
@@ -238,6 +295,12 @@ function placeCamera(): void {
 }
 
 async function presentFrame(): Promise<void> {
+  if (PRESENTATION === "direct") {
+    renderer.setRenderTarget(null);
+    await renderer.renderAsync(scene, camera);
+    return;
+  }
+
   renderer.setRenderTarget(rt);
   await renderer.renderAsync(scene, camera);
   const pixels = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as Uint8Array;
@@ -247,7 +310,7 @@ async function presentFrame(): Promise<void> {
     const src = (vh - 1 - y) * stride;
     flip.set(pixels.subarray(src, src + stride), y * stride);
   }
-  ctx2d.putImageData(new ImageData(flip, vw, vh), 0, 0);
+  ctx2d!.putImageData(new ImageData(flip, vw, vh), 0, 0);
 }
 
 /** Cheap running hash of the presented frame — used to prove frames actually change. */
@@ -365,7 +428,14 @@ async function runInteractive(frames: SyntheticFrames, sourceLabel: string): Pro
         }
         if (!published) {
           published = true;
-          window.__DEMO05__ = { ready: true, source: sourceLabel };
+          window.__DEMO05__ = {
+            ready: true,
+            source: sourceLabel,
+            adapter,
+            presentation: PRESENTATION,
+            swizzleShim: SWIZZLE_SHIM,
+            keepAliveShim: KEEP_ALIVE_SHIM,
+          };
         }
       })
       .catch((err: unknown) => {
@@ -439,6 +509,10 @@ async function runTest(frames: SyntheticFrames): Promise<void> {
       uploadMs: sequence.stats.uploadMs,
       maxGridBytes: frames.maxGridBytes,
       source: "synthetic (blob-url fetch)",
+      adapter,
+      presentation: PRESENTATION,
+      swizzleShim: SWIZZLE_SHIM,
+      keepAliveShim: KEEP_ALIVE_SHIM,
     };
   } catch (err) {
     fail(err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err));
@@ -468,8 +542,10 @@ async function run(): Promise<void> {
     fail("WebGPU unavailable (navigator.gpu undefined) — needs a secure context + adapter.");
     return;
   }
-  installSwizzleCompatShim();
-  installAdapterKeepAliveShim();
+  if (TEST_MODE && PRESENTATION !== "readback")
+    throw new Error("test=1 requires presentation=readback for frame hash verification");
+  if (SWIZZLE_SHIM) installSwizzleCompatShim();
+  if (KEEP_ALIVE_SHIM) installAdapterKeepAliveShim();
   await initRenderer();
 
   // Always show the synthetic-frames note (and the EmberGen how-to).
@@ -488,7 +564,7 @@ async function run(): Promise<void> {
   if (WANT_EMBERGEN) {
     const manifest = await probeEmberGen();
     if (manifest) {
-      await runEmberGen(manifest, frames.maxGridBytes);
+      await runEmberGen(manifest);
       return;
     }
     noteEl.innerHTML =
@@ -506,19 +582,48 @@ async function run(): Promise<void> {
  * synthetic max as a conservative floor and grow it lazily on the first
  * over-capacity rebind by rebuilding the material (documented fallback).
  */
-async function runEmberGen(manifest: EmberGenManifest, floorBytes: number): Promise<void> {
-  // First frame decides the initial capacity; use max(floor, first frame).
-  const firstFile = await NanoVDBFile.fromURL(manifest.urls[0]!);
-  const firstGrid = NanoVDBGrid.fromFile(firstFile, 0);
+async function runEmberGen(manifest: EmberGenManifest): Promise<void> {
+  //* Validate the complete sequence before playback ===========================
+
+  const grids: NanoVDBGrid[] = [];
+  const bounds = new THREE.Box3();
+  let maxGridBytes = 0;
+  let expectedGridType: string | undefined;
+
+  for (let index = 0; index < manifest.urls.length; index++) {
+    const url = manifest.urls[index]!;
+    const file = await NanoVDBFile.fromURL(url);
+    const grid = NanoVDBGrid.fromFile(file, 0);
+    if (expectedGridType === undefined) expectedGridType = grid.metadata.gridType;
+    else if (grid.metadata.gridType !== expectedGridType)
+      throw new Error(
+        `EmberGen frame ${index} grid type ${grid.metadata.gridType} does not match ${expectedGridType}`,
+      );
+
+    const frameBounds = grid.worldBBox();
+    if (frameBounds.isEmpty() || !frameBounds.min.toArray().every(Number.isFinite) || !frameBounds.max.toArray().every(Number.isFinite))
+      throw new Error(`EmberGen frame ${index} has invalid world bounds`);
+
+    bounds.union(frameBounds);
+    maxGridBytes = Math.max(maxGridBytes, grid.image.byteLength);
+    grids.push(grid);
+  }
+
+  if (grids.length !== manifest.urls.length || grids.length === 0)
+    throw new Error(`EmberGen preflight loaded ${grids.length}/${manifest.urls.length} frames`);
+
+  const firstGrid = grids[0]!;
   const material = new NanoVDBVolumeMaterial({
     grid: firstGrid,
     pnanovdbSource,
-    maxGridBytes: Math.max(floorBytes, firstGrid.image.byteLength * 2),
+    maxGridBytes,
     jitter: true,
   });
-  const worldBox = firstGrid.worldBBox();
-  const size = worldBox.getSize(new THREE.Vector3());
-  const center = worldBox.getCenter(new THREE.Vector3());
+  if (material.capacityBytes < maxGridBytes)
+    throw new Error(`material capacity ${material.capacityBytes} is smaller than sequence maximum ${maxGridBytes}`);
+
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
   const geom = new THREE.BoxGeometry(size.x, size.y, size.z);
   geom.translate(center.x, center.y, center.z);
   scene.add(new THREE.Mesh(geom, material));
@@ -530,14 +635,69 @@ async function runEmberGen(manifest: EmberGenManifest, floorBytes: number): Prom
   controls.target.copy(center);
   controls.update();
 
+  const observedFrames: number[] = [];
   sequence = new NanoVDBSequence({
     urls: manifest.urls,
     fps: manifest.fps,
-    prefetch: 4,
+    prefetch: VALIDATE_CYCLE ? manifest.urls.length : 4,
     loop: true,
+    loader: (_url, index) => Promise.resolve(grids[index]!),
+    onFrame: (stats) => observedFrames.push(stats.frame),
+    onError: (error, index) => fail(`EmberGen frame ${index} failed: ${String(error)}`),
   });
   setViewport(window.innerWidth, window.innerHeight);
   window.addEventListener("resize", () => setViewport(window.innerWidth, window.innerHeight));
+
+  if (VALIDATE_CYCLE) {
+    await sequence.preload(manifest.urls.length);
+    sequence.start(material, 0);
+    await presentFrame();
+
+    const frameDuration = 1000 / manifest.fps;
+    for (let frame = 1; frame <= manifest.urls.length; frame++) {
+      sequence.update((frame + 0.1) * frameDuration);
+      await presentFrame();
+    }
+
+    const expectedFrames = [
+      ...Array.from({ length: manifest.urls.length }, (_, index) => index),
+      0,
+    ];
+    if (observedFrames.some((frame, index) => frame !== expectedFrames[index]))
+      throw new Error(
+        `EmberGen cycle progression mismatch: ${observedFrames.join(",")} ` +
+          `!= ${expectedFrames.join(",")}`,
+      );
+    if (observedFrames.length !== expectedFrames.length)
+      throw new Error(
+        `EmberGen cycle rendered ${observedFrames.length}/${expectedFrames.length} expected frames`,
+      );
+    if (sequence.stats.stalls !== 0 || sequence.stats.frame !== 0)
+      throw new Error(
+        `EmberGen cycle ended at frame ${sequence.stats.frame} with ${sequence.stats.stalls} stalls`,
+      );
+
+    updateHud(sequence.stats, manifest.fps, `embergen (${manifest.urls.length} frames, cycle validated)`);
+    window.__DEMO05__ = {
+      ready: true,
+      source: manifest.manifestUrl,
+      frameCount: manifest.urls.length,
+      framesValidated: grids.length,
+      framesPlayed: sequence.stats.rebinds,
+      rebinds: sequence.stats.rebinds,
+      stalls: sequence.stats.stalls,
+      cyclesCompleted: 1,
+      finalFrame: sequence.stats.frame,
+      validationMode: "full-cycle",
+      maxGridBytes,
+      adapter,
+      presentation: PRESENTATION,
+      swizzleShim: SWIZZLE_SHIM,
+      keepAliveShim: KEEP_ALIVE_SHIM,
+    };
+    return;
+  }
+
   await sequence.preload();
   sequence.start(material);
 
@@ -552,10 +712,25 @@ async function runEmberGen(manifest: EmberGenManifest, floorBytes: number): Prom
     presentFrame()
       .then(() => {
         busy = false;
-        updateHud(sequence!.stats, manifest.fps, "embergen");
+        updateHud(sequence!.stats, manifest.fps, `embergen (${manifest.urls.length} frames)`);
         if (!published) {
           published = true;
-          window.__DEMO05__ = { ready: true, source: "embergen" };
+          window.__DEMO05__ = {
+            ready: true,
+            source: manifest.manifestUrl,
+            frameCount: manifest.urls.length,
+            framesValidated: grids.length,
+            framesPlayed: sequence!.stats.rebinds,
+            rebinds: sequence!.stats.rebinds,
+            stalls: sequence!.stats.stalls,
+            finalFrame: sequence!.stats.frame,
+            validationMode: "bounded-playback-smoke",
+            maxGridBytes,
+            adapter,
+            presentation: PRESENTATION,
+            swizzleShim: SWIZZLE_SHIM,
+            keepAliveShim: KEEP_ALIVE_SHIM,
+          };
         }
       })
       .catch((err: unknown) => {

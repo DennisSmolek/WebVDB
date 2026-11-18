@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { readValue } from "../src/cpu/read-value.js";
+import { readLeafQuantum, readValue } from "../src/cpu/read-value.js";
 import { defineNumber, gridTypeConstantsFor } from "../src/cpu/stride-tables.js";
 
 /**
@@ -27,8 +27,6 @@ const FILE_METADATA_OFF_GRID_SIZE = 0;
 const FILE_METADATA_OFF_NAME_SIZE = 136;
 
 const fixturesDir = new URL("../../../fixtures/primitives/", import.meta.url);
-// Sidecars are committed, so the dir always exists — gate on the git-ignored .nvdb files (`pnpm fixtures:bake`).
-const fixturesPresent = ["sphere", "torus", "box"].flatMap((p) => ["float", "fp8", "fpn"].map((v) => `${p}_fog_${v}.nvdb`)).every((n) => existsSync(new URL(n, fixturesDir)));
 
 interface Sample {
   ijk: [number, number, number];
@@ -93,6 +91,7 @@ async function loadFixture(name: string): Promise<{ words: Uint32Array; sidecar:
 const PRIMITIVES = ["sphere_fog", "torus_fog", "box_fog"];
 const VARIANTS = ["float", "fp8", "fpn"];
 const FIXTURE_NAMES = PRIMITIVES.flatMap((p) => VARIANTS.map((v) => `${p}_${v}`));
+const fixturesPresent = FIXTURE_NAMES.every((name) => existsSync(new URL(`${name}.nvdb`, fixturesDir)));
 
 const GRID_TYPE_ID: Record<string, number> = { float: 1, fp8: 14, fpn: 16 };
 
@@ -162,6 +161,18 @@ describe.skipIf(!fixturesPresent)("cpu readValue vs. baked ground-truth sidecars
     const background = f32[backgroundWordIndex]!;
 
     expect(result.value).toBe(background);
+  });
+
+  it("reports the encoded FP8 leaf quantum", async () => {
+    const fp8 = await loadFixture("sphere_fog_fp8");
+    const leafSample = fp8.sidecar.samples.find(
+      (sample) => sample.active && readLeafQuantum(fp8.words, sample.ijk) > 0,
+    );
+    expect(leafSample).toBeDefined();
+    expect(readLeafQuantum(fp8.words, leafSample!.ijk)).toBeGreaterThan(0);
+
+    const float = await loadFixture("sphere_fog_float");
+    expect(readLeafQuantum(float.words, leafSample!.ijk)).toBe(0);
   });
 
   it("throws a clear error for unsupported grid types", async () => {

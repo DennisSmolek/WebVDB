@@ -11,6 +11,7 @@
 
 FROM ubuntu:24.04 AS build
 ARG OPENVDB_COMMIT=a532de5526ef791280b6483a872336a811a68542
+ARG BUILD_JOBS=2
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
@@ -26,18 +27,24 @@ RUN git init openvdb && cd openvdb \
 RUN cmake -S openvdb -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DOPENVDB_BUILD_CORE=ON \
+      -DOPENVDB_CORE_STATIC=OFF \
       -DOPENVDB_BUILD_BINARIES=OFF \
       -DOPENVDB_BUILD_UNITTESTS=OFF \
       -DOPENVDB_BUILD_PYTHON_MODULE=OFF \
       -DUSE_NANOVDB=ON \
       -DNANOVDB_USE_OPENVDB=ON \
       -DNANOVDB_BUILD_TOOLS=ON \
-    && cmake --build build -j"$(nproc)" \
+    && cmake --build build -j"${BUILD_JOBS}" \
     && cmake --install build
 
 # The bake program is NanoVDB-header-only — no OpenVDB link needed.
 COPY bake_primitives.cpp /src/
 RUN g++ -std=c++17 -O2 -I /src/openvdb/nanovdb /src/bake_primitives.cpp -o /usr/local/bin/bake_primitives
+
+COPY CMakeLists.txt normalize_vdb.cpp /src/fixture-tools/
+RUN cmake -S /src/fixture-tools -B /src/fixture-tools-build \
+    && cmake --build /src/fixture-tools-build -j"${BUILD_JOBS}" \
+    && cmake --install /src/fixture-tools-build
 
 FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

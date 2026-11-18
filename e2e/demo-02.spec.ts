@@ -37,7 +37,7 @@ async function loadPose(page: import("@playwright/test").Page, pose: number): Pr
     if (msg.type() === "error") consoleErrors.push(msg.text());
   });
 
-  await page.goto(`${DEMO_URL}?test=1&pose=${pose}`);
+  await page.goto(`${DEMO_URL}?test=1&fixture=primitive&presentation=readback&pose=${pose}`);
   await page.waitForFunction(() => window.__DEMO02__ !== undefined, undefined, { timeout: 120_000 });
 
   const state = await page.evaluate(() => window.__DEMO02__);
@@ -45,6 +45,9 @@ async function loadPose(page: import("@playwright/test").Page, pose: number): Pr
   expect(state, `window.__DEMO02__ should be set:\n${detail}`).toBeTruthy();
   expect(state!.error, `demo reported an error:\n${detail}`).toBeUndefined();
   expect(state!.ready, `demo should reach ready:\n${detail}`).toBe(true);
+  expect(state!.fixture, `CI must use the primitive fixture:\n${detail}`).toBe("sphere_fog_fp8.nvdb");
+  expect(state!.presentation, `CI must retain deterministic readback:\n${detail}`).toBe("readback");
+  expect(state!.adapter, `canonical goldens require SwiftShader:\n${detail}`).toMatch(/swiftshader/i);
 }
 
 test.describe("demo 02 — cloud golden image", () => {
@@ -64,5 +67,42 @@ test.describe("demo 02 — cloud golden image", () => {
 
     await loadPose(page, 1);
     await expect(page).toHaveScreenshot("demo-02-sphere-pose1.png", { maxDiffPixelRatio: 0.02 });
+  });
+
+  test("readback handles rows whose byte width needs WebGPU padding", async ({ page }) => {
+    const fixture = await page.request.get(PRIMITIVE_FIXTURE);
+    test.skip(!fixture.ok(), `fixtures missing (${PRIMITIVE_FIXTURE} -> ${fixture.status()})`);
+
+    // 641 RGBA8 pixels need 252 bytes of WebGPU row padding. The old blit
+    // treated those padded bytes as pixels and smeared the volume across the canvas.
+    await page.setViewportSize({ width: 641, height: 480 });
+    await page.goto(`${DEMO_URL}?fixture=primitive&presentation=readback&swizzle=off&keepAlive=off`);
+    await page.waitForFunction(() => window.__DEMO02__?.ready === true, undefined, { timeout: 120_000 });
+
+    const bounds = await page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
+      const context = canvas.getContext("2d")!;
+      const { data, width, height } = context.getImageData(0, 0, canvas.width, canvas.height);
+      const background = [data[0]!, data[1]!, data[2]!] as const;
+      let minX = width;
+      let maxX = -1;
+
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const offset = (y * width + x) * 4;
+          const difference =
+            Math.abs(data[offset]! - background[0]) +
+            Math.abs(data[offset + 1]! - background[1]) +
+            Math.abs(data[offset + 2]! - background[2]);
+          if (difference <= 18) continue;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+        }
+
+      return { canvasWidth: width, contentWidth: maxX - minX + 1 };
+    });
+
+    expect(bounds.contentWidth).toBeGreaterThan(0);
+    expect(bounds.contentWidth).toBeLessThan(bounds.canvasWidth * 0.65);
   });
 });

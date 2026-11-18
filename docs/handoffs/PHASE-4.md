@@ -19,13 +19,38 @@ TSL), 3D dispatch, shared library assembly with the material path:
 All three take `pnanovdbSource` explicitly (package never does `?raw`
 imports itself — same convention as `NanoVDBVolumeMaterial`).
 
-## Environment findings (retest on real hardware)
+## Hardware retest (2026-07-12)
 
-- `Data3DTexture` + TSL `texture3D()` fails Dawn validation in this
-  sandbox (2D view vs 3D texture, on upload and submit) — demo 04
-  samples the atlas from a storage buffer via `wgslFn` instead;
-  `decodeToAtlas` itself is unaffected. The SPEC-pictured
-  `VolumeNodeMaterial` bridge should be retried on hardware.
+Stable Chrome 149 on an Apple M5 Pro (`apple metal-3`) passed both
+explicit Demo 04 paths in a 1920×1080 browser viewport; deterministic Demo 04
+renders use a 640×480 canvas:
+
+- `texture=3d&presentation=direct&swizzle=off&keepAlive=off`: the intended
+  `Data3DTexture` + TSL `texture3D()` + `VolumeNodeMaterial` bridge rendered
+  successfully with `statsOk=true` and `transformOk=true`.
+- `texture=storage&presentation=direct&swizzle=off&keepAlive=off`: the
+  storage-buffer bridge remained green as the SwiftShader/compatibility
+  fallback.
+- Neither compatibility shim was needed on hardware. CI keeps storage,
+  readback, and both shims explicitly selected for its canonical lane.
+
+Both checks now fail unless published state exactly matches the FP8 sphere
+fixture, Float stats fixture, adapter, direct presentation, selected texture
+mode, disabled shims, 640×480 render resolution, and atlas quality
+(`maxDim=96`, trilinear, normalized uint8), with `statsOk` and `transformOk`.
+
+Evidence: `pnpm hardware:smoke` and ignored
+`artifacts/hardware-report.json`/screenshots.
+
+The same strict hardware lane loaded all 100 validated frames from
+`fixtures/embergen/Fire_01/manifest.json` in Demo 05. Its preflight reported a
+1,018,304-byte maximum grid, compatible FP8 types and finite union bounds. The
+fixed-clock cycle validation then rendered progression `0…99→0`: 101 rebinds,
+one completed cycle, zero stalls, direct presentation, both shims disabled,
+and no console errors.
+
+## Remaining environment finding
+
 - three r185 `NodeMaterial.setupLighting()` short-circuits without ≥1
   light in the scene — a zero-intensity `AmbientLight` un-sticks it.
 - Both utilities iterate the dense index bbox (fine at fixture scale);

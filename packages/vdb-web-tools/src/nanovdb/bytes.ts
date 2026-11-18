@@ -39,6 +39,7 @@ export const GRID_TYPE_FLOAT = 1;
 export const GRID_TYPE_FP8 = 14;
 export const GRID_TYPE_FPN = 16;
 export const GRID_CLASS_UNKNOWN = 0;
+export const GRID_CLASS_LEVEL_SET = 1;
 export const GRID_CLASS_FOG_VOLUME = 2;
 
 /**

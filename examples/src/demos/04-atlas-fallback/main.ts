@@ -45,9 +45,9 @@
  * `window.__DEMO04__ = { ready, statsOk, transformOk, error? }` is the e2e
  * read channel.
  */
-import * as THREE from "three";
+import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { Fn, storage, uniform, wgslFn } from "three/tsl";
+import { Fn, storage, texture3D, uniform, wgslFn } from "three/tsl";
 import { StorageBufferAttribute, VolumeNodeMaterial } from "three/webgpu";
 import type { Node, WebGPURenderer } from "three/webgpu";
 import { NanoVDBFile, readValue } from "nanovdb-wgsl";
@@ -97,6 +97,19 @@ interface Demo04State {
   ready: boolean;
   statsOk: boolean;
   transformOk: boolean;
+  fixture?: string;
+  statsFixture?: string;
+  gridType?: string;
+  adapter?: string;
+  presentation?: string;
+  textureMode?: string;
+  swizzleShim?: boolean;
+  keepAliveShim?: boolean;
+  resolution?: string;
+  atlasMaxDim?: number;
+  atlasFilter?: string;
+  atlasFormat?: string;
+  atlasNormalize?: boolean;
   error?: string;
 }
 
@@ -119,6 +132,10 @@ interface Sidecar {
 const ATLAS_FIXTURE = "/fixtures/primitives/sphere_fog_fp8.nvdb";
 const STATS_FIXTURE_NVDB = "/fixtures/primitives/box_fog_float.nvdb";
 const STATS_FIXTURE_SIDECAR = "/fixtures/primitives/box_fog_float.sidecar.json";
+const ATLAS_MAX_DIM = 96;
+const ATLAS_FILTER = "trilinear";
+const ATLAS_FORMAT = "uint8";
+const ATLAS_NORMALIZE = true;
 
 const STATS_VALUE_EPS = 1e-3; // FP8 atlas isn't involved here, but keep parity with demo 01/harness tolerances
 const TRANSFORM_VALUE_EPS = 1e-4;
@@ -159,6 +176,10 @@ function installAdapterKeepAliveShim(): void {
 
 const params = new URLSearchParams(location.search);
 const TEST_MODE = params.get("test") === "1";
+const PRESENTATION = params.get("presentation") === "direct" ? "direct" : "readback";
+const TEXTURE_MODE = params.get("texture") === "3d" ? "3d" : "storage";
+const SWIZZLE_SHIM = params.get("swizzle") !== "off";
+const KEEP_ALIVE_SHIM = params.get("keepAlive") !== "off";
 
 const statsEl = document.querySelector<HTMLDivElement>("#stats")!;
 const errEl = document.querySelector<HTMLDivElement>("#err")!;
@@ -354,8 +375,8 @@ async function run(): Promise<void> {
     fail("WebGPU unavailable (navigator.gpu undefined) — needs a secure context + adapter.");
     return;
   }
-  installSwizzleCompatShim();
-  installAdapterKeepAliveShim();
+  if (SWIZZLE_SHIM) installSwizzleCompatShim();
+  if (KEEP_ALIVE_SHIM) installAdapterKeepAliveShim();
 
   const [atlasBuf, statsBuf, sidecarRes] = await Promise.all([
     fetchOk(ATLAS_FIXTURE),
@@ -379,9 +400,15 @@ async function run(): Promise<void> {
   const atlasGrid = NanoVDBGrid.fromFile(NanoVDBFile.fromArrayBuffer(atlasBuf), 0);
   const statsGrid = NanoVDBGrid.fromFile(NanoVDBFile.fromArrayBuffer(statsBuf), 0);
 
-  const { renderer, device } = await createVolumeRenderer({
+  const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
+  const created = await createVolumeRenderer({
     gridBytes: Math.max(atlasGrid.byteLength, statsGrid.byteLength),
+    ...(directCanvas ? { canvas: directCanvas } : {}),
   });
+  const { renderer, device } = created;
+  const adapter =
+    [created.report.adapterInfo?.vendor, created.report.adapterInfo?.architecture].filter(Boolean).join(" ") ||
+    "unreported adapter";
 
   // -------------------------------------------------------------------------
   // gridStats: GPU result vs. full CPU pass over box_fog_float.
@@ -462,10 +489,10 @@ async function run(): Promise<void> {
   // them by hand in `ATLAS_SAMPLE_WGSL` below.
   // -------------------------------------------------------------------------
   const atlas = await decodeToAtlas(device, atlasGrid, pnanovdbSource, {
-    maxDim: 96,
-    filter: "trilinear",
-    format: "uint8",
-    normalize: true,
+    maxDim: ATLAS_MAX_DIM,
+    filter: ATLAS_FILTER,
+    format: ATLAS_FORMAT,
+    normalize: ATLAS_NORMALIZE,
   });
   const [dx, dy, dz] = atlas.dims;
   const voxelCount = dx * dy * dz;
@@ -476,6 +503,12 @@ async function run(): Promise<void> {
   const atlasAttr = new StorageBufferAttribute(packedAtlas, 1);
   const atlasStorage = storage(atlasAttr, "uint", packedAtlas.length).toReadOnly();
   const dimsUniform = uniform(new THREE.Vector3(dx, dy, dz));
+  const dataTexture = new THREE.Data3DTexture(atlas.data as Uint8Array, dx, dy, dz);
+  dataTexture.format = THREE.RedFormat;
+  dataTexture.minFilter = THREE.LinearFilter;
+  dataTexture.magFilter = THREE.LinearFilter;
+  dataTexture.unpackAlignment = 1;
+  dataTexture.needsUpdate = true;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b1020);
@@ -510,9 +543,12 @@ async function run(): Promise<void> {
   (material as VolumeNodeMaterial & { scatteringEmissiveNode?: (p: { positionRay: Node<"vec3"> }) => Node }).scatteringEmissiveNode = Fn(
     ({ positionRay }: { positionRay: Node<"vec3"> }) => {
       const uvw = positionRay.sub(boxMin).mul(boxSizeInv);
-      // wgslFn is typed as returning a bare Node; the WGSL returns f32 (demo
-      // 01's same cast-around-the-generic-type pattern).
-      const density = sampleAtlas({ atlas_ptr: atlasStorage, uvw, dims: dimsUniform }) as unknown as Node<"float">;
+      // This JavaScript conditional runs at graph-build time. Hardware can use
+      // the stock 3D texture node; CI retains the storage-buffer bridge.
+      const density =
+        TEXTURE_MODE === "3d"
+          ? texture3D(dataTexture, uvw).r
+          : (sampleAtlas({ atlas_ptr: atlasStorage, uvw, dims: dimsUniform }) as unknown as Node<"float">);
       return tintColor.mul(density).mul(densityGain);
     },
   );
@@ -530,13 +566,13 @@ async function run(): Promise<void> {
   // needs to be PRESENT; zero intensity keeps it a no-op otherwise.
   scene.add(new THREE.AmbientLight(0xffffff, 0));
 
-  const display = document.createElement("canvas");
+  const display = directCanvas ?? document.createElement("canvas");
   display.id = "view";
   display.style.width = "100%";
   display.style.height = "100%";
   display.style.display = "block";
   appEl.appendChild(display);
-  const ctx = display.getContext("2d")!;
+  const ctx = PRESENTATION === "readback" ? display.getContext("2d") : null;
 
   const controls = new OrbitControls(camera, display);
   controls.target.copy(center);
@@ -551,10 +587,13 @@ async function run(): Promise<void> {
   function setViewport(w: number, h: number): void {
     vw = Math.max(1, w);
     vh = Math.max(1, h);
-    display.width = vw;
-    display.height = vh;
-    rt.setSize(vw, vh);
-    flip = new Uint8ClampedArray(vw * vh * 4);
+    if (PRESENTATION === "direct") renderer.setSize(vw, vh, false);
+    else {
+      display.width = vw;
+      display.height = vh;
+      rt.setSize(vw, vh);
+      flip = new Uint8ClampedArray(vw * vh * 4);
+    }
     camera.aspect = vw / vh;
     camera.updateProjectionMatrix();
   }
@@ -571,6 +610,12 @@ async function run(): Promise<void> {
   }
 
   async function presentFrame(): Promise<void> {
+    if (PRESENTATION === "direct") {
+      renderer.setRenderTarget(null);
+      await renderer.renderAsync(scene, camera);
+      return;
+    }
+
     (renderer as WebGPURenderer).setRenderTarget(rt);
     await (renderer as WebGPURenderer).renderAsync(scene, camera);
     const pixels = (await (renderer as WebGPURenderer).readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as Uint8Array;
@@ -580,11 +625,14 @@ async function run(): Promise<void> {
       const src = (vh - 1 - y) * stride;
       flip.set(pixels.subarray(src, src + stride), y * stride);
     }
-    ctx.putImageData(new ImageData(flip, vw, vh), 0, 0);
+    ctx!.putImageData(new ImageData(flip, vw, vh), 0, 0);
   }
 
   statsEl.textContent =
     `atlas: ${dx}x${dy}x${dz} (${atlas.range.min.toFixed(3)}..${atlas.range.max.toFixed(3)})\n` +
+    `adapter: ${adapter}\n` +
+    `texture: ${TEXTURE_MODE}  ·  presentation: ${PRESENTATION}  ·  ` +
+    `swizzle: ${SWIZZLE_SHIM ? "on" : "off"}  ·  keepAlive: ${KEEP_ALIVE_SHIM ? "on" : "off"}\n` +
     `gridStats: min ${gpuStats.min.toFixed(4)} max ${gpuStats.max.toFixed(4)} mean ${gpuStats.mean.toFixed(4)} ` +
     `active ${gpuStats.activeVoxelCount} (fast path: ${gpuStats.usedAtomicFastPath})\n` +
     `statsOk: ${statsOk}  transformOk: ${transformOk}`;
@@ -596,7 +644,24 @@ async function run(): Promise<void> {
     try {
       await presentFrame();
       await presentFrame();
-      window.__DEMO04__ = { ready: true, statsOk, transformOk };
+      window.__DEMO04__ = {
+        ready: true,
+        statsOk,
+        transformOk,
+        fixture: ATLAS_FIXTURE,
+        statsFixture: STATS_FIXTURE_NVDB,
+        gridType: atlasGrid.metadata.gridType,
+        adapter,
+        presentation: PRESENTATION,
+        textureMode: TEXTURE_MODE,
+        swizzleShim: SWIZZLE_SHIM,
+        keepAliveShim: KEEP_ALIVE_SHIM,
+        resolution: "640x480",
+        atlasMaxDim: ATLAS_MAX_DIM,
+        atlasFilter: ATLAS_FILTER,
+        atlasFormat: ATLAS_FORMAT,
+        atlasNormalize: ATLAS_NORMALIZE,
+      };
     } catch (err) {
       fail(err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err));
     }
@@ -619,7 +684,24 @@ async function run(): Promise<void> {
         busy = false;
         if (!published) {
           published = true;
-          window.__DEMO04__ = { ready: true, statsOk, transformOk };
+          window.__DEMO04__ = {
+            ready: true,
+            statsOk,
+            transformOk,
+            fixture: ATLAS_FIXTURE,
+            statsFixture: STATS_FIXTURE_NVDB,
+            gridType: atlasGrid.metadata.gridType,
+            adapter,
+            presentation: PRESENTATION,
+            textureMode: TEXTURE_MODE,
+            swizzleShim: SWIZZLE_SHIM,
+            keepAliveShim: KEEP_ALIVE_SHIM,
+            resolution: `${vw}x${vh}`,
+            atlasMaxDim: ATLAS_MAX_DIM,
+            atlasFilter: ATLAS_FILTER,
+            atlasFormat: ATLAS_FORMAT,
+            atlasNormalize: ATLAS_NORMALIZE,
+          };
         }
       })
       .catch((err: unknown) => {

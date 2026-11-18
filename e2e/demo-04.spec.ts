@@ -43,7 +43,9 @@ test.describe("demo 04 — atlas-fallback (compute toolset)", () => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
 
-    await page.goto(`${DEMO_URL}?test=1`);
+    await page.goto(
+      `${DEMO_URL}?test=1&texture=storage&presentation=readback&swizzle=on&keepAlive=on`,
+    );
     await page.waitForFunction(() => window.__DEMO04__ !== undefined, undefined, { timeout: 150_000 });
 
     const state = await page.evaluate(() => window.__DEMO04__);
@@ -54,6 +56,9 @@ test.describe("demo 04 — atlas-fallback (compute toolset)", () => {
     expect(state!.ready, `demo should reach ready:\n${detail}`).toBe(true);
     expect(state!.statsOk, `gridStats should match the CPU/sidecar truth:\n${detail}`).toBe(true);
     expect(state!.transformOk, `valueTransform should match 2x the sidecar values:\n${detail}`).toBe(true);
+    expect(state!.textureMode, `CI must retain the storage bridge:\n${detail}`).toBe("storage");
+    expect(state!.presentation, `CI must retain deterministic readback:\n${detail}`).toBe("readback");
+    expect(state!.adapter, `canonical goldens require SwiftShader:\n${detail}`).toMatch(/swiftshader/i);
 
     await expect(page).toHaveScreenshot("demo-04-atlas.png", { maxDiffPixelRatio: 0.02 });
   });
