@@ -1,0 +1,86 @@
+---
+title: .wvdb files
+description: Read, stream, write and bake mjurczyk's WebVDB delivery format.
+nav: 33
+sourcecode: packages/vdb/src/tools/wvdb/index.ts
+---
+
+`.wvdb` is mjurczyk's WebVDB delivery format (spec v0.5): dense bricks at several LODs, coarsest first, in one file.
+It is supported for delivery (D14), read and written by `@pmndrs/vdb/tools`. The logic is ported from
+[mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) (MIT); see [credits](/reference/credits).
+
+## Read
+
+`readWvdb(bytes, options?)` decodes the whole file. `{ maxLod }` stops at a LOD, and `{ partial: true }` accepts a
+truncated file. A volume grid has `levels` (dimensions, `values` as floats, brick bounds); a points grid has positions
+and optional colours.
+
+{/* snippet: wvdb-read */}
+```ts
+import { readWvdb, wvdbDenseVolume } from '@pmndrs/vdb/tools';
+
+const file = readWvdb(bytes); // the whole file; { maxLod } or { partial: true } read a prefix
+for (const grid of file.grids) console.log(grid.name, grid.kind, grid.class, grid.levels.length);
+
+// The finest decoded LOD of the density grid as 8-bit texels with a mip atlas: what the dense
+// frame-renderer source uploads.
+const volume = wvdbDenseVolume(file, { density: 'density' });
+console.log(volume.dimensions, volume.meanDensity);
+```
+
+`wvdbDenseVolume(file, options?)` turns the density grid (and optional `mask`, `albedo` and `emission` grids) into
+8-bit texels with a mip atlas. That is the input of the dense source of [the froxel renderer](/three/frame-renderer).
+
+## Stream
+
+`WvdbStreamReader` is the push parser. Each complete LOD is an event, coarsest first, so a viewer can show LOD 0 while
+the finer ones download. `readWvdbHeader`, `wvdbLodByteRange` and `wvdbPrefixLength` support range requests for one LOD.
+
+{/* snippet: wvdb-stream */}
+```ts
+import { WvdbStreamReader } from '@pmndrs/vdb/tools';
+
+const reader = new WvdbStreamReader();
+const response = await fetch(url);
+const body = response.body;
+if (!body) return;
+const stream = body.getReader();
+for (;;) {
+    const { done, value } = await stream.read();
+    if (done) break;
+    // Each complete LOD is an event, coarsest first.
+    for (const event of reader.push(value)) console.log('lod', event.lod, 'complete', event.complete);
+}
+reader.end();
+```
+
+## Write and bake
+
+`writeWvdb(grids, options)` writes dense grids you made. `vdbToWvdb(vdb, options)` and `nanoVdbToWvdb(images, options)`
+bake from a `.vdb` or a NanoVDB grid: they sample over the bbox to a target `resolution` and downsample the LODs.
+
+{/* snippet: wvdb-bake */}
+```ts
+import { nanoVdbToWvdb, vdbToWvdb, writeWvdb } from '@pmndrs/vdb/tools';
+
+// From a .vdb (all float grids) or a NanoVDB grid image: point-sampled over the bbox, like his CLI.
+const fromVdb = vdbToWvdb(vdbBytes, { resolution: 128, lods: 3 });
+const fromNano = nanoVdbToWvdb(image, { resolution: 128 });
+
+// Or write dense grids you made yourself.
+const dims: [number, number, number] = [32, 32, 32];
+const written = writeWvdb(
+    [{ name: 'density', background: 0, bbox: null, finest: { dimensions: dims, values: new Float32Array(32 * 32 * 32) } }],
+    { lods: 2 },
+);
+```
+
+Sampling defaults to `'nearest'`, which reproduces his CLI byte for byte (D27). Use `sampling: 'box'` when the source
+is much finer than the texel grid, or when you read mass quantitatively; box files are 7 to 24% larger.
+
+## Level sets and points
+
+Level-set sources use `levelSetSampler: 'spec'` (the format spec) or `'mjurczyk'` (his CLI's sampler). A `.wvdb` points
+grid is read and written (`writeWvdb` with a `type: 'points'` grid, `maxPoints`, per-LOD subsets from `wvdbPointLods`),
+but the bakers do not turn a point-data `.vdb` grid into one yet: decode the points with `grid.points()` and pass them
+to `writeWvdb`.

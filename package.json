@@ -15,6 +15,8 @@
     "dev": "pnpm --filter @webvdb/examples dev",
     "build": "pnpm -r --filter './packages/*' build",
     "typecheck": "tsc --build",
+    "docs:snippets": "node scripts/docs-snippets.mjs",
+    "docs:check": "node scripts/docs-snippets.mjs --check && tsc --noEmit -p docs/snippets/tsconfig.json",
     "pack:dry": "pnpm --filter @pmndrs/vdb exec npm pack --dry-run",
     "verify:packed-subpaths": "node scripts/verify-packed-subpaths.mjs",
     "fixtures": "node scripts/fetch-wdas-cloud.mjs && node scripts/fetch-embergen-pack.mjs && node scripts/fetch-vdb-samples.mjs",

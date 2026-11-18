@@ -1,0 +1,60 @@
+---
+title: Parsing .vdb
+description: parseVdb reads OpenVDB files, including Blosc, vector grids and point data, with no native code.
+nav: 30
+sourcecode: packages/vdb/src/tools/vdb/index.ts
+---
+
+`@pmndrs/vdb/tools` is pure TypeScript (D3). It runs in the browser and in Node, and needs no GPU. `parseVdb(buffer)`
+reads an OpenVDB `.vdb` container and returns a `VdbFile` with its `grids`.
+
+What it reads:
+
+- 5-4-3 trees of **float** grids, **vec3** grids (`vec3s`, `vec3d`, `vec3i`) and **point data** grids (`ptdataidx32`).
+- Uncompressed, zlib and **Blosc** (LZ4 and zlib) data, and half-float storage.
+- Active tiles, and the inactive leaf and tile values OpenVDB keeps.
+
+Errors are `VdbFormatError` (a malformed file) or `VdbUnsupportedError` (a feature the parser does not read).
+
+{/* snippet: parse-vdb */}
+```ts
+import { buildFromVdb, parseVdb } from '@pmndrs/vdb/tools';
+
+const file = parseVdb(bytes); // uncompressed, zlib or Blosc (LZ4 / zlib); half-float storage; active tiles
+
+const images: Uint32Array[] = [];
+for (const grid of file.grids) {
+    console.log(grid.name, grid.valueType, grid.activeVoxelCount, grid.indexBBox);
+    grid.readValue([0, 0, 0]); // { value, active }
+
+    // A float grid, or a vec3 grid (Vec3f), becomes a NanoVDB grid image. The streaming build never
+    // makes a dense array, and the .vdb's uniform scale and translate go into the NanoVDB map.
+    if (grid.valueType !== 'ptdataidx32') images.push(buildFromVdb(grid));
+}
+```
+
+Every grid has `readValue(ijk)`, `iterLeaves()` (each leaf with its `origin`, `values` and `valueMask`), `iterTiles()`
+and `iterInactiveTiles()`, plus the `transform` and `metadata` from the file.
+
+## Point data
+
+A `ptdataidx32` grid is a point-data grid. `points()` decodes it into positions, the named attribute arrays and
+the group masks. Attributes the parser cannot decode are listed in `skipped`.
+
+{/* snippet: parse-points */}
+```ts
+import { parseVdb } from '@pmndrs/vdb/tools';
+
+const file = parseVdb(bytes);
+for (const grid of file.grids) {
+    if (grid.valueType !== 'ptdataidx32') continue; // a point-data grid
+    const points = grid.points();
+    console.log(grid.pointCount, grid.attributes.map((a) => a.name), grid.groupNames);
+    return points.positions; // Float32Array of xyz; points.attributes holds the named attribute arrays
+}
+```
+
+## From a .vdb to the GPU
+
+`buildFromVdb(grid)` returns a NanoVDB grid image (a `Uint32Array`) that `VDBGridPool.add` takes directly. See
+[building grids](/tools/build-and-quantize) for options and for what to do next.

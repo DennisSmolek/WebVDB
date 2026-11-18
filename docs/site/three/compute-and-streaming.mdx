@@ -1,0 +1,62 @@
+---
+title: Compute and streaming
+description: Grid statistics and dense atlases through the renderer, and coarse-first loading into a pool id.
+nav: 54
+sourcecode: packages/vdb/src/three/compute.ts
+---
+
+## Compute wrappers
+
+`vdbGridStats(renderer, pool, id, options?)` and `vdbDecodeToAtlas(renderer, pool, id, options?)` are the core's
+[compute tools](/core/raw-webgpu) through the renderer's device, returning promises. The grid must be resident (a
+`pool.flush()` ran after its `add`).
+
+{/* snippet: three-compute */}
+```ts
+import { vdbDecodeToAtlas, vdbGridStats } from '@pmndrs/vdb/three';
+
+// The core's gridStats and decodeToAtlas through the renderer's device; the grid must be resident.
+const stats = await vdbGridStats(renderer, pool, id, { histogramBins: 128 });
+console.log(stats.min, stats.max, stats.mean, stats.activeVoxelCount);
+
+// The atlas also comes back as a three Data3DTexture, ready for a material.
+const atlas = await vdbDecodeToAtlas(renderer, pool, id, { maxDim: 128, format: 'float32', normalize: false });
+console.log(atlas.dims, atlas.texture);
+```
+
+`vdbDecodeToAtlas` returns the core's atlas plus a `Data3DTexture`. The value transform is the core's
+`applyValueTransform` (a CPU edit that stages `pool.replace`).
+
+## Coarse-first streaming
+
+`vdbStreamCoarseFirst(pool, response, options?)` streams a file baked with
+[`bakeCoarseFirst`](/tools/nvdb) into one pool id. It adds the preview as soon as its bytes are in, with the full grid's
+size reserved, then replaces it in place with each finer grid. The id, its bind-group slot and any instance transform
+stay.
+
+{/* snippet: coarse-first */}
+```ts
+import { vdbStreamCoarseFirst } from '@pmndrs/vdb/three';
+
+// A file baked with bakeCoarseFirst() holds the preview grid first. The preview is added with the
+// full size reserved, then replaced in place when the full grid arrives: the same pool id throughout.
+const { id } = await vdbStreamCoarseFirst(pool, await fetch(url), {
+    onGrid: ({ action, final, voxelRatio }) => {
+        pool.flush(); // the preview, or the replacement, reaches the GPU
+        grids.update();
+        // A preview's voxels are voxelRatio times larger: keep the same optical depth, then restore it.
+        material.densityScale.value = final ? 1 : voxelRatio;
+        console.log(action, final ? 'full grid' : 'preview');
+    },
+});
+```
+
+Things to redo in `onGrid`, because a swap changes what the id holds:
+
+- `replace` drops a brick majorant: call `pool.setMajorant` again.
+- `VDBVolumeMaterial` marches in index voxels, so a preview with k-times larger voxels has 1/k the optical depth at the
+  same `densityScale`. Scale it by `voxelRatio` while a preview shows, and back to 1 at `final`.
+- The preview's box is the full box grown to whole preview voxels: build a new `vdbProxyGeometry(pool.info(id))`.
+
+It touches only `pool.add` and `pool.replace`, so it works with any pool host. It lives in `./three` because `tools`
+may not import the core. Pass `signal` to abort, and `reader` for `maxGridBytes` limits.

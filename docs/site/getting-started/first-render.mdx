@@ -1,0 +1,63 @@
+---
+title: First render
+description: Load a .nvdb, put it in a pool, and raymarch it in three.js.
+nav: 2
+---
+
+This renders one grid with `VDBVolumeMaterial`. The device, the renderer and the pool are created in this order: the
+adapter's device first, then the renderer on that device, then the pool on the renderer's device.
+
+{/* snippet: three-renderer */}
+```ts
+import { WebGPURenderer } from 'three/webgpu';
+import { VDBGridPool } from '@pmndrs/vdb';
+import { getDevice } from '@pmndrs/vdb/three';
+
+// The host owns the device. Pass it to three, so renderer.dispose() never destroys it or the pool's buffer.
+const adapter = await navigator.gpu.requestAdapter();
+if (!adapter) throw new Error('No WebGPU adapter');
+const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
+
+const renderer = new WebGPURenderer({ device });
+await renderer.init();
+
+getDevice(renderer) === device; // true: the renderer's WebGPU backend holds your device
+const pool = await VDBGridPool.create(getDevice(renderer));
+```
+
+Then load a grid image, add it to the pool and march it:
+
+{/* snippet: first-render */}
+```ts
+import * as THREE from 'three/webgpu';
+import { VDBGridPool } from '@pmndrs/vdb';
+import { NanoVDBFile } from '@pmndrs/vdb/tools';
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from '@pmndrs/vdb/three';
+
+const image = (await NanoVDBFile.fromURL(url)).gridImage(0);
+
+const pool = await VDBGridPool.create(getDevice(renderer));
+const id = pool.add(image);
+pool.flush(); // the grid is on the GPU after this
+await pool.settled();
+
+// One VDBGridNode per renderer. The ray clip the material needs is an opt-in helper.
+const grids = new VDBGridNode(renderer, pool, { helpers: ['rayClipSupport'] });
+const material = new VDBVolumeMaterial(renderer, grids, id, { densityScale: 1, stepSize: 0.75, shadowSteps: 12 });
+scene.add(new THREE.Mesh(vdbProxyGeometry(pool.info(id)), material)); // a box around the grid's index bbox
+
+renderer.setAnimationLoop(() => {
+    grids.update(); // rebinds only if the pool replaced its buffer
+    renderer.render(scene, camera);
+});
+```
+
+The three rules that matter, in order of how often they bite:
+
+1. **Update before bind.** `pool.add`, `replace`, `remove` and `setTransform` only stage changes. `pool.update(encoder)`
+   or `pool.flush()` puts them on the GPU, and must run before three renders. See [the grid pool](/core/grid-pool).
+2. **Call `grids.update()` every frame.** It rebinds three to the pool's new buffer after a growth. Skipping it leaves
+   three on the old buffer, which the pool destroys a couple of updates later.
+3. **One `VDBGridNode` per renderer, one module per shader.** See [VDBGridNode](/three/grid-node).
+
+For raw WebGPU, with no three, start at [the raw WebGPU example](/core/raw-webgpu).

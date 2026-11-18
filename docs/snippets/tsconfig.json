@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // The samples the docs site shows (docs/site/**/*.mdx), compiled against the package source through these
+  // paths. three lives in the examples workspace, so it is mapped from there.
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "baseUrl": "../..",
+    "paths": {
+      "@pmndrs/vdb": ["packages/vdb/src/core/index.ts"],
+      "@pmndrs/vdb/tools": ["packages/vdb/src/tools/index.ts"],
+      "@pmndrs/vdb/three": ["packages/vdb/src/three/index.ts"],
+      "three": ["examples/node_modules/@types/three"],
+      "three/webgpu": ["examples/node_modules/@types/three/build/three.webgpu.d.ts"],
+      "three/tsl": ["examples/node_modules/@types/three/build/three.tsl.d.ts"],
+      "three/addons/*": ["examples/node_modules/@types/three/examples/jsm/*"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

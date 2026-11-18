@@ -1,0 +1,187 @@
+---
+title: Froxel renderer
+description: VDBFrameVolume and VDBFrameRenderer, ported from mjurczyk's FrameRenderer, over a dense or a sparse source.
+nav: 55
+sourcecode: packages/vdb/src/three/frame/volume.ts
+---
+
+`VDBFrameVolume` is a `Group` whose proxy mesh draws a volume with froxel lighting: the volume's density and light are
+integrated into a view-aligned slice atlas, then composited over the scene up to the scene depth. It is mjurczyk's
+`FrameVolume` and `FrameRenderer` ([three-openvdb](https://github.com/mjurczyk/openvdb), MIT) ported to TSL and
+re-based on a volume source (D18). Add it to a scene and call `renderer.render(scene, camera)` as usual: the first
+proxy in a render draws the froxels, and every proxy then composites.
+
+> [!NOTE]
+> The pass timings recorded so far are provisional (D25). Read the quality settings below as defaults to tune, not as
+> measured recommendations.
+
+## Sources
+
+A volume reads its density only through a **source**. There are two:
+
+| Source | Made by | What it holds |
+| --- | --- | --- |
+| Dense | `vdbDenseTextures(wvdbDenseVolume(readWvdb(bytes)))` | A `.wvdb` LOD as 8-bit 3D textures with a mip atlas. Density is clamped to 0..1. |
+| Sparse | `vdbSparseSource(grids, { density: id }, options)` | A pool grid at full resolution, read through `vdbSample`. |
+
+{/* snippet: frame-dense */}
+```ts
+import { readWvdb, wvdbDenseVolume } from '@pmndrs/vdb/tools';
+import { VDBFrameVolume, vdbDenseTextures } from '@pmndrs/vdb/three';
+
+// A dense source: the .wvdb's density as an 8-bit 3D texture with a mip atlas.
+const source = vdbDenseTextures(wvdbDenseVolume(readWvdb(wvdb)));
+const volume = new VDBFrameVolume(source, { extinction: 100 }); // the box is the file's bbox
+scene.add(volume); // renderer.render(scene, camera) draws it, froxels first
+
+volume.scatterColor.set('#ffffff');
+volume.phase = 'dual-lobe';
+```
+
+The sparse source needs a `VDBGridNode` with profile `'march'`, plus the helpers its paths use. Optional `mask`,
+`albedo` (one grid, or three for RGB) and `emission` grids are scalar and read at level 0.
+
+{/* snippet: frame-sparse */}
+```ts
+import { VDBFrameVolume, VDBGridNode, vdbSparseSource } from '@pmndrs/vdb/three';
+
+const id = pool.add(image);
+pool.flush();
+
+// A sparse source: a pool grid, at full resolution. The module needs the march profile and the
+// helpers the source's HDDA and node-average paths use.
+const grids = new VDBGridNode(renderer, pool, {
+    profile: 'march',
+    helpers: ['cellBoundTrilinear', 'hddaCellEnd', 'nodeAverage'],
+});
+const source = vdbSparseSource(
+    grids,
+    { density: id }, // optional: mask, albedo (one grid or three), emission
+    { lod: 'coarse-pyramid', pyramidMax: 128, pyramidBuild: 'gpu', images: { density: image } },
+);
+
+const volume = new VDBFrameVolume(source, { extinction: 100, hdda: false }); // the box is the grid's world box
+scene.add(volume);
+```
+
+### LOD and HDDA
+
+When a froxel spans many voxels, a sparse source filters. `lod` picks how:
+
+- `'coarse-pyramid'` (default): a dense r16f pyramid, built on the GPU from the pool grid (`pyramidBuild: 'gpu'`,
+  default) and rebuilt when the grid's `imageRevision` changes, so `pool.replace` frames work. `'cpu'` builds it from
+  `images.density` once. `pyramidMax` is the base level's longest side (default 128).
+- `'node-average'`: no extra memory, trilinear over the nodes' stored averages. It blurs and brightens; it needs
+  stats.
+- `'none'`: level 0 only, which aliases.
+
+`hdda` on a `VDBFrameVolume` skips empty space in the shadow march of a sparse source. The image is the same either
+way, and it is **off by default**: on the Apple GPU it slowed the shadow march in all 12 paired runs (D30). Dense
+sources ignore it.
+
+## Lighting
+
+Settings live on `volume.frameRenderer.settings`, a renderer shared by every volume unless you pass another
+`frameRenderer`. Volumes in one renderer are lit together.
+
+{/* snippet: frame-lighting */}
+```ts
+import { vdbFrameLights } from '@pmndrs/vdb/three';
+
+const settings = volume.frameRenderer.settings; // shared by every volume that uses this renderer
+
+// 'volume': each volume lights itself with its own shadow march.
+// 'frame' (default): a world shadow grid shared by all volumes, with up to 4 cascades.
+settings.lighting = 'frame';
+settings.shadowResolution = 64;
+settings.shadowCascades = 2;
+
+// The scene's environment as lights: 'outward', 'directional' (default) or 'spherical-harmonics'.
+settings.environmentLighting = 'spherical-harmonics';
+settings.environmentShOrder = 2;
+
+// Which of the scene's light types this volume uses.
+volume.lights = vdbFrameLights.useDirectionalLights | vdbFrameLights.usePointLights | vdbFrameLights.useEnvironment;
+```
+
+| `lighting` | What it does |
+| --- | --- |
+| `'frame'` (default) | A world shadow grid of every caster, up to 4 cascades, redrawn only when its signature changes. Transmittance from each grid voxel to up to 6 scene lights and the sky, an optional environment grid, a density pass per volume and one lighting pass for all volumes, then temporal reprojection. |
+| `'volume'` | Each volume lights itself with its own shadow march. |
+
+`environmentLighting` turns the scene's environment into lights: `'outward'` (PMREM irradiance along each volume's
+outward direction), `'directional'` (default, up to 8 lights from a 64 x 32 readback) or `'spherical-harmonics'`
+(quadrature lights of order 1 or 2). `volume.lights` is a bitmask of `vdbFrameLights` (`useAmbientLights`,
+`usePointLights`, `useDirectionalLights`, `useSpotLights`, `useHemisphereLights`, `useEnvironment`);
+`vdbFrameAllLights` is the default.
+
+## Scattering and phase
+
+{/* snippet: frame-scattering */}
+```ts
+
+
+const settings = volume.frameRenderer.settings;
+
+// false: single scattering. true: 1D diffusion toward the light. 'two-sided': 2D slab diffusion.
+// 'octaves': indirect octaves. 'neural' (default): a small trained network for the scene lights.
+settings.multipleScattering = 'octaves';
+settings.scatteringOctaves = 4; // each octave n has extinction a^n, light b^n, phase g c^n
+settings.scatteringOctaveExtinction = 0.5;
+settings.scatteringOctaveContribution = 0.5;
+settings.scatteringOctavePhase = 0.5;
+
+// Phase functions: 'isotropic', 'henyey-greenstein', 'dual-lobe', 'lorenz-mie' or 'lorenz-mie-rgb'.
+volume.phase = 'henyey-greenstein';
+volume.phaseG = 0.6;
+```
+
+`multipleScattering` picks how the shadow marches approximate light that scatters more than once:
+
+| Value | Mode |
+| --- | --- |
+| `false` | Single scattering |
+| `true` | 1D diffusion toward the light |
+| `'two-sided'` | 2D slab diffusion toward and away from the light |
+| `'octaves'` | Indirect octaves: octave n has extinction a^n, light b^n and phase g c^n (`scatteringOctave*`) |
+| `'neural'` (default) | A small trained network for the scene light slots in `'frame'` lighting, diffusion elsewhere. Its weights are a separate module; set `frameRenderer.neuralNetwork` to another network, or `null` to run `'neural'` as 1D diffusion. |
+
+`volume.phase` is `'isotropic'`, `'henyey-greenstein'`, `'dual-lobe'`, `'lorenz-mie'` or `'lorenz-mie-rgb'`, with
+`phaseG`, `phaseBackG`, `phaseBackWeight` and `phaseGExponent`. `settings.phase` is the one phase for all volumes in
+`'frame'` lighting. Colour is grey in 0.1: `settings.spectral` and `extinctionScale` are kept for the uniform layout.
+
+## Quality
+
+{/* snippet: frame-quality */}
+```ts
+
+
+const settings = volume.frameRenderer.settings;
+settings.width = 256; // froxel grid, default 512 x 512 x 24
+settings.height = 256;
+settings.depth = 32;
+settings.pixelsPerFroxel = 4; // at most one froxel per 4 x 4 canvas pixels (0: no cap)
+settings.subSteps = 16;
+settings.temporal = true; // reproject the froxels over frames
+settings.jitter = true;
+
+volume.shadowSteps = 16; // the shadow march of this volume
+volume.mipmaps = true; // sample the source's coarser levels when a froxel spans many voxels
+volume.hdda = true; // sparse sources: skip empty space in the shadow march (same image, off by default)
+```
+
+`width`, `height` and `depth` are the froxel grid (default 512 x 512 x 24). `pixelsPerFroxel` caps it at one froxel per
+N x N canvas pixels. `fadeRadius` fades density with view distance. `srgbBlending` (default true) blends over the scene
+in sRGB, as `WebGLRenderer` does.
+
+## Volume props
+
+`VDBFrameVolume` props keep his names and defaults for the ported subset: `baseColor`, `scatterColor`, `extinction`
+(with `normalizeDensity`, the optical depth of the longest box side at the mean density, default 100), `densityScale`,
+`densityCutoff`, `absorbance`, `opacity`, `emissiveIntensity`, `temperatureRange`, `offset3D`, `wrap3D`, `bbox`,
+`mipmaps`, `shadowSteps`, `lights`, the phase props and `hdda`. After `source.replace()` (a dense LOD swap), call
+`volume.updateSource()`. `dispose()` frees the proxy and the pass materials; the source belongs to you.
+
+`volume.frameRenderer.passHook` takes `begin(pass)` and `end(pass)` callbacks for the passes (`'froxels'`, `'inject'`,
+`'shadowDensity'`, `'gridMips'`, `'transmittance'`, `'environmentGrid'`, `'density'`, `'lighting'`, `'temporal'`) for
+timing and debugging.

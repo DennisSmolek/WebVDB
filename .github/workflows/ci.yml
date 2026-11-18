@@ -39,6 +39,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # Every ts code block in docs/site/**/*.mdx equals a sample in docs/snippets, and the samples
+      # compile against the package source (scripts/docs-snippets.mjs).
+      - name: Docs snippets compile
+        run: pnpm docs:check
+
       - name: Build packages
         run: pnpm build
 

@@ -1,0 +1,62 @@
+---
+title: three.js
+description: What @pmndrs/vdb/three gives a three.js app, and the rules that keep it correct.
+nav: 50
+sourcecode: packages/vdb/src/three/index.ts
+---
+
+`@pmndrs/vdb/three` is the only part of the package that imports three. three is an optional peer dependency, pinned to
+`>=0.187.0 <0.188.0` (r187): `VDBGridNode` reaches into three's WebGPU backend, which is not public API, so each three
+release is checked before the range widens. Another revision warns once. It needs `WebGPURenderer` on the WebGPU
+backend. `getDevice` throws `VDB_UNSUPPORTED_DEVICE` before `await renderer.init()` and on the WebGL fallback.
+
+## What is in it
+
+| Piece | What it does |
+| --- | --- |
+| `getDevice`, `getGPUTexture` | Reach the renderer's `GPUDevice` and a three texture's `GPUTexture`. |
+| [`VDBGridNode`](/three/grid-node) | A pool inside three's node system: TSL helpers `vdbSample` and `vdbReadValue`, or the module as a `wgslFn` include. |
+| [`VDBVolumeMaterial`](/three/volume-material) | A fragment raymarch of one pooled grid. |
+| [`VDBSequence`](/three/sequence) | Plays a frame sequence into one pool id with `pool.replace`. |
+| [`vdbGridStats`, `vdbDecodeToAtlas`, `vdbStreamCoarseFirst`](/three/compute-and-streaming) | The core's compute tools through the renderer, and coarse-first streaming into a pool id. |
+| [`VDBFrameVolume`, `VDBFrameRenderer`](/three/frame-renderer) | The froxel volume renderer with lighting, scattering and phase modes, over a dense or a sparse source. |
+
+## Create the device first
+
+There is no renderer bootstrap. Request the adapter's device with the pool's limits and give it to three, so the
+pool outlives `renderer.dispose()` and shares the device with other tools:
+
+{/* snippet: three-renderer */}
+```ts
+import { WebGPURenderer } from 'three/webgpu';
+import { VDBGridPool } from '@pmndrs/vdb';
+import { getDevice } from '@pmndrs/vdb/three';
+
+// The host owns the device. Pass it to three, so renderer.dispose() never destroys it or the pool's buffer.
+const adapter = await navigator.gpu.requestAdapter();
+if (!adapter) throw new Error('No WebGPU adapter');
+const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
+
+const renderer = new WebGPURenderer({ device });
+await renderer.init();
+
+getDevice(renderer) === device; // true: the renderer's WebGPU backend holds your device
+const pool = await VDBGridPool.create(getDevice(renderer));
+```
+
+If three creates its own device instead, `renderer.dispose()` destroys that device, and the pool's buffer with it.
+
+## The rules
+
+1. **One `VDBGridNode` per renderer.** A node binds through one renderer's backend: make a second node for a second
+   renderer, even on the same device.
+2. **One VDB module per shader.** A shader holds at most one module, so every grid one shader reads goes through one
+   `VDBGridNode`. Both rules are checked when three builds a shader (`VDB_BAD_OPTION`).
+3. **Stage, flush, then render.** Pool changes reach the GPU at `pool.update(encoder)` or `pool.flush()`, before three
+   renders.
+4. **Call `grids.update()` each frame.** It rebinds after a growth. Nothing recompiles.
+5. **Perspective cameras for `VDBVolumeMaterial`.** Its view ray is `positionWorld - cameraPosition`.
+
+`VDBGridNode` also installs a guard over three's attribute destruction, so `renderer.dispose()` and a stand-in's
+`dispose()` never destroy the pool's buffer, and the first node on a backend self-tests that guard before any pool
+buffer reaches three (`VDB_ENGINE_MISMATCH` if three would destroy a buffer behind it).

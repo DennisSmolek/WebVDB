@@ -1,0 +1,130 @@
+---
+title: VDBGridPool
+description: Many NanoVDB grids in one GPUBuffer, with staged changes, a version and a revision.
+nav: 10
+sourcecode: packages/vdb/src/core/pool/pool.ts
+---
+
+`VDBGridPool` keeps any number of NanoVDB grid images in one `GPUBuffer`, behind a grid table. A kernel binds that one
+buffer at one slot and reads any grid by id. The pool takes your device, records into your encoder, and on `dispose()`
+frees only what it allocated.
+
+## Lifecycle
+
+CPU calls (`add`, `replace`, `remove`, `setTransform`, `setMajorant`) stage a change and return at once.
+`update(encoder)` applies them. Growth and compaction happen only inside `update`, by a new buffer plus copies of the
+ranges that were resident before it.
+
+{/* snippet: pool-lifecycle */}
+```ts
+import { VDBGridPool } from '@pmndrs/vdb';
+
+const pool = await VDBGridPool.create(device);
+
+// add() validates and stages the image, and returns its id at once. Nothing is on the GPU yet.
+// `capacity` reserves room for later frames, so replace() writes in place.
+const id = pool.add(image, { label: 'smoke', capacity: largest });
+
+// update() applies staged changes. flush() is update() on an encoder of its own, submitted at once.
+pool.flush();
+pool.info(id).resident; // true: the image is on the GPU
+
+pool.replace(id, next); // staged; fits the reserved capacity, so no `version` change
+pool.setTransform(id, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 0, 0, 1]); // column-major object-to-world
+pool.flush();
+
+pool.remove(id); // the id is reused by the next add()
+pool.flush();
+
+pool.dispose(); // frees what the pool allocated; the device stays yours
+```
+
+- `add(image, options)` validates the image and returns its id. A bad image throws `VDB_BAD_IMAGE`, an unsupported
+  grid type `VDB_UNSUPPORTED_GRID_TYPE`, and a request that could never fit under the byte limit `VDB_POOL_LIMIT`,
+  all at staging, with the pool unchanged.
+- Images are held **by reference** until the next `update` writes them, and after that while a growth is unconfirmed
+  (until `settled()` resolves). Do not mutate them before then.
+- `replace(id, image)` writes in place when the image fits the grid's reserved range (`capacity` at `add`), else moves
+  it. The transform, label and `valueMax` are kept; a brick majorant is dropped.
+- `update(encoder)` must be submitted before the second `update` after it. A buffer a growth retires stays alive for
+  that one update of slack.
+
+## Version and revision
+
+| Property | Changes when | What you do |
+| --- | --- | --- |
+| `version` | the pool's `buffer` becomes a different object (a growth, a compaction, or the rollback of a failed growth) | rebuild bind groups |
+| `revision` | any content changes: `add`, `replace`, `remove`, `setTransform`, `setMajorant` | rebuild anything derived from the data |
+
+Both only grow. `version` is the one that decides bind groups. `info(id).imageRevision` is the pool `revision` at that
+grid's last `add` or `replace`: it moves exactly when the image's contents may have (not on `setTransform` or
+`setMajorant`), so data derived from one grid, such as a coarse pyramid, rebuilds when it moves.
+
+## Update before bind
+
+Call `update(encoder)` before you build or reuse a bind group in a frame, then compare `version` with the version the
+bind group was built at. A bind group built before `update()` keeps the previous, still-alive buffer and silently
+misses new grids: no validation error, just stale data.
+
+{/* snippet: pool-bind */}
+```ts
+
+
+let bindGroup: GPUBindGroup | undefined;
+let boundVersion = -1;
+
+return (encoder) => {
+    pool.update(encoder); // 1. before any bind group is built or reused this frame
+    if (!bindGroup || boundVersion !== pool.version) {
+        // 2. the buffer is a new object after a growth: rebuild when `version` moved
+        bindGroup = device.createBindGroup({ layout, entries: [pool.bindGroupEntry(slot)] });
+        boundVersion = pool.version;
+    }
+    return bindGroup; // 3. the passes that read the pool, then submit the encoder
+};
+```
+
+`flush()` is `update()` on a throwaway encoder that it submits itself. Use it for one-off changes (a load, a sequence
+frame). Use `update(encoder)` in the frame loop, so the writes ride in your own submit.
+
+## settled() and lastError
+
+Growth allocates inside `out-of-memory` and `validation` error scopes. The pool switches to the new buffer at once,
+because `update` is synchronous, but keeps the old one alive until the scopes resolve. If the allocation failed, the
+pool rolls back to the old buffer (a new `version`) and reports through two doors:
+
+- `await pool.settled()` resolves once every growth so far is confirmed, or rejects with the `VDB_POOL_LIMIT` error.
+- `pool.lastError` holds that error until a later growth is confirmed.
+
+{/* snippet: pool-errors */}
+```ts
+import { VDBError } from '@pmndrs/vdb';
+
+try {
+    await pool.settled(); // resolves when every growth so far is confirmed by the device
+} catch (error) {
+    // A failed growth rolled the pool back to its previous buffer; `lastError` holds the same error.
+    if (error instanceof VDBError && error.code === 'VDB_POOL_LIMIT') console.warn(pool.lastError?.message);
+    else throw error;
+}
+```
+
+## Other things on the pool
+
+| Member | What it gives |
+| --- | --- |
+| `info(id)` | A `VDBGridInfo`: type, class, name, byte sizes, residency, stats, `worldBBox`, `indexBBox`, `voxelSize`, both affines. Throws `VDB_UNKNOWN_GRID` for a dead id. |
+| `types` | The grid types of the live grids now. It does not know about grids you add later (see [the WGSL module](/core/wgsl-module)). |
+| `gridCount`, `gridCapacity` | Highest live id + 1, and the table's capacity (`maxGrids`, default 16, doubles through the growth path). |
+| `byteLength`, `usedBytes`, `retiredBytes` | The buffer's size, the allocation high-water mark, and bytes in replaced buffers still alive. |
+| `setTransform(id, matrix)` | A 4x4 column-major object-to-world matrix (three's `Matrix4.elements`), or `null` for the file's own map. Composed in f64, rounded to f32. |
+
+`VDBGridPoolOptions` has `initialBytes` (default 1 MiB), `maxGrids`, `maxBytes`, `label`, `usage`, and `buffer`. Pass a
+host-owned `buffer` (`STORAGE | COPY_DST`) and the pool never grows or destroys it; when it is full, `add` throws
+`VDB_POOL_FULL`.
+
+## Errors
+
+Every error is a `VDBError` with a `code`: `VDB_UNSUPPORTED_DEVICE`, `VDB_BAD_IMAGE`, `VDB_UNSUPPORTED_GRID_TYPE`,
+`VDB_POOL_LIMIT`, `VDB_POOL_FULL`, `VDB_UNKNOWN_GRID`, `VDB_NO_STATS`, `VDB_TYPE_NOT_COMPILED`, `VDB_LAYOUT_MISMATCH`,
+`VDB_BAD_OPTION`, `VDB_DISPOSED` and `VDB_ENGINE_MISMATCH`. Messages say what to do next.

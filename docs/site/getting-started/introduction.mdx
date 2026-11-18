@@ -1,0 +1,37 @@
+---
+title: Introduction
+description: Sparse NanoVDB volumes on WebGPU, with no engine inside the core.
+nav: 0
+---
+
+<Intro>
+  `@pmndrs/vdb` reads and renders sparse volumes (OpenVDB and NanoVDB) on WebGPU. A WGSL module walks the NanoVDB
+  tree on the GPU, pure-TypeScript tools parse, build, quantize and write the files, and a three.js adapter puts the
+  grids into materials and a froxel volume renderer.
+</Intro>
+
+The package is one install with three subpaths. The core imports no engine, the tools need no GPU, and only the
+three.js subpath imports three.
+
+| Import | What it holds |
+| --- | --- |
+| `@pmndrs/vdb` | The core: `VDBGridPool`, the generated WGSL module (`vdbModuleWgsl`), compute tools, the volume-source seam. No engine. |
+| `@pmndrs/vdb/tools` | The CPU half in plain TypeScript: `.vdb` parser, NanoVDB builder, quantizer, resampler, `.nvdb` and `.wvdb` I/O, CPU twins of the WGSL. |
+| `@pmndrs/vdb/three` | The three.js adapter: `VDBGridNode`, `VDBVolumeMaterial`, `VDBSequence`, and the froxel renderer `VDBFrameVolume`. |
+| `@pmndrs/vdb/pnanovdb.wgsl` | The vendored traversal module as raw text. |
+
+## What it is for
+
+- Many grids in **one storage buffer**, bound at one slot, so a kernel that already uses most of its storage-buffer
+  budget can still read volumes.
+- **Full-resolution sparse data** on the GPU: Float, Fp4, Fp8, Fp16 and FpN grids are decoded in the shader, with no
+  dense 3D texture in between.
+- A **device you own**. Nothing here creates or destroys a `GPUDevice`, so the volumes share it with other pmndrs
+  tools and compose in the same frame.
+
+## Where to go
+
+- [Installation](/getting-started/installation) and [First render](/getting-started/first-render).
+- [The grid pool](/core/grid-pool) and [the WGSL module](/core/wgsl-module) for raw WebGPU.
+- [Tools](/tools/parse-vdb) to get from a `.vdb` to a grid image.
+- [three.js](/three/overview) for materials, sequences and the froxel renderer.

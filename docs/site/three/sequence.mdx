@@ -1,0 +1,64 @@
+---
+title: VDBSequence
+description: Play a NanoVDB frame sequence through one pool id, with a prefetch ring and no rebinds.
+nav: 53
+sourcecode: packages/vdb/src/three/sequence.ts
+---
+
+`VDBSequence` swaps each frame of an animation into **one** pool id with `pool.replace(id, frame)`, scheduled by a
+prefetch ring and a frame-time clock. It does not touch three: the target is `{ pool, id }`.
+
+## The pool contract
+
+Add the grid with `capacity` set to the largest frame. Then every `replace` writes in place: no move, no
+`pool.version` change, no `VDBGridNode` rebind and no new bind group. Per rendered frame:
+
+1. `sequence.update(now)` (may `replace`),
+2. `pool.flush()` (writes it),
+3. `grids.update()` (rebinds only after a growth),
+4. render.
+
+{/* snippet: sequence */}
+```ts
+import { NanoVDBFile } from '@pmndrs/vdb/tools';
+import { VDBSequence } from '@pmndrs/vdb/three';
+
+// Reserve the largest frame, so every replace() writes in place: no move, no `version` change,
+// no rebind of the VDBGridNode, no new bind group.
+const id = pool.add(firstFrame, { capacity: largestFrameBytes });
+
+const sequence = new VDBSequence({
+    urls: (index) => `/frames/smoke_${String(index).padStart(4, '0')}.nvdb`,
+    frameCount: 120,
+    fps: 24,
+    prefetch: 4, // frames decoded ahead
+    loop: true,
+    // The default loader fetches and parses a .nvdb; override it to load from anywhere.
+    loader: async (url) => (await NanoVDBFile.fromURL(url)).gridImage(0),
+    onError: (error, index) => console.warn('frame', index, error),
+});
+await sequence.preload(); // the first frames, so playback starts without a stall
+sequence.start({ pool, id });
+
+// Each rendered frame: update() may replace() the grid, then flush and render as usual.
+const frame = (now: number) => {
+    sequence.update(now);
+    pool.flush();
+};
+```
+
+## Options
+
+| Option | Meaning |
+| --- | --- |
+| `urls` | An array, or a function of the frame index |
+| `frameCount`, `fps` | Length and playback rate |
+| `prefetch` | Frames decoded ahead of the playhead |
+| `loop` | Wrap at the end |
+| `loader` | `(url, index) => Promise<Uint32Array>`; the default fetches and parses a `.nvdb` |
+| `now` | The clock, default `performance.now`; pass your own to step deterministically |
+| `onFrame`, `onError` | Stats after each swap, and per-frame load failures |
+
+`stats` reports `frame`, `decodedAhead`, `stalls` (a swap that had to wait for a decode), `replaceMs`, `swaps` and
+`failed`. Control it with `start(target, now?)`, `stop()`, `resume()`, `seek(index)`, `preload(count?)` and
+`dispose()`.

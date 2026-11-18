@@ -1,0 +1,62 @@
+---
+title: Installation
+description: The package, its subpaths, and a WebGPU device you create.
+nav: 1
+---
+
+```bash
+npm install @pmndrs/vdb
+```
+
+> [!NOTE]
+> `@pmndrs/vdb` is not published yet. Until it is, build it from [the repository](https://github.com/pmndrs/vdb)
+> (`pnpm install && pnpm build`) and link `packages/vdb`.
+
+For the three.js subpath, also install three. It is an optional peer dependency, pinned to `>=0.187.0 <0.188.0`
+because `VDBGridNode` binds the pool through three's WebGPU backend internals, and each three release is checked
+before the range widens.
+
+```bash
+npm install three@0.187
+```
+
+## Entry points
+
+| Import | Needs three | Needs a GPU |
+| --- | --- | --- |
+| `@pmndrs/vdb` | no | yes, for the pool and the compute tools; the WGSL generator is plain strings |
+| `@pmndrs/vdb/tools` | no | no |
+| `@pmndrs/vdb/three` | yes | yes |
+| `@pmndrs/vdb/pnanovdb.wgsl` | no | no |
+
+The package is ES modules only, with `sideEffects: false`. `core` never imports three, and `tools` never imports
+`core` or three. Both rules are tests.
+
+In Vite, the raw WGSL text is `import wgsl from '@pmndrs/vdb/pnanovdb.wgsl?raw'`. Most code never needs it: the
+generated module (`vdbModuleWgsl`) is the supported way to get WGSL.
+
+## The device is yours
+
+The core takes a `GPUDevice` and never creates or destroys one. It records into your command encoder and frees only
+what it allocated. Ask the adapter for its storage-buffer limits when you create the device, so the pool can grow:
+
+{/* snippet: host-device */}
+```ts
+import { VDBGridPool } from '@pmndrs/vdb';
+
+const adapter = await navigator.gpu.requestAdapter();
+if (!adapter) throw new Error('No WebGPU adapter');
+// The pool grows into the adapter's storage-buffer limits, so ask for them up front.
+const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
+const reason = VDBGridPool.unsupportedReason(device); // null when the device can hold a pool
+if (reason) throw new Error(reason);
+
+const pool = await VDBGridPool.create(device, { label: 'volumes' });
+```
+
+`VDBGridPool.isSupported(device)` and `unsupportedReason(device)` say whether a device can hold a pool. The reasons
+are a lost device, no storage buffer per shader stage (a compatibility-mode device), and a storage-buffer limit under
+the pool's minimum.
+
+There is no renderer bootstrap. With three, create the device first and hand it to `new WebGPURenderer({ device })`
+(see [three.js](/three/overview)).
