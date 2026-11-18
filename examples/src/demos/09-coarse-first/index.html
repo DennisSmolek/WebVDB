@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>WebVDB · 09 coarse-first</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #0b1020; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #panel {
+        position: fixed; top: 0; left: 0; margin: 0.75rem; padding: 0.75rem 0.9rem;
+        width: 19rem; max-width: calc(100vw - 1.5rem);
+        background: rgba(12, 16, 32, 0.72); color: #e6ebff; border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(6px);
+        font-size: 0.8rem; line-height: 1.35;
+      }
+      #panel h1 { font-size: 0.95rem; margin: 0 0 0.25rem; }
+      #panel a { color: #9db4ff; }
+      #phase { margin: 0.5rem 0 0.25rem; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.02em; }
+      #phase[data-phase="preview"] { color: #ffd479; }
+      #phase[data-phase="full"] { color: #7be3a1; }
+      #bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.14); overflow: hidden; margin: 0.3rem 0; }
+      #bar > div { height: 100%; width: 0; background: #9db4ff; }
+      #stats { font-variant-numeric: tabular-nums; opacity: 0.9; margin: 0.35rem 0 0.6rem; white-space: pre-line; }
+      #controls { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+      #controls label { opacity: 0.85; }
+      #controls select, #controls button { font: inherit; }
+      #err { color: #ff9b9b; white-space: pre-wrap; margin-top: 0.5rem; }
+      #panel.test-hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="panel">
+      <h1>09 · coarse-first</h1>
+      <div><a href="/">&larr; all demos</a> · a 12 KiB preview grid, then the full grid, one <code>.nvdb</code></div>
+      <div id="phase" data-phase="loading" data-testid="phase">loading…</div>
+      <div id="bar"><div></div></div>
+      <div id="stats" data-testid="stats">booting…</div>
+      <div id="controls">
+        <label for="speed">link</label>
+        <select id="speed">
+          <option value="64">64 KiB/s</option>
+          <option value="256" selected>256 KiB/s</option>
+          <option value="1024">1 MiB/s</option>
+        </select>
+        <button id="restart" type="button">restart</button>
+      </div>
+      <div id="err"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
