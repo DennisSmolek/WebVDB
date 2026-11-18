@@ -8,7 +8,7 @@
  *  - the file's own `file_voxel_count` metadata, written by OpenVDB, for the
  *    parsed active-voxel count (leaf masks plus 512 per lower tile);
  *  - the parsed `.vdb` tree's `readValue` for the NanoVDB image read through
- *    the proven CPU reader (`readValue`, `sampleTrilinear`), at every tile
+ *    the proven CPU reader (`readValue`, `vdbSampleTrilinear`), at every tile
  *    voxel, thousands of random active leaf voxels and random bbox coords.
  *
  * Skipped when the asset is absent (`pnpm fixtures:vdb-samples` does not fetch
@@ -20,9 +20,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { buildFromVdbDetailed, type BuiltGrid } from "../../src/tools/index.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { sampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { buildFromVdbDetailed, type VDBBuiltGrid } from "../../src/tools/index.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
 import { parseVdb } from "../../src/tools/vdb/index.js";
 import type { VdbGrid, VdbLeaf, VdbTile } from "../../src/tools/vdb/types.js";
 
@@ -50,7 +50,7 @@ describe.skipIf(!existsSync(BUNNY))("bunny_cloud.vdb — parse, build, CPU-oracl
   let grid: VdbGrid;
   let leaves: VdbLeaf[];
   let tiles: VdbTile[];
-  let built: BuiltGrid;
+  let built: VDBBuiltGrid;
 
   beforeAll(() => {
     const buf = readFileSync(BUNNY);
@@ -99,7 +99,7 @@ describe.skipIf(!existsSync(BUNNY))("bunny_cloud.vdb — parse, build, CPU-oracl
           for (let z = 0; z < t.dim; z++) {
             const ijk: Coord = [t.origin[0] + x, t.origin[1] + y, t.origin[2] + z];
             expect(grid.readValue(ijk)).toEqual({ value: t.value, active: true });
-            expect(readValue(built.image, ijk)).toEqual({ value: t.value, active: true });
+            expect(vdbReadValueCpu(built.image, ijk)).toEqual({ value: t.value, active: true });
             checked++;
           }
     }
@@ -115,20 +115,20 @@ describe.skipIf(!existsSync(BUNNY))("bunny_cloud.vdb — parse, build, CPU-oracl
       while (!isOn(leaf.valueMask, n)) n = (n + 1) & 511; // every stored leaf has an active voxel
       const ijk = leafCoord(leaf.origin, n);
       const want = grid.readValue(ijk);
-      const got = readValue(built.image, ijk);
+      const got = vdbReadValueCpu(built.image, ijk);
       if (!want.active || got.value !== want.value || got.active !== want.active) mismatches++;
     }
     const { min, max } = grid.indexBBox!;
     for (let i = 0; i < 4000; i++) {
       const ijk = [0, 1, 2].map((a) => min[a]! + Math.floor(rand() * (max[a]! - min[a]! + 1))) as Coord;
       const want = grid.readValue(ijk);
-      const got = readValue(built.image, ijk);
+      const got = vdbReadValueCpu(built.image, ijk);
       if (got.value !== want.value || got.active !== want.active) mismatches++;
     }
     expect(mismatches).toBe(0);
   });
 
-  it("sampleTrilinear matches trilinear interpolation of the parsed tree", () => {
+  it("vdbSampleTrilinear matches trilinear interpolation of the parsed tree", () => {
     const rand = rng(0xb0b);
     const { min, max } = grid.indexBBox!;
     const tap = (x: number, y: number, z: number): number => grid.readValue([x, y, z]).value;
@@ -154,7 +154,7 @@ describe.skipIf(!existsSync(BUNNY))("bunny_cloud.vdb — parse, build, CPU-oracl
         ),
         fz,
       );
-      maxErr = Math.max(maxErr, Math.abs(sampleTrilinear(built.image, p) - want));
+      maxErr = Math.max(maxErr, Math.abs(vdbSampleTrilinear(built.image, p) - want));
     }
     expect(maxErr).toBe(0);
   });

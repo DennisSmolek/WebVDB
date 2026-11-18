@@ -44,7 +44,7 @@
  * through `readCompressedValues`, `components` scalars per value. Point data
  * grids write their leaf buffers in passes; `points.ts` reads those.
  *
- * Scope limits (throw `VdbUnsupportedError`, not silently wrong data):
+ * Scope limits (throw `VDBUnsupportedError`, not silently wrong data):
  * multi-buffer trees.
  */
 
@@ -52,7 +52,7 @@ import { countBits, countZeroBits, iterOnes, testBit } from "./bit-utils.js";
 import type { ByteReader } from "./byte-reader.js";
 import type { CompressionFlags, ValueFormat } from "./compression.js";
 import { FLOAT_FORMAT, readCompressedValues, readFullValue } from "./compression.js";
-import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+import { VdbFormatError, VDBUnsupportedError } from "./errors.js";
 import { MAX_POINT_EXPANSION, type PointLeafData, readPointDataBuffers } from "./points.js";
 
 export const LEAF_LOG2DIM = 3;
@@ -261,7 +261,7 @@ export interface TreeReadOptions {
 export function readTree(reader: ByteReader, options: TreeReadOptions): TreeReadResult {
   const bufferCount = reader.u32();
   if (bufferCount !== 1) {
-    throw new VdbUnsupportedError(`multi-buffer trees are not supported (bufferCount=${bufferCount})`);
+    throw new VDBUnsupportedError(`multi-buffer trees are not supported (bufferCount=${bufferCount})`);
   }
 
   // RootNode::readTopology: the background is a full-width ValueType.

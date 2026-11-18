@@ -6,20 +6,20 @@ sourcecode: packages/vdb/src/tools/nanovdb/index.ts
 ---
 
 A **grid image** is a `Uint32Array` holding one NanoVDB grid: the exact bytes `VDBGridPool.add` and `writeNvdb`
-take. Everything on this page returns one, or a `BuiltGrid` that carries one in `.image` with its stats.
+take. Everything on this page returns one, or a `VDBBuiltGrid` that carries one in `.image` with its stats.
 
 ## Build
 
 - `buildFromVdb(grid, options?)` streams a parsed `.vdb` grid into the serializer, with no dense array. Float and
-  Vec3f grids are supported. `buildFromVdbDetailed` returns the `BuiltGrid`.
-- `buildFromDense(values, dims, options?)` builds a Float grid from a dense array (x fastest). Options: `origin`,
+  Vec3f grids are supported. `buildFromVdbDetailed` returns the `VDBBuiltGrid`.
+- `vdbBuildFromDense(values, dims, options?)` builds a Float grid from a dense array (x fastest). Options: `origin`,
   `voxelSize`, `worldOrigin`, `background`, `activeThreshold`, `gridName`, `gridClass`, `collapse`.
-- `buildFromLeavesDetailed(leaves, codec, options?)` is the general entry: your leaves and a `LeafCodec`
-  (`FLOAT_LEAF_CODEC`, `FP4_LEAF_CODEC`, `FP8_LEAF_CODEC`, `FP16_LEAF_CODEC`, `VEC3F_LEAF_CODEC`, or `makeFpNLeafCodec`).
+- `vdbBuildFromLeavesDetailed(leaves, codec, options?)` is the general entry: your leaves and a `VDBLeafCodec`
+  (`VDB_FLOAT_LEAF_CODEC`, `VDB_FP4_LEAF_CODEC`, `VDB_FP8_LEAF_CODEC`, `VDB_FP16_LEAF_CODEC`, `VDB_VEC3F_LEAF_CODEC`, or `vdbMakeFpNLeafCodec`).
 
 {/* snippet: build-dense */}
 ```ts
-import { buildFromDense, inspect, writeNvdb } from '@pmndrs/vdb/tools';
+import { vdbBuildFromDense, vdbInspect, writeNvdb } from '@pmndrs/vdb/tools';
 
 const dims: [number, number, number] = [64, 64, 64];
 const values = new Float32Array(dims[0] * dims[1] * dims[2]); // x fastest
@@ -31,17 +31,17 @@ for (let z = 0; z < dims[2]; z++)
         }
 
 // Zero voxels become inactive background; the rest go into a sparse 5-4-3 tree.
-const image = buildFromDense(values, dims, { voxelSize: 0.1, gridName: 'density', gridClass: 'FogVolume' });
-console.log(inspect(image)); // { gridType, gridClass, voxelCount, nodeCounts, memoryBreakdown }
+const image = vdbBuildFromDense(values, dims, { voxelSize: 0.1, gridName: 'density', gridClass: 'FogVolume' });
+console.log(vdbInspect(image)); // { gridType, gridClass, voxelCount, nodeCounts, memoryBreakdown }
 
 return writeNvdb([image], { codec: 'zip' });
 ```
 
-`inspect(image)` reports the grid type and class, the voxel count, node counts per level and a memory breakdown.
+`vdbInspect(image)` reports the grid type and class, the voxel count, node counts per level and a memory breakdown.
 
 ## Quantize
 
-`quantize(image, mode, tolerance?, options?)` re-encodes a Float grid as Fp4, Fp8, Fp16 or FpN with a per-leaf minimum and
+`vdbQuantize(image, mode, tolerance?, options?)` re-encodes a Float grid as Fp4, Fp8, Fp16 or FpN with a per-leaf minimum and
 quantum, and packed codes. Fp4, Fp8 and Fp16 are fixed at 4, 8 and 16 bits per voxel (`tolerance` is ignored). FpN picks
 its bit width per leaf from the absolute `tolerance`. All load on the GPU through the generated module (`types: ['fp4']`,
 `['fp8']`, `['fp16']` or `['fpn']`). Fp8 and FpN match `nanovdb_convert` byte for byte on the fixtures; Fp4 and Fp16 use
@@ -49,16 +49,16 @@ the same rules but have no native fixture to compare with.
 
 {/* snippet: quantize */}
 ```ts
-import { collapseGrid, quantize } from '@pmndrs/vdb/tools';
+import { vdbCollapseGrid, vdbQuantize } from '@pmndrs/vdb/tools';
 
 // Per-leaf min and quantum plus packed codes. Fp8 is one byte per voxel ('fp4' and 'fp16' are 4 and
 // 16 bits); FpN picks the bit width per leaf from the tolerance (an absolute error bound in value units).
-const fp8 = quantize(image, 'fp8');
-const fpn = quantize(image, 'fpn', 0.001);
+const fp8 = vdbQuantize(image, 'fp8');
+const fpn = vdbQuantize(image, 'fpn', 0.001);
 
-// collapseGrid() folds constant leaves into tiles (a smaller image, the same values).
-// quantize() does the same when asked: quantize(image, 'fpn', 0.001, { collapse: true }).
-const collapsed = collapseGrid(image).image;
+// vdbCollapseGrid() folds constant leaves into tiles (a smaller image, the same values).
+// vdbQuantize() does the same when asked: vdbQuantize(image, 'fpn', 0.001, { collapse: true }).
+const collapsed = vdbCollapseGrid(image).image;
 ```
 
 On the smoke sample, FpN at equal resolution is smaller than the `.wvdb` bake (474 vs 790 KiB); see
@@ -66,25 +66,25 @@ On the smoke sample, FpN at equal resolution is smaller than the `.wvdb` bake (4
 
 ## Resample and transform
 
-`resampleGrid(source, options)` resamples a grid image, a parsed `.vdb` grid or a whole `VdbFile` over a world box to a
+`vdbResampleGrid(source, options)` resamples a grid image, a parsed `.vdb` grid or a whole `VdbFile` over a world box to a
 target resolution, with a `'point'`, `'box'` (default) or `'trilinear'` filter. The result is sparse and optionally
-quantized. `resampleError` reports how far a result is from its source, and `resampleDense` returns the dense values.
+quantized. `vdbResampleError` reports how far a result is from its source, and `vdbResampleDense` returns the dense values.
 
-`transform(image, input)` edits the grid's map only (a uniform voxel size and translation, or a 4x4), with no voxel
+`vdbTransform(image, input)` edits the grid's map only (a uniform voxel size and translation, or a 4x4), with no voxel
 churn.
 
 {/* snippet: resample */}
 ```ts
-import { resampleError, resampleGrid, transform } from '@pmndrs/vdb/tools';
+import { vdbResampleError, vdbResampleGrid, vdbTransform } from '@pmndrs/vdb/tools';
 
 // Resample over a world box (default: the grid's own) to about 128 voxels on the longest side,
 // with a box filter, and store the result as Fp8.
-const baked = resampleGrid(image, { resolution: 128, filter: 'box', quantize: 'fp8' });
+const baked = vdbResampleGrid(image, { resolution: 128, filter: 'box', quantize: 'fp8' });
 console.log(baked.dimensions, baked.bbox, baked.voxelCount);
 
 // How far is it from the source? The mean absolute error as a share of the mean value.
-console.log(resampleError(image, baked.image).percent);
+console.log(vdbResampleError(image, baked.image).percent);
 
 // A metadata-only edit of the grid's map (uniform scale and translate), with no voxel churn.
-return transform(baked.image, { voxelSize: 0.05, worldOrigin: [0, 0, 0] });
+return vdbTransform(baked.image, { voxelSize: 0.05, worldOrigin: [0, 0, 0] });
 ```

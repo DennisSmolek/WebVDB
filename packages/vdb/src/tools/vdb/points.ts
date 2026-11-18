@@ -46,7 +46,7 @@
  *
  * Every count, size and offset read from the file is bounded before it drives
  * an allocation or a loop, and every failure is a `VdbFormatError` or
- * `VdbUnsupportedError`:
+ * `VDBUnsupportedError`:
  *
  * - The pass loops only visit the leaves that own an array for the pass, so
  *   their work is bounded by the array metadata actually stored (a large
@@ -67,7 +67,7 @@
 
 import type { ByteReader } from "./byte-reader.js";
 import { decompressBlosc } from "./blosc.js";
-import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+import { VdbFormatError, VDBUnsupportedError } from "./errors.js";
 import { halfToFloat } from "./half-float.js";
 import { readMetadataMap } from "./metadata.js";
 import type { VdbPointAttributeArray, VdbPointAttributeInfo, VdbPointList } from "./types.js";
@@ -218,7 +218,7 @@ function readArrayMetadata(reader: ByteReader): PointArrayData {
   const serialization = reader.u8();
   const size = reader.u32();
   if (serialization >= 0x10) {
-    throw new VdbUnsupportedError(`point attribute serialization flags 0x${serialization.toString(16)}`);
+    throw new VDBUnsupportedError(`point attribute serialization flags 0x${serialization.toString(16)}`);
   }
   if (total < 6n || total > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new VdbFormatError(`point attribute array byte count ${total} is out of range`);
@@ -354,7 +354,7 @@ export function readPointDataBuffers(reader: ByteReader, opts: ReadPointBuffersO
         }
         reader.skip(Number(skip));
       }
-      if (header > 3) throw new VdbUnsupportedError(`point leaf descriptor header flags 0x${header.toString(16)}`);
+      if (header > 3) throw new VDBUnsupportedError(`point leaf descriptor header flags 0x${header.toString(16)}`);
     }
     leaf.arrays = leaf.descriptor.attributes.map(() => readArrayMetadata(reader));
     maxArrays = Math.max(maxArrays, leaf.arrays.length);
@@ -807,7 +807,7 @@ export function decodePoints(
     if (pInfo) {
       const codec = attributeCodec(pInfo.type, pInfo.codec);
       if (!codec || codec.components !== 3) {
-        throw new VdbUnsupportedError(`point position attribute P is ${pInfo.type}/${pInfo.codec}`);
+        throw new VDBUnsupportedError(`point position attribute P is ${pInfo.type}/${pInfo.codec}`);
       }
       if (codec.output === Float32Array) {
         decodeArrayInto(arrays[pInfo.index]!, codec, leafCount, pInfo, ctx, positions, base * 3);
@@ -859,7 +859,7 @@ export function decodePoints(
         shape.stride !== stride ||
         target.constructor !== codec.output
       ) {
-        throw new VdbUnsupportedError(`point attribute "${info.name}" changes type between leaves`);
+        throw new VDBUnsupportedError(`point attribute "${info.name}" changes type between leaves`);
       }
       decodeArrayInto(array, codec, leafCount * stride, info, ctx, target, base * stride * codec.components);
     }

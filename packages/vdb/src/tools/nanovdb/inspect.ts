@@ -27,7 +27,7 @@ import {
   TREE_SIZE,
 } from "./bytes.js";
 
-export interface InspectReport {
+export interface VDBInspectReport {
   gridType: string;
   gridClass: string;
   voxelCount: number;
@@ -53,7 +53,7 @@ const GRID_CLASS_NAMES: Record<number, string> = {
 };
 
 /** Produces a structural + memory report for a NanoVDB grid image. */
-export function inspect(image: Uint32Array): InspectReport {
+export function vdbInspect(image: Uint32Array): VDBInspectReport {
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
 
   const gridTypeId = view.getUint32(GRID_OFF_GRID_TYPE, true);

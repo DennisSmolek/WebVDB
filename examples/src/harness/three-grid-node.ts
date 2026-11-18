@@ -21,7 +21,7 @@ import { StorageBufferAttribute, WebGPURenderer } from "three/webgpu";
 import { Fn, If, float, instanceIndex, ivec3, storage, uint } from "three/tsl";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, getDevice, vdbReadValue, vdbSample } from "@pmndrs/vdb/three";
-import { NanoVDBFile, probeCoords, probePoints, readValue, readValueF32, sampleTrilinear } from "@pmndrs/vdb/tools";
+import { NvdbFile, probeCoords, probePoints, vdbReadValueCpu, vdbReadValueF32, vdbSampleTrilinear } from "../../../packages/vdb/src/tools/internal.js";
 
 type Mode = 0 | 1 | 2; // read, sample index, sample world
 const MODE_NAMES = ["read", "sampleIndex", "sampleWorld"] as const;
@@ -36,7 +36,7 @@ interface ModeStats {
   count: number;
   maxAbs: number;
   exact: number;
-  /** Bit-exact against the f32 twin (read: `readValueF32`; sampleIndex: f32 taps + f32 lerps, see `f32Twin`); -1 = no f32 twin. */
+  /** Bit-exact against the f32 twin (read: `vdbReadValueF32`; sampleIndex: f32 taps + f32 lerps, see `f32Twin`); -1 = no f32 twin. */
   exactF32: number;
   bad: number;
   firstBad?: { i: number; gpu: number; cpu: number; at: number[] };
@@ -107,7 +107,7 @@ interface Probe {
 
 /**
  * f32 twin of the vendored trilinear (`sample_trilinear_typed`): taps through
- * `readValueF32`, `mix(a, b, t)` as `a + t * (b - a)`, each op rounded to f32.
+ * `vdbReadValueF32`, `mix(a, b, t)` as `a + t * (b - a)`, each op rounded to f32.
  * WGSL leaves mix's formula and FMA contraction to the implementation, so this
  * is diagnostic: exact on SwiftShader is the expectation, not the gate.
  */
@@ -115,7 +115,7 @@ function f32Twin(image: Uint32Array, xyz: V3): number {
   const f = Math.fround;
   const b = xyz.map(Math.floor) as V3;
   const u = xyz.map((v, k) => f(v - b[k]!)) as V3;
-  const c = (dx: number, dy: number, dz: number) => readValueF32(image, [b[0] + dx, b[1] + dy, b[2] + dz]);
+  const c = (dx: number, dy: number, dz: number) => vdbReadValueF32(image, [b[0] + dx, b[1] + dy, b[2] + dz]);
   const mix = (a: number, bb: number, t: number) => f(a + f(t * f(bb - a)));
   const x00 = mix(c(0, 0, 0), c(1, 0, 0), u[0]);
   const x10 = mix(c(0, 1, 0), c(1, 1, 0), u[0]);
@@ -130,15 +130,15 @@ function probesFor(pool: VDBGridPool, slot: number, id: number, image: Uint32Arr
   const bbox = { bboxMin: [...info.indexBBox.min] as V3, bboxMax: [...info.indexBBox.max] as V3 };
   const out: Probe[] = [];
   for (const ijk of probeCoords({ seed, count: PER_MODE, ...bbox })) {
-    out.push({ grid: slot, id, mode: 0, at: ijk, expected: Math.fround(readValue(image, ijk).value), f32: readValueF32(image, ijk) });
+    out.push({ grid: slot, id, mode: 0, at: ijk, expected: Math.fround(vdbReadValueCpu(image, ijk).value), f32: vdbReadValueF32(image, ijk) });
   }
   for (const p of probePoints({ seed: seed + 1n, count: PER_MODE, ...bbox })) {
     const at = fround3(p);
-    out.push({ grid: slot, id, mode: 1, at, expected: Math.fround(sampleTrilinear(image, at)), f32: f32Twin(image, at) });
+    out.push({ grid: slot, id, mode: 1, at, expected: Math.fround(vdbSampleTrilinear(image, at)), f32: f32Twin(image, at) });
   }
   for (const p of probePoints({ seed: seed + 2n, count: PER_MODE, ...bbox })) {
     const at = fround3(affine(info.indexToWorld, p));
-    out.push({ grid: slot, id, mode: 2, at, expected: Math.fround(sampleTrilinear(image, affine(info.worldToIndex, at))) });
+    out.push({ grid: slot, id, mode: 2, at, expected: Math.fround(vdbSampleTrilinear(image, affine(info.worldToIndex, at))) });
   }
   return out;
 }
@@ -198,7 +198,7 @@ async function run(result: Result): Promise<Result> {
   const files = await Promise.all(
     FIXTURES.map(async (name) => {
       const res = await fetch(`/fixtures/primitives/${name}.nvdb`);
-      return res.ok ? NanoVDBFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0) : null;
+      return res.ok ? NvdbFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0) : null;
     }),
   );
   const missing = FIXTURES.filter((_, k) => files[k] === null);

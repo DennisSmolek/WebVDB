@@ -10,6 +10,7 @@
  * meaning bumps {@link VDB_GPU_LAYOUT_VERSION} and is a breaking change (§1.8).
  */
 
+import type { VDBVec3 } from "../../tools/vdb/types.js";
 import { VDBError } from "../errors.js";
 
 /** Layout version written to header word 1 and baked into generated WGSL. */
@@ -112,8 +113,8 @@ export interface VDBPoolHeader {
   usedBytes: number;
 }
 
-/** A 3-vector of numbers. */
-export type VDBVec3 = [number, number, number];
+// One definition, shared with `@pmndrs/vdb/tools` (D32).
+export type { VDBVec3 };
 
 /**
  * Decoded grid record (§1.2). Affines hold the f32-rounded values the GPU sees;

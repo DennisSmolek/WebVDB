@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildFromDense,
+  vdbBuildFromDense,
   buildFromVdb,
-  inspect,
-  quantize,
-  transform,
+  vdbInspect,
+  vdbQuantize,
+  vdbTransform,
   writeNvdb,
 } from "../../src/tools/index.js";
 
@@ -13,15 +13,15 @@ import {
 // just guards the public barrel: everything is exported and callable.
 describe("@pmndrs/vdb/tools public barrel", () => {
   it("exports the v1 API as functions", () => {
-    for (const fn of [buildFromDense, writeNvdb, buildFromVdb, quantize, transform, inspect]) {
+    for (const fn of [vdbBuildFromDense, writeNvdb, buildFromVdb, vdbQuantize, vdbTransform, vdbInspect]) {
       expect(typeof fn).toBe("function");
     }
   });
 
   it("the v1 API validates its inputs instead of silently no-op'ing", () => {
     // Not a NanoVDB image -> a clear throw (not a Phase-5 stub message).
-    expect(() => inspect(new Uint32Array(8))).toThrow();
-    expect(() => quantize(new Uint32Array(8), "fp8")).toThrow();
+    expect(() => vdbInspect(new Uint32Array(8))).toThrow();
+    expect(() => vdbQuantize(new Uint32Array(8), "fp8")).toThrow();
     // buildFromVdb needs a grid with a transform.
     expect(() => buildFromVdb({} as never)).toThrow();
   });

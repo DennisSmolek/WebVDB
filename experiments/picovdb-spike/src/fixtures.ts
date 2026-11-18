@@ -17,8 +17,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { defineNumber } from "../../../packages/vdb/src/tools/cpu/stride-tables.js";
-import { NanoVDBFile } from "../../../packages/vdb/src/tools/nvdb-file.js";
-import { buildFromVdb, parseVdb, quantize, writeNvdb } from "../../../packages/vdb/src/tools/index.js";
+import { NvdbFile } from "../../../packages/vdb/src/tools/nvdb-file.js";
+import { buildFromVdb, parseVdb, vdbQuantize, writeNvdb } from "../../../packages/vdb/src/tools/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(here, "../../..");
@@ -59,7 +59,7 @@ export function samplesAvailable(): boolean {
 }
 
 function fromNvdb(id: string, kind: "fog" | "sdf", bytes: Uint8Array<ArrayBuffer>, fp8?: Uint8Array<ArrayBuffer>): Fixture {
-  const file = NanoVDBFile.fromArrayBuffer(bytes.buffer);
+  const file = NvdbFile.fromArrayBuffer(bytes.buffer);
   const meta = file.grids[0]!;
   const image = file.gridImage(0);
   const gridClassId = image[defineNumber("PNANOVDB_GRID_OFF_GRID_CLASS") >>> 2]!;
@@ -93,7 +93,7 @@ export function loadAll(): Fixture[] {
 
 /** Our TS Fp8 re-encode of the fixture's FLOAT grid (@pmndrs/vdb/tools `quantize`), as an .nvdb file. */
 export function tsFp8Nvdb(f: Fixture): Uint8Array<ArrayBuffer> {
-  return new Uint8Array(writeNvdb([quantize(f.image, "fp8")]));
+  return new Uint8Array(writeNvdb([vdbQuantize(f.image, "fp8")]));
 }
 
 /** File-safe stem for a fixture id. */

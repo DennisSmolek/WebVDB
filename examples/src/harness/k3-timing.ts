@@ -20,7 +20,7 @@ import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBSparseLod, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
-import { NanoVDBFile, buildFromVdb, nanoVdbToWvdb, parseVdb, readWvdb, vdbToWvdb, wvdbDenseToNanoVdb, wvdbDenseVolume, type WvdbDenseVolume } from "@pmndrs/vdb/tools";
+import { NvdbFile, buildFromVdb, nvdbToWvdb, parseVdb, readWvdb, vdbToWvdb, wvdbDenseToNvdb, wvdbDenseVolume, type WvdbDenseVolume } from "@pmndrs/vdb/tools";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 import { installPassTimer } from "./k3-pass-timer.js";
 
@@ -109,7 +109,7 @@ async function loadAsset(): Promise<Asset> {
   if (ASSET === "cloud04" || ASSET === "bunny") {
     const url = ASSET === "cloud04" ? cloudWvdbUrl : "/fixtures/k3/bunny_cloud.wvdb";
     const dense = wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(url))), { mipmaps: true });
-    const grid = sparse ? wvdbDenseToNanoVdb(dense) : null;
+    const grid = sparse ? wvdbDenseToNvdb(dense) : null;
     return { image: grid?.image ?? null, dense, ...(grid ? { indexBox: grid.textureIndexBox } : {}), ...(dense.bbox ? { bbox: dense.bbox as [Vec3, Vec3] } : {}) };
   }
   if (ASSET === "smoke") {
@@ -119,9 +119,9 @@ async function loadAsset(): Promise<Asset> {
     return { image: null, dense, ...(dense.bbox ? { bbox: dense.bbox as [Vec3, Vec3] } : {}) };
   }
   if (ASSET === "wdas") {
-    const image = NanoVDBFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0);
+    const image = NvdbFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0);
     if (sparse) return { image, dense: null };
-    const dense = wvdbDenseVolume(readWvdb(nanoVdbToWvdb(image, { resolution: DENSE_RES }).bytes), { mipmaps: true });
+    const dense = wvdbDenseVolume(readWvdb(nvdbToWvdb(image, { resolution: DENSE_RES }).bytes), { mipmaps: true });
     return { image: null, dense, ...(dense.bbox ? { bbox: dense.bbox as [Vec3, Vec3] } : {}) };
   }
   throw new Error(`unknown ?asset=${ASSET}`);

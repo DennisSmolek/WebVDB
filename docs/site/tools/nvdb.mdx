@@ -10,23 +10,23 @@ sourcecode: packages/vdb/src/tools/nvdb-file.ts
 
 ## Read
 
-`NanoVDBFile` parses a file with the NONE and ZIP codecs. A grid image decompressed from a zipped file is a copy; from
+`NvdbFile` parses a file with the NONE and ZIP codecs. A grid image decompressed from a zipped file is a copy; from
 an uncompressed one it may be a view of the source buffer (`isGridImageZeroCopy(i)`).
 
 {/* snippet: nvdb-read */}
 ```ts
-import { NanoVDBFile } from '@pmndrs/vdb/tools';
+import { NvdbFile } from '@pmndrs/vdb/tools';
 
-const file = await NanoVDBFile.fromURL(url); // or NanoVDBFile.fromArrayBuffer(bytes)
+const file = await NvdbFile.fromURL(url); // or NvdbFile.fromArrayBuffer(bytes)
 for (const meta of file.grids) console.log(meta.name, meta.gridType, meta.gridClass, meta.voxelSize);
 
 // The grid image is what VDBGridPool.add() takes, byte for byte. Float, Fp4, Fp8, Fp16 and FpN grids load.
 const image = file.gridImage(0); // decompressed when the file is zipped
 ```
 
-`NanoVDBFile` loads Float, Fp4, Fp8, Fp16 and FpN grids. It is the one reader: there is no separate `readNvdb`, so use
-`NanoVDBFile` for bytes you already hold (`fromArrayBuffer`, or `fromURL` for a fetch) and `readNvdbStream` for a stream.
-Native `nanovdb_convert` writes Float, Fp8 and FpN; `quantize(image, 'fp4' | 'fp16')` makes the other two.
+`NvdbFile` loads Float, Fp4, Fp8, Fp16 and FpN grids. It is the one reader: there is no separate `readNvdb`, so use
+`NvdbFile` for bytes you already hold (`fromArrayBuffer`, or `fromURL` for a fetch) and `readNvdbStream` for a stream.
+Native `nanovdb_convert` writes Float, Fp8 and FpN; `vdbQuantize(image, 'fp4' | 'fp16')` makes the other two.
 
 ## Write
 
@@ -55,17 +55,17 @@ bounded: `maxGridBytes` and `maxNameBytes` cap what a header may claim.
 
 ## Coarse-first
 
-`bakeCoarseFirst(source, options)` writes one `.nvdb` holding `[<name>.lod48, <name>]`: a coarse preview first, the
+`vdbBakeCoarseFirst(source, options)` writes one `.nvdb` holding `[<name>.lod48, <name>]`: a coarse preview first, the
 full grid after it. A reader that streams (`readNvdbStream`, or `vdbStreamCoarseFirst` in [three.js](/three/compute-and-streaming))
 shows the preview as soon as its bytes arrive, then swaps in the full grid. The preview filter defaults to
 `'trilinear'` (D26); keep `'box'` for thin or high-frequency data.
 
 {/* snippet: coarse-first-bake */}
 ```ts
-import { bakeCoarseFirst, nvdbLodName, parseNvdbLodName } from '@pmndrs/vdb/tools';
+import { vdbBakeCoarseFirst, nvdbLodName, parseNvdbLodName } from '@pmndrs/vdb/tools';
 
 // One .nvdb holding [<name>.lod48, <name>]: a coarse preview first, the full grid after it.
-const file = bakeCoarseFirst(image, { previewResolution: 48, quantize: 'fp8', fullQuantize: 'fpn', codec: 'zip' });
+const file = vdbBakeCoarseFirst(image, { previewResolution: 48, quantize: 'fp8', fullQuantize: 'fpn', codec: 'zip' });
 
 console.log(nvdbLodName('cloud', 48)); // the name of the preview grid
 console.log(parseNvdbLodName(nvdbLodName('cloud', 48))); // { baseName: 'cloud', lod: 48 }
@@ -73,20 +73,38 @@ console.log(parseNvdbLodName(nvdbLodName('cloud', 48))); // { baseName: 'cloud',
 
 ## CPU reads
 
-`readValue` and the sampling functions are the WGSL module's tree descent in TypeScript, so you can check GPU results
-or read voxels with no GPU. They take a grid image and **index-space** coordinates. `readValue` is the exact f64 decode;
-`readValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16 and FpN
-grids (and `readValueVec3` / `sampleTrilinearVec3` read Vec3f).
+`vdbReadValueCpu` and the sampling functions are the WGSL module's tree descent in TypeScript, so you can check GPU results
+or read voxels with no GPU. They take a grid image and **index-space** coordinates. `vdbReadValueCpu` is the exact f64 decode;
+`vdbReadValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16 and FpN
+grids (and `vdbReadValueVec3` / `vdbSampleTrilinearVec3` read Vec3f).
 
 {/* snippet: cpu-reads */}
 ```ts
-import { readValue, sampleTrilinear } from '@pmndrs/vdb/tools';
+import { vdbReadValueCpu, vdbSampleTrilinear } from '@pmndrs/vdb/tools';
 
 // The same tree descent as the WGSL module, in TypeScript: an oracle for GPU results, no GPU needed.
 // Index space: the integer coordinates are voxels. (Float, Fp4, Fp8, Fp16 and FpN grids.)
-console.log(readValue(image, [10, 20, 30])); // { value, active }
-console.log(sampleTrilinear(image, [10.5, 20.25, 30])); // continuous index-space sample
+console.log(vdbReadValueCpu(image, [10, 20, 30])); // { value, active }
+console.log(vdbSampleTrilinear(image, [10.5, 20.25, 30])); // continuous index-space sample
 ```
 
-Every WGSL entry point has a CPU twin in the same package, used as its test oracle: `hddaWalk`, `rayClip`, `nodeMax`,
-`gridStatsCpu`, `decodeToAtlasCpu` and, for the froxel renderer, the `vdbFrame*` functions.
+`vdbGridStatsCpu` and `vdbDecodeToAtlasCpu` are the CPU versions of the core's compute tools. Every WGSL entry point
+also has a CPU twin used as its test oracle (`hddaWalk`, `rayClip`, `nodeMax`, the frame renderer's passes); those live
+in the repository's tools internals (`src/tools/internal.ts`), not in the published API (D32).
+
+## Errors
+
+Every error `@pmndrs/vdb/tools` throws on bad input is a `VDBToolsError`, so one `instanceof` covers every format.
+Its `code` says what went wrong:
+
+| Class | `code` | When |
+| --- | --- | --- |
+| `VdbFormatError` | `VDB_BAD_VDB` | The bytes are not a valid `.vdb` (bad magic, truncated, corrupt). |
+| `NvdbFormatError` | `VDB_BAD_NVDB` | The bytes are not a valid `.nvdb` (from `NvdbFile` and the stream reader alike). |
+| `WvdbFormatError` | `VDB_BAD_WVDB` | The bytes break the `.wvdb` spec. |
+| `VDBUnsupportedError` | `VDB_UNSUPPORTED` | Valid data these tools don't handle (BLOSC `.nvdb`, a rotated map, ...). |
+| `VDBToolsError` | `VDB_BAD_OPTION` | An argument or option is out of range or inconsistent. |
+| `VDBToolsError` | `VDB_BAD_IMAGE` | A `Uint32Array` argument is not a NanoVDB grid image. |
+| `VDBToolsError` | `VDB_UNSUPPORTED_GRID_TYPE` | The operation doesn't take the grid's type (e.g. quantizing a Vec3f grid). |
+
+A failed `NvdbFile.fromURL` fetch is a plain `Error`: it is the network, not the input.

@@ -16,13 +16,13 @@
  * ## Frames: synthetic here, EmberGen on a network-open machine
  *
  * In-sandbox there is no EmberGen download, so frames are authored with the
- * project's own serializer (`frames.ts` -> `@pmndrs/vdb/tools.buildFromDense`). Two
+ * project's own serializer (`frames.ts` -> `@pmndrs/vdb/tools.vdbBuildFromDense`). Two
  * real loader paths are exercised:
  *
  *   - Interactive default: an in-memory `loader` override hands the sequence
  *     pre-built frame images (no fetch) — the fast path a memory-resident pack uses.
  *   - `?test=1`: frames are written to `.nvdb` and served as Blob URLs, read by
- *     the default loader (`NanoVDBFile.fromURL` fetch+parse).
+ *     the default loader (`NvdbFile.fromURL` fetch+parse).
  *   - EmberGen manifests resolve real fixture URLs.
  *
  * Pass `?src=embergen` to probe `/fixtures/embergen/<pack>/manifest.json`
@@ -52,7 +52,7 @@
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import { NvdbFile } from "@pmndrs/vdb/tools";
 import { VDBGridNode, VDBSequence, VDBVolumeMaterial, getDevice } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import type { VDBFrameLoader, VDBSequenceStats } from "@pmndrs/vdb/three";
@@ -347,7 +347,7 @@ function buildSyntheticFrames(): SyntheticFrames {
     const fileBuffer = writeNvdb([makeFrame(i)]);
     // Round-trip through the real loader so the in-memory path uses the same
     // bytes the fetch path produces.
-    const image = NanoVDBFile.fromArrayBuffer(fileBuffer).gridImage(0);
+    const image = NvdbFile.fromArrayBuffer(fileBuffer).gridImage(0);
     memImages.push(image);
     maxFrameBytes = Math.max(maxFrameBytes, image.byteLength);
     if (i < BLOB_FRAMES) {
@@ -464,7 +464,7 @@ async function runTest(frames: SyntheticFrames): Promise<void> {
   scene.add(domainMesh(material));
   placeCamera();
 
-  // Blob-URL manifest + DEFAULT loader => NanoVDBFile.fromURL fetch path runs.
+  // Blob-URL manifest + DEFAULT loader => NvdbFile.fromURL fetch path runs.
   sequence = new VDBSequence({
     urls: frames.blobUrls,
     fps: FPS,
@@ -593,7 +593,7 @@ async function runEmberGen(manifest: EmberGenManifest): Promise<void> {
 
   for (let index = 0; index < manifest.urls.length; index++) {
     const url = manifest.urls[index]!;
-    const file = await NanoVDBFile.fromURL(url);
+    const file = await NvdbFile.fromURL(url);
     const meta = file.grids[0];
     if (!meta) throw new Error(`EmberGen frame ${index} has no grid`);
     if (expectedGridType === undefined) expectedGridType = meta.gridType;

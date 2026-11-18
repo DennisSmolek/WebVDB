@@ -2,7 +2,7 @@
  * quantize (T3, Phase 5 wave 2) — FLOAT grid image -> Fp8 / FpN.
  *
  * Two oracles:
- *   1. Grids we build (`buildFromDense`): quantize, then read every voxel back
+ *   1. Grids we build (`vdbBuildFromDense`): quantize, then read every voxel back
  *      via the proven CPU reader (`read-value.ts`) and assert |Δ| ≤ the leaf's
  *      own quantum (read from the encoded leaf header).
  *   2. The native `sphere_fog_float.nvdb` fixture: re-encode to Fp8 and compare
@@ -19,9 +19,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { buildFromDense, inspect, quantize, quantizeDetailed } from "../../src/tools/index.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { NanoVDBFile } from "../../src/tools/nvdb-file.js";
+import { vdbBuildFromDense, vdbInspect, vdbQuantize, vdbQuantizeDetailed } from "../../src/tools/index.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { NvdbFile } from "../../src/tools/nvdb-file.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,7 +32,7 @@ function loadPrimitive(name: string): Uint32Array {
   const p = fileURLToPath(new URL(`../../../../fixtures/primitives/${name}`, import.meta.url));
   const buf = readFileSync(p);
   const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  return NanoVDBFile.fromArrayBuffer(ab).gridImage(0);
+  return NvdbFile.fromArrayBuffer(ab).gridImage(0);
 }
 
 interface Sidecar {
@@ -75,8 +75,8 @@ function radialRamp(dim: number): { values: Float32Array; dims: [number, number,
 describe("quantize — build FLOAT then round-trip within the per-leaf quantum", () => {
   it.each(["fp8", "fpn"] as const)("%s: every active voxel decodes within its leaf quantum", (mode) => {
     const { values, dims } = radialRamp(24);
-    const floatImg = buildFromDense(values, dims, { background: 0 });
-    const q = quantize(floatImg, mode);
+    const floatImg = vdbBuildFromDense(values, dims, { background: 0 });
+    const q = vdbQuantize(floatImg, mode);
 
     // Per-leaf quantum: for each 8^3 block compute (max-min)/((1<<bits)-1). For
     // fp8 bits=8; for fpn the encoder picked the width, but the source range
@@ -87,9 +87,9 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
       for (let y = 0; y < dims[1]; y++)
         for (let z = 0; z < dims[2]; z++) {
           const exact = values[(x * dims[1] + y) * dims[2] + z]!;
-          const src = readValue(floatImg, [x, y, z]);
+          const src = vdbReadValueCpu(floatImg, [x, y, z]);
           if (!src.active) continue; // only active voxels are asserted
-          const got = readValue(q, [x, y, z]);
+          const got = vdbReadValueCpu(q, [x, y, z]);
           expect(got.active).toBe(true);
           // The leaf quantum here is bounded by (leafMax-leafMin)/255 for fp8;
           // globally the ramp range is <=1 so quantum <= 1/255 for fp8. FpN picks
@@ -104,8 +104,8 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
 
   it("fp8 leaf header matches the native LeafFnBase layout (flags byte, mMinimum, mQuantum)", () => {
     const { values, dims } = radialRamp(16);
-    const floatImg = buildFromDense(values, dims, { background: 0 });
-    const q = quantize(floatImg, "fp8");
+    const floatImg = vdbBuildFromDense(values, dims, { background: 0 });
+    const q = vdbQuantize(floatImg, "fp8");
     const v = new DataView(q.buffer, q.byteOffset, q.byteLength);
     const treeOff = 672;
     const leafOff = treeOff + Number(v.getBigUint64(treeOff, true));
@@ -125,14 +125,14 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFp8 = loadPrimitive("sphere_fog_fp8.nvdb");
-    const myFp8 = quantize(floatImg, "fp8");
+    const myFp8 = vdbQuantize(floatImg, "fp8");
     const sidecar = loadSidecar("sphere_fog_fp8.sidecar.json");
 
     let maxVsNative = 0;
     let activeMismatch = 0;
     for (const s of sidecar.samples) {
-      const mine = readValue(myFp8, s.ijk);
-      const nat = readValue(nativeFp8, s.ijk);
+      const mine = vdbReadValueCpu(myFp8, s.ijk);
+      const nat = vdbReadValueCpu(nativeFp8, s.ijk);
       maxVsNative = Math.max(maxVsNative, Math.abs(mine.value - nat.value));
       if (mine.active !== nat.active) activeMismatch++;
     }
@@ -140,8 +140,8 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     expect(maxVsNative).toBe(0);
     expect(activeMismatch).toBe(0);
     // Active-voxel count and topology are preserved (active tiles stay tiles).
-    expect(inspect(myFp8).voxelCount).toBe(inspect(floatImg).voxelCount);
-    expect(inspect(myFp8).nodeCounts).toEqual(inspect(floatImg).nodeCounts);
+    expect(vdbInspect(myFp8).voxelCount).toBe(vdbInspect(floatImg).voxelCount);
+    expect(vdbInspect(myFp8).nodeCounts).toEqual(vdbInspect(floatImg).nodeCounts);
     },
   );
 
@@ -150,7 +150,7 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     () => {
     const floatImg = loadPrimitive("sphere_fog_float.nvdb");
     const nativeFpn = loadPrimitive("sphere_fog_fpn.nvdb");
-    const myFpn = quantizeDetailed(floatImg, "fpn").image;
+    const myFpn = vdbQuantizeDetailed(floatImg, "fpn").image;
 
     const dist = (img: Uint32Array): Record<number, number> => {
       const v = new DataView(img.buffer, img.byteOffset, img.byteLength);
@@ -175,12 +175,12 @@ describe("quantize — build FLOAT then round-trip within the per-leaf quantum",
     // The FpN image is self-consistent: cumulative variable-size leaves reach
     // exactly mGridSize.
     const v = new DataView(myFpn.buffer, myFpn.byteOffset, myFpn.byteLength);
-    expect(inspect(myFpn).memoryBreakdown.total).toBe(Number(v.getBigUint64(32, true)));
+    expect(vdbInspect(myFpn).memoryBreakdown.total).toBe(Number(v.getBigUint64(32, true)));
     },
   );
 
   it.skipIf(!nativeFixturesPresent)("throws clearly when the source grid is not FLOAT", () => {
     const fp8 = loadPrimitive("sphere_fog_fp8.nvdb");
-    expect(() => quantize(fp8, "fp8")).toThrowError(/not FLOAT|float grids only/i);
+    expect(() => vdbQuantize(fp8, "fp8")).toThrowError(/not FLOAT|float grids only/i);
   });
 });

@@ -1,7 +1,7 @@
 /**
  * K4.21 harness: `.wvdb` bake sampling A/B (`sampling: 'nearest'` vs `'box'`), image metric only (D25).
  *
- * For each volume the page bakes the sparse NanoVDB grid to `.wvdb` in memory (`nanoVdbToWvdb`) with both
+ * For each volume the page bakes the sparse NanoVDB grid to `.wvdb` in memory (`nvdbToWvdb`) with both
  * samplings at each resolution, reads each file back and renders it through the K3.0 dense source
  * (`wvdbDenseVolume` -> `vdbDenseTextures` -> `vdbVolumeNodes`, no mip atlas, `clamp01` texels) with the K3 harness's
  * emission-absorption march. Two references from the same two camera poses:
@@ -21,7 +21,7 @@ import { NodeMaterial, type WebGPURenderer } from "three/webgpu";
 import { Fn, Loop, cameraPosition, clamp, exp, float, length, modelWorldMatrix, modelWorldMatrixInverse, positionLocal, uniform, vec3, vec4 } from "three/tsl";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBVolumeMaterial, vdbDenseTextures, vdbProxyGeometry, vdbSample, vdbVolumeNodes, vdbVolumeUniforms } from "@pmndrs/vdb/three";
-import { NanoVDBFile, buildFromVdb, nanoVdbToWvdb, parseVdb, readWvdb, wvdbDenseVolume, type WvdbSampling } from "@pmndrs/vdb/tools";
+import { NvdbFile, buildFromVdb, nvdbToWvdb, parseVdb, readWvdb, wvdbDenseVolume, type WvdbSampling } from "@pmndrs/vdb/tools";
 import { createDeviceRenderer } from "../demos/device-renderer";
 
 // The K3 frame files take TSL through untyped nodes (three r187's typings reject most shader code).
@@ -116,7 +116,7 @@ async function loadSource(spec: Spec): Promise<Uint32Array | null> {
     if (!grid) throw new Error(`${spec.url}: no float grid`);
     return buildFromVdb(grid);
   }
-  return NanoVDBFile.fromArrayBuffer(buf).gridImage(0);
+  return NvdbFile.fromArrayBuffer(buf).gridImage(0);
 }
 
 interface Frame {
@@ -168,7 +168,7 @@ async function run(): Promise<void> {
     const baked: { key: string; sampling: WvdbSampling; resolution: number; fileBytes: number; header: { meanDensity?: number; nonZeroVoxels?: number }; volume: ReturnType<typeof wvdbDenseVolume> }[] = [];
     for (const resolution of RESOLUTIONS) {
       for (const sampling of SAMPLINGS) {
-        const out = nanoVdbToWvdb(source, { resolution, sampling });
+        const out = nvdbToWvdb(source, { resolution, sampling });
         const file = readWvdb(out.bytes);
         const volume = wvdbDenseVolume(file, { mipmaps: false });
         const h = out.header as unknown as { grids?: { meanDensity?: number; nonZeroVoxels?: number }[] };

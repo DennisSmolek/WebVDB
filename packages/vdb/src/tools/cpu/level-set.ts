@@ -15,7 +15,7 @@
  * NanoVDB tree at full resolution, HDDA skip, bisection, normals through the
  * grid affine (DIVERGES.md).
  */
-import { getDim, hddaInit, hddaStep, hddaUpdate, indexBBox, readValueF32, type Hdda, type Vec3 } from "./march.js";
+import { getDim, hddaInit, hddaStep, hddaUpdate, indexBBox, vdbReadValueF32, type Hdda, type Vec3 } from "./march.js";
 
 const f = Math.fround;
 
@@ -41,7 +41,7 @@ export interface LevelSetHit {
 
 /**
  * f32 trilinear sample with the vendored tap order: taps through
- * `readValueF32`, `mix(a, b, t)` as `a + t * (b - a)`, each op rounded.
+ * `vdbReadValueF32`, `mix(a, b, t)` as `a + t * (b - a)`, each op rounded.
  */
 export function sampleTrilinearF32(gridWords: Uint32Array, xyz: readonly number[]): number {
   const bx = Math.floor(xyz[0]!);
@@ -50,7 +50,7 @@ export function sampleTrilinearF32(gridWords: Uint32Array, xyz: readonly number[
   const u = f(xyz[0]! - bx);
   const v = f(xyz[1]! - by);
   const w = f(xyz[2]! - bz);
-  const c = (dx: number, dy: number, dz: number) => readValueF32(gridWords, [bx + dx, by + dy, bz + dz]);
+  const c = (dx: number, dy: number, dz: number) => vdbReadValueF32(gridWords, [bx + dx, by + dy, bz + dz]);
   const mix = (a: number, b: number, t: number) => f(a + f(t * f(b - a)));
   const x00 = mix(c(0, 0, 0), c(1, 0, 0), u);
   const x10 = mix(c(0, 1, 0), c(1, 1, 0), u);
@@ -66,7 +66,7 @@ function skipCell(gridWords: Uint32Array, c: Vec3, dim: number): boolean {
   for (let k = 0; k < 8; k++) {
     const p: Vec3 = [c[0] + (k & 1) * dim, c[1] + ((k >> 1) & 1) * dim, c[2] + ((k >> 2) & 1) * dim];
     if (getDim(gridWords, p) < dim) return false;
-    if (!(readValueF32(gridWords, p) > 0)) return false;
+    if (!(vdbReadValueF32(gridWords, p) > 0)) return false;
   }
   return true;
 }
@@ -204,7 +204,7 @@ export function levelSetHit(
 /**
  * Brute-force oracle for {@link levelSetHit}: a fixed-step march (`step`
  * voxels, default 0.125) through the whole support-box interval with no
- * skipping and no sphere steps (f64 trilinear through `readValueF32` taps),
+ * skipping and no sphere steps (f64 trilinear through `vdbReadValueF32` taps),
  * then the same bisection + secant refinement in f64. Slow; for tests.
  */
 export function levelSetHitReference(
@@ -225,7 +225,7 @@ export function levelSetHitReference(
     const p = [o[0] + d[0] * tt, o[1] + d[1] * tt, o[2] + d[2] * tt];
     const b = p.map(Math.floor) as Vec3;
     const u = [p[0]! - b[0], p[1]! - b[1], p[2]! - b[2]];
-    const tap = (dx: number, dy: number, dz: number) => readValueF32(gridWords, [b[0] + dx, b[1] + dy, b[2] + dz]);
+    const tap = (dx: number, dy: number, dz: number) => vdbReadValueF32(gridWords, [b[0] + dx, b[1] + dy, b[2] + dz]);
     const l = (a: number, bb: number, s: number) => a + (bb - a) * s;
     return l(
       l(l(tap(0, 0, 0), tap(1, 0, 0), u[0]!), l(tap(0, 1, 0), tap(1, 1, 0), u[0]!), u[1]!),

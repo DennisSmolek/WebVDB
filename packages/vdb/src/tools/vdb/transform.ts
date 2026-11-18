@@ -11,11 +11,11 @@
  * Rotated/sheared maps (`UnitaryMap`, `NonlinearFrustumMap`, general 4x4
  * `AffineMap`) are out of scope (per the Phase 3 handoff's note that
  * `NanoVDBGrid.indexToWorld()` is axis-aligned-only today) and raise
- * `VdbUnsupportedError`.
+ * `VDBUnsupportedError`.
  */
 
 import type { ByteReader } from "./byte-reader.js";
-import { VdbUnsupportedError } from "./errors.js";
+import { VDBUnsupportedError } from "./errors.js";
 
 export interface VdbTransform {
   type: string;
@@ -68,7 +68,7 @@ export function readTransform(reader: ByteReader): VdbTransform {
     return { type: mapType, matrix: toMatrix([1, 1, 1], translation), voxelSize: [1, 1, 1] };
   }
 
-  throw new VdbUnsupportedError(
+  throw new VDBUnsupportedError(
     `transform map type "${mapType}" (only Uniform/ScaleTranslateMap, Uniform/ScaleMap, TranslationMap are supported — rotated/sheared/frustum maps need the loader to surface the raw Map, per the Phase 3 handoff)`,
   );
 }

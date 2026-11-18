@@ -31,6 +31,7 @@
  *   pnanovdb_leaf_fp_read_float, pnanovdb_leaf_fp8_read_float,
  *   pnanovdb_leaf_fpn_read_float.
  */
+import { VDBToolsError } from "../errors.js";
 import {
   defineBigInt,
   defineNumber,
@@ -39,7 +40,7 @@ import {
   type GridTypeConstants,
 } from "./stride-tables.js";
 
-export interface ReadResult {
+export interface VDBReadResult {
   value: number;
   active: boolean;
 }
@@ -224,10 +225,10 @@ function gridTypeNameFor(id: number): SupportedGridTypeName {
     if (gridTypeIds[name] === id) return name;
   }
   const knownName = Object.entries(gridTypeIds).find(([, v]) => v === id)?.[0];
-  throw new Error(
+  throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
     `readValue: unsupported grid type ${id}${knownName ? ` (${knownName})` : ""}; ` +
       `only FLOAT (${gridTypeIds.FLOAT}), FP4 (${gridTypeIds.FP4}), FP8 (${gridTypeIds.FP8}), FP16 (${gridTypeIds.FP16}) and FPN (${gridTypeIds.FPN}) are implemented` +
-      (knownName === "VEC3F" ? "; use readValueVec3 for VEC3F grids" : ""),
+      (knownName === "VEC3F" ? "; use vdbReadValueVec3 for VEC3F grids" : ""),
   );
 }
 
@@ -344,7 +345,7 @@ function descendRoot(
 function checkMagic(gridWords: Uint32Array, fn: string): void {
   const magic = readU64(gridWords, GRID_OFF_MAGIC);
   if (magic !== MAGIC_GRID) {
-    throw new Error(
+    throw new VDBToolsError("VDB_BAD_IMAGE", 
       `${fn}: invalid NanoVDB grid magic 0x${magic.toString(16)} ` +
         `(expected 0x${MAGIC_GRID.toString(16)}); gridWords does not start at a GridData block`,
     );
@@ -357,11 +358,11 @@ function checkMagic(gridWords: Uint32Array, fn: string): void {
  * and FPN (16); throws for anything else.
  *
  * The value is the exact f64 decode (ground truth). It is NOT the GPU's
- * evaluation order: `readValueF32` (CPU twin of `vdbReadValue`) matches the
+ * evaluation order: `vdbReadValueF32` (CPU twin of `vdbReadValue`) matches the
  * shader's f32 arithmetic, and the two can differ by 1 ulp (f32) on Fp grids.
- * Use `readValueF32` as the oracle for GPU parity.
+ * Use `vdbReadValueF32` as the oracle for GPU parity.
  */
-export function readValue(gridWords: Uint32Array, ijk: [number, number, number]): ReadResult {
+export function vdbReadValueCpu(gridWords: Uint32Array, ijk: [number, number, number]): VDBReadResult {
   checkMagic(gridWords, "readValue");
 
   const gridTypeId = readU32(gridWords, GRID_OFF_GRID_TYPE);
@@ -415,24 +416,24 @@ export function readLeafQuantum(gridWords: Uint32Array, ijk: [number, number, nu
   return readF32(gridWords, resolved.valueAddress - LEAF_TABLE_NEG_OFF_QUANTUM);
 }
 
-export interface ReadVec3Result {
+export interface VDBReadVec3Result {
   value: [number, number, number];
   active: boolean;
 }
 
 /**
  * Looks up voxel `ijk` in a NanoVDB VEC3F (6) grid image: the same root ->
- * upper -> lower -> leaf descent as {@link readValue} with the VEC3F layout
+ * upper -> lower -> leaf descent as {@link vdbReadValueCpu} with the VEC3F layout
  * constants, then 3 f32 at the resolved address (`pnanovdb_read_vec3f`).
  * Throws for any other grid type.
  */
-export function readValueVec3(gridWords: Uint32Array, ijk: [number, number, number]): ReadVec3Result {
-  checkMagic(gridWords, "readValueVec3");
+export function vdbReadValueVec3(gridWords: Uint32Array, ijk: [number, number, number]): VDBReadVec3Result {
+  checkMagic(gridWords, "vdbReadValueVec3");
   const gridTypeId = readU32(gridWords, GRID_OFF_GRID_TYPE);
   if (gridTypeId !== gridTypeIds.VEC3F) {
     const knownName = Object.entries(gridTypeIds).find(([, v]) => v === gridTypeId)?.[0];
-    throw new Error(
-      `readValueVec3: grid type ${gridTypeId}${knownName ? ` (${knownName})` : ""} is not VEC3F (${gridTypeIds.VEC3F})`,
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
+      `vdbReadValueVec3: grid type ${gridTypeId}${knownName ? ` (${knownName})` : ""} is not VEC3F (${gridTypeIds.VEC3F})`,
     );
   }
   const gt = gridTypeConstantsFor("VEC3F");

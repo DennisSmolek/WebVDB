@@ -1,7 +1,7 @@
 /**
  * serialize.ts — lays a {@link BuiltTree} out into a complete, valid NanoVDB
  * FLOAT grid image (a flat little-endian u32 array), and the public
- * `buildFromDense` entry point.
+ * `vdbBuildFromDense` entry point.
  *
  * ## Memory layout (32-byte aligned throughout)
  *
@@ -29,7 +29,7 @@
  * This wave's correctness bar is *value* parity through the repo's proven CPU
  * (`read-value.ts`) and WGSL readers, plus structural conformance, NOT byte
  * identity with `nanovdb_convert`. Three things differ from a native encode and
- * are intentionally out of scope here: (a) tile topology: `buildFromDense`
+ * are intentionally out of scope here: (a) tile topology: `vdbBuildFromDense`
  * collapses uniform regions into tiles (K4.6, `collapse`), and the leaf path
  * keeps the source's tiles as they are (K4.1), (b) the real Full/Partial CRC checksum (we write the
  * "disabled" sentinel — see bytes.ts), and (c) native's trailing grid padding.
@@ -37,6 +37,7 @@
  * reader returns.
  */
 
+import { VDBToolsError } from "../errors.js";
 import {
   CHECKSUM_DISABLED,
   GRID_CLASS_FOG_VOLUME,
@@ -102,7 +103,7 @@ import {
   UPPER_TABLE_COUNT,
   VERSION_PACKED,
 } from "./bytes.js";
-import { FLOAT_LEAF_CODEC, type LeafCodec, writeVec3StatsBlock } from "./leaf-codec.js";
+import { VDB_FLOAT_LEAF_CODEC, type VDBLeafCodec, writeVec3StatsBlock } from "./leaf-codec.js";
 import { StatsAccumulator } from "./stats.js";
 import {
   buildTree,
@@ -115,7 +116,7 @@ import {
   type UpperNode,
 } from "./tree.js";
 
-export interface BuildFromDenseOptions {
+export interface VDBBuildFromDenseOptions {
   /** Index-space min corner of the dense block. Default [0,0,0]. */
   origin?: [number, number, number];
   /** Uniform voxel size in world units. Default 1. */
@@ -147,13 +148,13 @@ export interface BuildFromDenseOptions {
 export type GridClassName = "FogVolume" | "LevelSet" | "Staggered" | "Unknown";
 
 /** Result of a build, exposing metadata alongside the raw image. */
-export interface BuiltGrid {
+export interface VDBBuiltGrid {
   image: Uint32Array;
   gridName: string;
   voxelCount: number;
   indexBBox: { min: [number, number, number]; max: [number, number, number] };
   worldBBox: { min: [number, number, number]; max: [number, number, number] };
-  /** Voxel size along x: the voxel size of a uniform grid. See {@link BuiltGrid.voxelSizeXYZ} for all three. */
+  /** Voxel size along x: the voxel size of a uniform grid. See {@link VDBBuiltGrid.voxelSizeXYZ} for all three. */
   voxelSize: number;
   /** Voxel size per axis (equal for a uniform grid; an anisotropic grid has a diagonal, non-uniform Map). */
   voxelSizeXYZ: [number, number, number];
@@ -173,27 +174,27 @@ const GRID_CLASS_ID: Record<GridClassName, number> = {
  * Builds a complete FLOAT NanoVDB grid image from a dense array of shape
  * `[nx,ny,nz]` (x-major: idx = (x*ny + y)*nz + z).
  */
-export function buildFromDense(
+export function vdbBuildFromDense(
   values: Float32Array,
   dims: [number, number, number],
-  opts: BuildFromDenseOptions = {},
+  opts: VDBBuildFromDenseOptions = {},
 ): Uint32Array {
-  return buildFromDenseDetailed(values, dims, opts).image;
+  return vdbBuildFromDenseDetailed(values, dims, opts).image;
 }
 
-/** As `buildFromDense`, but also returns computed metadata (used by writeNvdb). */
-export function buildFromDenseDetailed(
+/** As `vdbBuildFromDense`, but also returns computed metadata (used by writeNvdb). */
+export function vdbBuildFromDenseDetailed(
   values: Float32Array,
   dims: [number, number, number],
-  opts: BuildFromDenseOptions = {},
-): BuiltGrid {
+  opts: VDBBuildFromDenseOptions = {},
+): VDBBuiltGrid {
   const [nx, ny, nz] = dims;
   if (nx < 0 || ny < 0 || nz < 0 || !Number.isInteger(nx) || !Number.isInteger(ny) || !Number.isInteger(nz)) {
-    throw new Error(`buildFromDense: dims must be non-negative integers, got [${nx},${ny},${nz}]`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `vdbBuildFromDense: dims must be non-negative integers, got [${nx},${ny},${nz}]`);
   }
   if (values.length !== nx * ny * nz) {
-    throw new Error(
-      `buildFromDense: values.length ${values.length} !== nx*ny*nz (${nx}*${ny}*${nz} = ${nx * ny * nz})`,
+    throw new VDBToolsError("VDB_BAD_OPTION", 
+      `vdbBuildFromDense: values.length ${values.length} !== nx*ny*nz (${nx}*${ny}*${nz} = ${nx * ny * nz})`,
     );
   }
 
@@ -207,13 +208,13 @@ export function buildFromDenseDetailed(
 
   const nameBytes = new TextEncoder().encode(gridName);
   if (nameBytes.length + 1 > GRID_NAME_MAX) {
-    throw new Error(
-      `buildFromDense: gridName is ${nameBytes.length} bytes; must be < ${GRID_NAME_MAX} (incl. NUL). ` +
+    throw new VDBToolsError("VDB_BAD_OPTION", 
+      `vdbBuildFromDense: gridName is ${nameBytes.length} bytes; must be < ${GRID_NAME_MAX} (incl. NUL). ` +
         `Long grid names (HasLongGridName + blind metadata) are not supported in v1.`,
     );
   }
 
-  const codec = FLOAT_LEAF_CODEC;
+  const codec = VDB_FLOAT_LEAF_CODEC;
   const tree = buildTree(values, dims, {
     origin,
     background,
@@ -248,7 +249,7 @@ export function buildFromDenseDetailed(
   };
 }
 
-export interface BuildFromLeavesOptions {
+export interface VDBBuildFromLeavesOptions {
   /**
    * Voxel size in world units: a number (uniform), or `[x, y, z]` for an
    * anisotropic, axis-aligned Map (diagonal scale). Default 1.
@@ -280,24 +281,24 @@ export interface BuildFromLeavesOptions {
 /**
  * Builds a complete NanoVDB grid image from an iterator of already-materialised
  * leaves (each carrying its 8-aligned origin, all 512 values and a 512-bit value
- * mask), using the given {@link LeafCodec}. This is the memory-frugal path —
+ * mask), using the given {@link VDBLeafCodec}. This is the memory-frugal path —
  * leaves stream in, no dense array is ever allocated — that backs `buildFromVdb`
  * (parser leaves -> FLOAT) and `quantize` (an existing grid's leaves -> Fp8/FpN).
  */
-export function buildFromLeavesDetailed(
+export function vdbBuildFromLeavesDetailed(
   leaves: Iterable<LeafInput>,
-  codec: LeafCodec,
-  opts: BuildFromLeavesOptions = {},
-): BuiltGrid {
+  codec: VDBLeafCodec,
+  opts: VDBBuildFromLeavesOptions = {},
+): VDBBuiltGrid {
   const vs = opts.voxelSize ?? 1;
   const voxelSizeXYZ: [number, number, number] = typeof vs === "number" ? [vs, vs, vs] : [vs[0], vs[1], vs[2]];
   if (!voxelSizeXYZ.every((v) => Number.isFinite(v) && v > 0)) {
-    throw new Error(`buildFromLeaves: voxelSize must be positive and finite, got ${JSON.stringify(vs)}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: voxelSize must be positive and finite, got ${JSON.stringify(vs)}`);
   }
   const components = codec.components ?? 1;
   const background: TileValue = opts.background ?? (components === 3 ? [0, 0, 0] : 0);
   if ((typeof background === "number") !== (components === 1)) {
-    throw new Error(`buildFromLeaves: background must have ${components} component(s) for this codec`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: background must have ${components} component(s) for this codec`);
   }
   const gridName = opts.gridName ?? "grid";
   const gridClassId = GRID_CLASS_ID[opts.gridClass ?? "FogVolume"];
@@ -305,7 +306,7 @@ export function buildFromLeavesDetailed(
 
   const nameBytes = new TextEncoder().encode(gridName);
   if (nameBytes.length + 1 > GRID_NAME_MAX) {
-    throw new Error(
+    throw new VDBToolsError("VDB_BAD_OPTION", 
       `buildFromLeaves: gridName is ${nameBytes.length} bytes; must be < ${GRID_NAME_MAX} (incl. NUL). ` +
         `Long grid names (HasLongGridName + blind metadata) are not supported in v1.`,
     );
@@ -348,7 +349,7 @@ interface LayoutParams {
   background: TileValue;
 }
 
-function layoutGrid(tree: BuiltTree, codec: LeafCodec, p: LayoutParams): Uint32Array {
+function layoutGrid(tree: BuiltTree, codec: VDBLeafCodec, p: LayoutParams): Uint32Array {
   const L = codec.layout;
   const nTiles = tree.rootTiles.length;
   const nUpper = tree.uppers.length;
@@ -472,7 +473,7 @@ interface InternalNodeWriteParams {
   offAve: number;
   offStdDev: number;
   background: TileValue;
-  codec: LeafCodec;
+  codec: VDBLeafCodec;
   /** Absolute byte offset of child with the given memIndex. */
   childAbs: (memIndex: number) => number;
 }
@@ -520,7 +521,7 @@ function writeInternalNode(
 
 function writeStats(
   w: GridImageWriter,
-  codec: LeafCodec,
+  codec: VDBLeafCodec,
   base: number,
   offMin: number,
   offMax: number,
@@ -541,7 +542,7 @@ function writeStats(
 function writeGridData(
   w: GridImageWriter,
   tree: BuiltTree,
-  codec: LeafCodec,
+  codec: VDBLeafCodec,
   p: LayoutParams,
   total: number,
 ): void {

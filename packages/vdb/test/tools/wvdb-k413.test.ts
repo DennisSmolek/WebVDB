@@ -1,6 +1,6 @@
 /**
  * K4.13 `.wvdb` follow-ups:
- *  (a) `levelSetSampler: 'mjurczyk'` (his `sampleLevelSet`) reproduces his
+ *  (a) `levelSetSampler: 'surface-mean'` (his `sampleLevelSet`) reproduces his
  *      committed level-set files (utahteapot from a digest + our pinned
  *      sample; venusstatue from his checkout via MJURCZYK_OPENVDB_DIR);
  *  (b) the stream reader decodes page by page with bounded memory and can emit
@@ -18,29 +18,29 @@ import {
   WvdbFormatError,
   WvdbStreamReader,
   bakeWvdb,
-  buildFromLeavesDetailed,
+  vdbBuildFromLeavesDetailed,
   buildFromVdb,
-  nanoVdbToWvdb,
+  nvdbToWvdb,
   parseVdb,
-  readValue,
+  vdbReadValueCpu,
   readWvdb,
   readWvdbHeader,
-  resampleDense,
+  vdbResampleDense,
   sampleWvdbDense,
   sampleWvdbDenseBox,
-  sampleWvdbLevelSetMjurczyk,
+  sampleWvdbLevelSetSurfaceMean,
   vdbToWvdb,
   wvdbChunkByteLimit,
   wvdbChunks,
-  wvdbSourceFromNanoVdb,
+  wvdbSourceFromNvdb,
   wvdbSourceFromVdbGrid,
   writeWvdb,
   type WvdbLodEvent,
   type WvdbPointsGrid,
   type WvdbVolumeGrid,
   type WvdbVolumeLevel,
-} from "../../src/tools/index.js";
-import { FLOAT_LEAF_CODEC } from "../../src/tools/nanovdb/leaf-codec.js";
+} from "../../src/tools/internal.js";
+import { VDB_FLOAT_LEAF_CODEC } from "../../src/tools/nanovdb/leaf-codec.js";
 import type { LeafInput } from "../../src/tools/nanovdb/tree.js";
 import { WVDB_FIXTURES, bytesEqual, fixture, headerWithoutOffsets, hisAsset, readBytes, vdbSample } from "./wvdb-helpers.js";
 
@@ -73,18 +73,18 @@ function sphereLevelSet(r: number, b: number, n: number): Uint32Array {
       }
     }
   }
-  return buildFromLeavesDetailed(leaves, FLOAT_LEAF_CODEC, { background: b, gridClass: "LevelSet", gridName: "ls", voxelSize: 0.5 }).image;
+  return vdbBuildFromLeavesDetailed(leaves, VDB_FLOAT_LEAF_CODEC, { background: b, gridClass: "LevelSet", gridName: "ls", voxelSize: 0.5 }).image;
 }
 
-describe("levelSetSampler 'mjurczyk' (his sampleLevelSet)", () => {
+describe("levelSetSampler 'surface-mean' (his sampleLevelSet)", () => {
   const b = 1.5; // 3 voxels of 0.5
   const image = sphereLevelSet(10, b, 32);
-  const source = wvdbSourceFromNanoVdb(image);
+  const source = wvdbSourceFromNvdb(image);
   const box = source.bbox!;
 
   it("stays in [-b, b], keeps |v| < b one step inside the band, and is ±b far from the surface", () => {
     for (const dims of [[16, 16, 16], [64, 64, 64]] as Vec3[]) {
-      const v = sampleWvdbLevelSetMjurczyk(source, box, dims, 8);
+      const v = sampleWvdbLevelSetSurfaceMean(source, box, dims, 8);
       const band = b - (2 * b) / 255;
       let inside = 0;
       let outside = 0;
@@ -101,11 +101,11 @@ describe("levelSetSampler 'mjurczyk' (his sampleLevelSet)", () => {
 
   it("texels finer than a voxel are a trilinear sample of the clamped distance at the texel centre", () => {
     const dims: Vec3 = [64, 64, 64]; // texel 0.5 voxel: no 4x4x4 filter
-    const v = sampleWvdbLevelSetMjurczyk(source, box, dims, 16);
+    const v = sampleWvdbLevelSetSurfaceMean(source, box, dims, 16);
     const min = box[0];
     const size = [0, 1, 2].map((a) => box[1][a]! - min[a]!);
     const dist = (ijk: Vec3): number => {
-      const r = readValue(image, ijk.map(Math.round) as Vec3);
+      const r = vdbReadValueCpu(image, ijk.map(Math.round) as Vec3);
       return r.active ? Math.min(Math.max(r.value, -b), b) : r.value < 0 ? -b : b;
     };
     let checked = 0;
@@ -136,7 +136,7 @@ describe("levelSetSampler 'mjurczyk' (his sampleLevelSet)", () => {
 
   it("texels coarser than a voxel that cross the surface are the mean of 4x4x4 sub-samples", () => {
     const dims: Vec3 = [8, 8, 8]; // ~2.5 voxels per texel
-    const v = sampleWvdbLevelSetMjurczyk(source, box, dims, 16);
+    const v = sampleWvdbLevelSetSurfaceMean(source, box, dims, 16);
     const spec = sampleWvdbDense(source, box, dims, 16);
     // Crossing texels are smooth means; the spec point sample only sees in/out there.
     let differ = 0;
@@ -146,21 +146,21 @@ describe("levelSetSampler 'mjurczyk' (his sampleLevelSet)", () => {
     expect(v[4 + 4 * 8 + 4 * 64]).toBe(-b);
   });
 
-  it("bakeWvdb: 'spec' stays the default; 'mjurczyk' only changes level sets", () => {
-    const a = nanoVdbToWvdb(image, { compress: identity, resolution: 32 });
-    const s = nanoVdbToWvdb(image, { compress: identity, resolution: 32, levelSetSampler: "spec" });
-    const m = nanoVdbToWvdb(image, { compress: identity, resolution: 32, levelSetSampler: "mjurczyk" });
+  it("bakeWvdb: 'spec' stays the default; 'surface-mean' only changes level sets", () => {
+    const a = nvdbToWvdb(image, { compress: identity, resolution: 32 });
+    const s = nvdbToWvdb(image, { compress: identity, resolution: 32, levelSetSampler: "spec" });
+    const m = nvdbToWvdb(image, { compress: identity, resolution: 32, levelSetSampler: "surface-mean" });
     expect(bytesEqual(a.bytes, s.bytes)).toBe(true);
     expect(bytesEqual(a.bytes, m.bytes)).toBe(false);
-    expect(() => nanoVdbToWvdb(image, { levelSetSampler: "x" as "spec" })).toThrow(/levelSetSampler/);
+    expect(() => nvdbToWvdb(image, { levelSetSampler: "x" as "spec" })).toThrow(/levelSetSampler/);
     const noIndex = { ...source, index: undefined };
-    expect(() => bakeWvdb([noIndex], { levelSetSampler: "mjurczyk", resolution: 8 })).toThrow(/index access/);
+    expect(() => bakeWvdb([noIndex], { levelSetSampler: "surface-mean", resolution: 8 })).toThrow(/index access/);
   });
 });
 
-/** His level-set files: inflated chunks and header (offsets zeroed) of our 'mjurczyk' bake vs his. */
+/** His level-set files: inflated chunks and header (offsets zeroed) of our 'surface-mean' bake vs his. */
 function expectReproduces(vdbBytes: Uint8Array, fileName: string, his: { header: unknown; chunks: { inflatedBytes: number; inflatedSha256: string }[] }): void {
-  const ours = vdbToWvdb(vdbBytes, { fileName, levelSetSampler: "mjurczyk", compress: identity });
+  const ours = vdbToWvdb(vdbBytes, { fileName, levelSetSampler: "surface-mean", compress: identity });
   expect(headerWithoutOffsets(ours.header)).toEqual(his.header);
   const dataStart = 12 + new DataView(ours.bytes.buffer, ours.bytes.byteOffset).getUint32(8, true);
   const chunks = wvdbChunks(ours.header);
@@ -189,7 +189,7 @@ function digestOfHisFile(bytes: Uint8Array): { header: unknown; chunks: { inflat
 
 
 const teapotVdb = vdbSample("utahteapot.vdb");
-describe.skipIf(!teapotVdb)("utahteapot.vdb → .wvdb with levelSetSampler 'mjurczyk' reproduces his utahteapot.wvdb", () => {
+describe.skipIf(!teapotVdb)("utahteapot.vdb → .wvdb with levelSetSampler 'surface-mean' reproduces his utahteapot.wvdb", () => {
   it("same header (offsets zeroed) and every inflated chunk (digest)", () => {
     const digest = JSON.parse(readFileSync(path.join(WVDB_FIXTURES, "utahteapot.wvdb.digest.json"), "utf8"));
     expectReproduces(readBytes(teapotVdb!), "utahteapot.vdb", { header: digest.headerWithoutOffsets, chunks: digest.chunks });
@@ -198,8 +198,8 @@ describe.skipIf(!teapotVdb)("utahteapot.vdb → .wvdb with levelSetSampler 'mjur
   it("the NanoVDB path gives the same bytes as the .vdb path", () => {
     const bytes = readBytes(teapotVdb!);
     const file = parseVdb(bytes.slice().buffer);
-    const a = vdbToWvdb(file, { levelSetSampler: "mjurczyk", compress: identity });
-    const b = nanoVdbToWvdb(buildFromVdb(file.grids[0]!), { levelSetSampler: "mjurczyk", compress: identity });
+    const a = vdbToWvdb(file, { levelSetSampler: "surface-mean", compress: identity });
+    const b = nvdbToWvdb(buildFromVdb(file.grids[0]!), { levelSetSampler: "surface-mean", compress: identity });
     expect(bytesEqual(a.bytes, b.bytes)).toBe(true);
   }, 30_000);
 });
@@ -243,8 +243,8 @@ describe("sampling 'box' (K4.4 box filter on his lattice)", () => {
     for (let i = 0; i < 512; i++) values[i] = field(ox + (i >> 6), oy + ((i >> 3) & 7), oz + (i & 7));
     leaves.push({ origin: [ox, oy, oz], values, valueMask: new Uint32Array(16).fill(0xffffffff) });
   }
-  const image = buildFromLeavesDetailed(leaves, FLOAT_LEAF_CODEC, { gridName: "density" }).image;
-  const source = wvdbSourceFromNanoVdb(image);
+  const image = vdbBuildFromLeavesDetailed(leaves, VDB_FLOAT_LEAF_CODEC, { gridName: "density" }).image;
+  const source = wvdbSourceFromNvdb(image);
 
   it("a downsample by 2 on an aligned box is the exact 2x2x2 mean", () => {
     const box: [Vec3, Vec3] = [[-0.5, -0.5, -0.5], [15.5, 15.5, 15.5]];
@@ -274,23 +274,23 @@ describe("sampling 'box' (K4.4 box filter on his lattice)", () => {
     expect(sum(boxV) / inner).toBeCloseTo(1, 4);
     expect(Math.abs(sum(pointV) / inner - 1)).toBeGreaterThan(Math.abs(sum(boxV) / inner - 1));
     expect(mass).toBeGreaterThan(inner);
-    const baked = nanoVdbToWvdb(image, { sampling: "box", resolution: 5 });
+    const baked = nvdbToWvdb(image, { sampling: "box", resolution: 5 });
     const decoded = (readWvdb(baked.bytes).grids[0] as WvdbVolumeGrid).levels[2]!.values;
     for (let i = 0; i < decoded.length; i++) expect(Math.abs(decoded[i]! - boxV[i]!)).toBeLessThan(0.02);
   });
 
   it("a one-voxel-thick box axis samples the nearest voxel there; errors are clear", () => {
     const flat: [Vec3, Vec3] = [[0, 0, 5], [15, 15, 5]];
-    const v = resampleDense(image, { bbox: flat, dimensions: [16, 16, 1], filter: "box" });
+    const v = vdbResampleDense(image, { bbox: flat, dimensions: [16, 16, 1], filter: "box" });
     for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
       // x/y texels are 15/16 voxel wide: a blend of neighbours, but z is exactly voxel 5.
       expect(v.active[x + y * 16]).toBe(1);
     }
-    const mid = resampleDense(image, { bbox: [[3, 3, 5], [3, 3, 5]], dimensions: [1, 1, 1] });
+    const mid = vdbResampleDense(image, { bbox: [[3, 3, 5], [3, 3, 5]], dimensions: [1, 1, 1] });
     expect(mid.values[0]).toBe(field(3, 3, 5));
     expect(() => bakeWvdb([{ ...source, grid: undefined }], { sampling: "box", resolution: 4 })).toThrow(/needs the source grid/);
     expect(() => bakeWvdb([source], { sampling: "linear" as "box" })).toThrow(/unknown sampling/);
-    expect(() => resampleDense(image, { bbox: [[0, 0, 0], [-1, 0, 0]], dimensions: [1, 1, 1] })).toThrow(/invalid bbox/);
+    expect(() => vdbResampleDense(image, { bbox: [[0, 0, 0], [-1, 0, 0]], dimensions: [1, 1, 1] })).toThrow(/invalid bbox/);
   });
 });
 

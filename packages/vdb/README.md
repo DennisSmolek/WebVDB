@@ -5,7 +5,7 @@ Sparse NanoVDB volumes on WebGPU, from the [WebVDB](../../README.md) repo. One p
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
 | `@pmndrs/vdb` | the engine-free core: the vendored `pnanovdb.wgsl` module | no engine |
-| `@pmndrs/vdb/tools` | CPU side: `.nvdb` loader, CPU oracle (`readValue`, `sampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, writer | no |
+| `@pmndrs/vdb/tools` | CPU side: `.nvdb` loader, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, writer | no |
 | `@pmndrs/vdb/three` | the three.js / TSL adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBSequence`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
 
@@ -31,24 +31,24 @@ and how to walk them, in WGSL or in plain TS.
   upper -> lower -> leaf tree traversal, HDDA ray marching, and
   Float/Fp4/Fp8/Fp16/FpN value decoders. Import it as raw text (`?raw` in Vite,
   or read the file yourself) and splice it into your own shader.
-- **`NanoVDBFile`** (`@pmndrs/vdb/tools`) — parses a `.nvdb` file (header + per-grid metadata +
+- **`NvdbFile`** (`@pmndrs/vdb/tools`) — parses a `.nvdb` file (header + per-grid metadata +
   grid images), handling the NONE/ZIP codecs.
-- **A pure-TypeScript CPU reference** (`@pmndrs/vdb/tools`: `readValue`, `sampleTrilinear`,
-  `probeCoords`/`probePoints`) — the exact same tree descent as the WGSL
+- **A pure-TypeScript CPU reference** (`@pmndrs/vdb/tools`: `vdbReadValueCpu`, `vdbReadValueF32`,
+  `vdbSampleTrilinear`) — the exact same tree descent as the WGSL
   module, so you can sanity-check GPU results or read voxels with no GPU
   at all (Node, workers, tests).
 
 ### Quickstart: load a file and read a voxel
 
 ```ts
-import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
+import { NvdbFile, vdbReadValueCpu } from "@pmndrs/vdb/tools";
 
-const file = await NanoVDBFile.fromURL("/fixtures/sphere_fog_float.nvdb");
+const file = await NvdbFile.fromURL("/fixtures/sphere_fog_float.nvdb");
 const gridImage = file.gridImage(0); // flat Uint32Array — the grid, as-is on disk
 const meta = file.grids[0]!;
 console.log(meta.name, meta.gridType, meta.voxelCount);
 
-const { value, active } = readValue(gridImage, [12, 4, -3]);
+const { value, active } = vdbReadValueCpu(gridImage, [12, 4, -3]);
 ```
 
 `gridImage` is a zero-copy view into the file's buffer when possible
@@ -59,8 +59,7 @@ const { value, active } = readValue(gridImage, [12, 4, -3]);
 
 ```ts
 import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw"; // Vite/bundler `?raw` import
-// or: fetch(new URL("@pmndrs/vdb/pnanovdb.wgsl", import.meta.url)) — see the
-// package's `pnanovdbWgslUrl` export for a resolvable URL in non-bundler runtimes
+// or, outside a bundler: fetch(import.meta.resolve("@pmndrs/vdb/pnanovdb.wgsl"))
 ```
 
 `pnanovdbSource` is the library's text, unmodified. It's a genuine C-style
@@ -88,7 +87,7 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 | `Float` | yes | lossless, 4 bytes/voxel |
 | `Fp8` | yes | per-leaf min/quantum, 1 byte/voxel |
 | `FpN` | yes | per-leaf variable bit-width (oracle-matched to native) |
-| other `GridType`s | rejected | `NanoVDBFile` throws a clear "unsupported grid type" error — v1 targets FogVolume rendering (SPEC §2.1) |
+| other `GridType`s | rejected | `NvdbFile` throws a clear "unsupported grid type" error — v1 targets FogVolume rendering (SPEC §2.1) |
 
 | File codec | Support |
 |---|---|
@@ -125,24 +124,24 @@ grid, optionally quantize, write a real `.nvdb` file — trimmed from
 [`examples/src/demos/07-builder`](../../examples/src/demos/07-builder):
 
 ```ts
-import { buildFromDenseDetailed, quantize, writeNvdb } from "@pmndrs/vdb/tools";
+import { vdbBuildFromDenseDetailed, vdbQuantize, writeNvdb } from "@pmndrs/vdb/tools";
 
 const dim = 32;
 const values = new Float32Array(dim * dim * dim); // fill with your density field
 // ... write nonzero values into `values` at your active voxels ...
 
-const built = buildFromDenseDetailed(values, [dim, dim, dim], {
+const built = vdbBuildFromDenseDetailed(values, [dim, dim, dim], {
   gridName: "my_grid",
   background: 0,
 });
 // built: { image: Uint32Array, voxelCount, indexBBox, worldBBox, voxelSize, nodeCounts }
 
-const fp8Image = quantize(built.image, "fp8"); // or "fpn"; per-leaf min/quantum, native-exact rounding
+const fp8Image = vdbQuantize(built.image, "fp8"); // or "fpn"; per-leaf min/quantum, native-exact rounding
 
 const fileBuffer = writeNvdb([fp8Image]); // ArrayBuffer — a real NanoVDB2 file, ready to save/upload
 ```
 
-`fileBuffer` round-trips through `NanoVDBFile.fromArrayBuffer`
+`fileBuffer` round-trips through `NvdbFile.fromArrayBuffer`
 byte-for-byte (that loader is this subpath's read path, see above).
 
 ### Quickstart: parse a real `.vdb` and build NanoVDB from it
@@ -151,13 +150,13 @@ The drop-in-a-file pipeline, trimmed from
 [`examples/src/demos/06-explorer`](../../examples/src/demos/06-explorer):
 
 ```ts
-import { parseVdb, buildFromVdbDetailed, inspect } from "@pmndrs/vdb/tools";
+import { parseVdb, buildFromVdbDetailed, vdbInspect } from "@pmndrs/vdb/tools";
 
 const buffer = await fetch("/fixtures/vdb-samples/utahteapot.vdb").then((r) => r.arrayBuffer());
 const vdbFile = parseVdb(buffer); // { fileVersion, grids: VdbGrid[] }
 
 const built = buildFromVdbDetailed(vdbFile.grids[0]!); // streams leaves, no dense allocation
-const report = inspect(built.image);
+const report = vdbInspect(built.image);
 console.log(report.nodeCounts, report.memoryBreakdown);
 ```
 
@@ -171,16 +170,16 @@ the NanoVDB `Map`.
 | Function | What it does |
 |---|---|
 | `parseVdb(buffer)` | Reads a `.vdb` container: FloatGrid, 5-4-3 tree, uncompressed or zlib. Throws a clear error for blosc. |
-| `buildFromDense` / `buildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
-| `buildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `quantize` are built on) |
+| `vdbBuildFromDense` / `vdbBuildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
+| `vdbBuildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `vdbQuantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
-| `quantize` / `quantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
-| `transform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](../../docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
-| `inspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
+| `vdbQuantize` / `vdbQuantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
+| `vdbTransform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](../../docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
+| `vdbInspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
 | `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2, `io::Segment` layout; `{ codec: 'zip' }` for NanoVDB's ZIP codec) |
-| `bakeCoarseFirst` | Coarse-first `.nvdb`: a small preview grid (`<name>.lod48`, box, FpN) then the full grid, ZIP by default |
+| `vdbBakeCoarseFirst` | Coarse-first `.nvdb`: a small preview grid (`<name>.lod48`, box, FpN) then the full grid, ZIP by default |
 | `NvdbStreamReader` / `readNvdbStream` | Reads a `.nvdb` from pushed bytes or a stream, emitting each grid as soon as its data is complete; hostile-input checks before allocation |
-| `NanoVDBFile` | Reads a `.nvdb` held in memory or fetched (`fromArrayBuffer` / `fromURL`); there is no separate `readNvdb` |
+| `NvdbFile` | Reads a `.nvdb` held in memory or fetched (`fromArrayBuffer` / `fromURL`); there is no separate `readNvdb` |
 
 ### Supported `.vdb` subset
 
@@ -191,7 +190,7 @@ the NanoVDB `Map`.
 | Compression | none, zlib |
 | Compression | blosc — throws a clear "not supported" error |
 | Half-float leaf storage | yes |
-| Transform | uniform scale + translate (affine `Map`); non-uniform/rotated throws on `transform()`, parses fine on `parseVdb()`/`buildFromVdb()` |
+| Transform | uniform scale + translate (affine `Map`); non-uniform/rotated throws on `vdbTransform()`, parses fine on `parseVdb()`/`buildFromVdb()` |
 
 ### Native parity
 
@@ -222,7 +221,7 @@ trimmed to the essentials (no camera controls, no live uniforms):
 ```ts
 import * as THREE from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import { NvdbFile } from "@pmndrs/vdb/tools";
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 
 // The host owns the device: the pool's limits, passed to the renderer so the
@@ -232,7 +231,7 @@ const device = await adapter!.requestDevice({ requiredLimits: VDBGridPool.requir
 const renderer = new THREE.WebGPURenderer({ device, canvas });
 await renderer.init();
 
-const file = await NanoVDBFile.fromURL("/fixtures/wdas_cloud_quarter_fp8.nvdb");
+const file = await NvdbFile.fromURL("/fixtures/wdas_cloud_quarter_fp8.nvdb");
 const pool = await VDBGridPool.create(getDevice(renderer));
 const id = pool.add(file.gridImage(0));
 pool.flush(); // writes the grid (or record pool.update(encoder) into your own encoder)
@@ -299,19 +298,19 @@ records into your encoder and hands back a readback you resolve after
 submitting; the three wrappers take the renderer and return promises:
 
 ```ts
-import { VDBGridPool, gridStats, decodeToAtlas, applyValueTransform } from "@pmndrs/vdb";
+import { VDBGridPool, vdbGridStatsGpu, vdbDecodeToAtlasGpu, vdbApplyValueTransform } from "@pmndrs/vdb";
 
 const id = pool.add(image);
 pool.update(encoder); // or pool.flush()
-const stats = gridStats(device, pool, id, { encoder, histogramBins: 256 });
-const atlas = decodeToAtlas(device, pool, id, { encoder, maxDim: 128, format: "uint8" });
+const stats = vdbGridStatsGpu(device, pool, id, { encoder, histogramBins: 256 });
+const atlas = vdbDecodeToAtlasGpu(device, pool, id, { encoder, maxDim: 128, format: "uint8" });
 device.queue.submit([encoder.finish()]);
 // With your encoder, say it was submitted before reading (read() earlier rejects with VDB_BAD_OPTION):
 await stats.submitted().read();  // { min, max, mean, histogram, activeVoxelCount, usedAtomicFastPath, range }
 await atlas.submitted().read();  // { data: Uint8Array | Float32Array, dims, range }; atlas.buffer is the raw f32 GPU output
 
 // Per-voxel edits run on the CPU (the pool is read-only to shaders) and are staged with pool.replace:
-applyValueTransform(pool, id, image, "double"); // or (v) => v * 2; Float grids only
+vdbApplyValueTransform(pool, id, image, "double"); // or (v) => v * 2; Float grids only
 ```
 
 ```ts
@@ -322,25 +321,24 @@ const { data, dims, range, texture } = await vdbDecodeToAtlas(renderer, pool, id
 ```
 
 The three wrappers submit their own encoder. The value transform has no three
-wrapper: call the core `applyValueTransform`.
+wrapper: call the core `vdbApplyValueTransform`.
 
 Each tool frees only the buffers it allocated (in `read()` or `dispose()`).
-`gridStats` bins over the grid's root min/max statistics (a grid with a
+`vdbGridStatsGpu` bins over the grid's root min/max statistics (a grid with a
 negative root min takes the dump path, 8 B per bbox voxel, and is refused up
-front when that exceeds the device's buffer limits); `decodeToAtlas`
+front when that exceeds the device's buffer limits); `vdbDecodeToAtlasGpu`
 normalizes to them by default. The atlas keeps v1's sample positions,
 `min + (i + 0.5) / dims * size` in index space, which is half a voxel past the
 voxel centres (texel `i` at full resolution sits between voxels `min + i` and
-`min + i + 1`): sample it over the cell box `[min, max + 1]`. `applyValueTransform` rewrites leaf values
-(not tiles) and does not recompute the image's statistics. CPU twins live in
-`@pmndrs/vdb/tools` (`gridStatsCpu`, `decodeToAtlasCpu`, `atlasFromRaw`,
-`transformLeafValues`). See
+`min + i + 1`): sample it over the cell box `[min, max + 1]`. `vdbApplyValueTransform` rewrites leaf values
+(not tiles) and does not recompute the image's statistics. CPU versions live in
+`@pmndrs/vdb/tools` (`vdbGridStatsCpu`, `vdbDecodeToAtlasCpu`). See
 [`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback)
 for the atlas fallback path through a stock `Data3DTexture`.
 
 ### Coarse-first loading: `vdbStreamCoarseFirst`
 
-A file baked with `bakeCoarseFirst` (`@pmndrs/vdb/tools`) holds a ~12 KiB preview grid before the full grid
+A file baked with `vdbBakeCoarseFirst` (`@pmndrs/vdb/tools`) holds a ~12 KiB preview grid before the full grid
 (docs/design/K4-5-coarse-first.md). `vdbStreamCoarseFirst` reads the response body as it arrives, adds the
 preview to the pool with the full grid's size reserved, and replaces it in place when the full grid is in:
 
@@ -423,3 +421,8 @@ The published export map points only at built `dist/` output (`dist/{core,tools,
 Workspace Vite/Vitest/TypeScript configs alias `@pmndrs/vdb`, `@pmndrs/vdb/tools`, `@pmndrs/vdb/three` and
 `@pmndrs/vdb/pnanovdb.wgsl` to `src/` for source-level development without exposing TypeScript source paths
 to npm consumers.
+
+Each subpath's `index.ts` is its public API, frozen by `test/api-surface.test.ts` (an export-list snapshot
+and the D32 naming rule). Test oracles and other internals live in `src/{core,tools,three}/internal.ts`, which
+re-exports the public API and is imported by path from tests, harnesses and scripts; it is never a package
+export.

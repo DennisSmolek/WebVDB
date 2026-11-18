@@ -7,7 +7,7 @@
  * with three's OWN stock `VolumeNodeMaterial` (not the sparse raymarch) — the
  * mobile/compat fallback path for a GPU that doesn't need (or can't do) the
  * full storage-buffer traversal every fragment. `vdbGridStats` and
- * `applyValueTransform` run against a second (Float) fixture and are checked
+ * `vdbApplyValueTransform` run against a second (Float) fixture and are checked
  * against the `tools` CPU twins, publishing verification booleans.
  *
  * ## Atlas sampling: the stock 3D texture (K2.5, DIVERGES V8 closed)
@@ -21,11 +21,11 @@
  *
  * ## Why a second fixture for stats/transform
  *
- * `applyValueTransform` is Float-only (re-encoding quantized leaves is out of scope)
+ * `vdbApplyValueTransform` is Float-only (re-encoding quantized leaves is out of scope)
  * and the atlas fixture (`sphere_fog_fp8`) is Fp8, so `box_fog_float.nvdb` —
  * small (81 x 41 x 61 index bbox, every voxel active, ~200K voxels) —
- * exercises `vdbGridStats` (against `gridStatsCpu` and the sidecar) and
- * `applyValueTransform` (on the CPU since K2.3, staged with `pool.replace`).
+ * exercises `vdbGridStats` (against `vdbGridStatsCpu` and the sidecar) and
+ * `vdbApplyValueTransform` (on the CPU since K2.3, staged with `pool.replace`).
  *
  * ## Presentation & determinism
  *
@@ -42,8 +42,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Fn, texture3D, uniform } from "three/tsl";
 import { VolumeNodeMaterial, WebGPURenderer } from "three/webgpu";
 import type { Node } from "three/webgpu";
-import { VDBGridPool, applyValueTransform } from "@pmndrs/vdb";
-import { NanoVDBFile, getDim, gridStatsCpu, readValueF32 } from "@pmndrs/vdb/tools";
+import { VDBGridPool, vdbApplyValueTransform } from "@pmndrs/vdb";
+import { NvdbFile, vdbGridStatsCpu, vdbReadValueF32 } from "@pmndrs/vdb/tools";
+// `getDim` (leaf voxel vs tile) is a CPU twin of the WGSL march helper, not public API (D32): this check imports it
+// from the tools internals by path.
+import { getDim } from "../../../../packages/vdb/src/tools/internal.js";
 import { getDevice, vdbDecodeToAtlas, vdbGridStats } from "@pmndrs/vdb/three";
 
 interface Demo04State {
@@ -183,8 +186,8 @@ async function run(): Promise<void> {
   }
   const sidecar = (await sidecarRes.json()) as Sidecar;
 
-  const atlasImage = NanoVDBFile.fromArrayBuffer(atlasBuf).gridImage(0);
-  const statsImage = NanoVDBFile.fromArrayBuffer(statsBuf).gridImage(0);
+  const atlasImage = NvdbFile.fromArrayBuffer(atlasBuf).gridImage(0);
+  const statsImage = NvdbFile.fromArrayBuffer(statsBuf).gridImage(0);
 
   // Device first (D8): the host owns the device and passes it to three, so the
   // pool on it outlives the renderer (CLAUDE.md Traps).
@@ -206,10 +209,10 @@ async function run(): Promise<void> {
   const atlasInfo = pool.info(atlasId);
 
   // -------------------------------------------------------------------------
-  // gridStats: GPU result vs. the CPU twin (gridStatsCpu) and the sidecar.
+  // gridStats: GPU result vs. the CPU twin (vdbGridStatsCpu) and the sidecar.
   // -------------------------------------------------------------------------
   const gpuStats = await vdbGridStats(renderer, pool, statsId);
-  const cpuStats = gridStatsCpu(statsImage);
+  const cpuStats = vdbGridStatsCpu(statsImage);
   const statsOk =
     gpuStats.activeVoxelCount === sidecar.grid.activeVoxelCount &&
     gpuStats.activeVoxelCount === cpuStats.activeVoxelCount &&
@@ -219,7 +222,7 @@ async function run(): Promise<void> {
     gpuStats.histogram.reduce((a, b) => a + b, 0) === gpuStats.activeVoxelCount;
 
   // -------------------------------------------------------------------------
-  // applyValueTransform "double" (CPU, staged with pool.replace), then check the
+  // vdbApplyValueTransform "double" (CPU, staged with pool.replace), then check the
   // result at up to 50 active sidecar coords. `box_fog_float`'s solid
   // interior is constant LOWER-level tiles even though every bbox voxel is
   // active, so per sample:
@@ -230,13 +233,13 @@ async function run(): Promise<void> {
   // match the twin on the transformed image (the pool wrote it in place).
   // -------------------------------------------------------------------------
   const versionBefore = pool.version;
-  const transformedImage = applyValueTransform(pool, statsId, statsImage, "double");
+  const transformedImage = vdbApplyValueTransform(pool, statsId, statsImage, "double");
   pool.flush();
   const activeSamples = sidecar.samples.filter((s) => s.active).slice(0, MAX_TRANSFORM_SAMPLES);
   let sawLeaf = false;
   let transformOk = activeSamples.length > 0 && pool.version === versionBefore;
   for (const s of activeSamples) {
-    const got = readValueF32(transformedImage, s.ijk);
+    const got = vdbReadValueF32(transformedImage, s.ijk);
     if (getDim(statsImage, s.ijk) === 1) {
       sawLeaf = true;
       if (Math.abs(got - 2 * s.value) > TRANSFORM_VALUE_EPS) transformOk = false;
@@ -247,7 +250,7 @@ async function run(): Promise<void> {
   // A vacuously-true result (no leaf samples, nothing exercised) doesn't count.
   if (!sawLeaf) transformOk = false;
   const transformedStats = await vdbGridStats(renderer, pool, statsId);
-  if (transformedStats.max !== gridStatsCpu(transformedImage).max) transformOk = false;
+  if (transformedStats.max !== vdbGridStatsCpu(transformedImage).max) transformOk = false;
 
   // -------------------------------------------------------------------------
   // decodeToAtlas -> VolumeNodeMaterial (the fallback path). The wrapper

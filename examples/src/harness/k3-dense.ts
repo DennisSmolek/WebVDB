@@ -24,7 +24,7 @@ import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import { Fn, Loop, cameraPosition, exp, float, length, modelWorldMatrixInverse, positionLocal, uniform, vec3, vec4 } from "three/tsl";
 import { vdbDenseSource } from "@pmndrs/vdb";
 import { getDevice, vdbDenseTextures, vdbVolumeNodes, vdbVolumeUniforms } from "@pmndrs/vdb/three";
-import { readWvdb, sampleWvdbDenseTexture, wvdbDenseVolume } from "@pmndrs/vdb/tools";
+import { readWvdb, sampleWvdbDenseTexture, wvdbDenseVolume } from "../../../packages/vdb/src/tools/internal.js";
 import defaultWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
 interface ProbeStats {

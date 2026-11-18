@@ -1,13 +1,13 @@
 // #region first-render
 import * as THREE from 'three/webgpu';
 import { VDBGridPool } from '@pmndrs/vdb';
-import { NanoVDBFile } from '@pmndrs/vdb/tools';
+import { NvdbFile } from '@pmndrs/vdb/tools';
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from '@pmndrs/vdb/three';
 // #endregion
 
 export async function firstRender(renderer: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.Camera, url: string): Promise<void> {
     // #region first-render
-    const image = (await NanoVDBFile.fromURL(url)).gridImage(0);
+    const image = (await NvdbFile.fromURL(url)).gridImage(0);
 
     const pool = await VDBGridPool.create(getDevice(renderer));
     const id = pool.add(image);

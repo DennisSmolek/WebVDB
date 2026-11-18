@@ -27,6 +27,7 @@
  * `compress: (b) => zlib.deflateSync(b, { level: 9 })` in Node.
  */
 
+import { VDBToolsError } from "../errors.js";
 import { zlibSync } from "fflate";
 import {
   WVDB_BRICK_DIM,
@@ -258,12 +259,12 @@ function encodeLod(
   if (sparse && level.brickOrder) {
     const given = Array.from(level.brickOrder);
     const set = new Set(given);
-    if (set.size !== given.length) throw new Error("writeWvdb: brickOrder lists a brick twice");
+    if (set.size !== given.length) throw new VDBToolsError("VDB_BAD_OPTION", "writeWvdb: brickOrder lists a brick twice");
     for (const i of given) {
-      if (!Number.isInteger(i) || i < 0 || i >= total) throw new Error(`writeWvdb: brickOrder index ${i} is out of range`);
+      if (!Number.isInteger(i) || i < 0 || i >= total) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: brickOrder index ${i} is out of range`);
     }
     for (const b of bricks) {
-      if (!set.has(b.index)) throw new Error(`writeWvdb: brickOrder omits brick ${b.index}, which is not all background`);
+      if (!set.has(b.index)) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: brickOrder omits brick ${b.index}, which is not all background`);
     }
     bricks.length = 0;
     for (const index of given) bricks.push({ index, weight: 0 });
@@ -314,9 +315,9 @@ function pointsBox(positions: Float32Array): WvdbBox | null {
 
 function checkLevel(level: WvdbDenseLevel, channels: number, what: string): void {
   const [x, y, z] = level.dimensions;
-  if (![x, y, z].every((n) => Number.isInteger(n) && n >= 1)) throw new Error(`writeWvdb: ${what}: dimensions must be integers >= 1`);
+  if (![x, y, z].every((n) => Number.isInteger(n) && n >= 1)) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: ${what}: dimensions must be integers >= 1`);
   if (level.values.length !== x * y * z * channels) {
-    throw new Error(`writeWvdb: ${what}: ${level.values.length} values, expected ${x * y * z * channels} (X*Y*Z*channels)`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: ${what}: ${level.values.length} values, expected ${x * y * z * channels} (X*Y*Z*channels)`);
   }
 }
 
@@ -338,14 +339,14 @@ export function writeWvdb(grids: readonly WvdbGridInput[], options: WriteWvdbOpt
   const pageBricks = options.pageBricks ?? DEFAULTS.pageBricks;
   const maxPoints = options.maxPoints ?? DEFAULTS.maxPoints;
   const compress = options.compress ?? defaultCompress;
-  if (!Number.isInteger(lods) || lods < 1) throw new Error(`writeWvdb: invalid LOD count ${lods}`);
-  if (bits !== 8 && bits !== 16) throw new Error(`writeWvdb: bits must be 8 or 16 (got ${String(bits)})`);
-  if (layout !== "dense" && layout !== "sparse") throw new Error(`writeWvdb: invalid layout ${String(layout)}`);
-  if (!Number.isInteger(pageBricks) || pageBricks < 1) throw new Error(`writeWvdb: invalid pageBricks ${pageBricks}`);
-  if (!Number.isInteger(maxPoints) || maxPoints < 1) throw new Error(`writeWvdb: invalid maxPoints ${maxPoints}`);
+  if (!Number.isInteger(lods) || lods < 1) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: invalid LOD count ${lods}`);
+  if (bits !== 8 && bits !== 16) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: bits must be 8 or 16 (got ${String(bits)})`);
+  if (layout !== "dense" && layout !== "sparse") throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: invalid layout ${String(layout)}`);
+  if (!Number.isInteger(pageBricks) || pageBricks < 1) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: invalid pageBricks ${pageBricks}`);
+  if (!Number.isInteger(maxPoints) || maxPoints < 1) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: invalid maxPoints ${maxPoints}`);
   const names = new Set<string>();
   for (const g of grids) {
-    if (names.has(g.name)) throw new Error(`writeWvdb: grid name "${g.name}" is not unique`);
+    if (names.has(g.name)) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: grid name "${g.name}" is not unique`);
     names.add(g.name);
   }
 
@@ -357,9 +358,9 @@ export function writeWvdb(grids: readonly WvdbGridInput[], options: WriteWvdbOpt
   const encoded: Encoded[] = grids.map((grid): Encoded => {
     if (grid.type === "points") {
       const total = grid.positions.length / 3;
-      if (!Number.isInteger(total)) throw new Error(`writeWvdb: "${grid.name}": positions length is not a multiple of 3`);
+      if (!Number.isInteger(total)) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: "${grid.name}": positions length is not a multiple of 3`);
       if (grid.colors && grid.colors.length !== grid.positions.length) {
-        throw new Error(`writeWvdb: "${grid.name}": colors must have 3 values per point`);
+        throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: "${grid.name}": colors must have 3 values per point`);
       }
       const stride = Math.max(1, Math.ceil(total / maxPoints));
       const count = total > 0 ? Math.floor((total - 1) / stride) + 1 : 0;
@@ -402,20 +403,20 @@ export function writeWvdb(grids: readonly WvdbGridInput[], options: WriteWvdbOpt
     }
 
     const channels = grid.channels ?? 1;
-    if (channels !== 1 && channels !== 3) throw new Error(`writeWvdb: "${grid.name}": channels must be 1 or 3`);
+    if (channels !== 1 && channels !== 3) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: "${grid.name}": channels must be 1 or 3`);
     const background = typeof grid.background === "number" ? [grid.background] : [...grid.background];
-    if (background.length !== channels) throw new Error(`writeWvdb: "${grid.name}": background needs ${channels} value(s)`);
+    if (background.length !== channels) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: "${grid.name}": background needs ${channels} value(s)`);
     const bg32 = background.map(Math.fround);
     let levels: WvdbDenseLevel[];
     if (grid.levels) {
-      if (grid.levels.length !== lods) throw new Error(`writeWvdb: "${grid.name}": ${grid.levels.length} levels given, lods is ${lods}`);
+      if (grid.levels.length !== lods) throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: "${grid.name}": ${grid.levels.length} levels given, lods is ${lods}`);
       levels = [...grid.levels];
     } else if (grid.finest) {
       levels = [];
       levels[lods - 1] = grid.finest;
       for (let lod = lods - 2; lod >= 0; lod--) levels[lod] = downsampleWvdbLevel(levels[lod + 1]!, channels);
     } else {
-      throw new Error(`writeWvdb: "${grid.name}": give finest or levels`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `writeWvdb: "${grid.name}": give finest or levels`);
     }
     levels.forEach((l, i) => checkLevel(l, channels, `"${grid.name}" LOD ${i}`));
     resolution ??= Math.max(...levels[lods - 1]!.dimensions);

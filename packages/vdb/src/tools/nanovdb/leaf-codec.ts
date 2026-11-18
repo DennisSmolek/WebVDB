@@ -7,15 +7,15 @@
  * (topology, masks, internal-node tables, stats, bbox, GridData) is identical
  * across those types — the internal-node/root tiles and background stay plain
  * f32 even for quantized grids (verified against native fp8/fpn fixtures). So the
- * serializer is parameterised over a {@link LeafCodec}: `serialize.ts` lays out
+ * serializer is parameterised over a {@link VDBLeafCodec}: `serialize.ts` lays out
  * the common blocks and hands each leaf to the codec, which owns the full leaf
  * write (bbox, flags, value mask, value table and per-leaf stats).
  *
  * Three codecs ship:
- *   - {@link FLOAT_LEAF_CODEC} — 512 raw f32 values + f32 stats.
- *   - {@link FP4_LEAF_CODEC} / {@link FP8_LEAF_CODEC} / {@link FP16_LEAF_CODEC} — fixed 4/8/16-bit
+ *   - {@link VDB_FLOAT_LEAF_CODEC} — 512 raw f32 values + f32 stats.
+ *   - {@link VDB_FP4_LEAF_CODEC} / {@link VDB_FP8_LEAF_CODEC} / {@link VDB_FP16_LEAF_CODEC} — fixed 4/8/16-bit
  *     quantization (`LeafData<Fp4|Fp8|Fp16>`).
- *   - {@link makeFpNLeafCodec} — variable bit-width (`LeafData<FpN>`); a
+ *   - {@link vdbMakeFpNLeafCodec} — variable bit-width (`LeafData<FpN>`); a
  *     per-leaf oracle picks the smallest of 1/2/4/8/16 bits meeting a tolerance.
  *
  * ## Encode authority
@@ -30,6 +30,7 @@
  * at global bit `n*bits`, identical to the reader's word/shift addressing.
  */
 
+import { VDBToolsError } from "../errors.js";
 import {
   FLOAT_LAYOUT,
   VEC3F_LAYOUT,
@@ -70,7 +71,7 @@ export interface LeafPlan {
   readonly byteSize: number;
 }
 
-export interface LeafCodec {
+export interface VDBLeafCodec {
   readonly layout: GridTypeLayout;
   /** Scalars per value: 1 (default) or 3 (Vec3f). */
   readonly components?: 1 | 3;
@@ -92,7 +93,7 @@ export interface LeafCodec {
 
 /** A scalar codec's constant: tiles and backgrounds of scalar grids are numbers. */
 function scalar(value: TileValue): number {
-  if (typeof value !== "number") throw new Error(`leaf codec: expected a scalar value, got [${value.join(", ")}]`);
+  if (typeof value !== "number") throw new VDBToolsError("VDB_BAD_OPTION", `leaf codec: expected a scalar value, got [${value.join(", ")}]`);
   return value;
 }
 
@@ -133,7 +134,7 @@ function writeLeafHeader(
 // ---------------------------------------------------------------------------
 
 /** FLOAT leaf codec: 512 raw f32 values, f32 stats. */
-export const FLOAT_LEAF_CODEC: LeafCodec = {
+export const VDB_FLOAT_LEAF_CODEC: VDBLeafCodec = {
   layout: FLOAT_LAYOUT,
   planLeaf() {
     return { byteSize: FLOAT_LAYOUT.leafSize };
@@ -174,7 +175,7 @@ function writeVec3(w: GridImageWriter, off: number, v: readonly number[]): void 
  * `leaf.values`), Vec3f min/max and f32 ave/stddev of the squared lengths
  * (NanoVDB `Stats<Vec3f, 1>`, see {@link Vec3StatsAccumulator}).
  */
-export const VEC3F_LEAF_CODEC: LeafCodec = {
+export const VDB_VEC3F_LEAF_CODEC: VDBLeafCodec = {
   layout: VEC3F_LAYOUT,
   components: 3,
   planLeaf() {
@@ -188,7 +189,7 @@ export const VEC3F_LEAF_CODEC: LeafCodec = {
     writeVec3StatsBlock(w, leafOff, L.leafOffMin, L.leafOffMax, L.leafOffAve, L.leafOffStdDev, leaf.stats);
   },
   writeConstant(w, off, value) {
-    if (typeof value === "number") throw new Error(`Vec3f codec: expected a vector value, got ${value}`);
+    if (typeof value === "number") throw new VDBToolsError("VDB_BAD_OPTION", `Vec3f codec: expected a vector value, got ${value}`);
     writeVec3(w, off, value);
   },
 };
@@ -310,7 +311,7 @@ function packCodes(
 // Fp4 / Fp8 / Fp16 — fixed bit width
 // ---------------------------------------------------------------------------
 
-function makeFixedLeafCodec(layout: GridTypeLayout, bits: 4 | 8 | 16): LeafCodec {
+function makeFixedLeafCodec(layout: GridTypeLayout, bits: 4 | 8 | 16): VDBLeafCodec {
   const mask = (1 << bits) - 1;
   return {
     layout,
@@ -342,10 +343,10 @@ function makeFixedLeafCodec(layout: GridTypeLayout, bits: 4 | 8 | 16): LeafCodec
 }
 
 /** Fp4: fixed 4-bit codes (`LeafData<Fp4>`, 16 levels per leaf). */
-export const FP4_LEAF_CODEC: LeafCodec = makeFixedLeafCodec(FP4_LAYOUT, 4);
-export const FP8_LEAF_CODEC: LeafCodec = makeFixedLeafCodec(FP8_LAYOUT, 8);
+export const VDB_FP4_LEAF_CODEC: VDBLeafCodec = makeFixedLeafCodec(FP4_LAYOUT, 4);
+export const VDB_FP8_LEAF_CODEC: VDBLeafCodec = makeFixedLeafCodec(FP8_LAYOUT, 8);
 /** Fp16: fixed 16-bit codes (`LeafData<Fp16>`). */
-export const FP16_LEAF_CODEC: LeafCodec = makeFixedLeafCodec(FP16_LAYOUT, 16);
+export const VDB_FP16_LEAF_CODEC: VDBLeafCodec = makeFixedLeafCodec(FP16_LAYOUT, 16);
 
 // ---------------------------------------------------------------------------
 // FpN — variable bit-width chosen per leaf by an absolute-difference oracle
@@ -388,7 +389,7 @@ interface FpNPlan extends LeafPlan {
 }
 
 /** Builds an FpN codec for a given absolute tolerance (default: native's 0.01). */
-export function makeFpNLeafCodec(tolerance: number = FPN_DEFAULT_TOLERANCE): LeafCodec {
+export function vdbMakeFpNLeafCodec(tolerance: number = FPN_DEFAULT_TOLERANCE): VDBLeafCodec {
   return {
     layout: FPN_LAYOUT,
     planLeaf(values): FpNPlan {

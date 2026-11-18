@@ -24,19 +24,18 @@
  * filling, never the whole file. Emitted images are handed off (a fresh buffer
  * per grid, 4-byte aligned, so `image` is a zero-copy `Uint32Array`).
  *
- * Errors are `NvdbFormatError` (a `VdbFormatError`) for malformed or
- * truncated data and `VdbUnsupportedError` for valid data out of scope
+ * Errors are `NvdbFormatError` (a `VDBToolsError`) for malformed or
+ * truncated data and `VDBUnsupportedError` for valid data out of scope
  * (BLOSC, a raw `NanoVDB1` grid buffer, unsupported grid types). After an
  * error the reader is failed: every later `push` rethrows it.
  */
 
-import { VdbFormatError, VdbUnsupportedError } from "./vdb/errors.js";
+import { NvdbFormatError, VDBToolsError, VDBUnsupportedError } from "./errors.js";
 import {
-  Codec,
+  NvdbCodec,
   FILE_HEADER_SIZE,
   FILE_METADATA_SIZE,
   GRID_DATA_SIZE,
-  NvdbFormatError,
   assertSafeGridSize,
   decodeCString,
   finishGridRecord,
@@ -47,7 +46,7 @@ import {
   readFileHeader,
   readFileMetaData,
   validateGridType,
-  type GridMetadata,
+  type NvdbGridMetadata,
   type ParsedFileMetaData,
 } from "./nvdb-file.js";
 
@@ -102,7 +101,7 @@ export function nvdbResponseLength(response: { headers: { get(name: string): str
 export interface NvdbStreamGrid {
   /** Grid number in the file (counted across segments). */
   index: number;
-  metadata: GridMetadata;
+  metadata: NvdbGridMetadata;
   /** The decoded grid image (zero-copy view of a buffer of its own). */
   image: Uint32Array;
   /** File bytes pushed when this grid completed (the end of its data). */
@@ -129,7 +128,7 @@ const LOD_SUFFIX = /^(.*)\.lod(\d+)$/;
 /** The preview name for `name` at `resolution`: `<name>.lod<resolution>` (K4.5). */
 export function nvdbLodName(name: string, resolution: number): string {
   if (!Number.isInteger(resolution) || resolution < 1) {
-    throw new Error(`nvdbLodName: resolution must be a positive integer, got ${resolution}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `nvdbLodName: resolution must be a positive integer, got ${resolution}`);
   }
   return `${name}.lod${resolution}`;
 }
@@ -166,7 +165,7 @@ export class NvdbStreamReader {
   #filled = 0;
 
   #phase: Phase = "header";
-  #codec: Codec = Codec.NONE;
+  #codec: NvdbCodec = NvdbCodec.NONE;
   #segmentGrids = 0;
   #pending: PendingGrid[] = [];
   #nextMeta: ParsedFileMetaData | null = null;
@@ -175,21 +174,21 @@ export class NvdbStreamReader {
   #segments = 0;
   #emitted = 0;
   #failed: Error | null = null;
-  readonly #grids: GridMetadata[] = [];
+  readonly #grids: NvdbGridMetadata[] = [];
 
   constructor(options: NvdbStreamReaderOptions = {}) {
     this.#maxGridBytes = options.maxGridBytes ?? DEFAULT_MAX_GRID_BYTES;
     this.#maxNameBytes = options.maxNameBytes ?? DEFAULT_MAX_NAME_BYTES;
     if (!Number.isSafeInteger(this.#maxGridBytes) || this.#maxGridBytes < GRID_DATA_SIZE) {
-      throw new Error(`NvdbStreamReader: maxGridBytes must be an integer >= ${GRID_DATA_SIZE}`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `NvdbStreamReader: maxGridBytes must be an integer >= ${GRID_DATA_SIZE}`);
     }
     if (!Number.isSafeInteger(this.#maxNameBytes) || this.#maxNameBytes < 1) {
-      throw new Error("NvdbStreamReader: maxNameBytes must be a positive integer");
+      throw new VDBToolsError("VDB_BAD_OPTION", "NvdbStreamReader: maxNameBytes must be a positive integer");
     }
     this.#onProgress = options.onProgress;
     this.#declaredTotal = options.bytesTotal ?? null;
     if (this.#declaredTotal !== null && (!Number.isSafeInteger(this.#declaredTotal) || this.#declaredTotal < 0)) {
-      throw new Error("NvdbStreamReader: bytesTotal must be a non-negative integer");
+      throw new VDBToolsError("VDB_BAD_OPTION", "NvdbStreamReader: bytesTotal must be a non-negative integer");
     }
     this.#target = this.#scratch.subarray(0, FILE_HEADER_SIZE);
   }
@@ -220,7 +219,7 @@ export class NvdbStreamReader {
    * any data, so the full grid's `gridByteSize` is known before its preview
    * is emitted). Names are as stored; see {@link parseNvdbLodName}.
    */
-  get grids(): readonly GridMetadata[] {
+  get grids(): readonly NvdbGridMetadata[] {
     return this.#grids;
   }
 
@@ -246,7 +245,7 @@ export class NvdbStreamReader {
       // A zero-length target (an empty name) completes without bytes.
       while (this.#target.byteLength === 0 && this.#filled === 0 && this.#phase !== "header") this.#advance(out);
     } catch (err) {
-      this.#failed = err instanceof VdbFormatError || err instanceof VdbUnsupportedError ? err : new NvdbFormatError((err as Error).message);
+      this.#failed = err instanceof VDBToolsError ? err : new NvdbFormatError((err as Error).message);
       throw this.#failed;
     }
     if (this.#onProgress && chunk.byteLength > 0) this.#onProgress(this.progress);
@@ -295,8 +294,8 @@ export class NvdbStreamReader {
         const magic = String.fromCharCode(...this.#scratch.subarray(0, 8));
         if (!isFileHeaderMagic(magic)) {
           if (magic === "NanoVDB1") {
-            throw new VdbUnsupportedError(
-              ".nvdb stream: this is a raw NanoVDB grid buffer (magic NanoVDB1), not a segment file; read it whole with NanoVDBFile.fromArrayBuffer.",
+            throw new VDBUnsupportedError(
+              ".nvdb stream: this is a raw NanoVDB grid buffer (magic NanoVDB1), not a segment file; read it whole with NvdbFile.fromArrayBuffer.",
             );
           }
           throw new NvdbFormatError(
@@ -304,12 +303,12 @@ export class NvdbStreamReader {
           );
         }
         const view = new DataView(this.#scratch.buffer, 0, FILE_HEADER_SIZE);
-        let header: { gridCount: number; codec: Codec };
+        let header: { gridCount: number; codec: NvdbCodec };
         try {
           header = readFileHeader(view, 0);
         } catch (err) {
           const msg = (err as Error).message;
-          if (/BLOSC/.test(msg)) throw new VdbUnsupportedError(msg);
+          if (/BLOSC/.test(msg)) throw new VDBUnsupportedError(msg);
           throw new NvdbFormatError(msg);
         }
         if (header.gridCount === 0) throw new NvdbFormatError(`segment #${this.#segments} declares 0 grids.`);
@@ -348,7 +347,7 @@ export class NvdbStreamReader {
         try {
           validateGridType(gridType, name);
         } catch (err) {
-          throw new VdbUnsupportedError((err as Error).message);
+          throw new VDBUnsupportedError((err as Error).message);
         }
         this.#pending.push({ meta, name });
         this.#grids.push({
@@ -388,7 +387,7 @@ export class NvdbStreamReader {
         const k = this.#gridInSegment;
         const index = this.#segmentFirst() + k;
         const { meta, name } = this.#pending[k]!;
-        const bytes = this.#codec === Codec.ZIP ? inflateZipGrid(this.#target, meta.gridSize, index, name) : this.#target;
+        const bytes = this.#codec === NvdbCodec.ZIP ? inflateZipGrid(this.#target, meta.gridSize, index, name) : this.#target;
         const record = finishGridRecord(meta, name, index, bytes);
         this.#grids[index] = record.metadata;
         const { baseName, lod } = parseNvdbLodName(name);
@@ -407,7 +406,7 @@ export class NvdbStreamReader {
 
   #startGrid(): void {
     const { meta } = this.#pending[this.#gridInSegment]!;
-    if (this.#codec === Codec.ZIP) this.#expect("zipPrefix", this.#scratch.subarray(0, ZIP_PREFIX));
+    if (this.#codec === NvdbCodec.ZIP) this.#expect("zipPrefix", this.#scratch.subarray(0, ZIP_PREFIX));
     else this.#expect("grid", new Uint8Array(meta.gridSize));
   }
 }
@@ -433,7 +432,7 @@ export async function* readNvdbStream(
 ): AsyncGenerator<NvdbStreamGrid, void, undefined> {
   if (isResponse(source)) {
     const len = nvdbResponseLength(source);
-    if (source.body === null) throw new VdbFormatError("readNvdbStream: the response has no body.");
+    if (source.body === null) throw new NvdbFormatError("readNvdbStream: the response has no body.");
     options = len !== null && options.bytesTotal === undefined ? { ...options, bytesTotal: len } : options;
     source = source.body;
   }

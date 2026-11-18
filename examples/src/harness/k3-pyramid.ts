@@ -1,5 +1,5 @@
 /**
- * K3.2a harness: the sparse source's coarse pyramid built on the GPU (core `createBoxPyramid`)
+ * K3.2a harness: the sparse source's coarse pyramid built on the GPU (core `vdbCreateBoxPyramid`)
  * against its CPU twin (tools `vdbBoxPyramid` + three's `DataUtils.toHalfFloat`, the K3.2 path),
  * texel for texel on the r16f textures, plus build times and bytes.
  *
@@ -21,9 +21,9 @@
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
-import { VDBGridPool, createBoxPyramid, type VDBBoxPyramidGpu } from "@pmndrs/vdb";
+import { VDBGridPool, vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "@pmndrs/vdb";
 import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, getGPUTexture, vdbSparseSource } from "@pmndrs/vdb/three";
-import { NanoVDBFile, buildFromVdb, parseVdb, readWvdb, vdbBoxPyramid, wvdbDenseToNanoVdb, wvdbDenseVolume } from "@pmndrs/vdb/tools";
+import { NvdbFile, buildFromVdb, parseVdb, readWvdb, vdbBoxPyramid, wvdbDenseToNvdb, wvdbDenseVolume } from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
 type Vec3 = [number, number, number];
@@ -126,7 +126,7 @@ interface Asset {
 async function loadAsset(name: string): Promise<Asset> {
   if (name === "cloud04" || name === "bunny") {
     const url = name === "cloud04" ? cloudWvdbUrl : "/fixtures/k3/bunny_cloud.wvdb";
-    const grid = wvdbDenseToNanoVdb(wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(url))), { mipmaps: false }));
+    const grid = wvdbDenseToNvdb(wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(url))), { mipmaps: false }));
     return { image: grid.image, indexBox: grid.textureIndexBox };
   }
   if (name === "smoke" || name === "spherels") {
@@ -135,8 +135,8 @@ async function loadAsset(name: string): Promise<Asset> {
     return { image: buildFromVdb(file.grids.find((g) => g.valueType === "float")!) };
   }
   const primitive: Record<string, string> = { sphere: "sphere_fog_float", sphere8: "sphere_fog_fp8", spherefpn: "sphere_fog_fpn", torus: "torus_fog_float" };
-  if (primitive[name]) return { image: NanoVDBFile.fromArrayBuffer(await fetchBytes(`/fixtures/primitives/${primitive[name]}.nvdb`)).gridImage(0) };
-  if (name === "wdas") return { image: NanoVDBFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0) };
+  if (primitive[name]) return { image: NvdbFile.fromArrayBuffer(await fetchBytes(`/fixtures/primitives/${primitive[name]}.nvdb`)).gridImage(0) };
+  if (name === "wdas") return { image: NvdbFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0) };
   throw new Error(`unknown asset ${name}`);
 }
 
@@ -241,7 +241,7 @@ async function main(): Promise<void> {
       cpuRuns.push(cpu.ms);
     }
 
-    const pyramid = createBoxPyramid(device, pool, id, { indexBox, ...(pyramidMax !== undefined ? { pyramidMax } : {}) });
+    const pyramid = vdbCreateBoxPyramid(device, pool, id, { indexBox, ...(pyramidMax !== undefined ? { pyramidMax } : {}) });
     device.pushErrorScope("validation");
     const encoder = device.createCommandEncoder();
     pyramid.record(encoder);
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
     await device.queue.onSubmittedWorkDone();
     const scopeError = await device.popErrorScope();
     const pipelineError = await pyramid.error;
-    if (scopeError || pipelineError) throw new Error(`createBoxPyramid ${spec}: ${(scopeError ?? pipelineError)!.message}`);
+    if (scopeError || pipelineError) throw new Error(`vdbCreateBoxPyramid ${spec}: ${(scopeError ?? pipelineError)!.message}`);
     const { base, atlas } = await checkAgainstCpu(device, pyramid, cpu);
 
     // Timed rebuilds (the first build above was the warm-up: pipeline creation).
@@ -380,7 +380,7 @@ async function threeCheck(device: GPUDevice): Promise<void> {
   const half = wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(cloudWvdbUrl))), { mipmaps: false });
   const halfData = half.density.data as Uint8Array;
   for (let i = 0; i < halfData.length; i++) halfData[i] = halfData[i]! >> 1;
-  const next = wvdbDenseToNanoVdb(half).image;
+  const next = wvdbDenseToNvdb(half).image;
   const versionBefore = gpuSource.version;
   pool.replace(id, next);
   pool.flush();

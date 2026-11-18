@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { probePoints } from "../../src/tools/cpu/probe-coords.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { sampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
 import { defineNumber, gridTypeConstantsFor } from "../../src/tools/cpu/stride-tables.js";
 
 /**
@@ -14,7 +14,7 @@ import { defineNumber, gridTypeConstantsFor } from "../../src/tools/cpu/stride-t
  *
  * `.nvdb` slicing here mirrors `test/cpu-read-value.test.ts`'s test-local
  * `extractGridImage` (a stand-in for the concurrently-developed
- * `NanoVDBFile` loader, src/tools/nvdb-file.ts).
+ * `NvdbFile` loader, src/tools/nvdb-file.ts).
  */
 
 const FILE_HEADER_SIZE = 16;
@@ -36,7 +36,7 @@ interface Sidecar {
   samples: Sample[];
 }
 
-/** Test-local `.nvdb` parser — a stand-in for `NanoVDBFile` (Phase 1). */
+/** Test-local `.nvdb` parser — a stand-in for `NvdbFile` (Phase 1). */
 function extractGridImage(buffer: ArrayBuffer): Uint32Array {
   const view = new DataView(buffer);
 
@@ -86,14 +86,14 @@ async function loadFixture(name: string): Promise<{ words: Uint32Array; sidecar:
 }
 
 describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (sphere_fog_float)", () => {
-  it("at integer coords, sampleTrilinear equals readValue's value for a dozen sidecar coords", async () => {
+  it("at integer coords, vdbSampleTrilinear equals readValue's value for a dozen sidecar coords", async () => {
     const { words, sidecar } = await loadFixture("sphere_fog_float");
     const dozen = sidecar.samples.slice(0, 12);
     expect(dozen.length).toBe(12);
 
     for (const sample of dozen) {
-      const expected = readValue(words, sample.ijk).value;
-      const got = sampleTrilinear(words, sample.ijk);
+      const expected = vdbReadValueCpu(words, sample.ijk).value;
+      const got = vdbSampleTrilinear(words, sample.ijk);
       expect(got, `ijk=${JSON.stringify(sample.ijk)}`).toBeCloseTo(expected, 5);
     }
   });
@@ -114,14 +114,14 @@ describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (
     ];
 
     for (const [a, b] of pairs) {
-      const va = readValue(words, a).value;
-      const vb = readValue(words, b).value;
+      const va = vdbReadValueCpu(words, a).value;
+      const vb = vdbReadValueCpu(words, b).value;
       const midpoint: [number, number, number] = [
         (a[0] + b[0]) / 2,
         (a[1] + b[1]) / 2,
         (a[2] + b[2]) / 2,
       ];
-      const got = sampleTrilinear(words, midpoint);
+      const got = vdbSampleTrilinear(words, midpoint);
       expect(got, `midpoint of ${JSON.stringify(a)} / ${JSON.stringify(b)}`).toBeCloseTo(
         (va + vb) / 2,
         5,
@@ -151,14 +151,14 @@ describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (
       for (const dx of [0, 1] as const) {
         for (const dy of [0, 1] as const) {
           for (const dz of [0, 1] as const) {
-            const v = readValue(words, [bx + dx, by + dy, bz + dz]).value;
+            const v = vdbReadValueCpu(words, [bx + dx, by + dy, bz + dz]).value;
             lo = Math.min(lo, v);
             hi = Math.max(hi, v);
           }
         }
       }
 
-      const got = sampleTrilinear(words, xyz);
+      const got = vdbSampleTrilinear(words, xyz);
       const epsilon = 1e-4;
       expect(got, `xyz=${JSON.stringify(xyz)} got=${got} lo=${lo} hi=${hi}`).toBeGreaterThanOrEqual(
         lo - epsilon,
@@ -186,11 +186,11 @@ describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (
     const background = f32[(rootAddress + gt.root_off_background) / 4]!;
 
     const deepOutside: [number, number, number] = [1_000_000.37, 1_000_000.5, 1_000_000.9];
-    const got = sampleTrilinear(words, deepOutside);
+    const got = vdbSampleTrilinear(words, deepOutside);
     expect(got).toBe(background);
 
     // Sanity: readValue at the same integer taps is also background (inactive).
-    const base = readValue(words, [1_000_000, 1_000_000, 1_000_000]);
+    const base = vdbReadValueCpu(words, [1_000_000, 1_000_000, 1_000_000]);
     expect(base.active).toBe(false);
     expect(base.value).toBe(background);
   });

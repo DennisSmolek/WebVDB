@@ -8,7 +8,7 @@ import {
   wvdbDensityScale,
   type WvdbDenseVolume,
   type WvdbVec3,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { vdbDenseSource } from "../../src/core/index.js";
 import { vdbDenseTextures, vdbVolumeUniforms } from "../../src/three/index.js";
 import { bytesEqual, fixture, hisAsset, readBytes } from "./wvdb-helpers.js";

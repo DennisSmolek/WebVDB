@@ -5,7 +5,7 @@
  * ## Conventions
  *
  * Voxels are centred at integer index coordinates, the convention of the CPU
- * oracle's `readValue`/`sampleTrilinear` (and the WGSL sampler), and of
+ * oracle's `readValue`/`vdbSampleTrilinear` (and the WGSL sampler), and of
  * mjurczyk's `.wvdb` bake (`Math.round` in index space). Voxel `i` therefore
  * covers the index interval `[i - 0.5, i + 0.5]`.
  *
@@ -42,7 +42,7 @@
  *   flickering in or out with the sampling phase. A downsample by 2 on an
  *   aligned box is the exact 2x2x2 mean.
  * - `'trilinear'`: the trilinear interpolation of the source at the target
- *   voxel centre (`sampleTrilinear`). Smooth for upsampling and small ratios;
+ *   voxel centre (`vdbSampleTrilinear`). Smooth for upsampling and small ratios;
  *   aliases like `'point'` at large downsampling ratios.
  *
  * ## Sparsity
@@ -55,11 +55,12 @@
  * texture sampler would see).
  */
 
-import { readValue } from "../cpu/read-value.js";
+import { VDBToolsError, VDBUnsupportedError } from "../errors.js";
+import { vdbReadValueCpu } from "../cpu/read-value.js";
 import { gridTypeConstantsForId } from "../cpu/stride-tables.js";
 import { leafVoxels, treeNodes } from "../cpu/march.js";
 import type { VdbFile, VdbFloatGrid, VdbGrid } from "../vdb/types.js";
-import { sampleTrilinear } from "../cpu/sample-trilinear.js";
+import { vdbSampleTrilinear } from "../cpu/sample-trilinear.js";
 import {
   GRID_NAME_MAX,
   GRID_OFF_GRID_CLASS,
@@ -72,19 +73,19 @@ import {
   MAP_OFF_VECD,
   TREE_OFF_NODE_OFFSET_ROOT,
 } from "./bytes.js";
-import { FLOAT_LEAF_CODEC } from "./leaf-codec.js";
-import { quantizeDetailed, type QuantizeMode } from "./quantize.js";
-import { buildFromLeavesDetailed, type BuiltGrid, type GridClassName } from "./serialize.js";
+import { VDB_FLOAT_LEAF_CODEC } from "./leaf-codec.js";
+import { vdbQuantizeDetailed, type VDBQuantizeMode } from "./quantize.js";
+import { vdbBuildFromLeavesDetailed, type VDBBuiltGrid, type GridClassName } from "./serialize.js";
 import type { LeafInput } from "./tree.js";
 
 type Vec3 = [number, number, number];
 
-export type ResampleFilter = "point" | "box" | "trilinear";
+export type VDBResampleFilter = "point" | "box" | "trilinear";
 
 /** A NanoVDB FLOAT/Fp8/FpN grid image, a parsed `.vdb` float grid, or a parsed `.vdb` file. */
-export type ResampleSource = Uint32Array | VdbGrid | VdbFile;
+export type VDBResampleSource = Uint32Array | VdbGrid | VdbFile;
 
-export interface ResampleOptions {
+export interface VDBResampleOptions {
   /** Voxels on the longest side of the box; uniform voxels. */
   resolution?: number;
   /** Target voxel size in world units: uniform, or `[x, y, z]` (anisotropic). */
@@ -92,7 +93,7 @@ export interface ResampleOptions {
   /** Target voxels per axis; voxel size = box size / dims per axis. */
   dimensions?: Vec3;
   /** Default `'box'`. */
-  filter?: ResampleFilter;
+  filter?: VDBResampleFilter;
   /** World box `[min, max]`. Default: the source's active cell box. */
   bbox?: [Vec3, Vec3];
   /**
@@ -101,7 +102,7 @@ export interface ResampleOptions {
    */
   cutoff?: number;
   /** Quantize the result (via `quantize`). Default: FLOAT. */
-  quantize?: QuantizeMode;
+  quantize?: VDBQuantizeMode;
   /** FpN tolerance (`quantize`'s, default 0.01). */
   tolerance?: number;
   /** Which grid of a `VdbFile` to resample. Default: the first float grid. */
@@ -119,12 +120,12 @@ export interface ResampleOptions {
   collapse?: boolean;
 }
 
-export interface ResampledGrid extends BuiltGrid {
+export interface VDBResampledGrid extends VDBBuiltGrid {
   /** Target voxels per axis (the index box is `[0, dims - 1]`). */
   dimensions: Vec3;
   /** The world box that was resampled (grown to whole voxels for `resolution`/`voxelSize`). */
   bbox: [Vec3, Vec3];
-  filter: ResampleFilter;
+  filter: VDBResampleFilter;
   /** Source voxel size per axis. */
   sourceVoxelSize: Vec3;
 }
@@ -165,7 +166,7 @@ function blockKey(bx: number, by: number, bz: number): number {
   const y = by + KEY_OFF;
   const z = bz + KEY_OFF;
   if (x < 0 || y < 0 || z < 0 || x >= KEY_SPAN || y >= KEY_SPAN || z >= KEY_SPAN) {
-    throw new Error(`resampleGrid: index coordinate block [${bx}, ${by}, ${bz}] is outside the supported range (|ijk| < 2^19)`);
+    throw new VDBUnsupportedError(`vdbResampleGrid: index coordinate block [${bx}, ${by}, ${bz}] is outside the supported range (|ijk| < 2^19)`);
   }
   return (x * KEY_SPAN + y) * KEY_SPAN + z;
 }
@@ -206,7 +207,7 @@ function fieldFromNanoVdb(image: Uint32Array): SourceField {
   const inv = Array.from({ length: 9 }, (_, i) => view.getFloat64(GRID_OFF_MAP + MAP_OFF_INVMATD + i * 8, true));
   const vec = Array.from({ length: 3 }, (_, i) => view.getFloat64(GRID_OFF_MAP + MAP_OFF_VECD + i * 8, true));
   if ([1, 2, 3, 5, 6, 7].some((i) => mat[i] !== 0) || !(mat[0]! > 0 && mat[4]! > 0 && mat[8]! > 0)) {
-    throw new Error(`resampleGrid: grid "${name}" has a rotated, sheared or flipped Map; only positive axis-aligned maps are supported`);
+    throw new VDBUnsupportedError(`vdbResampleGrid: grid "${name}" has a rotated, sheared or flipped Map; only positive axis-aligned maps are supported`);
   }
   const root = GRID_SIZE + Number(view.getBigUint64(GRID_SIZE + TREE_OFF_NODE_OFFSET_ROOT, true));
   const background = view.getFloat32(root + gridTypeConstantsForId(gridType).root_off_background, true);
@@ -229,21 +230,21 @@ function fieldFromNanoVdb(image: Uint32Array): SourceField {
     inverse: [inv[0]!, inv[4]!, inv[8]!],
     leaves,
     tiles,
-    blockValue: cachedBlocks((ijk) => readValue(image, ijk)),
+    blockValue: cachedBlocks((ijk) => vdbReadValueCpu(image, ijk)),
   };
 }
 
 function fieldFromVdbGrid(grid: VdbGrid): SourceField {
   if (grid.valueType !== "float") {
-    throw new Error(`resampleGrid: grid "${grid.name}" is a ${grid.valueType} grid; only float grids can be resampled`);
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", `vdbResampleGrid: grid "${grid.name}" is a ${grid.valueType} grid; only float grids can be resampled`);
   }
   const m = grid.transform.matrix;
   if ([m[1], m[2], m[4], m[6], m[8], m[9]].some((v) => v !== 0)) {
-    throw new Error(`resampleGrid: grid "${grid.name}" has a rotated or sheared map; only axis-aligned maps are supported`);
+    throw new VDBUnsupportedError(`vdbResampleGrid: grid "${grid.name}" has a rotated or sheared map; only axis-aligned maps are supported`);
   }
   const scale: Vec3 = [m[0]!, m[5]!, m[10]!];
   if (!scale.every((v) => v > 0)) {
-    throw new Error(`resampleGrid: grid "${grid.name}" has a non-positive scale ${JSON.stringify(scale)}; only positive axis-aligned maps are supported`);
+    throw new VDBUnsupportedError(`vdbResampleGrid: grid "${grid.name}" has a non-positive scale ${JSON.stringify(scale)}; only positive axis-aligned maps are supported`);
   }
   const leaves = new Map<number, SourceLeaf>();
   for (const leaf of grid.iterLeaves()) {
@@ -272,15 +273,15 @@ function fieldFromVdbGrid(grid: VdbGrid): SourceField {
   };
 }
 
-function toField(source: ResampleSource, sourceGridName?: string): SourceField {
+function toField(source: VDBResampleSource, sourceGridName?: string): SourceField {
   if (source instanceof Uint32Array) return fieldFromNanoVdb(source);
   if ("grids" in source) {
     const grid = sourceGridName
       ? source.grids.find((g) => g.name === sourceGridName)
       : source.grids.find((g) => g.valueType === "float");
     if (!grid) {
-      throw new Error(
-        sourceGridName ? `resampleGrid: no grid named "${sourceGridName}"` : "resampleGrid: the file has no float grid",
+      throw new VDBToolsError("VDB_BAD_OPTION", 
+        sourceGridName ? `vdbResampleGrid: no grid named "${sourceGridName}"` : "vdbResampleGrid: the file has no float grid",
       );
     }
     return fieldFromVdbGrid(grid);
@@ -332,7 +333,7 @@ function snap(v: number): number {
 }
 
 function axisTable(
-  filter: ResampleFilter,
+  filter: VDBResampleFilter,
   dims: number,
   boxMin: number,
   size: number,
@@ -419,7 +420,7 @@ function targetRange(t: AxisTable, i0: number, i1: number): [number, number] {
 }
 
 // ---------------------------------------------------------------------------
-// resampleGrid
+// vdbResampleGrid
 // ---------------------------------------------------------------------------
 
 /**
@@ -427,13 +428,13 @@ function targetRange(t: AxisTable, i0: number, i1: number): [number, number] {
  * NanoVDB FLOAT image (optionally quantized to Fp8/FpN). See the module doc for
  * the conventions, filters and sparsity rule.
  */
-export function resampleGrid(source: ResampleSource, options: ResampleOptions = {}): ResampledGrid {
+export function vdbResampleGrid(source: VDBResampleSource, options: VDBResampleOptions = {}): VDBResampledGrid {
   const filter = options.filter ?? "box";
   if (filter !== "point" && filter !== "box" && filter !== "trilinear") {
-    throw new Error(`resampleGrid: unknown filter "${String(filter)}"`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleGrid: unknown filter "${String(filter)}"`);
   }
   const given = [options.resolution, options.voxelSize, options.dimensions].filter((v) => v !== undefined).length;
-  if (given > 1) throw new Error("resampleGrid: pass at most one of resolution, voxelSize, dimensions");
+  if (given > 1) throw new VDBToolsError("VDB_BAD_OPTION", "vdbResampleGrid: pass at most one of resolution, voxelSize, dimensions");
 
   const field = toField(source, options.sourceGridName);
   const background = options.background ?? field.background;
@@ -463,7 +464,7 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
   }
   const boxSize: Vec3 = [boxMax[0] - boxMin[0], boxMax[1] - boxMin[1], boxMax[2] - boxMin[2]];
   if (boxSize.some((s) => !(s >= 0) || !Number.isFinite(s))) {
-    throw new Error(`resampleGrid: invalid bbox ${JSON.stringify([boxMin, boxMax])}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleGrid: invalid bbox ${JSON.stringify([boxMin, boxMax])}`);
   }
 
   // Target lattice.
@@ -472,15 +473,15 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
   if (options.dimensions) {
     dims = [...options.dimensions];
     if (!dims.every((d) => Number.isInteger(d) && d >= 1)) {
-      throw new Error(`resampleGrid: dimensions must be positive integers, got ${JSON.stringify(dims)}`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleGrid: dimensions must be positive integers, got ${JSON.stringify(dims)}`);
     }
-    if (boxSize.some((s) => s <= 0)) throw new Error("resampleGrid: dimensions need a box with positive size");
+    if (boxSize.some((s) => s <= 0)) throw new VDBToolsError("VDB_BAD_OPTION", "vdbResampleGrid: dimensions need a box with positive size");
     size = [...boxSize];
   } else {
     let vs: Vec3;
     if (options.resolution !== undefined) {
       const r = options.resolution;
-      if (!Number.isInteger(r) || r < 1) throw new Error(`resampleGrid: invalid resolution ${r}`);
+      if (!Number.isInteger(r) || r < 1) throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleGrid: invalid resolution ${r}`);
       const longest = Math.max(...boxSize);
       const v = longest > 0 ? longest / r : srcVoxel[0];
       vs = [v, v, v];
@@ -490,7 +491,7 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
     } else {
       vs = [...srcVoxel];
     }
-    if (!vs.every((v) => Number.isFinite(v) && v > 0)) throw new Error(`resampleGrid: invalid voxel size ${JSON.stringify(vs)}`);
+    if (!vs.every((v) => Number.isFinite(v) && v > 0)) throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleGrid: invalid voxel size ${JSON.stringify(vs)}`);
     dims = [0, 1, 2].map((a) => Math.max(1, Math.ceil(boxSize[a]! / vs[a]! - 1e-9))) as Vec3;
     size = [0, 1, 2].map((a) => dims[a]! * vs[a]!) as Vec3;
   }
@@ -500,7 +501,7 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
 
   const uniform = voxel[0] === voxel[1] && voxel[0] === voxel[2];
   const worldOrigin: Vec3 = [boxMin[0] + voxel[0] / 2, boxMin[1] + voxel[1] / 2, boxMin[2] + voxel[2] / 2];
-  let built = buildFromLeavesDetailed(leaves, FLOAT_LEAF_CODEC, {
+  let built = vdbBuildFromLeavesDetailed(leaves, VDB_FLOAT_LEAF_CODEC, {
     voxelSize: uniform ? voxel[0] : voxel,
     worldOrigin,
     background,
@@ -508,7 +509,7 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
     gridClass: field.gridClass,
     collapse: options.collapse ?? true,
   });
-  if (options.quantize) built = quantizeDetailed(built, options.quantize, options.tolerance);
+  if (options.quantize) built = vdbQuantizeDetailed(built, options.quantize, options.tolerance);
   return { ...built, dimensions: dims, bbox: lattice, filter, sourceVoxelSize: srcVoxel };
 }
 
@@ -520,7 +521,7 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
  */
 function filterLeaves(
   field: SourceField,
-  filter: ResampleFilter,
+  filter: VDBResampleFilter,
   dims: Vec3,
   boxMin: Vec3,
   size: Vec3,
@@ -568,41 +569,41 @@ function filterLeaves(
   return leaves;
 }
 
-export interface ResampleDenseOptions {
+export interface VDBResampleDenseOptions {
   /** World box `[min, max]`: target voxel `j` is centred at `min + ((j + 0.5) / dims) * (max - min)`. */
   bbox: [Vec3, Vec3];
   /** Target voxels per axis. */
   dimensions: Vec3;
   /** Default `'box'`. */
-  filter?: ResampleFilter;
+  filter?: VDBResampleFilter;
   /** Which grid of a `VdbFile`. Default: the first float grid. */
   sourceGridName?: string;
 }
 
 /**
- * {@link resampleGrid}'s filters onto a dense lattice (the `.wvdb` bake's,
+ * {@link vdbResampleGrid}'s filters onto a dense lattice (the `.wvdb` bake's,
  * K4.13): `values` x fastest (`x + y*X + z*X*Y`), `active` 1 where the target
  * voxel's footprint touches an active source voxel. Voxels in no emitted leaf
  * (the footprint touches no active source voxel) hold the source background.
- * Unlike `resampleGrid`, the box may have zero size on an axis (one voxel
+ * Unlike `vdbResampleGrid`, the box may have zero size on an axis (one voxel
  * thick); that axis samples the nearest source voxel.
  */
-export function resampleDense(
-  source: ResampleSource,
-  options: ResampleDenseOptions,
+export function vdbResampleDense(
+  source: VDBResampleSource,
+  options: VDBResampleDenseOptions,
 ): { values: Float32Array; active: Uint8Array; background: number } {
   const filter = options.filter ?? "box";
   if (filter !== "point" && filter !== "box" && filter !== "trilinear") {
-    throw new Error(`resampleDense: unknown filter "${String(filter)}"`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleDense: unknown filter "${String(filter)}"`);
   }
   const dims: Vec3 = [...options.dimensions];
   if (!dims.every((d) => Number.isInteger(d) && d >= 1)) {
-    throw new Error(`resampleDense: dimensions must be positive integers, got ${JSON.stringify(dims)}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleDense: dimensions must be positive integers, got ${JSON.stringify(dims)}`);
   }
   const boxMin: Vec3 = [...options.bbox[0]];
   const size: Vec3 = [0, 1, 2].map((a) => options.bbox[1][a]! - boxMin[a]!) as Vec3;
   if (!size.every((v) => v >= 0 && Number.isFinite(v)) || !boxMin.every(Number.isFinite)) {
-    throw new Error(`resampleDense: invalid bbox ${JSON.stringify(options.bbox)}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `vdbResampleDense: invalid bbox ${JSON.stringify(options.bbox)}`);
   }
   const field = toField(source, options.sourceGridName);
   const background = field.background;
@@ -777,14 +778,14 @@ function filterLeaf(
 // Error metric (research/INDEX comparison)
 // ---------------------------------------------------------------------------
 
-export interface ResampleErrorOptions {
+export interface VDBResampleErrorOptions {
   /** Use every `stride`-th active source voxel (leaf order). Default 7, as in the comparison report. */
   stride?: number;
   /** Which grid of a `VdbFile`. Default: the first float grid. */
   sourceGridName?: string;
 }
 
-export interface ResampleErrorResult {
+export interface VDBResampleErrorResult {
   /** Mean |target − source| over the sampled active source voxels. */
   meanAbsError: number;
   /** Mean source value over the same voxels. */
@@ -799,14 +800,14 @@ export interface ResampleErrorResult {
  * The error metric of the mjurczyk comparison (research/INDEX): mean absolute
  * difference over every `stride`-th active source voxel, as a percentage of the
  * mean source value there. The target (any NanoVDB FLOAT/Fp8/FpN image with an
- * axis-aligned Map) is read back with `sampleTrilinear` at each source voxel
+ * axis-aligned Map) is read back with `vdbSampleTrilinear` at each source voxel
  * centre. Active tiles are not sampled (leaves only).
  */
-export function resampleError(
-  source: ResampleSource,
+export function vdbResampleError(
+  source: VDBResampleSource,
   target: Uint32Array,
-  options: ResampleErrorOptions = {},
-): ResampleErrorResult {
+  options: VDBResampleErrorOptions = {},
+): VDBResampleErrorResult {
   const stride = options.stride ?? 7;
   const field = toField(source, options.sourceGridName);
   const view = new DataView(target.buffer, target.byteOffset, target.byteLength);
@@ -830,7 +831,7 @@ export function resampleError(
         xyz[a] = (world - tVec[a]!) * tInv[a]!;
       }
       const src = leaf.values[n]!;
-      sumAbs += Math.abs(sampleTrilinear(target, xyz) - src);
+      sumAbs += Math.abs(vdbSampleTrilinear(target, xyz) - src);
       sumVal += src;
       count++;
     }

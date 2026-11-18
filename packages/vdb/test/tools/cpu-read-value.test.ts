@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { readLeafQuantum, readValue } from "../../src/tools/cpu/read-value.js";
+import { readLeafQuantum, vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
 import { defineNumber, gridTypeConstantsFor } from "../../src/tools/cpu/stride-tables.js";
 
 /**
@@ -17,8 +17,8 @@ import { defineNumber, gridTypeConstantsFor } from "../../src/tools/cpu/stride-t
  *   raw grid image (gridSize bytes) — a self-contained NanoVDB GridData block
  *
  * `extractGridImage` below is test-local scaffolding standing in for the
- * concurrently-developed `NanoVDBFile` loader (src/tools/nvdb-file.ts, Phase 1);
- * replace this with `NanoVDBFile` once that lands.
+ * concurrently-developed `NvdbFile` loader (src/tools/nvdb-file.ts, Phase 1);
+ * replace this with `NvdbFile` once that lands.
  */
 
 const FILE_HEADER_SIZE = 16;
@@ -39,7 +39,7 @@ interface Sidecar {
   samples: Sample[];
 }
 
-/** Test-local `.nvdb` parser — a stand-in for `NanoVDBFile` (Phase 1). */
+/** Test-local `.nvdb` parser — a stand-in for `NvdbFile` (Phase 1). */
 function extractGridImage(buffer: ArrayBuffer): Uint32Array {
   const view = new DataView(buffer);
 
@@ -128,7 +128,7 @@ describe.skipIf(!fixturesPresent)("cpu readValue vs. baked ground-truth sidecars
 
       let passCount = 0;
       for (const sample of sidecar.samples) {
-        const result = readValue(words, sample.ijk);
+        const result = vdbReadValueCpu(words, sample.ijk);
         expect(result.active, `${name} ${JSON.stringify(sample.ijk)} active`).toBe(sample.active);
         expect(
           Math.abs(result.value - sample.value),
@@ -144,7 +144,7 @@ describe.skipIf(!fixturesPresent)("cpu readValue vs. baked ground-truth sidecars
     const { words } = await loadFixture("sphere_fog_float");
 
     const farAway: [number, number, number] = [1_000_000, 1_000_000, 1_000_000];
-    const result = readValue(words, farAway);
+    const result = vdbReadValueCpu(words, farAway);
     expect(result.active).toBe(false);
 
     // Independently read root_off_background to avoid a tautological check
@@ -180,6 +180,6 @@ describe.skipIf(!fixturesPresent)("cpu readValue vs. baked ground-truth sidecars
     const mutated = words.slice();
     // Word 159 = PNANOVDB_GRID_OFF_GRID_TYPE / 4. Flip FLOAT (1) to DOUBLE (2).
     mutated[159] = 2;
-    expect(() => readValue(mutated, [0, 0, 0])).toThrowError(/unsupported grid type/i);
+    expect(() => vdbReadValueCpu(mutated, [0, 0, 0])).toThrowError(/unsupported grid type/i);
   });
 });

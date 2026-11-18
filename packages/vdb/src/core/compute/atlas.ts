@@ -1,7 +1,7 @@
 /**
  * `decodeToAtlas`: dense decode of one pool grid's index bbox into a flat f32
  * array (x fastest), recorded into the host's encoder (K2.3, ported from v1
- * `three/compute.ts`). CPU twin: `decodeToAtlasCpu` + `atlasFromRaw` in
+ * `three/compute.ts`). CPU twin: `vdbDecodeToAtlasCpu` + `atlasFromRaw` in
  * `@pmndrs/vdb/tools`.
  *
  * One thread per output voxel samples the index bbox at
@@ -42,9 +42,9 @@ import {
   type KernelSource,
   type VDBReadback,
 } from "./shared.js";
-import { atlasDims, atlasFromRaw, bboxSize, type AtlasFilter, type AtlasFormat } from "../../tools/cpu/compute.js";
+import { atlasDims, atlasFromRaw, bboxSize, type VDBAtlasFilter, type VDBAtlasFormat } from "../../tools/cpu/compute.js";
 
-export type { AtlasFilter, AtlasFormat };
+export type { VDBAtlasFilter, VDBAtlasFormat };
 
 const W = WORKGROUP_AXIS;
 
@@ -75,14 +75,14 @@ fn csAtlas(@builtin(global_invocation_id) gid: vec3u) {
 `,
 };
 
-/** Options of {@link decodeToAtlas} (v1's, plus `encoder` and `readback`). */
+/** Options of {@link vdbDecodeToAtlasGpu} (v1's, plus `encoder` and `readback`). */
 export interface VDBDecodeToAtlasOptions {
   /** Per-axis output resolution cap (a literal clamp, not a proportional downscale). Default 256. */
   maxDim?: number;
   /** Default `'trilinear'`. */
-  filter?: AtlasFilter;
+  filter?: VDBAtlasFilter;
   /** Element type of `read()`'s `data`. Default `'uint8'`. */
-  format?: AtlasFormat;
+  format?: VDBAtlasFormat;
   /** Map `range` to `[0, 1]` (`float32`) or `[0, 255]` (`uint8`) in `read()`. Default `true`. */
   normalize?: boolean;
   /** Normalization range. Default: the grid's root min/max statistics (`pool.info(id).rootMin/rootMax`). */
@@ -139,7 +139,7 @@ function checkAtlasOptions(o: VDBDecodeToAtlasOptions): void {
  * `gridStats`). The tool frees only its own parameter, output and readback
  * buffers.
  */
-export function decodeToAtlas(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBDecodeToAtlasOptions = {}): VDBAtlasReadback {
+export function vdbDecodeToAtlasGpu(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBDecodeToAtlasOptions = {}): VDBAtlasReadback {
   checkAtlasOptions(options);
   const info = checkTarget(WHERE, device, pool, gridId);
   const maxDim = options.maxDim ?? 256;

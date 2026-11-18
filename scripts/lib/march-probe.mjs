@@ -12,7 +12,7 @@
 //             level, voxel, active), max exact, t within 1e-5 relative
 //   nodeMax   vdbNodeMax at active voxels of the Fp grids (leaf stats fix), dims 8/128/4096/2^20
 //   dead      ids 1 (removed) and 99 (out of range): no ray hit, type 0, empty bbox, zero transforms
-//   zero      vdbSample with outside 'zero', trilinear and nearest, on id 4 vs sampleTrilinear/sampleNearest
+//   zero      vdbSample with outside 'zero', trilinear and nearest, on id 4 vs vdbSampleTrilinear/vdbSampleNearest
 
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -43,13 +43,13 @@ function rng(seed) {
 /** Builds the probe inputs in Node. Returns what the page needs and what Node compares against. */
 export async function buildMarchProbe() {
   const core = await import(path.join(ROOT, "packages/vdb/dist/core/index.js"));
-  const tools = await import(path.join(ROOT, "packages/vdb/dist/tools/index.js"));
+  const tools = await import(path.join(ROOT, "packages/vdb/dist/tools/internal.js"));
   const images = FIXTURES.map((n) => {
     if (n === null) return null;
     const buf = readFileSync(path.join(ROOT, `fixtures/primitives/${n}.nvdb`));
-    return tools.NanoVDBFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)).gridImage(0);
+    return tools.NvdbFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)).gridImage(0);
   });
-  images.push(tools.buildFromDense(new Float32Array(512).fill(1), [8, 8, 8], { background: 3 }));
+  images.push(tools.vdbBuildFromDense(new Float32Array(512).fill(1), [8, 8, 8], { background: 3 }));
 
   // Rays: index space (identity transforms are not needed: the walk works on index-space rays).
   const rays = [];
@@ -92,8 +92,8 @@ export async function buildMarchProbe() {
   for (let k = 0; k < 64; k++) samplePoints.push([-2 + 12 * r(), -2 + 12 * r(), -2 + 12 * r()].map(Math.fround));
   const zero = { outside: "zero" };
   const sampleWant = {
-    trilinear: samplePoints.map((p) => tools.sampleTrilinear(images[4], p, zero)),
-    nearest: samplePoints.map((p) => tools.sampleNearest(images[4], p, zero)),
+    trilinear: samplePoints.map((p) => tools.vdbSampleTrilinear(images[4], p, zero)),
+    nearest: samplePoints.map((p) => tools.vdbSampleNearest(images[4], p, zero)),
   };
 
   const types = ["float", "fp8", "fpn"];

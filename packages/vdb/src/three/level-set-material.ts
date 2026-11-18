@@ -36,7 +36,7 @@ import * as THREE from "three";
 import { MeshStandardNodeMaterial } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { VDBError } from "../core/errors.js";
-import { getDevice, type ThreeRendererLike } from "./device.js";
+import { getDevice, type VDBThreeRendererLike } from "./device.js";
 import { VDBGridNode, type VDBTslNode } from "./grid-node.js";
 import type { VDBUintUniform } from "./material.js";
 
@@ -139,7 +139,7 @@ export class VDBLevelSetMaterial<TGridId extends number | VDBTslNode = number> e
    * @throws VDBError `VDB_BAD_OPTION` for a `grids` this material can't use, a bad id or cap;
    *   `VDB_UNSUPPORTED_DEVICE` for an uninitialized renderer.
    */
-  constructor(renderer: ThreeRendererLike, grids: VDBGridNode, gridId: TGridId, params: VDBLevelSetMaterialParameters = {}) {
+  constructor(renderer: VDBThreeRendererLike, grids: VDBGridNode, gridId: TGridId, params: VDBLevelSetMaterialParameters = {}) {
     const { sdfToIndex, maxSamples, maxSamplesCap, normalStep, ...standard } = params;
     super(standard);
     this.name = "VDBLevelSetMaterial";

@@ -13,7 +13,7 @@ import {
   wvdbBrickOrigin,
   wvdbBrickTotal,
   wvdbPointLods,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 // Spec references are to mjurczyk/openvdb src/docs/wvdb/README.md (v0.5.x) at 75e7345.
 

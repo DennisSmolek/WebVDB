@@ -1,7 +1,7 @@
 /**
  * `gridStats`: min, max, mean, active-voxel count and a histogram of one pool
  * grid, as compute passes recorded into the host's encoder (K2.3, ported from
- * v1 `three/compute.ts`). CPU twin: `gridStatsCpu` in `@pmndrs/vdb/tools`.
+ * v1 `three/compute.ts`). CPU twin: `vdbGridStatsCpu` in `@pmndrs/vdb/tools`.
  *
  * One thread per voxel of the grid's dense index bbox reads `vdbIsActive` and
  * `vdbReadValue`; inactive voxels are skipped. The histogram spans the root
@@ -105,7 +105,7 @@ fn csStatsDump(@builtin(global_invocation_id) gid: vec3u) {
 `,
 };
 
-/** Options of {@link gridStats}. */
+/** Options of {@link vdbGridStatsGpu}. */
 export interface VDBGridStatsOptions {
   /** Histogram bins over `[rootMin, rootMax]`. Default 256. */
   histogramBins?: number;
@@ -117,7 +117,7 @@ export interface VDBGridStatsOptions {
   encoder?: GPUCommandEncoder;
 }
 
-/** What {@link gridStats} reads back (v1's `GridStatsResult` plus the range). */
+/** What {@link vdbGridStatsGpu} reads back (v1's `GridStatsResult` plus the range). */
 export interface VDBGridStats {
   /** Exact extremes over the active voxels (0 when there are none). */
   min: number;
@@ -151,7 +151,7 @@ const WHERE = "gridStats";
  *   per-voxel outputs (`voxels * 4` bytes each, `voxels * 8` to read back)
  *   exceed `device.limits.maxStorageBufferBindingSize` / `maxBufferSize`.
  */
-export function gridStats(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBGridStatsOptions = {}): VDBReadback<VDBGridStats> {
+export function vdbGridStatsGpu(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBGridStatsOptions = {}): VDBReadback<VDBGridStats> {
   const bins = options.histogramBins ?? DEFAULT_BINS;
   checkPositiveInt(WHERE, "histogramBins", bins);
   const info = checkTarget(WHERE, device, pool, gridId);
@@ -220,7 +220,7 @@ function checkDumpSize(device: GPUDevice, gridId: number, size: readonly [number
       `${WHERE}: grid ${gridId} has a negative root min, so its stats take the dump path (8 B per bbox voxel): ` +
         `${size.join(" x ")} = ${voxels} voxels needs ${each} B per output binding and ${each * 2} B of readback, over this device's ` +
         `maxStorageBufferBindingSize ${binding} / maxBufferSize ${total}. Raise the limits (VDBGridPool.requiredLimits(adapter)) ` +
-        "or compute the stats on the CPU (gridStatsCpu in @pmndrs/vdb/tools).",
+        "or compute the stats on the CPU (vdbGridStatsCpu in @pmndrs/vdb/tools).",
     );
   }
 }

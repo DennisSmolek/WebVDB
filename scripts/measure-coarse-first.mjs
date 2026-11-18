@@ -9,9 +9,9 @@
  * Needs fixtures/vdb-samples/smoke.vdb (`pnpm fixtures:vdb-samples`) and
  * fixtures/wdas/wdas_cloud_quarter.vdb (`pnpm fixtures:wdas`). Sizes are gzip
  * level 9 (Node zlib) of the `.nvdb` file, standing in for HTTP compression as in
- * the comparison report (research/INDEX). Errors are `resampleError`: mean |diff|
+ * the comparison report (research/INDEX). Errors are `vdbResampleError`: mean |diff|
  * over every 7th active source voxel as % of the mean, target read back with
- * `sampleTrilinear`.
+ * `vdbSampleTrilinear`.
  *
  * "Stream offset" = how many gzip bytes of the whole multi-grid file a streaming
  * decoder must receive before the first grid (file header + its metadata + image)
@@ -27,7 +27,7 @@ import { gzipSync } from "node:zlib";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // fflate is a dependency of packages/vdb (pnpm does not hoist it to the root).
 const { Gunzip } = createRequire(path.join(root, "packages/vdb/package.json"))("fflate");
-const T = await import(path.join(root, "packages/vdb/dist/tools/index.js"));
+const T = await import(path.join(root, "packages/vdb/dist/tools/internal.js"));
 
 const KiB = (n) => (n / 1024).toFixed(1);
 const gz = (bytes) => gzipSync(bytes, { level: 9 });
@@ -173,15 +173,15 @@ function run(label, file, { resolutions, hisBox = false, filters = ["point", "bo
   const { grid, bytes } = loadGrid(file);
   let t = performance.now();
   const full = T.buildFromVdbDetailed(grid);
-  const fullFpn = T.quantizeDetailed(full, "fpn");
-  const fullFp8 = T.quantizeDetailed(full, "fp8");
+  const fullFpn = T.vdbQuantizeDetailed(full, "fpn");
+  const fullFp8 = T.vdbQuantizeDetailed(full, "fp8");
   const fullBytes = nvdb([fullFpn.image]);
   const fullGz = gz(fullBytes);
   const srcMass = mass(full.image, full.voxelSizeXYZ);
   console.log(
     `full: active ${full.voxelCount}, leaves ${full.nodeCounts.leaf}, tiles ${JSON.stringify(full.tileCounts)}, float gz ${KiB(gz(nvdb([full.image])).length)} KiB, ` +
       `fp8 gz ${KiB(gz(nvdb([fullFp8.image])).length)} KiB, fpn raw ${KiB(fullBytes.length)} KiB gz ${KiB(fullGz.length)} KiB ` +
-      `(${((performance.now() - t) / 1000).toFixed(1)} s); fpn err ${T.resampleError(grid, fullFpn.image).percent.toFixed(2)}%`,
+      `(${((performance.now() - t) / 1000).toFixed(1)} s); fpn err ${T.vdbResampleError(grid, fullFpn.image).percent.toFixed(2)}%`,
   );
 
   // (c)/(d): what a range read or a gzip stream of the full grid gets before its first leaf.
@@ -202,12 +202,12 @@ function run(label, file, { resolutions, hisBox = false, filters = ["point", "bo
     for (const filter of filters) {
       t = performance.now();
       for (const d of [32, 64]) {
-        const c = T.resampleGrid(grid, { dimensions: [d, d, d], bbox: box, filter, quantize: "fpn" });
-        const ce = T.resampleError(grid, c.image);
+        const c = T.vdbResampleGrid(grid, { dimensions: [d, d, d], bbox: box, filter, quantize: "fpn" });
+        const ce = T.vdbResampleError(grid, c.image);
         console.log(`his ${d}^3 box, ${filter}, fpn: active ${c.voxelCount}, gz ${KiB(gz(nvdb([c.image])).length)} KiB, err ${ce.percent.toFixed(1)}%`);
       }
-      const r = T.resampleGrid(grid, { dimensions: [128, 128, 128], bbox: box, filter, quantize: "fpn" });
-      const e = T.resampleError(grid, r.image);
+      const r = T.vdbResampleGrid(grid, { dimensions: [128, 128, 128], bbox: box, filter, quantize: "fpn" });
+      const e = T.vdbResampleError(grid, r.image);
       console.log(
         `his 128^3 box, ${filter}, fpn: active ${r.voxelCount}, gz ${KiB(gz(nvdb([r.image])).length)} KiB, ` +
           `err ${e.percent.toFixed(2)}% (n ${e.count}), ${((performance.now() - t) / 1000).toFixed(2)} s`,
@@ -220,7 +220,7 @@ function run(label, file, { resolutions, hisBox = false, filters = ["point", "bo
   for (const resolution of resolutions) {
     for (const filter of filters) {
       for (const quant of ["fp8", "fpn"]) {
-        const r = T.resampleGrid(grid, { resolution, filter, quantize: quant });
+        const r = T.vdbResampleGrid(grid, { resolution, filter, quantize: quant });
         const previewFile = nvdb([r.image]);
         const previewGz = gz(previewFile).length;
         const multi = nvdb([r.image, fullFpn.image]);
@@ -228,7 +228,7 @@ function run(label, file, { resolutions, hisBox = false, filters = ["point", "bo
         // header + both FileMetaData + names (io::Segment writes all metadata first, K4.16) + preview image
         const prefix = previewFile.length + 176 + new TextEncoder().encode(fullFpn.gridName).length + 1;
         const offset = streamOffset(multiGz, prefix);
-        const e = T.resampleError(grid, r.image);
+        const e = T.vdbResampleError(grid, r.image);
         const m = mass(r.image, r.voxelSizeXYZ) / srcMass;
         console.log(
           `| ${resolution} | ${filter} | ${quant} | ${r.dimensions.join("x")} | ${r.voxelCount} | ${KiB(previewFile.length)} | ${KiB(previewGz)} | ` +

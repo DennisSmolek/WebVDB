@@ -1,5 +1,5 @@
 // #region module-options
-import { VDB_ALL_SCALAR_TYPES, checkModule, vdbModuleEntries, vdbModuleWgsl } from '@pmndrs/vdb';
+import { VDB_ALL_SCALAR_TYPES, vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from '@pmndrs/vdb';
 import type { VDBSlotModuleOptions } from '@pmndrs/vdb';
 // #endregion
 
@@ -16,7 +16,7 @@ export function moduleOptions(pool: VDBGridPool): string {
     const wgsl = vdbModuleWgsl(options); // deterministic: the same options give the same bytes
     const entries = vdbModuleEntries(options.slot); // the bind group layout entries for that slot
 
-    checkModule(pool, options); // throws VDB_TYPE_NOT_COMPILED if the pool holds a type the module lacks
+    vdbCheckModule(pool, options); // throws VDB_TYPE_NOT_COMPILED if the pool holds a type the module lacks
     // #endregion
     void VDB_ALL_SCALAR_TYPES;
     void entries;

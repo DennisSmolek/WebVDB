@@ -20,10 +20,10 @@
  *
  * Options beyond his CLI (K4.13):
  *  - `sampling: 'box'` prefilters: each texel is the area-weighted mean of the
- *    source voxels its cell covers, on the same lattice (`resampleDense`, the
- *    K4.4 `resampleGrid` box filter). Mass is conserved and thin features fade
+ *    source voxels its cell covers, on the same lattice (`vdbResampleDense`, the
+ *    K4.4 `vdbResampleGrid` box filter). Mass is conserved and thin features fade
  *    instead of flickering in and out;
- *  - `levelSetSampler: 'mjurczyk'` samples level sets with his CLI's
+ *  - `levelSetSampler: 'surface-mean'` samples level sets with his CLI's
  *    `sampleLevelSet` (`level-set.ts`), which reproduces his level-set files.
  *
  * Differences from his CLI (also in docs/handoffs/K4-3.md):
@@ -36,8 +36,9 @@
  *    `bunny_cloud.wvdb`; this reproduces them).
  */
 
-import { readValue } from "../cpu/read-value.js";
-import { resampleDense } from "../nanovdb/resample.js";
+import { VDBToolsError, VDBUnsupportedError } from "../errors.js";
+import { vdbReadValueCpu } from "../cpu/read-value.js";
+import { vdbResampleDense } from "../nanovdb/resample.js";
 import { gridTypeConstantsForId } from "../cpu/stride-tables.js";
 import {
   GRID_NAME_MAX,
@@ -56,7 +57,7 @@ import {
 import { parseVdb } from "../vdb/parse.js";
 import type { VdbFile, VdbGrid } from "../vdb/types.js";
 import type { WvdbBits, WvdbBox, WvdbSource, WvdbVec3 } from "./format.js";
-import { sampleWvdbLevelSetMjurczyk, type WvdbIndexAccess } from "./level-set.js";
+import { sampleWvdbLevelSetSurfaceMean, type WvdbIndexAccess } from "./level-set.js";
 import { sha256Hex } from "./sha256.js";
 import { writeWvdb, type WriteWvdbOptions, type WriteWvdbResult, type WvdbVolumeGridInput } from "./write.js";
 
@@ -70,7 +71,7 @@ export interface WvdbSampleSource {
   bbox: WvdbBox | null;
   /** The grid value (and active state) at the voxel nearest to a world position. */
   sample(world: WvdbVec3): { value: number; active: boolean };
-  /** Index-space access, for `levelSetSampler: 'mjurczyk'`. The built-in sources have it. */
+  /** Index-space access, for `levelSetSampler: 'surface-mean'`. The built-in sources have it. */
   index?: WvdbIndexAccess;
   /** The sparse grid behind the source, for `sampling: 'box'`. The built-in sources have it. */
   grid?: Uint32Array | VdbGrid;
@@ -96,7 +97,7 @@ export interface BakeWvdbOptions extends Omit<WriteWvdbOptions, "resolution" | "
   sampling?: WvdbSampling;
   /**
    * How level sets are sampled. `"spec"` (default): `sampling`, then the spec
-   * §8 rule by active state. `"mjurczyk"`: his CLI's `sampleLevelSet`
+   * §8 rule by active state. `"surface-mean"`: his CLI's `sampleLevelSet`
    * (trilinear near the surface, a 4x4x4 mean in texels that cross it), which
    * reproduces his level-set `.wvdb` files; it ignores `sampling`.
    */
@@ -104,7 +105,7 @@ export interface BakeWvdbOptions extends Omit<WriteWvdbOptions, "resolution" | "
 }
 
 export type WvdbSampling = "nearest" | "box";
-export type WvdbLevelSetSampler = "spec" | "mjurczyk";
+export type WvdbLevelSetSampler = "spec" | "surface-mean";
 
 function unionBox(boxes: WvdbBox[]): WvdbBox | null {
   if (!boxes.length) return null;
@@ -161,7 +162,7 @@ export function sampleWvdbDense(
 }
 
 /**
- * Box-filters one source over the box (`sampling: 'box'`): `resampleDense` on
+ * Box-filters one source over the box (`sampling: 'box'`): `vdbResampleDense` on
  * his lattice, then the level-set rule of {@link sampleWvdbDense} by the
  * filtered active state.
  */
@@ -174,9 +175,9 @@ export function sampleWvdbDenseBox(
   const background = source.background;
   if (!source.bbox || !bbox) return new Float32Array(dimensions[0] * dimensions[1] * dimensions[2]).fill(background);
   if (!source.grid) {
-    throw new Error(`bakeWvdb: sampling "box" needs the source grid; "${source.name}" has none (use wvdbSourceFromVdbGrid or wvdbSourceFromNanoVdb)`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `bakeWvdb: sampling "box" needs the source grid; "${source.name}" has none (use wvdbSourceFromVdbGrid or wvdbSourceFromNvdb)`);
   }
-  const { values, active } = resampleDense(source.grid, { bbox, dimensions, filter: "box" });
+  const { values, active } = vdbResampleDense(source.grid, { bbox, dimensions, filter: "box" });
   if (source.class === "level set") {
     const band = background - (2 * background) / ((1 << bits) - 1);
     for (let i = 0; i < values.length; i++) {
@@ -200,11 +201,11 @@ export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdb
     levelSetSampler = "spec",
     ...write
   } = options;
-  if (sampling !== "nearest" && sampling !== "box") throw new Error(`bakeWvdb: unknown sampling "${String(sampling)}"`);
-  if (levelSetSampler !== "spec" && levelSetSampler !== "mjurczyk") {
-    throw new Error(`bakeWvdb: unknown levelSetSampler "${String(levelSetSampler)}"`);
+  if (sampling !== "nearest" && sampling !== "box") throw new VDBToolsError("VDB_BAD_OPTION", `bakeWvdb: unknown sampling "${String(sampling)}"`);
+  if (levelSetSampler !== "spec" && levelSetSampler !== "surface-mean") {
+    throw new VDBToolsError("VDB_BAD_OPTION", `bakeWvdb: unknown levelSetSampler "${String(levelSetSampler)}"`);
   }
-  if (!Number.isInteger(resolution) || resolution < 1) throw new Error(`bakeWvdb: invalid resolution ${resolution}`);
+  if (!Number.isInteger(resolution) || resolution < 1) throw new VDBToolsError("VDB_BAD_OPTION", `bakeWvdb: invalid resolution ${resolution}`);
   const selected = gridNames ? sources.filter((s) => gridNames.includes(s.name)) : [...sources];
   const box = bakeBBox ?? unionBox(selected.flatMap((s) => (s.bbox ? [s.bbox] : [])));
   const dims = dimensions ?? wvdbFinestDimensions(box, resolution);
@@ -217,8 +218,8 @@ export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdb
     finest: {
       dimensions: dims,
       values:
-        s.class === "level set" && levelSetSampler === "mjurczyk"
-          ? sampleWvdbLevelSetMjurczyk(s, box, dims, bits)
+        s.class === "level set" && levelSetSampler === "surface-mean"
+          ? sampleWvdbLevelSetSurfaceMean(s, box, dims, bits)
           : sampling === "box"
             ? sampleWvdbDenseBox(s, box, dims, bits)
             : sampleWvdbDense(s, box, dims, bits),
@@ -234,14 +235,14 @@ export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdb
 /** A parsed `.vdb` grid (axis-aligned map) as a sample source. */
 export function wvdbSourceFromVdbGrid(grid: VdbGrid): WvdbSampleSource {
   if (grid.valueType !== "float") {
-    throw new Error(
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
       `wvdbSourceFromVdbGrid: grid "${grid.name}" is a ${grid.valueType} grid; only float grids can be baked ` +
         `(vdbToWvdb skips the others)`,
     );
   }
   const m = grid.transform.matrix;
   if (m[1] !== 0 || m[2] !== 0 || m[4] !== 0 || m[6] !== 0 || m[8] !== 0 || m[9] !== 0) {
-    throw new Error(`wvdbSourceFromVdbGrid: grid "${grid.name}" has a rotated map; only axis-aligned maps are supported`);
+    throw new VDBUnsupportedError(`wvdbSourceFromVdbGrid: grid "${grid.name}" has a rotated map; only axis-aligned maps are supported`);
   }
   const scale = [m[0]!, m[5]!, m[10]!];
   const translation = [m[3]!, m[7]!, m[11]!];
@@ -294,7 +295,7 @@ export function wvdbSourceFromVdbGrid(grid: VdbGrid): WvdbSampleSource {
 const NANO_CLASS: Record<number, string> = { 1: "level set", 2: "fog volume", 3: "staggered" };
 
 /** A NanoVDB FLOAT/Fp8/FpN grid image as a sample source, read through the CPU oracle (`readValue`). */
-export function wvdbSourceFromNanoVdb(gridWords: Uint32Array): WvdbSampleSource {
+export function wvdbSourceFromNvdb(gridWords: Uint32Array): WvdbSampleSource {
   const view = new DataView(gridWords.buffer, gridWords.byteOffset, gridWords.byteLength);
   const nameBytes = new Uint8Array(gridWords.buffer, gridWords.byteOffset + GRID_OFF_GRID_NAME, GRID_NAME_MAX);
   const nul = nameBytes.indexOf(0);
@@ -333,7 +334,7 @@ export function wvdbSourceFromNanoVdb(gridWords: Uint32Array): WvdbSampleSource 
     sample(world) {
       const p = [world[0] - vec[0]!, world[1] - vec[1]!, world[2] - vec[2]!];
       for (let r = 0; r < 3; r++) ijk[r] = Math.round(inv[r * 3]! * p[0]! + inv[r * 3 + 1]! * p[1]! + inv[r * 3 + 2]! * p[2]!);
-      return readValue(gridWords, ijk);
+      return vdbReadValueCpu(gridWords, ijk);
     },
     index: {
       toIndex(world, out) {
@@ -348,7 +349,7 @@ export function wvdbSourceFromNanoVdb(gridWords: Uint32Array): WvdbSampleSource 
         for (let r = 0; r < 3; r++) out[r] = inv[r * 3]! * v0 + inv[r * 3 + 1]! * v1 + inv[r * 3 + 2]! * v2;
         return out;
       },
-      voxel: (p) => readValue(gridWords, p),
+      voxel: (p) => vdbReadValueCpu(gridWords, p),
     },
     grid: gridWords,
   };
@@ -380,12 +381,12 @@ export function vdbToWvdb(input: ArrayBuffer | Uint8Array | VdbFile, options: Vd
     file = input;
   }
   const floatGrids = file.grids.filter((g) => g.valueType === "float");
-  if (floatGrids.length === 0) throw new Error("vdbToWvdb: the file has no float grids to bake");
+  if (floatGrids.length === 0) throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", "vdbToWvdb: the file has no float grids to bake");
   return bakeWvdb(floatGrids.map(wvdbSourceFromVdbGrid), { ...bake, ...(source ? { source } : {}) });
 }
 
 /** NanoVDB grid image(s) → `.wvdb`, sampled through the CPU oracle. */
-export function nanoVdbToWvdb(images: Uint32Array | readonly Uint32Array[], options: BakeWvdbOptions = {}): WriteWvdbResult {
+export function nvdbToWvdb(images: Uint32Array | readonly Uint32Array[], options: BakeWvdbOptions = {}): WriteWvdbResult {
   const list = images instanceof Uint32Array ? [images] : images;
-  return bakeWvdb(list.map(wvdbSourceFromNanoVdb), options);
+  return bakeWvdb(list.map(wvdbSourceFromNvdb), options);
 }

@@ -2,7 +2,7 @@
  * K4.16 / K4.18 browser gate: coarse-first `.nvdb` delivery
  * (docs/design/K4-5-coarse-first.md, option a).
  *
- * 1. Bakes `smoke.vdb` in the page with `bakeCoarseFirst` (`[density.lod48,
+ * 1. Bakes `smoke.vdb` in the page with `vdbBakeCoarseFirst` (`[density.lod48,
  *    density]`, box, FpN, codec ZIP), and the same two images with codec NONE.
  * 2. Streams each through a throttled, pull-driven `ReadableStream` (fixed-size
  *    chunks, one at a time) into `vdbStreamCoarseFirst` on a real
@@ -16,7 +16,7 @@
  *    rendered (`VDBVolumeMaterial`, density scaled by the voxel ratio), then
  *    the stream resumes, the full grid replaces the preview in place, and the
  *    final frame is rendered. A fresh pool with the full grid alone (read from
- *    a single-grid file by `NanoVDBFile`) renders the reference frame with the
+ *    a single-grid file by `NvdbFile`) renders the reference frame with the
  *    same camera and uniforms. Gate: final == reference, byte for byte.
  *
  * Results go to `window.__VDB_COARSE_FIRST__` for e2e/coarse-first.spec.ts.
@@ -26,7 +26,7 @@ import * as THREE from "three";
 import type { WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBVolumeMaterial, vdbProxyGeometry, vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "@pmndrs/vdb/three";
-import { bakeCoarseFirst, NanoVDBFile, parseVdb, writeNvdb, type GridMetadata } from "@pmndrs/vdb/tools";
+import { vdbBakeCoarseFirst, NvdbFile, parseVdb, writeNvdb, type NvdbGridMetadata } from "@pmndrs/vdb/tools";
 import { createDeviceRenderer } from "../demos/device-renderer";
 
 interface StreamRun {
@@ -161,15 +161,15 @@ async function run(): Promise<void> {
   }
   const vdb = parseVdb(await resp.arrayBuffer());
 
-  // 1. Bake: ZIP (the default) with bakeCoarseFirst; the same images with codec NONE.
-  const zipFile = bakeCoarseFirst(vdb, { previewResolution: 48, filter: "box", quantize: "fpn" });
-  const parsed = NanoVDBFile.fromArrayBuffer(zipFile.slice().buffer);
+  // 1. Bake: ZIP (the default) with vdbBakeCoarseFirst; the same images with codec NONE.
+  const zipFile = vdbBakeCoarseFirst(vdb, { previewResolution: 48, filter: "box", quantize: "fpn" });
+  const parsed = NvdbFile.fromArrayBuffer(zipFile.slice().buffer);
   const previewImage = parsed.gridImage(0);
   const fullImage = parsed.gridImage(1);
   const noneFile = new Uint8Array(writeNvdb([previewImage, fullImage]));
   const [zipGz, noneGz] = await Promise.all([gzip(zipFile), gzip(noneFile)]);
   result.sizes = { zipFile: zipFile.length, noneFile: noneFile.length, zipGzip: zipGz.length, noneGzip: noneGz.length };
-  result.grids = parsed.grids.map((g: GridMetadata) => ({
+  result.grids = parsed.grids.map((g: NvdbGridMetadata) => ({
     name: g.name,
     gridType: g.gridType,
     voxelCount: g.voxelCount,
@@ -280,7 +280,7 @@ async function run(): Promise<void> {
   };
 
   // 4. Reference: the full grid alone, from a single-grid file, in a fresh pool.
-  const alone = NanoVDBFile.fromArrayBuffer(writeNvdb([fullImage]));
+  const alone = NvdbFile.fromArrayBuffer(writeNvdb([fullImage]));
   const refPool = await VDBGridPool.create(device);
   const refId = refPool.add(alone.gridImage(0));
   refPool.flush();

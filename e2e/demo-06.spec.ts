@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 /**
  * Demo 06 — explorer: half of the Phase 5/8 demo gate ("drag-drop a .vdb and
  * render it", docs/PLAN.md). Two deterministic navigations exercise both
- * load routes — `?sample=nvdb&presentation=readback` (NanoVDBFile) and `?sample=vdb&presentation=readback` (parseVdb ->
+ * load routes — `?sample=nvdb&presentation=readback` (NvdbFile) and `?sample=vdb&presentation=readback` (parseVdb ->
  * buildFromVdb) — asserting the metadata/inspect/histogram/slice panels all
  * populated (`window.__DEMO06__`). One golden image pins the nvdb render
  * (leaf-bbox wireframe over the raymarched volume).

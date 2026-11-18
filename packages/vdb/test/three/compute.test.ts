@@ -26,7 +26,7 @@ describe("@pmndrs/vdb/three compute wrappers", () => {
   it("are exported from the barrel as vdb*; the core names, the alias and the v1 helpers are not", () => {
     expect(three.vdbGridStats).toBe(vdbGridStats);
     expect(three.vdbDecodeToAtlas).toBe(vdbDecodeToAtlas);
-    // gridStats / decodeToAtlas are the core's (device + encoder); valueTransform is the core's applyValueTransform.
+    // gridStats / decodeToAtlas are the core's (device + encoder); valueTransform is the core's vdbApplyValueTransform.
     for (const gone of ["gridStats", "decodeToAtlas", "valueTransform", "buildComputeShaderSource", "buildValueTransformShaderSource", "resolveTransformBody", "VALUE_TRANSFORM_PRESETS"]) {
       expect(gone in three, gone).toBe(false);
     }

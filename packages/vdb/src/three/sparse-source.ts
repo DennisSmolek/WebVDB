@@ -28,7 +28,7 @@
  *   the base is a box resample of the grid, the levels above it his box mip atlas. lod in (0, L₀)
  *   blends level 0 toward L₀; lod ≥ L₀ samples the pyramid as his mip atlas. GPU bytes: ~2 B × (base
  *   + atlas) texels. Built on the GPU from the pool grid by default (`pyramidBuild: 'gpu'`, K3.2a: the
- *   core's `createBoxPyramid`, no CPU image needed) and rebuilt when the grid's image changes
+ *   core's `vdbCreateBoxPyramid`, no CPU image needed) and rebuilt when the grid's image changes
  *   (`pool.replace`: a sequence frame), checked once per render that samples it; `'cpu'` keeps the
  *   K3.2 path (`@pmndrs/vdb/tools` `vdbBoxPyramid` from `images.density`, static). Both give the same
  *   texels to ≤ 1 f16 ulp (e2e/k3-pyramid.spec.ts).
@@ -48,7 +48,7 @@ import * as TSL from "three/tsl";
 import { code, wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
 import type { VDBVolumeChannels } from "../core/source/types.js";
-import { createBoxPyramid, type VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
+import { vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
 import { vdbBoxPyramid } from "../tools/frame/sparse.js";
 import { vdbBoxPyramidLayout } from "../tools/frame/pyramid-layout.js";
 import { getGPUTexture, webgpuBackendOf } from "./device.js";
@@ -99,7 +99,7 @@ export interface VDBSparseSourceOptions {
   pyramidMax?: number;
   /**
    * `'coarse-pyramid'`: where the pyramid is built. `'gpu'` (default, K3.2a): a compute pass over the
-   * pool grid on the renderer's device (the core's `createBoxPyramid`), rebuilt when the grid's
+   * pool grid on the renderer's device (the core's `vdbCreateBoxPyramid`), rebuilt when the grid's
    * `imageRevision` changes; needs an initialized WebGPURenderer behind the `VDBGridNode`. `'cpu'`:
    * `vdbBoxPyramid` from `images.density` (the K3.2 path, static; the GPU build's twin).
    */
@@ -119,7 +119,7 @@ export interface VDBSparseSourceOptions {
   indexBox?: VDBIndexBox;
   /**
    * K3.6: index boxes the unit box covers in the aux grids (default: each grid's own index bbox). Grids converted
-   * from one dense `.wvdb` level (`wvdbDenseToNanoVdb`) share the texture's box (`textureIndexBox`); pass it so a
+   * from one dense `.wvdb` level (`wvdbDenseToNvdb`) share the texture's box (`textureIndexBox`); pass it so a
    * sparse emission or mask channel lines up with the density (its active bbox is usually smaller).
    */
   auxIndexBoxes?: Partial<Record<"mask" | "albedo" | "emission", VDBIndexBox>>;
@@ -497,7 +497,7 @@ class SparseSource implements VDBThreeSparseSource {
         map.name = "vdbSparseSource pyramid base";
         if (mip) mip.name = "vdbSparseSource pyramid atlas";
         for (const t of [map, mip]) if (t) initTexture.call(renderer, t);
-        const gpu = createBoxPyramid(device, grids.pool as never, ids.density, {
+        const gpu = vdbCreateBoxPyramid(device, grids.pool as never, ids.density, {
           indexBox: b,
           ...pyramidMax,
           targets: { base: getGPUTexture(renderer as never, map), atlas: mip ? getGPUTexture(renderer as never, mip) : null },

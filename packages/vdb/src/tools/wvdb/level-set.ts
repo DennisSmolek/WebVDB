@@ -1,6 +1,6 @@
 /**
  * level-set.ts — mjurczyk's level-set bake sampler (`sampleLevelSet`), an
- * option of the `.wvdb` bake (`levelSetSampler: 'mjurczyk'`, K4.13).
+ * option of the `.wvdb` bake (`levelSetSampler: 'surface-mean'`, K4.13).
  *
  * Portions derived from mjurczyk/openvdb (MIT), commit 75e7345:
  * `src/openvdb/utils/levelSet.js` (`sampleLevelSet`, `getVoxelDistance`,
@@ -22,6 +22,7 @@
  * state; that stays the default (`levelSetSampler: 'spec'`, DIVERGES V17).
  */
 
+import { VDBToolsError } from "../errors.js";
 import type { WvdbBits, WvdbBox, WvdbVec3 } from "./format.js";
 
 /** Index-space access to a sample source (axis-aligned or affine map). */
@@ -49,7 +50,7 @@ const FILTER_SAMPLES = 4;
  * His `sampleLevelSetGrid`: samples a level set over `bbox` at `dimensions`
  * (x fastest) and applies the band limit for `bits`.
  */
-export function sampleWvdbLevelSetMjurczyk(
+export function sampleWvdbLevelSetSurfaceMean(
   source: WvdbLevelSetSource,
   bbox: WvdbBox | null,
   dimensions: WvdbVec3,
@@ -61,7 +62,7 @@ export function sampleWvdbLevelSetMjurczyk(
   if (!source.bbox || !bbox) return values.fill(background);
   const access = source.index;
   if (!access) {
-    throw new Error(`levelSetSampler 'mjurczyk': source "${source.name}" has no index access (use wvdbSourceFromVdbGrid or wvdbSourceFromNanoVdb)`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `levelSetSampler 'surface-mean': source "${source.name}" has no index access (use wvdbSourceFromVdbGrid or wvdbSourceFromNvdb)`);
   }
   const min = bbox[0];
   const size: WvdbVec3 = [bbox[1][0] - min[0], bbox[1][1] - min[1], bbox[1][2] - min[2]];

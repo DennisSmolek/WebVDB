@@ -62,10 +62,10 @@
 import { CodeNode, REVISION, StorageBufferAttribute, type Node, type NodeBuilder } from "three/webgpu";
 import { storage, uint, wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
-import { checkModule, vdbModuleWgsl } from "../core/wgsl/generate.js";
+import { vdbCheckModule, vdbModuleWgsl } from "../core/wgsl/generate.js";
 import type { VDBModuleHelper, VDBModuleOptions, VDBModuleProfile } from "../core/wgsl/types.js";
 import type { VDBGridTypeName } from "../core/types.js";
-import { webgpuBackendOf, type ThreeRendererLike } from "./device.js";
+import { webgpuBackendOf, type VDBThreeRendererLike } from "./device.js";
 
 /** What `VDBGridNode` needs from a pool; a `VDBGridPool` is one. */
 export interface VDBGridNodePoolLike {
@@ -412,7 +412,7 @@ export class VDBGridNode {
    * The renderer this node binds through. Only shaders this renderer builds
    * may use the node; make one `VDBGridNode` per renderer.
    */
-  readonly renderer: ThreeRendererLike;
+  readonly renderer: VDBThreeRendererLike;
 
   private readonly three: RendererLike;
   private boundVersion: number;
@@ -422,7 +422,7 @@ export class VDBGridNode {
   private readonly helpers = new Map<HelperKind, (...args: unknown[]) => VDBTslNode>();
 
   constructor(
-    renderer: ThreeRendererLike,
+    renderer: VDBThreeRendererLike,
     readonly pool: VDBGridNodePoolLike,
     options: VDBGridNodeOptions = {},
   ) {
@@ -473,7 +473,7 @@ export class VDBGridNode {
     // With the default types, the module must decode every grid the pool holds now.
     // Explicit types are the caller's choice (a pool may be shared by modules
     // compiling different subsets); the layout must match either way.
-    checkModule(explicitTypes ? { types: [], layoutVersion: pool.layoutVersion } : pool, raw);
+    vdbCheckModule(explicitTypes ? { types: [], layoutVersion: pool.layoutVersion } : pool, raw);
     this.name = name;
     this.options = Object.freeze({
       types: Object.freeze([...new Set(raw.types)].sort()) as readonly VDBGridTypeName[],
@@ -530,7 +530,7 @@ export class VDBGridNode {
    * @throws VDBError `VDB_TYPE_NOT_COMPILED` (those grids would read 0) or `VDB_LAYOUT_MISMATCH`.
    */
   check(): void {
-    checkModule(this.pool, { types: this.options.types });
+    vdbCheckModule(this.pool, { types: this.options.types });
   }
 
   /** Releases the stand-in attribute. The pool's buffer is not destroyed (it is the pool's). */

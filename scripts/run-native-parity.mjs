@@ -9,12 +9,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { NanoVDBFile, readValue } from "../packages/vdb/dist/tools/index.js";
+import { NvdbFile, vdbReadValueCpu } from "../packages/vdb/dist/tools/index.js";
 import { readLeafQuantum } from "../packages/vdb/dist/tools/cpu/read-value.js";
 import {
   buildFromVdb,
   parseVdb,
-  quantize,
+  vdbQuantize,
   writeNvdb,
 } from "../packages/vdb/dist/tools/index.js";
 import { createParityAccumulator, overallPassed } from "./lib/parity-report.mjs";
@@ -74,22 +74,22 @@ function convertNative(docker, sample, mode) {
 async function loadGridImage(file) {
   const bytes = await readFile(file);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  return NanoVDBFile.fromArrayBuffer(buffer).gridImage(0);
+  return NvdbFile.fromArrayBuffer(buffer).gridImage(0);
 }
 
 //* Strict topology + active-coordinate union =================================
 
 function addComparison(accumulator, coordinate, nativeImage, typescriptImage, numericBound) {
-  const native = readValue(nativeImage, coordinate);
-  const typescript = readValue(typescriptImage, coordinate);
+  const native = vdbReadValueCpu(nativeImage, coordinate);
+  const typescript = vdbReadValueCpu(typescriptImage, coordinate);
   accumulator.add({ coordinate, native, typescript, numericBound });
 }
 
 function fp8NumericBound(coordinate, nativeImage, typescriptImage) {
   const nativeQuantum = readLeafQuantum(nativeImage, coordinate);
   const typescriptQuantum = readLeafQuantum(typescriptImage, coordinate);
-  const native = readValue(nativeImage, coordinate);
-  const typescript = readValue(typescriptImage, coordinate);
+  const native = vdbReadValueCpu(nativeImage, coordinate);
+  const typescript = vdbReadValueCpu(typescriptImage, coordinate);
   const float32Roundoff =
     Math.max(Math.abs(native.value), Math.abs(typescript.value), 1) * 2 ** -22;
   return (nativeQuantum + typescriptQuantum) / 2 + float32Roundoff;
@@ -221,7 +221,7 @@ async function runSample(docker, sample) {
   if (!sourceGrid) throw new Error(`${sample}.vdb contains no grid`);
 
   const typescriptFloat = buildFromVdb(sourceGrid);
-  const typescriptFp8 = quantize(typescriptFloat, "fp8");
+  const typescriptFp8 = vdbQuantize(typescriptFloat, "fp8");
   await writeFile(path.join(OUTPUT, `${sample}.typescript.float.nvdb`), Buffer.from(writeNvdb([typescriptFloat])));
   await writeFile(path.join(OUTPUT, `${sample}.typescript.fp8.nvdb`), Buffer.from(writeNvdb([typescriptFp8])));
 

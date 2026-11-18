@@ -3,18 +3,18 @@ import { readFile, readdir } from "node:fs/promises";
 import { zlibSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import {
-  Codec,
+  NvdbCodec,
   FILE_HEADER_SIZE,
   FILE_METADATA_SIZE,
-  NanoVDBFile,
+  NvdbFile,
   NvdbFormatError,
-  VdbFormatError,
-  VdbUnsupportedError,
-} from "../../src/tools/index.js";
+  VDBToolsError,
+  VDBUnsupportedError,
+} from "../../src/tools/internal.js";
 
 /**
  * Parses all 9 baked primitive fixtures (fixtures/primitives/*.nvdb) with
- * NanoVDBFile and checks the result against their committed sidecar ground
+ * NvdbFile and checks the result against their committed sidecar ground
  * truth. `.nvdb` files themselves are git-ignored (regenerate with
  * `pnpm fixtures:bake`), so this whole suite is skipped when the directory
  * is absent — it is present on this machine.
@@ -27,8 +27,8 @@ const VARIANTS = ["float", "fp8", "fpn"];
 const FIXTURE_NAMES = PRIMITIVES.flatMap((p) => VARIANTS.map((v) => `${p}_${v}`));
 const fixturesPresent = FIXTURE_NAMES.every((name) => existsSync(new URL(`${name}.nvdb`, fixturesDir)));
 
-// sidecar "type" is lowercase (float/fp8/fpn); GridMetadata.gridType uses the
-// NanoVDB.h enum identifier casing (matches SUPPORTED_GRID_TYPES).
+// sidecar "type" is lowercase (float/fp8/fpn); NvdbGridMetadata.gridType uses the
+// NanoVDB.h enum identifier casing (matches NVDB_SUPPORTED_GRID_TYPES).
 const EXPECTED_GRID_TYPE: Record<string, string> = { float: "Float", fp8: "Fp8", fpn: "FpN" };
 
 interface Sidecar {
@@ -57,7 +57,7 @@ async function loadFixture(name: string): Promise<{ buffer: ArrayBuffer; sidecar
   return { buffer, sidecar };
 }
 
-describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
+describe.skipIf(!fixturesPresent)("NvdbFile — primitive fixtures", () => {
   it("fixtures directory is present with all 9 primitive x variant pairs", async () => {
     const names = await readdir(fixturesDir);
     for (const f of FIXTURE_NAMES) {
@@ -71,7 +71,7 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
 
     it(`${name}: metadata matches the sidecar ground truth`, async () => {
       const { buffer, sidecar } = await loadFixture(name);
-      const file = NanoVDBFile.fromArrayBuffer(buffer);
+      const file = NvdbFile.fromArrayBuffer(buffer);
 
       expect(file.grids).toHaveLength(1);
       const grid = file.grids[0]!;
@@ -98,7 +98,7 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
 
     it(`${name}: gridImage byte length matches gridByteSize and starts with a valid magic`, async () => {
       const { buffer, sidecar } = await loadFixture(name);
-      const file = NanoVDBFile.fromArrayBuffer(buffer);
+      const file = NvdbFile.fromArrayBuffer(buffer);
       const image = file.gridImage(0);
 
       expect(image.byteLength).toBe(sidecar.grid.gridByteSize);
@@ -120,7 +120,7 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
     // at byte 200 (16 + 176 + 8) — 4-byte aligned.
     for (const variant of VARIANTS) {
       const { buffer } = await loadFixture(`box_fog_${variant}`);
-      const file = NanoVDBFile.fromArrayBuffer(buffer);
+      const file = NvdbFile.fromArrayBuffer(buffer);
       expect(file.isGridImageZeroCopy(0), `box_fog_${variant}`).toBe(true);
       expect(file.gridImage(0).buffer, `box_fog_${variant}`).toBe(buffer);
     }
@@ -132,7 +132,7 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
     for (const primitive of ["sphere_fog", "torus_fog"]) {
       for (const variant of VARIANTS) {
         const { buffer } = await loadFixture(`${primitive}_${variant}`);
-        const file = NanoVDBFile.fromArrayBuffer(buffer);
+        const file = NvdbFile.fromArrayBuffer(buffer);
         expect(file.isGridImageZeroCopy(0), `${primitive}_${variant}`).toBe(false);
         expect(file.gridImage(0).buffer, `${primitive}_${variant}`).not.toBe(buffer);
       }
@@ -141,11 +141,11 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
 
   it("ZIP round-trip: recompressing a NONE fixture's grid segment yields a byte-identical image", async () => {
     const { buffer: noneBuffer } = await loadFixture("box_fog_float");
-    const noneFile = NanoVDBFile.fromArrayBuffer(noneBuffer);
+    const noneFile = NvdbFile.fromArrayBuffer(noneBuffer);
     const expectedImage = noneFile.gridImage(0);
 
     const zipBuffer = rewriteAsZip(noneBuffer);
-    const zipFile = NanoVDBFile.fromArrayBuffer(zipBuffer);
+    const zipFile = NvdbFile.fromArrayBuffer(zipBuffer);
 
     expect(zipFile.grids).toHaveLength(1);
     expect(zipFile.grids[0]).toEqual(noneFile.grids[0]);
@@ -165,11 +165,11 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — primitive fixtures", () => {
   });
 });
 
-describe("NanoVDBFile — error handling", () => {
+describe("NvdbFile — error handling", () => {
   it("throws for garbage magic bytes", () => {
     const buffer = new ArrayBuffer(32);
     new Uint8Array(buffer).set([..."NotANvdb"].map((c) => c.charCodeAt(0)), 0);
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/unrecognized magic/);
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/unrecognized magic/);
   });
 
   it("throws a helpful error for the BLOSC codec value", () => {
@@ -178,52 +178,53 @@ describe("NanoVDBFile — error handling", () => {
     new Uint8Array(buffer).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
     view.setUint32(8, (32 << 21) | (9 << 10) | 1, true); // version 32.9.1
     view.setUint16(12, 1, true); // gridCount
-    view.setUint16(14, Codec.BLOSC, true); // codec = BLOSC
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/BLOSC/);
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/codec NONE or ZIP/);
+    view.setUint16(14, NvdbCodec.BLOSC, true); // codec = BLOSC
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/BLOSC/);
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/codec NONE or ZIP/);
   });
 
-  it("malformed input is an NvdbFormatError (a VdbFormatError), BLOSC a VdbUnsupportedError (K4.20)", () => {
+  it("malformed input is an NvdbFormatError (a VDBToolsError, VDB_BAD_NVDB), BLOSC a VDBUnsupportedError (K4.20, D32)", () => {
     const garbage = new ArrayBuffer(32);
     new Uint8Array(garbage).set([..."NotANvdb"].map((c) => c.charCodeAt(0)), 0);
     for (const bad of [garbage, new ArrayBuffer(10)]) {
       let err: unknown;
       try {
-        NanoVDBFile.fromArrayBuffer(bad);
+        NvdbFile.fromArrayBuffer(bad);
       } catch (e) {
         err = e;
       }
       expect(err).toBeInstanceOf(NvdbFormatError);
-      expect(err).toBeInstanceOf(VdbFormatError);
+      expect(err).toBeInstanceOf(VDBToolsError);
+      expect((err as VDBToolsError).code).toBe("VDB_BAD_NVDB");
       expect((err as Error).name).toBe("NvdbFormatError");
-      expect((err as Error).message).toMatch(/^@pmndrs\/vdb\/tools: malformed \.nvdb: NanoVDBFile: /);
+      expect((err as Error).message).toMatch(/^@pmndrs\/vdb\/tools \[VDB_BAD_NVDB\]: malformed \.nvdb: NvdbFile: /);
     }
     const blosc = new ArrayBuffer(FILE_HEADER_SIZE);
     new Uint8Array(blosc).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
     const v = new DataView(blosc);
     v.setUint32(8, (32 << 21) | (9 << 10) | 1, true);
     v.setUint16(12, 1, true);
-    v.setUint16(14, Codec.BLOSC, true);
-    expect(() => NanoVDBFile.fromArrayBuffer(blosc)).toThrow(VdbUnsupportedError);
+    v.setUint16(14, NvdbCodec.BLOSC, true);
+    expect(() => NvdbFile.fromArrayBuffer(blosc)).toThrow(VDBUnsupportedError);
   });
 
   it("throws for a truncated buffer (short FileHeader)", () => {
     const buffer = new ArrayBuffer(10);
     new Uint8Array(buffer).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/truncated buffer/);
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/truncated buffer/);
   });
 
   it("throws for a buffer truncated mid grid-data", async () => {
     if (!fixturesPresent) return;
     const { buffer } = await loadFixture("box_fog_float");
     const truncated = buffer.slice(0, buffer.byteLength - 1000);
-    expect(() => NanoVDBFile.fromArrayBuffer(truncated)).toThrowError(/truncated buffer/);
+    expect(() => NvdbFile.fromArrayBuffer(truncated)).toThrowError(/truncated buffer/);
   });
 
   it("gridImage/isGridImageZeroCopy reject an out-of-range index", async () => {
     if (!fixturesPresent) return;
     const { buffer } = await loadFixture("box_fog_float");
-    const file = NanoVDBFile.fromArrayBuffer(buffer);
+    const file = NvdbFile.fromArrayBuffer(buffer);
     expect(() => file.gridImage(5)).toThrowError(/out of range/);
     expect(() => file.isGridImageZeroCopy(5)).toThrowError(/out of range/);
   });
@@ -242,7 +243,7 @@ describe("NanoVDBFile — error handling", () => {
     // of throwing.
     view.setBigUint64(FILE_HEADER_SIZE + 0, trueGridSize - 1000n, true);
 
-    expect(() => NanoVDBFile.fromArrayBuffer(patched)).toThrowError(
+    expect(() => NvdbFile.fromArrayBuffer(patched)).toThrowError(
       /FileMetaData\.gridSize \(\d+\) does not match its own internal GridData\.mGridSize \(\d+\)/,
     );
   });
@@ -260,7 +261,7 @@ describe("NanoVDBFile — error handling", () => {
     // (there aren't 1000 more real bytes to read) rather than the internal
     // mismatch error — both are refusals to silently load a wrong image, so
     // assert on the truncation message here.
-    expect(() => NanoVDBFile.fromArrayBuffer(patched)).toThrowError(/truncated buffer/);
+    expect(() => NvdbFile.fromArrayBuffer(patched)).toThrowError(/truncated buffer/);
   });
 
   // --- Finding 2: bounded ZIP inflation --------------------------------
@@ -276,7 +277,7 @@ describe("NanoVDBFile — error handling", () => {
     const bigPayload = new Uint8Array(2_000_000);
     const buffer = buildZipSegmentBuffer(declaredGridSize, bigPayload);
 
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(
       /exceeds its declared gridSize of 128 bytes/,
     );
   });
@@ -286,7 +287,7 @@ describe("NanoVDBFile — error handling", () => {
     const smallPayload = new Uint8Array(10);
     const buffer = buildZipSegmentBuffer(declaredGridSize, smallPayload);
 
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(
       /ZIP-decompressed grid #0 \("g"\) is 10 bytes, expected 1000/,
     );
   });
@@ -302,15 +303,15 @@ describe("NanoVDBFile — error handling", () => {
     bytes.set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
     view.setUint32(8, (32 << 21) | (9 << 10) | 1, true); // version 32.9.1
     view.setUint16(12, 1, true); // gridCount
-    view.setUint16(14, Codec.NONE, true); // codec
+    view.setUint16(14, NvdbCodec.NONE, true); // codec
 
     const meta = FILE_HEADER_SIZE;
     view.setBigUint64(meta + 0, 2n ** 60n, true); // grossly unrepresentable gridSize
     view.setUint32(meta + 136, nameSize, true); // nameSize
     bytes.set([...name].map((c) => c.charCodeAt(0)), meta + FILE_METADATA_SIZE);
 
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/unrepresentable gridSize/);
-    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrow(NvdbFormatError);
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/unrepresentable gridSize/);
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrow(NvdbFormatError);
   });
 });
 
@@ -339,8 +340,8 @@ function rewriteAsZip(noneBuffer: ArrayBuffer): ArrayBuffer {
   out.set(headerAndMeta, 0);
 
   const outView = new DataView(out.buffer);
-  outView.setUint16(14, Codec.ZIP, true); // FileHeader.codec
-  outView.setUint16(FILE_HEADER_SIZE + 168, Codec.ZIP, true); // FileMetaData.codec
+  outView.setUint16(14, NvdbCodec.ZIP, true); // FileHeader.codec
+  outView.setUint16(FILE_HEADER_SIZE + 168, NvdbCodec.ZIP, true); // FileMetaData.codec
   outView.setBigUint64(headerAndMeta.byteLength, BigInt(compressed.byteLength), true);
   out.set(compressed, headerAndMeta.byteLength + 8);
 
@@ -370,7 +371,7 @@ function buildZipSegmentBuffer(declaredGridSize: number, decompressedPayload: Ui
   bytes.set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
   view.setUint32(8, (32 << 21) | (9 << 10) | 1, true); // version 32.9.1
   view.setUint16(12, 1, true); // gridCount
-  view.setUint16(14, Codec.ZIP, true); // codec
+  view.setUint16(14, NvdbCodec.ZIP, true); // codec
 
   const meta = FILE_HEADER_SIZE;
   view.setBigUint64(meta + 0, BigInt(declaredGridSize), true); // gridSize
@@ -378,7 +379,7 @@ function buildZipSegmentBuffer(declaredGridSize: number, decompressedPayload: Ui
   view.setUint32(meta + 32, 1, true); // gridType = Float
   view.setUint32(meta + 36, 2, true); // gridClass = FogVolume
   view.setUint32(meta + 136, nameSize, true); // nameSize
-  view.setUint16(meta + 168, Codec.ZIP, true); // codec (FileMetaData mirror)
+  view.setUint16(meta + 168, NvdbCodec.ZIP, true); // codec (FileMetaData mirror)
 
   bytes.set([...name].map((c) => c.charCodeAt(0)), meta + FILE_METADATA_SIZE);
 
@@ -407,10 +408,10 @@ function bufferOf(image: Uint32Array): Buffer {
  * NanoVDB.h's `NANOVDB_MAGIC_GRID`) — so no magic rewriting is needed; the
  * extracted bytes are fed to `fromArrayBuffer` as-is.
  */
-describe.skipIf(!fixturesPresent)("NanoVDBFile — raw grid buffer (magic NanoVDB1, no FileHeader)", () => {
+describe.skipIf(!fixturesPresent)("NvdbFile — raw grid buffer (magic NanoVDB1, no FileHeader)", () => {
   it("sniffs a bare grid image (no FileHeader) as the raw-buffer format via its own NanoVDB1 magic", async () => {
     const { buffer } = await loadFixture("box_fog_float");
-    const segmentFile = NanoVDBFile.fromArrayBuffer(buffer);
+    const segmentFile = NvdbFile.fromArrayBuffer(buffer);
     const image = segmentFile.gridImage(0);
     const magicBytes = new Uint8Array(image.buffer, image.byteOffset, 8);
     expect(String.fromCharCode(...magicBytes)).toBe("NanoVDB1");
@@ -419,10 +420,10 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — raw grid buffer (magic NanoVD
   for (const name of ["box_fog_float", "sphere_fog_fp8", "torus_fog_fpn"]) {
     it(`${name}: raw-buffer parse of the extracted grid image matches the segment-parsed metadata and gridImage bytes`, async () => {
       const { buffer } = await loadFixture(name);
-      const segmentFile = NanoVDBFile.fromArrayBuffer(buffer);
+      const segmentFile = NvdbFile.fromArrayBuffer(buffer);
       const rawBuffer = standaloneImageBuffer(segmentFile.gridImage(0));
 
-      const rawFile = NanoVDBFile.fromArrayBuffer(rawBuffer);
+      const rawFile = NvdbFile.fromArrayBuffer(rawBuffer);
       expect(rawFile.grids).toHaveLength(1);
 
       const segGrid = segmentFile.grids[0]!;
@@ -448,8 +449,8 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — raw grid buffer (magic NanoVD
   it("parses a concatenated two-grid raw buffer by walking mGridSize, once mGridCount/mGridIndex agree across grids", async () => {
     const { buffer: bufferA } = await loadFixture("box_fog_float");
     const { buffer: bufferB } = await loadFixture("box_fog_fp8");
-    const fileA = NanoVDBFile.fromArrayBuffer(bufferA);
-    const fileB = NanoVDBFile.fromArrayBuffer(bufferB);
+    const fileA = NvdbFile.fromArrayBuffer(bufferA);
+    const fileB = NvdbFile.fromArrayBuffer(bufferB);
 
     // Each fixture is independently produced as a single-grid buffer, so its
     // image's own mGridCount is 1 — concatenating two of those as-is would
@@ -468,7 +469,7 @@ describe.skipIf(!fixturesPresent)("NanoVDBFile — raw grid buffer (magic NanoVD
     combined.set(patchedA, 0);
     combined.set(patchedB, patchedA.byteLength);
 
-    const rawFile = NanoVDBFile.fromArrayBuffer(combined.buffer);
+    const rawFile = NvdbFile.fromArrayBuffer(combined.buffer);
     expect(rawFile.grids).toHaveLength(2);
 
     expect(rawFile.grids[0]!.gridType).toBe(fileA.grids[0]!.gridType);

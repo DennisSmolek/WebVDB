@@ -448,7 +448,7 @@ function build(o: NormalizedOptions): string {
  * the ones present now: a grid of a type the module wasn't generated for reads
  * as 0. Either generate for every type up front (`VDB_ALL_SCALAR_TYPES`, or
  * the host's known set) or regenerate the module and rebuild the pipeline when
- * `checkModule(pool, options)` throws `VDB_TYPE_NOT_COMPILED` after an `add`.
+ * `vdbCheckModule(pool, options)` throws `VDB_TYPE_NOT_COMPILED` after an `add`.
  *
  * @throws VDBError `VDB_BAD_OPTION` for invalid options.
  */
@@ -513,8 +513,8 @@ export function vdbModuleEntries(
  *   the module targets; `VDB_TYPE_NOT_COMPILED` if the pool holds a grid
  *   type the module would not decode; `VDB_BAD_OPTION` for invalid options.
  */
-export function checkModule(pool: VDBModulePoolLike, options: VDBModuleOptions | VDBModuleTypeCheck): void {
-  const where = "checkModule";
+export function vdbCheckModule(pool: VDBModulePoolLike, options: VDBModuleOptions | VDBModuleTypeCheck): void {
+  const where = "vdbCheckModule";
   let o: { readonly types: readonly VDBGridTypeName[] };
   let target = VDB_GPU_LAYOUT_VERSION;
   if (options !== null && typeof options === "object" && !("slot" in options) && !("buffer" in options) && !("profile" in options)) {

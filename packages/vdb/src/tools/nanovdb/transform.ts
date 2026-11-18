@@ -11,6 +11,7 @@
  * which the test asserts.
  */
 
+import { VDBToolsError } from "../errors.js";
 import {
   GRID_OFF_MAP,
   GRID_OFF_VOXEL_SIZE,
@@ -30,24 +31,24 @@ import {
 } from "./bytes.js";
 
 /** Uniform scale + translate specified directly. */
-export interface TransformSpec {
+export interface VDBTransformSpec {
   /** New uniform voxel size (world units per voxel). */
   voxelSize: number;
   /** New world-space position of index origin (the Map's translation). */
   worldOrigin: [number, number, number];
 }
 
-export type TransformInput = Float32Array | number[] | TransformSpec;
+export type VDBGridTransformInput = Float32Array | number[] | VDBTransformSpec;
 
 /**
  * Returns a copy of `image` with its transform replaced by an affine uniform
  * scale + translate. Accepts either a row-major 4x4 matrix (`Float32Array` /
  * `number[16]`) or an explicit `{ voxelSize, worldOrigin }`.
  */
-export function transform(image: Uint32Array, input: TransformInput): Uint32Array {
+export function vdbTransform(image: Uint32Array, input: VDBGridTransformInput): Uint32Array {
   const { voxelSize, translation } = resolve(input);
   if (!(voxelSize > 0)) {
-    throw new Error(`transform: voxelSize must be positive, got ${voxelSize}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `transform: voxelSize must be positive, got ${voxelSize}`);
   }
 
   const out = image.slice(); // deep copy — source is never mutated
@@ -81,11 +82,11 @@ export function transform(image: Uint32Array, input: TransformInput): Uint32Arra
   return out;
 }
 
-function resolve(input: TransformInput): { voxelSize: number; translation: [number, number, number] } {
+function resolve(input: VDBGridTransformInput): { voxelSize: number; translation: [number, number, number] } {
   if (input instanceof Float32Array || Array.isArray(input)) {
     const m = input;
     if (m.length !== 16) {
-      throw new Error(`transform: expected a 4x4 (16-element) matrix, got ${m.length}`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `transform: expected a 4x4 (16-element) matrix, got ${m.length}`);
     }
     const sx = m[0]!;
     const sy = m[5]!;
@@ -95,7 +96,7 @@ function resolve(input: TransformInput): { voxelSize: number; translation: [numb
     const rotated = offDiagonal.some((v) => Math.abs(v) > eps);
     const nonUniform = Math.abs(sx - sy) > eps || Math.abs(sx - sz) > eps;
     if (rotated || nonUniform) {
-      throw new Error(
+      throw new VDBToolsError("VDB_BAD_OPTION", 
         `transform: matrix is ${rotated ? "rotated/sheared" : "non-uniformly scaled"} ` +
           `(scale [${sx}, ${sy}, ${sz}]). v1 supports uniform scale + translate only; ` +
           `rotation/shear/anisotropy need GPU resampling (roadmap).`,

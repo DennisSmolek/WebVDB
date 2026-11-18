@@ -14,7 +14,7 @@ import {
   encodeRecord,
   vdbPoolLayoutWgsl,
   type VDBGridRecord,
-} from "../../src/core/index.js";
+} from "../../src/core/internal.js";
 import {
   VDB_RECORD_BRICK_LOG2_SHIFT,
   VDB_RECORD_BYTE_FIELD_MASK,
@@ -22,7 +22,7 @@ import {
   encodeHeader,
 } from "../../src/core/pool/layout.js";
 import { readImageHeader } from "../../src/core/pool/image-header.js";
-import { NanoVDBFile } from "../../src/tools/index.js";
+import { NvdbFile } from "../../src/tools/index.js";
 import { FakeDevice } from "./fake-gpu.js";
 
 const f32 = (x: number) => Math.fround(x);
@@ -138,7 +138,7 @@ const fixtureUrl = new URL("../../../../fixtures/primitives/box_fog_float.nvdb",
 describe.skipIf(!existsSync(fixtureUrl))("golden record (box_fog_float)", () => {
   it("matches the committed words", async () => {
     const bytes = readFileSync(fixtureUrl);
-    const file = NanoVDBFile.fromArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    const file = NvdbFile.fromArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     const sidecar = JSON.parse(readFileSync(new URL("box_fog_float.sidecar.json", fixtureUrl), "utf8"));
     const device = new FakeDevice();
     const pool = await VDBGridPool.create(device.asGPU(), { initialBytes: 4096 });

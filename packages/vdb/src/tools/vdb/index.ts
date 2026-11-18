@@ -1,5 +1,5 @@
 export { parseVdb } from "./parse.js";
-export { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+export { VdbFormatError, VDBUnsupportedError } from "./errors.js";
 export type {
   VdbBBox,
   VdbFile,
@@ -14,5 +14,5 @@ export type {
   VdbTransformInfo,
   VdbValueType,
   VdbVec3Grid,
-  Vec3Tuple,
+  VDBVec3,
 } from "./types.js";

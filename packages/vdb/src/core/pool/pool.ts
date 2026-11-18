@@ -463,7 +463,7 @@ export class VDBGridPool {
   }
 
   /**
-   * Grid types of the live grids now, for `checkModule` and
+   * Grid types of the live grids now, for `vdbCheckModule` and
    * `vdbModuleWgsl({ types })`. It does not know about grids the host adds
    * later: generate the module for every type the host may add (see `add`).
    */
@@ -482,7 +482,7 @@ export class VDBGridPool {
    * generated for; a grid of any other type reads as 0. A module must
    * therefore be generated for every type the host may add (its known set,
    * or `VDB_ALL_SCALAR_TYPES`), or regenerated and its pipeline rebuilt when
-   * a new type arrives. Call `checkModule(pool, options)` after `add` to
+   * a new type arrives. Call `vdbCheckModule(pool, options)` after `add` to
    * catch a mismatch (`VDB_TYPE_NOT_COMPILED`).
    */
   add(image: Uint32Array, options: VDBAddOptions = {}): number {

@@ -33,7 +33,7 @@ import {
   vdbFrameShadowReceiver,
   type VDBFrameEmitter,
   type VDBFrameVec3 as Vec3,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 const close = (a: number, b: number, tol: number) => expect(Math.abs(a - b), `${a} vs ${b}`).toBeLessThanOrEqual(tol);
 

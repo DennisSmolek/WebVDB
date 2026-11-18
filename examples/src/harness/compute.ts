@@ -1,7 +1,7 @@
 /**
  * K2.3 GPU gate for the core compute tools: `gridStats` and `decodeToAtlas`
- * on a real device against their `tools` CPU twins (`gridStatsCpu`,
- * `decodeToAtlasCpu` + `atlasFromRaw`), and `applyValueTransform` round trips.
+ * on a real device against their `tools` CPU twins (`vdbGridStatsCpu`,
+ * `vdbDecodeToAtlasCpu` + `atlasFromRaw`), and `vdbApplyValueTransform` round trips.
  *
  * Five grids share one pool (a filler grid first, so ids and image offsets
  * are not 0): box Float, sphere Fp8, torus FpN, sphere Float, and a dense
@@ -9,9 +9,9 @@
  * a host encoder (with the pool update), half let the tool submit.
  * Results go to `window.__VDB_COMPUTE__` for e2e/compute.spec.ts.
  */
-import { VDBGridPool, applyValueTransform, decodeToAtlas, gridStats } from "@pmndrs/vdb";
-import type { AtlasFilter, AtlasFormat, VDBDecodeToAtlasOptions } from "@pmndrs/vdb";
-import { NanoVDBFile, atlasFromRaw, buildFromDense, decodeToAtlasCpu, gridStatsCpu, getDim, readValueF32 } from "@pmndrs/vdb/tools";
+import { VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlasGpu, vdbGridStatsGpu } from "@pmndrs/vdb";
+import type { VDBAtlasFilter, VDBAtlasFormat, VDBDecodeToAtlasOptions } from "@pmndrs/vdb";
+import { NvdbFile, atlasFromRaw, vdbBuildFromDense, vdbDecodeToAtlasCpu, vdbGridStatsCpu, getDim, vdbReadValueF32 } from "../../../packages/vdb/src/tools/internal.js";
 
 interface StatsCheck {
   grid: string;
@@ -98,7 +98,7 @@ function signedGrid(): Uint32Array {
       }
     }
   }
-  return buildFromDense(values, dims, { origin: [-7, 3, -12], gridClass: "Unknown", gridName: "signed" });
+  return vdbBuildFromDense(values, dims, { origin: [-7, 3, -12], gridClass: "Unknown", gridName: "signed" });
 }
 
 function compareRaw(gpu: Float32Array, twin: Float32Array): { exact: number; maxAbs: number } {
@@ -123,7 +123,7 @@ async function run(): Promise<ComputeReport> {
   const loaded = await Promise.all(
     FIXTURES.map(async (name) => {
       const res = await fetch(`/fixtures/primitives/${name}.nvdb`);
-      return res.ok ? NanoVDBFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0) : null;
+      return res.ok ? NvdbFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0) : null;
     }),
   );
   const missing = FIXTURES.filter((_, k) => loaded[k] === null);
@@ -142,15 +142,15 @@ async function run(): Promise<ComputeReport> {
     if (k % 2 === 1) {
       const encoder = device.createCommandEncoder();
       pool.update(encoder);
-      job = gridStats(device, pool, ids[k]!, { histogramBins, encoder });
+      job = vdbGridStatsGpu(device, pool, ids[k]!, { histogramBins, encoder });
       device.queue.submit([encoder.finish()]);
       job.submitted();
     } else {
       pool.flush();
-      job = gridStats(device, pool, ids[k]!, { histogramBins });
+      job = vdbGridStatsGpu(device, pool, ids[k]!, { histogramBins });
     }
     const gpu = await job.read();
-    const twin = gridStatsCpu(images[k]!, { histogramBins });
+    const twin = vdbGridStatsCpu(images[k]!, { histogramBins });
     let l1 = 0;
     for (let b = 0; b < histogramBins; b++) l1 += Math.abs(gpu.histogram[b]! - twin.histogram[b]!);
     report.stats.push({
@@ -168,7 +168,7 @@ async function run(): Promise<ComputeReport> {
   }
 
   // decodeToAtlas: raw f32 (normalize: false) against the twin, then the formatted outputs.
-  const variants: { label: string; filter: AtlasFilter; format: AtlasFormat; normalize: boolean; maxDim: number }[] = [
+  const variants: { label: string; filter: VDBAtlasFilter; format: VDBAtlasFormat; normalize: boolean; maxDim: number }[] = [
     { label: "nearest raw", filter: "nearest", format: "float32", normalize: false, maxDim: 256 },
     { label: "trilinear raw", filter: "trilinear", format: "float32", normalize: false, maxDim: 256 },
     { label: "trilinear raw maxDim 40", filter: "trilinear", format: "float32", normalize: false, maxDim: 40 },
@@ -182,19 +182,19 @@ async function run(): Promise<ComputeReport> {
       let job;
       if ((k + v) % 2 === 0) {
         const encoder = device.createCommandEncoder();
-        job = decodeToAtlas(device, pool, ids[k]!, { ...options, encoder });
+        job = vdbDecodeToAtlasGpu(device, pool, ids[k]!, { ...options, encoder });
         device.queue.submit([encoder.finish()]);
         job.submitted();
       } else {
-        job = decodeToAtlas(device, pool, ids[k]!, options);
+        job = vdbDecodeToAtlasGpu(device, pool, ids[k]!, options);
       }
       const gpu = await job.read();
-      const twin = decodeToAtlasCpu(images[k]!, { filter: o.filter, maxDim: o.maxDim });
+      const twin = vdbDecodeToAtlasCpu(images[k]!, { filter: o.filter, maxDim: o.maxDim });
       // Raw comparison: re-run unformatted when this variant formats.
       const raw =
         !o.normalize && o.format === "float32"
           ? (gpu.data as Float32Array)
-          : ((await decodeToAtlas(device, pool, ids[k]!, { filter: o.filter, maxDim: o.maxDim, format: "float32", normalize: false }).read()).data as Float32Array);
+          : ((await vdbDecodeToAtlasGpu(device, pool, ids[k]!, { filter: o.filter, maxDim: o.maxDim, format: "float32", normalize: false }).read()).data as Float32Array);
       const { exact, maxAbs } = compareRaw(raw, twin.raw);
       const twinData = atlasFromRaw(twin.raw, { format: o.format, normalize: o.normalize, range: gpu.range });
       let dataDiff = 0;
@@ -211,7 +211,7 @@ async function run(): Promise<ComputeReport> {
 
   // readback: false keeps the GPU buffer; dispose() frees it; read() after dispose rejects.
   {
-    const job = decodeToAtlas(device, pool, ids[0]!, { readback: false, maxDim: 16 });
+    const job = vdbDecodeToAtlasGpu(device, pool, ids[0]!, { readback: false, maxDim: 16 });
     report.readbackFalseOk = job.buffer.size === job.dims[0] * job.dims[1] * job.dims[2] * 4;
     job.dispose();
     report.disposeRejects = await job.read().then(
@@ -224,7 +224,7 @@ async function run(): Promise<ComputeReport> {
   // (mapping the staging buffer first would fail that submit's validation).
   {
     const encoder = device.createCommandEncoder();
-    const job = gridStats(device, pool, ids[0]!, { encoder });
+    const job = vdbGridStatsGpu(device, pool, ids[0]!, { encoder });
     const early = await job.read().then(
       () => "resolved",
       (e: unknown) => (e as { code?: string }).code ?? String(e),
@@ -236,16 +236,16 @@ async function run(): Promise<ComputeReport> {
     report.readBeforeSubmit = {
       earlyRead: early,
       submitValidation: submitError ? submitError.message : null,
-      readAfterSubmittedOk: stats.activeVoxelCount === gridStatsCpu(images[0]!).activeVoxelCount,
+      readAfterSubmittedOk: stats.activeVoxelCount === vdbGridStatsCpu(images[0]!).activeVoxelCount,
     };
   }
 
-  // applyValueTransform on box Float: leaf values double, tiles stay, in place.
+  // vdbApplyValueTransform on box Float: leaf values double, tiles stay, in place.
   {
     const k = 0;
     const source = images[k]!;
     const versionBefore = pool.version;
-    const transformed = applyValueTransform(pool, ids[k]!, source, "double");
+    const transformed = vdbApplyValueTransform(pool, ids[k]!, source, "double");
     pool.flush();
     const versionUnchanged = pool.version === versionBefore;
     let leafSamples = 0;
@@ -256,8 +256,8 @@ async function run(): Promise<ComputeReport> {
     const [lo, hi] = [info.indexBBox.min, info.indexBBox.max];
     for (let n = 0; n < 4000; n++) {
       const ijk: [number, number, number] = [0, 1, 2].map((a) => lo[a]! + ((n * [7919, 104729, 1299709][a]!) % (hi[a]! - lo[a]! + 1))) as [number, number, number];
-      const before = readValueF32(source, ijk);
-      const after = readValueF32(transformed, ijk);
+      const before = vdbReadValueF32(source, ijk);
+      const after = vdbReadValueF32(transformed, ijk);
       if (getDim(source, ijk) === 1) {
         leafSamples++;
         if (!Object.is(after, Math.fround(before * 2))) leafDoubled = false;
@@ -266,10 +266,10 @@ async function run(): Promise<ComputeReport> {
         if (!Object.is(after, before)) tilesUnchanged = false;
       }
     }
-    const gpuAtlas = await decodeToAtlas(device, pool, ids[k]!, { filter: "nearest", format: "float32", normalize: false }).read();
-    const twinAtlas = decodeToAtlasCpu(transformed, { filter: "nearest" });
-    const gpuStats = await gridStats(device, pool, ids[k]!).read();
-    const twinStats = gridStatsCpu(transformed);
+    const gpuAtlas = await vdbDecodeToAtlasGpu(device, pool, ids[k]!, { filter: "nearest", format: "float32", normalize: false }).read();
+    const twinAtlas = vdbDecodeToAtlasCpu(transformed, { filter: "nearest" });
+    const gpuStats = await vdbGridStatsGpu(device, pool, ids[k]!).read();
+    const twinStats = vdbGridStatsCpu(transformed);
     report.transform = {
       grid: names[k]!,
       leafSamples,

@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
  * Demo 07 — builder: the other half of the Phase 5/8 demo gate ("dense ->
  * TS-build -> render round-trip", docs/PLAN.md). Everything is generated
  * in-page (no external fixture): a deterministic 96^3 dense field ->
- * `buildFromDense` -> `writeNvdb` -> re-parse via `NanoVDBFile` -> `VDBGridPool`
+ * `vdbBuildFromDense` -> `writeNvdb` -> re-parse via `NvdbFile` -> `VDBGridPool`
  * -> `VDBVolumeMaterial` render,
  * with the round-trip proven in-page (`window.__DEMO07__`) before the
  * screenshot is taken.
@@ -23,7 +23,7 @@ test.setTimeout(120_000);
 test.describe("demo 07 — builder", () => {
   test.skip(({ browserName }) => browserName !== "chromium", "WebGPU/SwiftShader path is chromium-only");
 
-  test("dense -> buildFromDense -> writeNvdb -> re-parse round trip, matches the golden", async ({ page }) => {
+  test("dense -> vdbBuildFromDense -> writeNvdb -> re-parse round trip, matches the golden", async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") consoleErrors.push(msg.text());

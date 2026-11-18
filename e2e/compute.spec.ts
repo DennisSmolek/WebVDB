@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 // K2.3 gate: the core compute tools (gridStats, decodeToAtlas,
-// applyValueTransform) on a real device against their tools CPU twins
+// vdbApplyValueTransform) on a real device against their tools CPU twins
 // (examples/src/harness/compute.ts). Five grids in one pool, both stats
 // paths, host-encoder and self-submitted calls.
 const PAGE_URL = "/src/harness/compute.html";

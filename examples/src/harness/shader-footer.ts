@@ -6,7 +6,7 @@
  * `pnanovdb_readaccessor_get_value_float` / `pnanovdb_readaccessor_is_active`
  * / `pnanovdb_sample_trilinear_typed` over flat coordinate buffers, so the
  * CPU reference (`@pmndrs/vdb/tools`'s package-exported `readValue`/
- * `sampleTrilinear`, see `main.ts`) and the GPU shader can be compared
+ * `vdbSampleTrilinear`, see `main.ts`) and the GPU shader can be compared
  * value-for-value.
  *
  * Binding layout (explicit, non-'auto', built in main.ts):

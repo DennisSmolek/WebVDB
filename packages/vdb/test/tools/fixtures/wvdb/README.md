@@ -15,7 +15,7 @@ copy from [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) at commit `75e
 The JangaFX sets are CC0 1.0 (Public Domain); his repo carries their `LICENSE.txt` / `README.txt` next to the
 files. The `.wvdb` encoding is his MIT-licensed tool's output. The digest records only the header (chunk offsets
 zeroed) and SHA-256 sums of the inflated chunks, so the smoke re-bake test (and the K4.13 level-set re-bake of the
-teapot, `levelSetSampler: 'mjurczyk'`) can run from our own `fixtures/vdb-samples/*.vdb` (`pnpm fixtures:vdb-samples`)
+teapot, `levelSetSampler: 'surface-mean'`) can run from our own `fixtures/vdb-samples/*.vdb` (`pnpm fixtures:vdb-samples`)
 without committing his larger files. Our pinned `utahteapot.vdb` has the SHA-256 his header records.
 
 Tests that need his other committed files (`venusstatue.wvdb`, `utahteapot.wvdb`, `sphere_points.wvdb`,

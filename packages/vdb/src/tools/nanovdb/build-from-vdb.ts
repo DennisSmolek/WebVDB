@@ -4,7 +4,7 @@
  * A parsed {@link VdbGrid} exposes `iterLeaves()` (each leaf: 8-aligned origin,
  * 512 values, 512-bit value mask), `iterTiles()` (active tiles above leaf
  * level) and an index->world transform. `buildFromVdb` streams those leaves
- * straight into the leaf-iterator build path ({@link buildFromLeavesDetailed})
+ * straight into the leaf-iterator build path ({@link vdbBuildFromLeavesDetailed})
  * with the FLOAT codec — no dense array is materialised, so a 7M-active-voxel
  * teapot in a large bbox stays sparse — and writes the active tiles as NanoVDB
  * tiles at the same level (K4.1).
@@ -19,14 +19,14 @@
  * roadmap for those).
  */
 
-import { VdbUnsupportedError } from "../vdb/errors.js";
+import { VDBToolsError, VDBUnsupportedError } from "../errors.js";
 import type { VdbGrid, VdbTransformInfo } from "../vdb/types.js";
 import type { TileInput } from "./tree.js";
-import { FLOAT_LEAF_CODEC, VEC3F_LEAF_CODEC } from "./leaf-codec.js";
+import { VDB_FLOAT_LEAF_CODEC, VDB_VEC3F_LEAF_CODEC } from "./leaf-codec.js";
 import {
-  buildFromLeavesDetailed,
-  type BuildFromLeavesOptions,
-  type BuiltGrid,
+  vdbBuildFromLeavesDetailed,
+  type VDBBuildFromLeavesOptions,
+  type VDBBuiltGrid,
   type GridClassName,
 } from "./serialize.js";
 
@@ -51,14 +51,14 @@ export function buildFromVdb(grid: VdbGrid, opts: BuildFromVdbOptions = {}): Uin
 }
 
 /** As {@link buildFromVdb}, but returns the computed metadata alongside the image. */
-export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = {}): BuiltGrid {
+export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = {}): VDBBuiltGrid {
   if (grid.valueType === "ptdataidx32") {
-    throw new VdbUnsupportedError(
+    throw new VDBUnsupportedError(
       `buildFromVdb: grid "${grid.name}" is a point data grid; NanoVDB point output is not implemented (use grid.points())`,
     );
   }
   const { voxelSize, translation } = uniformTransform(grid.transform);
-  const buildOpts: BuildFromLeavesOptions = {
+  const buildOpts: VDBBuildFromLeavesOptions = {
     voxelSize,
     worldOrigin: translation,
     background: grid.background,
@@ -68,8 +68,8 @@ export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = 
     collapse: opts.collapse === true,
   };
   const isVector = grid.valueType === "vec3s" || grid.valueType === "vec3d" || grid.valueType === "vec3i";
-  const codec = isVector ? VEC3F_LEAF_CODEC : FLOAT_LEAF_CODEC;
-  return buildFromLeavesDetailed(grid.iterLeaves(), codec, buildOpts);
+  const codec = isVector ? VDB_VEC3F_LEAF_CODEC : VDB_FLOAT_LEAF_CODEC;
+  return vdbBuildFromLeavesDetailed(grid.iterLeaves(), codec, buildOpts);
 }
 
 /** Active tiles, then inactive tiles with a stored value (K4.9). */
@@ -101,7 +101,7 @@ export function uniformTransform(t: VdbTransformInfo): {
 } {
   const m = t.matrix;
   if (m.length !== 16) {
-    throw new Error(`buildFromVdb: expected a 4x4 (16-element) transform matrix, got ${m.length}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `buildFromVdb: expected a 4x4 (16-element) transform matrix, got ${m.length}`);
   }
   const sx = m[0]!;
   const sy = m[5]!;
@@ -112,7 +112,7 @@ export function uniformTransform(t: VdbTransformInfo): {
   const rotated = offDiagonal.some((v) => Math.abs(v) > eps);
   const nonUniform = Math.abs(sx - sy) > eps || Math.abs(sx - sz) > eps;
   if (rotated || nonUniform) {
-    throw new Error(
+    throw new VDBUnsupportedError(
       `buildFromVdb: transform "${t.type}" is ${rotated ? "rotated/sheared" : "non-uniformly scaled"} ` +
         `(scale [${sx}, ${sy}, ${sz}]${rotated ? `, off-diagonal ${JSON.stringify(offDiagonal)}` : ""}). ` +
         `v1 supports uniform scale + translate only; rotation/shear/anisotropy need GPU resampling (roadmap).`,

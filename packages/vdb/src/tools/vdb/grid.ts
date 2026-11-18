@@ -25,7 +25,7 @@ import type {
   VdbTile,
   VdbTransformInfo,
   VdbValueType,
-  Vec3Tuple,
+  VDBVec3,
 } from "./types.js";
 
 /** Rounds down to a multiple of `dim` (a power of two). `n & (dim - 1)` is the
@@ -58,7 +58,7 @@ export interface GridInit {
   pointOutputBudget?: number;
 }
 
-type Value = number | Vec3Tuple;
+type Value = number | VDBVec3;
 
 class VdbGridImpl {
   readonly name: string;
@@ -120,7 +120,7 @@ class VdbGridImpl {
         const tile = map.get(leafKey(floorTo(x, dim), floorTo(y, dim), floorTo(z, dim)));
         if (tile) return { value: this.toValue(tile.value), active: tile.active };
       }
-      return { value: this.components === 3 ? [...(this.background as Vec3Tuple)] : this.background, active: false };
+      return { value: this.components === 3 ? [...(this.background as VDBVec3)] : this.background, active: false };
     }
     const lx = x & (LEAF_DIM - 1);
     const ly = y & (LEAF_DIM - 1);

@@ -1,5 +1,5 @@
 /**
- * `.nvdb` loader — Phase 1 (docs/PLAN.md), implementing the `NanoVDBFile`
+ * `.nvdb` loader — Phase 1 (docs/PLAN.md), implementing the `NvdbFile`
  * contract from docs/SPEC.md §2.2: parse a `.nvdb` file (or a raw NanoVDB
  * grid buffer) into GPU-ready grid images — "a valid NanoVDB grid image in
  * a flat u32 buffer" (SPEC §1).
@@ -76,20 +76,9 @@
  */
 
 import { unzlibSync } from "fflate";
-import { VdbFormatError, VdbUnsupportedError } from "./vdb/errors.js";
+import { NvdbFormatError, VDBToolsError, VDBUnsupportedError } from "./errors.js";
 
-/**
- * A malformed or truncated `.nvdb` (K4.20). Thrown by `NanoVDBFile` and the
- * stream reader alike; `instanceof VdbFormatError` holds. Valid data this
- * loader does not handle (BLOSC, other grid types) is a `VdbUnsupportedError`.
- */
-export class NvdbFormatError extends VdbFormatError {
-  constructor(message: string) {
-    super(message);
-    this.name = "NvdbFormatError";
-    this.message = `@pmndrs/vdb/tools: malformed .nvdb: ${message}`;
-  }
-}
+export { NvdbFormatError } from "./errors.js";
 
 /** `.nvdb` FileHeader size in bytes (magic + version + grid count + codec). */
 export const FILE_HEADER_SIZE = 16;
@@ -103,22 +92,22 @@ export const GRID_DATA_SIZE = 672;
 /**
  * NanoVDB 8-byte magic strings: `NanoVDB0` = legacy file header / grid,
  * `NanoVDB1` = raw grid buffer, `NanoVDB2` = current file header. Sniffed
- * by `NanoVDBFile.fromArrayBuffer`.
+ * by `NvdbFile.fromArrayBuffer`.
  */
 export const MAGIC_ASCII = ["NanoVDB0", "NanoVDB1", "NanoVDB2"] as const;
 
 /** File codecs we know about; v1 supports NONE and ZIP (fflate). */
-export const Codec = {
+export const NvdbCodec = {
   NONE: 0,
   ZIP: 1,
   BLOSC: 2,
 } as const;
-export type Codec = (typeof Codec)[keyof typeof Codec];
+export type NvdbCodec = (typeof NvdbCodec)[keyof typeof NvdbCodec];
 
 /** Grid types targeted for v1 (FogVolume rendering). */
-export const SUPPORTED_GRID_TYPES = ["Float", "Fp4", "Fp8", "Fp16", "FpN"] as const;
+export const NVDB_SUPPORTED_GRID_TYPES = ["Float", "Fp4", "Fp8", "Fp16", "FpN"] as const;
 
-export interface GridMetadata {
+export interface NvdbGridMetadata {
   name: string;
   gridType: string;
   gridClass: string;
@@ -182,7 +171,7 @@ const ROOT_BASE_SIZE = 28;
 export function requireBytes(buffer: ArrayBuffer, minLength: number, what: string): void {
   if (buffer.byteLength < minLength) {
     throw new NvdbFormatError(
-      `NanoVDBFile: truncated buffer while reading ${what} ` +
+      `NvdbFile: truncated buffer while reading ${what} ` +
         `(need ${minLength} bytes, buffer has ${buffer.byteLength})`,
     );
   }
@@ -199,7 +188,7 @@ export function requireBytes(buffer: ArrayBuffer, minLength: number, what: strin
 export function assertSafeGridSize(gridSize: number, context: string): void {
   if (!Number.isSafeInteger(gridSize) || gridSize < 0) {
     throw new NvdbFormatError(
-      `NanoVDBFile: ${context} has an unrepresentable gridSize (${gridSize}) — the on-disk u64 does not fit ` +
+      `NvdbFile: ${context} has an unrepresentable gridSize (${gridSize}) — the on-disk u64 does not fit ` +
         `in a safe JS integer, so the file is corrupt or malicious.`,
     );
   }
@@ -218,7 +207,7 @@ export function assertSafeGridSize(gridSize: number, context: string): void {
 function checkInternalGridSize(gridBytes: Uint8Array, expectedGridSize: number, i: number, name: string): void {
   if (gridBytes.byteLength < GRID_OFF_GRID_SIZE + 8) {
     throw new NvdbFormatError(
-      `NanoVDBFile: grid #${i} ("${name}") image is only ${gridBytes.byteLength} bytes — too short to contain ` +
+      `NvdbFile: grid #${i} ("${name}") image is only ${gridBytes.byteLength} bytes — too short to contain ` +
         `a GridData header, so its internal mGridSize can't be verified against FileMetaData.gridSize ` +
         `(${expectedGridSize}). The file is corrupt or truncated.`,
     );
@@ -227,7 +216,7 @@ function checkInternalGridSize(gridBytes: Uint8Array, expectedGridSize: number, 
   const internalGridSize = Number(view.getBigUint64(GRID_OFF_GRID_SIZE, true));
   if (internalGridSize !== expectedGridSize) {
     throw new NvdbFormatError(
-      `NanoVDBFile: grid #${i} ("${name}")'s FileMetaData.gridSize (${expectedGridSize}) does not match its ` +
+      `NvdbFile: grid #${i} ("${name}")'s FileMetaData.gridSize (${expectedGridSize}) does not match its ` +
         `own internal GridData.mGridSize (${internalGridSize}) — the file's metadata is inconsistent with its ` +
         `grid data (truncated or corrupted); refusing to load a possibly-wrong grid image.`,
     );
@@ -271,7 +260,7 @@ export function checkVersion(raw: number): ParsedVersion {
   const v = parseVersion(raw);
   if (v.major !== NANOVDB_MAJOR_VERSION) {
     throw new NvdbFormatError(
-      `NanoVDBFile: incompatible NanoVDB version ${formatVersion(v)} ` +
+      `NvdbFile: incompatible NanoVDB version ${formatVersion(v)} ` +
         `(this loader targets NanoVDB ${NANOVDB_MAJOR_VERSION}.x). ` +
         `Re-export the file with a matching major version of NanoVDB.`,
     );
@@ -336,13 +325,13 @@ export function gridClassName(id: number): string {
   return GRID_CLASS_NAMES[id] ?? `Unknown(${id})`;
 }
 
-const SUPPORTED_GRID_TYPES_SET: readonly string[] = SUPPORTED_GRID_TYPES;
+const SUPPORTED_GRID_TYPES_SET: readonly string[] = NVDB_SUPPORTED_GRID_TYPES;
 
 export function validateGridType(gridType: string, gridName: string): void {
   if (!SUPPORTED_GRID_TYPES_SET.includes(gridType)) {
-    throw new VdbUnsupportedError(
-      `NanoVDBFile: grid "${gridName}" is a ${gridType} grid, which this loader does not ` +
-        `support — v1 only handles FogVolume grids of type ${SUPPORTED_GRID_TYPES.join("/")}. ` +
+    throw new VDBUnsupportedError(
+      `NvdbFile: grid "${gridName}" is a ${gridType} grid, which this loader does not ` +
+        `support — v1 only handles FogVolume grids of type ${NVDB_SUPPORTED_GRID_TYPES.join("/")}. ` +
         `Re-export as float/fp4/fp8/fp16 (or fpn), e.g. \`nanovdb_convert --fp8 in.vdb out.nvdb\`.`,
     );
   }
@@ -364,8 +353,8 @@ export interface ParsedFileMetaData {
   voxelCount: number;
   gridTypeId: number;
   gridClassId: number;
-  worldBBox: GridMetadata["worldBBox"];
-  indexBBox: GridMetadata["indexBBox"];
+  worldBBox: NvdbGridMetadata["worldBBox"];
+  indexBBox: NvdbGridMetadata["indexBBox"];
   voxelSize: [number, number, number];
   nameSize: number;
 }
@@ -410,7 +399,7 @@ export function readFileMetaData(view: DataView, offset: number): ParsedFileMeta
 }
 
 export interface GridRecord {
-  metadata: GridMetadata;
+  metadata: NvdbGridMetadata;
   image: Uint32Array;
 }
 
@@ -425,20 +414,20 @@ export function isFileHeaderMagic(magic: string): boolean {
 }
 
 /** Checks a FileHeader's version and codec; returns its grid count and codec. */
-export function readFileHeader(view: DataView, offset: number): { gridCount: number; codec: Codec } {
+export function readFileHeader(view: DataView, offset: number): { gridCount: number; codec: NvdbCodec } {
   checkVersion(view.getUint32(offset + FILE_HEADER_OFF_VERSION, true));
   const gridCount = view.getUint16(offset + FILE_HEADER_OFF_GRID_COUNT, true);
   const codec = view.getUint16(offset + FILE_HEADER_OFF_CODEC, true);
-  if (codec === Codec.BLOSC) {
-    throw new VdbUnsupportedError(
-      "NanoVDBFile: this file uses the BLOSC codec, which is not supported in the browser. " +
+  if (codec === NvdbCodec.BLOSC) {
+    throw new VDBUnsupportedError(
+      "NvdbFile: this file uses the BLOSC codec, which is not supported in the browser. " +
         "Re-export it with codec NONE or ZIP (e.g. `nanovdb_convert --codec=zip`).",
     );
   }
-  if (codec !== Codec.NONE && codec !== Codec.ZIP) {
-    throw new NvdbFormatError(`NanoVDBFile: unknown codec value ${codec} in FileHeader`);
+  if (codec !== NvdbCodec.NONE && codec !== NvdbCodec.ZIP) {
+    throw new NvdbFormatError(`NvdbFile: unknown codec value ${codec} in FileHeader`);
   }
-  return { gridCount, codec: codec as Codec };
+  return { gridCount, codec: codec as NvdbCodec };
 }
 
 /**
@@ -455,18 +444,18 @@ export function inflateZipGrid(compressed: Uint8Array, gridSize: number, i: numb
   try {
     decompressed = unzlibSync(compressed, { out: outBound });
   } catch (err) {
-    throw new NvdbFormatError(`NanoVDBFile: failed to inflate ZIP-compressed grid #${i} ("${name}"): ${(err as Error).message}`);
+    throw new NvdbFormatError(`NvdbFile: failed to inflate ZIP-compressed grid #${i} ("${name}"): ${(err as Error).message}`);
   }
   if (decompressed.byteLength === outBound.length) {
     throw new NvdbFormatError(
-      `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") exceeds its declared gridSize of ` +
+      `NvdbFile: ZIP-decompressed grid #${i} ("${name}") exceeds its declared gridSize of ` +
         `${gridSize} bytes (decompression is bounded to gridSize + 1 bytes to avoid unbounded memory ` +
         `use on a corrupt or malicious file) — the file's metadata is untrustworthy.`,
     );
   }
   if (decompressed.byteLength !== gridSize) {
     throw new NvdbFormatError(
-      `NanoVDBFile: ZIP-decompressed grid #${i} ("${name}") is ${decompressed.byteLength} ` +
+      `NvdbFile: ZIP-decompressed grid #${i} ("${name}") is ${decompressed.byteLength} ` +
         `bytes, expected ${gridSize}`,
     );
   }
@@ -511,7 +500,7 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
     requireBytes(buffer, offset + FILE_HEADER_SIZE, "FileHeader");
     if (offset > 0 && !isFileHeaderMagic(readMagic(buffer, offset))) {
       throw new NvdbFormatError(
-        `NanoVDBFile: the ${buffer.byteLength - offset} bytes after byte ${offset} are not another segment ` +
+        `NvdbFile: the ${buffer.byteLength - offset} bytes after byte ${offset} are not another segment ` +
           `(magic "${readMagic(buffer, offset)}"); the file is corrupt.`,
       );
     }
@@ -536,7 +525,7 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
       const i = first + k;
       const { meta, name } = metas[k]!;
       let gridBytes: Uint8Array;
-      if (codec === Codec.NONE) {
+      if (codec === NvdbCodec.NONE) {
         requireBytes(buffer, offset + meta.gridSize, `grid data for grid #${i} ("${name}")`);
         gridBytes = new Uint8Array(buffer, offset, meta.gridSize);
         offset += meta.gridSize;
@@ -573,7 +562,7 @@ function parseRawGridBuffer(buffer: ArrayBuffer): GridRecord[] {
     requireBytes(buffer, offset + GRID_DATA_SIZE, `GridData for grid #${index}`);
     const magic = readMagic(buffer, offset);
     if (magic !== "NanoVDB1" && magic !== "NanoVDB0") {
-      throw new NvdbFormatError(`NanoVDBFile: expected a grid magic at byte ${offset}, found "${magic}"`);
+      throw new NvdbFormatError(`NvdbFile: expected a grid magic at byte ${offset}, found "${magic}"`);
     }
     checkVersion(view.getUint32(offset + GRID_OFF_VERSION, true));
 
@@ -665,7 +654,7 @@ function sniffFormat(buffer: ArrayBuffer): "segment" | "raw" {
   if (magic === "NanoVDB2" || magic === "NanoVDB0") return "segment";
   if (magic === "NanoVDB1") return "raw";
   throw new NvdbFormatError(
-    `NanoVDBFile: unrecognized magic "${magic}" at byte 0 (expected one of ` +
+    `NvdbFile: unrecognized magic "${magic}" at byte 0 (expected one of ` +
       `${MAGIC_ASCII.join(", ")}) — this does not look like a NanoVDB file.`,
   );
 }
@@ -675,7 +664,7 @@ function sniffFormat(buffer: ArrayBuffer): "segment" | "raw" {
  * images as flat u32 views — "a valid NanoVDB grid image in a flat u32
  * buffer" is the single contract between the CPU and GPU halves (SPEC §1).
  */
-export class NanoVDBFile {
+export class NvdbFile {
   private readonly records: readonly GridRecord[];
   private readonly sourceBuffer: ArrayBuffer;
 
@@ -684,24 +673,24 @@ export class NanoVDBFile {
     this.records = records;
   }
 
-  static async fromURL(url: string | URL): Promise<NanoVDBFile> {
+  static async fromURL(url: string | URL): Promise<NvdbFile> {
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(
-        `NanoVDBFile.fromURL: failed to fetch ${String(url)} (${response.status} ${response.statusText})`,
+        `NvdbFile.fromURL: failed to fetch ${String(url)} (${response.status} ${response.statusText})`,
       );
     }
     const buffer = await response.arrayBuffer();
-    return NanoVDBFile.fromArrayBuffer(buffer);
+    return NvdbFile.fromArrayBuffer(buffer);
   }
 
-  static fromArrayBuffer(buffer: ArrayBuffer): NanoVDBFile {
+  static fromArrayBuffer(buffer: ArrayBuffer): NvdbFile {
     const format = sniffFormat(buffer);
     const records = format === "segment" ? parseSegments(buffer) : parseRawGridBuffer(buffer);
-    return new NanoVDBFile(buffer, records);
+    return new NvdbFile(buffer, records);
   }
 
-  get grids(): readonly GridMetadata[] {
+  get grids(): readonly NvdbGridMetadata[] {
     return this.records.map((r) => r.metadata);
   }
 
@@ -724,7 +713,7 @@ export class NanoVDBFile {
   private getRecord(i: number, caller: string): GridRecord {
     const record = this.records[i];
     if (!record) {
-      throw new Error(`NanoVDBFile.${caller}: index ${i} out of range (file has ${this.records.length} grid(s))`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `NvdbFile.${caller}: index ${i} out of range (file has ${this.records.length} grid(s))`);
     }
     return record;
   }

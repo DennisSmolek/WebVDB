@@ -3,7 +3,7 @@
 //   clamped edge taps, the mip atlas layout), as float data.
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: f32 data without the 8-bit rounding; the first level comes from a sparse grid through
-// `resampleGrid` (box); node-average sampling and the HDDA skip are ours (K3.2). Divergences:
+// `vdbResampleGrid` (box); node-average sampling and the HDDA skip are ours (K3.2). Divergences:
 // DIVERGES.md (K3.2 rows).
 
 /**
@@ -12,7 +12,7 @@
  *
  * - `'coarse-pyramid'`: {@link vdbBoxPyramid} builds the dense coarse levels his
  *   `sampleExtinction(localPos, lod)` reads at lod ≥ 1. The base level L₀ = max(1, ⌈log2(maxTexels /
- *   pyramidMax)⌉) is a box resample of the sparse grid (`resampleGrid`, filter `'box'`) to
+ *   pyramidMax)⌉) is a box resample of the sparse grid (`vdbResampleGrid`, filter `'box'`) to
  *   ⌈texels / 2^L₀⌉ voxels over the exact index box, so texel j is centred at uvw (j + 0.5) / dims as
  *   his mip levels are; the levels above it are his 2x2x2 box mip atlas, in float
  *   ({@link vdbBoxMipAtlasF32}).
@@ -23,8 +23,9 @@
  * Engine-free and core-free (D20): reads the NanoVDB image with the `tools/cpu` twins.
  */
 
+import { VDBToolsError } from "../errors.js";
 import { cellBoundTrilinear, hddaCellEnd, hddaInit, hddaStep, indexBBox, leafVoxels, nodeAverage, nodeMax, treeNodes, type Vec3 } from "../cpu/march.js";
-import { resampleGrid } from "../nanovdb/resample.js";
+import { vdbResampleGrid } from "../nanovdb/resample.js";
 import { GRID_OFF_MAP, MAP_OFF_MATD, MAP_OFF_VECD } from "../nanovdb/bytes.js";
 import { vdbBoxPyramidLayout, vdbPyramidBaseLevel, vdbPyramidLevelSize as levelSize } from "./pyramid-layout.js";
 
@@ -120,13 +121,13 @@ export interface VDBBoxPyramid {
 }
 
 /**
- * The coarse pyramid of a sparse FLOAT/Fp grid image (CPU, `resampleGrid` box). The grid's Map must
- * be axis-aligned (resampleGrid's rule).
+ * The coarse pyramid of a sparse FLOAT/Fp grid image (CPU, `vdbResampleGrid` box). The grid's Map must
+ * be axis-aligned (vdbResampleGrid's rule).
  */
 export function vdbBoxPyramid(image: Uint32Array, o: VDBBoxPyramidOptions = {}): VDBBoxPyramid {
   const box = o.indexBox ?? indexBBox(image);
   const texels: Vec3 = [box.max[0] - box.min[0] + 1, box.max[1] - box.min[1] + 1, box.max[2] - box.min[2] + 1];
-  if (texels.some((t) => !(t > 0))) throw new Error("vdbBoxPyramid: empty index box");
+  if (texels.some((t) => !(t > 0))) throw new VDBToolsError("VDB_BAD_OPTION", "vdbBoxPyramid: empty index box");
   const layout = vdbBoxPyramidLayout(texels, { ...(o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {}), ...(o.level !== undefined ? { level: o.level } : {}) });
   const level = layout.level;
   const dims: Vec3 = [...layout.dimensions];
@@ -137,7 +138,7 @@ export function vdbBoxPyramid(image: Uint32Array, o: VDBBoxPyramidOptions = {}):
   const world = (ijk: Vec3): Vec3 => [0, 1, 2].map((r) => mat[r * 3]! * ijk[0] + mat[r * 3 + 1]! * ijk[1] + mat[r * 3 + 2]! * ijk[2] + vec[r]!) as Vec3;
   const lo = world([box.min[0] - 0.5, box.min[1] - 0.5, box.min[2] - 0.5]);
   const hi = world([box.max[0] + 0.5, box.max[1] + 0.5, box.max[2] + 0.5]);
-  const coarse = resampleGrid(image, { filter: "box", dimensions: dims, bbox: [lo, hi] });
+  const coarse = vdbResampleGrid(image, { filter: "box", dimensions: dims, bbox: [lo, hi] });
   // Dense readout of the resampled grid (index box [0, dims − 1]); voxels outside its leaves and tiles are background.
   const data = new Float32Array(dims[0] * dims[1] * dims[2]);
   const background = 0;

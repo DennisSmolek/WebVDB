@@ -8,7 +8,7 @@ import {
 import { VDB_GRID_TYPE_IDS, type VDBGridTypeName } from "../../src/core/types.js";
 // Tests may import tools (the core may not, D20): this is the cross-check.
 import * as bytes from "../../src/tools/nanovdb/bytes.js";
-import { NanoVDBFile } from "../../src/tools/index.js";
+import { NvdbFile } from "../../src/tools/index.js";
 import { makeImage } from "./synthetic-image.js";
 
 const strideTables = JSON.parse(readFileSync(new URL("../../vendor/stride-tables.json", import.meta.url), "utf8"));
@@ -105,9 +105,9 @@ const NAMES = ["box_fog", "sphere_fog", "torus_fog"].flatMap((p) => ["float", "f
 const present = NAMES.every((n) => existsSync(new URL(`${n}.nvdb`, dir)));
 
 describe.skipIf(!present)("readImageHeader on the nine primitive fixtures", () => {
-  it.each(NAMES)("%s agrees with NanoVDBFile and the sidecar", (name) => {
+  it.each(NAMES)("%s agrees with NvdbFile and the sidecar", (name) => {
     const buf = readFileSync(new URL(`${name}.nvdb`, dir));
-    const file = NanoVDBFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    const file = NvdbFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const meta = file.grids[0]!;
     const sidecar = JSON.parse(readFileSync(new URL(`${name}.sidecar.json`, dir), "utf8")).grid;
     const h = readImageHeader(file.gridImage(0));

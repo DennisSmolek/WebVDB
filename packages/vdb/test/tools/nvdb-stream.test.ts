@@ -1,7 +1,7 @@
 /**
  * K4.16 / K4.18: `writeNvdb` in NanoVDB's own segment layout with codec ZIP,
  * `NvdbStreamReader` (push bytes, emit each grid when complete, hostile-input
- * checks before allocation) and `bakeCoarseFirst` (`[<name>.lod48, <name>]`).
+ * checks before allocation) and `vdbBakeCoarseFirst` (`[<name>.lod48, <name>]`).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,9 +9,9 @@ import { gzipSync } from "node:zlib";
 import { unzlibSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import {
-  bakeCoarseFirst,
-  buildFromDense,
-  NanoVDBFile,
+  vdbBakeCoarseFirst,
+  vdbBuildFromDense,
+  NvdbFile,
   NvdbFormatError,
   NvdbStreamReader,
   nvdbResponseLength,
@@ -20,9 +20,9 @@ import {
   parseNvdbLodName,
   parseVdb,
   readNvdbStream,
-  readValue,
-  VdbFormatError,
-  VdbUnsupportedError,
+  vdbReadValueCpu,
+  VDBToolsError,
+  VDBUnsupportedError,
   writeNvdb,
   type NvdbStreamGrid,
 } from "../../src/tools/index.js";
@@ -38,7 +38,7 @@ function ball(dims: number, name: string, voxelSize = 1): Uint32Array {
         const d = Math.hypot(x - c, y - c, z - c) / (dims / 2);
         v[(x * dims + y) * dims + z] = d < 1 ? Math.round((1 - d) * 64) / 64 : 0;
       }
-  return buildFromDense(v, [dims, dims, dims], { gridName: name, voxelSize, origin: [-4, 3, 10] });
+  return vdbBuildFromDense(v, [dims, dims, dims], { gridName: name, voxelSize, origin: [-4, 3, 10] });
 }
 
 const u8 = (image: Uint32Array) => new Uint8Array(image.buffer, image.byteOffset, image.byteLength);
@@ -75,7 +75,7 @@ describe("writeNvdb: native segment layout and Codec.ZIP (K4.18)", () => {
     const data0 = meta1 + 176 + n1;
     expect(Buffer.from(file.subarray(data0, data0 + A.byteLength)).equals(Buffer.from(u8(A)))).toBe(true);
     expect(Buffer.from(file.subarray(data0 + A.byteLength)).equals(Buffer.from(u8(B)))).toBe(true);
-    const parsed = NanoVDBFile.fromArrayBuffer(file.buffer);
+    const parsed = NvdbFile.fromArrayBuffer(file.buffer);
     expect(parsed.grids.map((g) => g.name)).toEqual(["density.lod8", "density"]);
     expect(same(parsed.gridImage(0), A) && same(parsed.gridImage(1), B)).toBe(true);
   });
@@ -98,7 +98,7 @@ describe("writeNvdb: native segment layout and Codec.ZIP (K4.18)", () => {
       at += 8 + size;
     }
     expect(at).toBe(file.length);
-    const parsed = NanoVDBFile.fromArrayBuffer(file.buffer);
+    const parsed = NvdbFile.fromArrayBuffer(file.buffer);
     expect(same(parsed.gridImage(0), A) && same(parsed.gridImage(1), B)).toBe(true);
     // The 270 KB upper node is nearly all zeros: ZIP makes the file much smaller.
     expect(file.length).toBeLessThan(writeNvdb([A, B]).byteLength / 5);
@@ -109,18 +109,18 @@ describe("writeNvdb: native segment layout and Codec.ZIP (K4.18)", () => {
     expect(() => writeNvdb([B], { codec: "zip", zipLevel: 10 })).toThrow(/zipLevel/);
   });
 
-  it("NanoVDBFile reads a file of several segments (writeGrids writes one per handle)", () => {
+  it("NvdbFile reads a file of several segments (writeGrids writes one per handle)", () => {
     const one = new Uint8Array(writeNvdb([A], { codec: "zip" }));
     const two = new Uint8Array(writeNvdb([B]));
     const cat = new Uint8Array(one.length + two.length);
     cat.set(one);
     cat.set(two, one.length);
-    const parsed = NanoVDBFile.fromArrayBuffer(cat.buffer);
+    const parsed = NvdbFile.fromArrayBuffer(cat.buffer);
     expect(parsed.grids.map((g) => g.name)).toEqual(["density.lod8", "density"]);
     expect(same(parsed.gridImage(1), B)).toBe(true);
     const junk = new Uint8Array(two.length + 20);
     junk.set(two);
-    expect(() => NanoVDBFile.fromArrayBuffer(junk.buffer)).toThrow(/not another segment/);
+    expect(() => NvdbFile.fromArrayBuffer(junk.buffer)).toThrow(/not another segment/);
   });
 });
 
@@ -128,7 +128,7 @@ describe("NvdbStreamReader (K4.16)", () => {
   for (const codec of ["none", "zip"] as const) {
     it(`codec ${codec}: emits each grid as soon as its data is complete, at any chunk size`, () => {
       const file = new Uint8Array(writeNvdb([A, B], { codec }));
-      const whole = NanoVDBFile.fromArrayBuffer(file.slice().buffer);
+      const whole = NvdbFile.fromArrayBuffer(file.slice().buffer);
       for (const step of [1, 7, 176, 4096, file.length]) {
         const events = pushAll(file, step);
         expect(events.map((e) => e.metadata.name)).toEqual(["density.lod8", "density"]);
@@ -215,10 +215,10 @@ describe("NvdbStreamReader (K4.16)", () => {
       const bad = file();
       bad[0] = 0x58;
       expect(() => new NvdbStreamReader().push(bad)).toThrow(NvdbFormatError);
-      expect(() => new NvdbStreamReader().push(u8(B))).toThrow(VdbUnsupportedError); // NanoVDB1 raw grid
+      expect(() => new NvdbStreamReader().push(u8(B))).toThrow(VDBUnsupportedError); // NanoVDB1 raw grid
       const blosc = file();
       dv(blosc).setUint16(14, 2, true);
-      expect(() => new NvdbStreamReader().push(blosc)).toThrow(VdbUnsupportedError);
+      expect(() => new NvdbStreamReader().push(blosc)).toThrow(VDBUnsupportedError);
       const zero = file();
       dv(zero).setUint16(12, 0, true);
       expect(() => new NvdbStreamReader().push(zero)).toThrow(/0 grids/);
@@ -269,13 +269,13 @@ describe("NvdbStreamReader (K4.16)", () => {
       const corrupt = file();
       const data0 = 16 + 2 * 176 + "density.lod8\0".length + "density\0".length;
       corrupt.fill(0xff, data0 + 8 + 2, data0 + 8 + 40);
-      expect(() => new NvdbStreamReader().push(corrupt)).toThrow(VdbFormatError);
+      expect(() => new NvdbStreamReader().push(corrupt)).toThrow(NvdbFormatError);
     });
 
-    it("an unsupported grid type is VdbUnsupportedError, at its FileMetaData", () => {
+    it("an unsupported grid type is VDBUnsupportedError, at its FileMetaData", () => {
       const vec = file();
       dv(vec).setUint32(16 + 32, 6, true); // Vec3f
-      expect(() => new NvdbStreamReader().push(vec.subarray(0, 16 + 176 + 13))).toThrow(VdbUnsupportedError);
+      expect(() => new NvdbStreamReader().push(vec.subarray(0, 16 + 176 + 13))).toThrow(VDBUnsupportedError);
     });
 
     it("a failed reader rethrows on every later call", () => {
@@ -287,7 +287,7 @@ describe("NvdbStreamReader (K4.16)", () => {
       expect(() => reader.end()).toThrow(NvdbFormatError);
     });
 
-    it("random corruption never escapes as anything but a VdbFormatError / VdbUnsupportedError", () => {
+    it("random corruption never escapes as anything but an NvdbFormatError / VDBUnsupportedError (both VDBToolsError)", () => {
       let seed = 12345;
       const rand = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
       const base = file();
@@ -299,7 +299,8 @@ describe("NvdbStreamReader (K4.16)", () => {
         try {
           pushAll(f, 1 + Math.floor(rand() * 3000), reader);
         } catch (err) {
-          expect(err instanceof VdbFormatError || err instanceof VdbUnsupportedError, String(err)).toBe(true);
+          expect(err instanceof NvdbFormatError || err instanceof VDBUnsupportedError, String(err)).toBe(true);
+          expect(err instanceof VDBToolsError, String(err)).toBe(true);
         }
       }
     });
@@ -315,10 +316,10 @@ describe("NvdbStreamReader (K4.16)", () => {
   });
 });
 
-describe("bakeCoarseFirst (K4.16)", () => {
+describe("vdbBakeCoarseFirst (K4.16)", () => {
   it("writes [<name>.lod<r>..., <name>] coarsest first; the previews cover the full grid's world box", () => {
     const full = ball(40, "density", 0.5);
-    const bytes = bakeCoarseFirst(full, { previewResolution: [16, 8], codec: "zip" });
+    const bytes = vdbBakeCoarseFirst(full, { previewResolution: [16, 8], codec: "zip" });
     const events = pushAll(bytes, 1000);
     expect(events.map((e) => e.metadata.name)).toEqual(["density.lod8", "density.lod16", "density"]);
     expect(events.map((e) => e.metadata.gridType)).toEqual(["FpN", "FpN", "Float"]);
@@ -340,24 +341,24 @@ describe("bakeCoarseFirst (K4.16)", () => {
     }
     expect(events[0]!.metadata.voxelSize[0]).toBeCloseTo((40 * 0.5) / 8, 9);
     // The preview reads the ball's centre value approximately (box filter, FpN).
-    const centre = readValue(events[1]!.image, [8, 8, 8]).value;
+    const centre = vdbReadValueCpu(events[1]!.image, [8, 8, 8]).value;
     expect(centre).toBeGreaterThan(0.6);
   });
 
   it("defaults: one preview at 48, box, FpN, codec zip; fullQuantize; option errors", () => {
     const full = ball(64, "smoke");
-    const bytes = bakeCoarseFirst(full);
+    const bytes = vdbBakeCoarseFirst(full);
     expect(dv(bytes).getUint16(14, true)).toBe(1);
     const events = pushAll(bytes, 1 << 16);
     expect(events.map((e) => [e.metadata.name, e.metadata.gridType])).toEqual([
       ["smoke.lod48", "FpN"],
       ["smoke", "Float"],
     ]);
-    const fp8 = pushAll(bakeCoarseFirst(full, { fullQuantize: "fp8", quantize: "none", codec: "none" }), 1 << 16);
+    const fp8 = pushAll(vdbBakeCoarseFirst(full, { fullQuantize: "fp8", quantize: "none", codec: "none" }), 1 << 16);
     expect(fp8.map((e) => e.metadata.gridType)).toEqual(["Float", "Fp8"]);
-    expect(() => bakeCoarseFirst(full, { previewResolution: [] })).toThrow(/empty/);
-    expect(() => bakeCoarseFirst(full, { previewResolution: [8, 8] })).toThrow(/duplicates/);
-    expect(() => bakeCoarseFirst(full, { previewResolution: 0 })).toThrow(/positive/);
+    expect(() => vdbBakeCoarseFirst(full, { previewResolution: [] })).toThrow(/empty/);
+    expect(() => vdbBakeCoarseFirst(full, { previewResolution: [8, 8] })).toThrow(/duplicates/);
+    expect(() => vdbBakeCoarseFirst(full, { previewResolution: 0 })).toThrow(/positive/);
   });
 
   const SMOKE = fileURLToPath(new URL("../../../../fixtures/vdb-samples/smoke.vdb", import.meta.url));
@@ -366,7 +367,7 @@ describe("bakeCoarseFirst (K4.16)", () => {
     const vdb = parseVdb(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const GATE = 14.8 * 1024;
 
-    const zip = bakeCoarseFirst(vdb);
+    const zip = vdbBakeCoarseFirst(vdb);
     const z = pushAll(zip, 512);
     expect(z.map((e) => [e.metadata.name, e.metadata.gridType])).toEqual([
       ["density.lod48", "FpN"],
@@ -375,7 +376,7 @@ describe("bakeCoarseFirst (K4.16)", () => {
     expect(z[0]!.bytesReceived).toBeLessThan(GATE); // raw transfer, no HTTP compression
     expect(zip.length).toBeLessThan(700 * 1024);
 
-    const none = bakeCoarseFirst(vdb, { codec: "none" });
+    const none = vdbBakeCoarseFirst(vdb, { codec: "none" });
     const n = pushAll(none, 1 << 16);
     expect(n[0]!.bytesReceived).toBeGreaterThan(300 * 1024); // the raw upper node
     // With gzip on the wire the preview needs about its gzip size (the design's 11.9 KiB + the second FileMetaData).

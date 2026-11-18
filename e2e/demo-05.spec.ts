@@ -4,8 +4,8 @@ import { expect, test } from "@playwright/test";
  * Demo 05 — embergen-sequence: the Phase 7 gate (docs/PLAN.md, SPEC §3.5).
  *
  * Everything is generated in-page (no external fixture): synthetic animated fog
- * frames authored with `@pmndrs/vdb/tools.buildFromDense`, written to `.nvdb`, and
- * served as Blob URLs so the real `NanoVDBFile.fromURL` fetch+parse path runs.
+ * frames authored with `@pmndrs/vdb/tools.vdbBuildFromDense`, written to `.nvdb`, and
+ * served as Blob URLs so the real `NvdbFile.fromURL` fetch+parse path runs.
  * In `?test=1` the `VDBSequence` scheduler is driven by a fixed timestep to play
  * exactly 6 frames, each swapped into ONE pool grid via `pool.replace` (the grid
  * was added with `capacity` for the largest frame). The demo reports that every

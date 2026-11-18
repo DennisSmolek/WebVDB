@@ -21,6 +21,7 @@
  * name-based `readGrid` accepts 0 as "no key" and compares the names.
  */
 
+import { VDBToolsError } from "../errors.js";
 import { zlibSync } from "fflate";
 import {
   GRID_OFF_GRID_CLASS,
@@ -79,7 +80,7 @@ export interface WriteNvdbOptions {
   /**
    * Per-grid codec. `'none'` (default) stores the images; `'zip'` stores each
    * as NanoVDB's `Codec::ZIP` (zlib), which native tools read when built with
-   * zlib and `NanoVDBFile` / `NvdbStreamReader` decode.
+   * zlib and `NvdbFile` / `NvdbStreamReader` decode.
    */
   codec?: "none" | "zip";
   /** zlib level for `codec: 'zip'`, 0–9. Default 9 (zlib's own default, used by `compress()`, is 6). */
@@ -112,7 +113,7 @@ function extractMeta(image: Uint32Array, i: number): ImageMeta {
   const imageBytes = new Uint8Array(image.buffer, image.byteOffset, image.byteLength);
   const gridSize = Number(dv.getBigUint64(GRID_OFF_GRID_SIZE, true));
   if (gridSize !== image.byteLength) {
-    throw new Error(
+    throw new VDBToolsError("VDB_BAD_IMAGE", 
       `writeNvdb: grid #${i} GridData.mGridSize (${gridSize}) !== image byte length ` +
         `(${image.byteLength}); the image is malformed and the loader's mGridSize cross-check would reject it.`,
     );
@@ -195,19 +196,19 @@ function gridPayload(m: ImageMeta, codec: number, level: number): Uint8Array {
  */
 export function writeNvdb(images: Uint32Array[], opts: WriteNvdbOptions = {}): ArrayBuffer {
   if (images.length === 0) {
-    throw new Error("writeNvdb: at least one grid image is required");
+    throw new VDBToolsError("VDB_BAD_OPTION", "writeNvdb: at least one grid image is required");
   }
   if (images.length > 0xffff) {
-    throw new Error(`writeNvdb: too many grids (${images.length}); FileHeader.gridCount is a u16`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: too many grids (${images.length}); FileHeader.gridCount is a u16`);
   }
   const codecName = opts.codec ?? "none";
   if (codecName !== "none" && codecName !== "zip") {
-    throw new Error(`writeNvdb: unknown codec "${String(codecName)}" (expected "none" or "zip")`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: unknown codec "${String(codecName)}" (expected "none" or "zip")`);
   }
   const codec = codecName === "zip" ? CODEC_ZIP : CODEC_NONE;
   const level = opts.zipLevel ?? 9;
   if (!Number.isInteger(level) || level < 0 || level > 9) {
-    throw new Error(`writeNvdb: zipLevel must be an integer 0-9, got ${level}`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: zipLevel must be an integer 0-9, got ${level}`);
   }
 
   const metas = images.map((img, i) => extractMeta(img, i));

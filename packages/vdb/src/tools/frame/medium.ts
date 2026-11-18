@@ -10,6 +10,8 @@
 // unit tests check that the ported table is that fit at his precision (3 decimals). Divergences: none.
 
 /** A measured medium: linear albedo (red 650 nm, green 550 nm, blue 450 nm), Ångström exponent, phase. */
+
+import { VDBToolsError } from "../errors.js";
 export interface VDBFrameMediumPreset {
   readonly albedo: readonly [number, number, number];
   readonly angstromExponent: number;
@@ -133,7 +135,7 @@ export function vdbFrameMediumFromMeasurements(m: VDBFrameMediumMeasurement, mie
   let phaseG: number;
 
   if (g.asymmetryFromMieRgb) {
-    if (mieRgbGreenAsymmetry === undefined) throw new Error("vdbFrameMediumFromMeasurements: pass the 'lorenz-mie-rgb' green asymmetry");
+    if (mieRgbGreenAsymmetry === undefined) throw new VDBToolsError("VDB_BAD_OPTION", "vdbFrameMediumFromMeasurements: pass the 'lorenz-mie-rgb' green asymmetry");
     phaseG = mieRgbGreenAsymmetry;
   } else if (g.green !== undefined) {
     phaseG = midpoint(g.green);

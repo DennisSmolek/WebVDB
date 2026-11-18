@@ -1,5 +1,5 @@
 // #region sequence
-import { NanoVDBFile } from '@pmndrs/vdb/tools';
+import { NvdbFile } from '@pmndrs/vdb/tools';
 import { VDBSequence } from '@pmndrs/vdb/three';
 // #endregion
 
@@ -18,7 +18,7 @@ export async function sequence(pool: VDBGridPool, largestFrameBytes: number, fir
         prefetch: 4, // frames decoded ahead
         loop: true,
         // The default loader fetches and parses a .nvdb; override it to load from anywhere.
-        loader: async (url) => (await NanoVDBFile.fromURL(url)).gridImage(0),
+        loader: async (url) => (await NvdbFile.fromURL(url)).gridImage(0),
         onError: (error, index) => console.warn('frame', index, error),
     });
     await sequence.preload(); // the first frames, so playback starts without a stall

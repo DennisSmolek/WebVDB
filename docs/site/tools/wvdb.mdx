@@ -56,16 +56,16 @@ reader.end();
 
 ## Write and bake
 
-`writeWvdb(grids, options)` writes dense grids you made. `vdbToWvdb(vdb, options)` and `nanoVdbToWvdb(images, options)`
+`writeWvdb(grids, options)` writes dense grids you made. `vdbToWvdb(vdb, options)` and `nvdbToWvdb(images, options)`
 bake from a `.vdb` or a NanoVDB grid: they sample over the bbox to a target `resolution` and downsample the LODs.
 
 {/* snippet: wvdb-bake */}
 ```ts
-import { nanoVdbToWvdb, vdbToWvdb, writeWvdb } from '@pmndrs/vdb/tools';
+import { nvdbToWvdb, vdbToWvdb, writeWvdb } from '@pmndrs/vdb/tools';
 
 // From a .vdb (all float grids) or a NanoVDB grid image: point-sampled over the bbox, like his CLI.
 const fromVdb = vdbToWvdb(vdbBytes, { resolution: 128, lods: 3 });
-const fromNano = nanoVdbToWvdb(image, { resolution: 128 });
+const fromNano = nvdbToWvdb(image, { resolution: 128 });
 
 // Or write dense grids you made yourself.
 const dims: [number, number, number] = [32, 32, 32];
@@ -80,7 +80,7 @@ is much finer than the texel grid, or when you read mass quantitatively; box fil
 
 ## Level sets and points
 
-Level-set sources use `levelSetSampler: 'spec'` (the format spec) or `'mjurczyk'` (his CLI's sampler). A `.wvdb` points
+Level-set sources use `levelSetSampler: 'spec'` (the format spec) or `'surface-mean'` (his CLI's sampler). A `.wvdb` points
 grid is read and written (`writeWvdb` with a `type: 'points'` grid, `maxPoints`, per-LOD subsets from `wvdbPointLods`),
 but the bakers do not turn a point-data `.vdb` grid into one yet: decode the points with `grid.points()` and pass them
 to `writeWvdb`.

@@ -82,20 +82,20 @@ one, and otherwise submits its own.
 
 {/* snippet: compute-tools */}
 ```ts
-import { decodeToAtlas, gridStats } from '@pmndrs/vdb';
+import { vdbDecodeToAtlasGpu, vdbGridStatsGpu } from '@pmndrs/vdb';
 
 // The grid must be resident (an update() or flush() ran after its add()).
-const stats = await gridStats(device, pool, gridId, { histogramBins: 64 }).read();
+const stats = await vdbGridStatsGpu(device, pool, gridId, { histogramBins: 64 }).read();
 console.log(stats.min, stats.max, stats.mean, stats.activeVoxelCount);
 
 // Dense decode of the index box: x fastest, at most 128 voxels per axis, normalized to 0..255.
-const atlas = await decodeToAtlas(device, pool, gridId, { maxDim: 128, format: 'uint8' }).read();
+const atlas = await vdbDecodeToAtlasGpu(device, pool, gridId, { maxDim: 128, format: 'uint8' }).read();
 console.log(atlas.dims, atlas.data.length);
 
 // To record into your own encoder instead: pass { encoder }, submit it, then `job.submitted().read()`.
 ```
 
-`gridStats` bins its histogram over the grid's root min and max statistics, so a grid without stats (or with stale
-ones after a value transform) bins against whatever they hold. `decodeToAtlas` samples half a voxel past voxel
+`vdbGridStatsGpu` bins its histogram over the grid's root min and max statistics, so a grid without stats (or with stale
+ones after a value transform) bins against whatever they hold. `vdbDecodeToAtlasGpu` samples half a voxel past voxel
 centres (the v1 convention, kept for parity): sample its output as a texture over the cell box `[min, max + 1]`.
-The CPU twins are `gridStatsCpu` and `decodeToAtlasCpu` in `@pmndrs/vdb/tools`.
+The CPU twins are `vdbGridStatsCpu` and `vdbDecodeToAtlasCpu` in `@pmndrs/vdb/tools`.

@@ -1,35 +1,35 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  Codec,
+  NvdbCodec,
   FILE_HEADER_SIZE,
   FILE_METADATA_SIZE,
   GRID_DATA_SIZE,
   MAGIC_ASCII,
-  NanoVDBFile,
-  SUPPORTED_GRID_TYPES,
-} from "../../src/tools/index.js";
+  NvdbFile,
+  NVDB_SUPPORTED_GRID_TYPES,
+} from "../../src/tools/internal.js";
 
 describe("@pmndrs/vdb/tools .nvdb constants", () => {
   it("exposes the NanoVDB layout constants", () => {
     expect(FILE_HEADER_SIZE).toBe(16);
     expect(FILE_METADATA_SIZE).toBe(176);
     expect(GRID_DATA_SIZE).toBe(672);
-    expect(SUPPORTED_GRID_TYPES).toEqual(["Float", "Fp4", "Fp8", "Fp16", "FpN"]);
+    expect(NVDB_SUPPORTED_GRID_TYPES).toEqual(["Float", "Fp4", "Fp8", "Fp16", "FpN"]);
     expect(MAGIC_ASCII).toEqual(["NanoVDB0", "NanoVDB1", "NanoVDB2"]);
-    expect(Codec).toEqual({ NONE: 0, ZIP: 1, BLOSC: 2 });
+    expect(NvdbCodec).toEqual({ NONE: 0, ZIP: 1, BLOSC: 2 });
   });
 });
 
-describe("NanoVDBFile (Phase 1)", () => {
+describe("NvdbFile (Phase 1)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
   it("fromArrayBuffer rejects an empty buffer with an actionable error, not a stub error", () => {
-    expect(() => NanoVDBFile.fromArrayBuffer(new ArrayBuffer(0))).toThrowError(
+    expect(() => NvdbFile.fromArrayBuffer(new ArrayBuffer(0))).toThrowError(
       /truncated buffer/,
     );
-    expect(() => NanoVDBFile.fromArrayBuffer(new ArrayBuffer(0))).not.toThrowError(/Phase 1/);
+    expect(() => NvdbFile.fromArrayBuffer(new ArrayBuffer(0))).not.toThrowError(/Phase 1/);
   });
 
   it("fromURL rejects a non-OK response with an actionable error", async () => {
@@ -37,7 +37,7 @@ describe("NanoVDBFile (Phase 1)", () => {
       "fetch",
       vi.fn(async () => new Response(null, { status: 404, statusText: "Not Found" })),
     );
-    await expect(NanoVDBFile.fromURL("https://example.test/missing.nvdb")).rejects.toThrowError(
+    await expect(NvdbFile.fromURL("https://example.test/missing.nvdb")).rejects.toThrowError(
       /failed to fetch/,
     );
   });
@@ -52,7 +52,7 @@ describe("NanoVDBFile (Phase 1)", () => {
       "fetch",
       vi.fn(async () => new Response(buffer)),
     );
-    const file = await NanoVDBFile.fromURL("https://example.test/grid.nvdb");
+    const file = await NvdbFile.fromURL("https://example.test/grid.nvdb");
     expect(file.grids).toHaveLength(1);
     expect(file.grids[0]?.gridType).toBe("Float");
   });

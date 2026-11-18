@@ -117,12 +117,12 @@ function bad(message: string): never {
 
 /**
  * Parses and validates the header of a NanoVDB grid image (one grid, as
- * `NanoVDBFile` from `@pmndrs/vdb/tools` returns it). Throws `VDB_BAD_IMAGE` or
+ * `NvdbFile` from `@pmndrs/vdb/tools` returns it). Throws `VDB_BAD_IMAGE` or
  * `VDB_UNSUPPORTED_GRID_TYPE` with the fix in the message.
  */
 export function readImageHeader(image: Uint32Array, what = "image"): VDBImageHeader {
   if (!(image instanceof Uint32Array)) {
-    bad(`${what} must be a Uint32Array holding one NanoVDB grid (NanoVDBFile from @pmndrs/vdb/tools returns one per grid).`);
+    bad(`${what} must be a Uint32Array holding one NanoVDB grid (NvdbFile from @pmndrs/vdb/tools returns one per grid).`);
   }
   const O = NANOVDB_OFFSETS;
   const byteLength = image.byteLength;
@@ -137,7 +137,7 @@ export function readImageHeader(image: Uint32Array, what = "image"): VDBImageHea
   const magicHi = u32(O.gridMagic + 4);
   if (magicLo !== MAGIC_GRID_LO || (magicHi !== MAGIC_GRID_HI_CURRENT && magicHi !== MAGIC_GRID_HI_LEGACY)) {
     bad(
-      `${what} does not start with the NanoVDB grid magic "NanoVDB1". Pass a grid image (NanoVDBFile.grids[i].image), ` +
+      `${what} does not start with the NanoVDB grid magic "NanoVDB1". Pass a grid image (NvdbFile.grids[i].image), ` +
         `not a whole .nvdb file.`,
     );
   }
@@ -157,7 +157,7 @@ export function readImageHeader(image: Uint32Array, what = "image"): VDBImageHea
   if (sizeLo !== byteLength) {
     bad(
       `${what} declares mGridSize ${sizeLo} but the array holds ${byteLength} bytes. Pass exactly one grid ` +
-        `(a multi-grid buffer must be split, which NanoVDBFile does).`,
+        `(a multi-grid buffer must be split, which NvdbFile does).`,
     );
   }
 

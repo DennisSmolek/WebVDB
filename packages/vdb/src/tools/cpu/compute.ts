@@ -1,8 +1,8 @@
 /**
  * CPU twins (D11) of the core compute tools (K2.3, `core/compute/`):
- * `gridStatsCpu` (twin of `gridStats`), `decodeToAtlasCpu` (twin of
+ * `vdbGridStatsCpu` (twin of `gridStats`), `vdbDecodeToAtlasCpu` (twin of
  * `decodeToAtlas`) and `transformLeafValues`, the CPU value transform that
- * `applyValueTransform` writes back with `pool.replace` (it is also the twin of
+ * `vdbApplyValueTransform` writes back with `pool.replace` (it is also the twin of
  * v1's GPU `valueTransform`, which the pool's read-only binding retired).
  *
  * The shared pure pieces live here so the core and its twins cannot drift:
@@ -13,7 +13,8 @@
  * the WGSL's order. WGSL allows a 2.5 ULP division and fused multiply-adds,
  * so GPU parity compares with a tolerance and reports the bit-exact count.
  */
-import { indexBBox, isActive, readValueF32, treeNodes, type Vec3 } from "./march.js";
+import { VDBToolsError } from "../errors.js";
+import { indexBBox, isActive, vdbReadValueF32, treeNodes, type Vec3 } from "./march.js";
 import { defineNumber, gridTypeConstantsFor, gridTypeConstantsForId, gridTypeIds } from "./stride-tables.js";
 
 const f = Math.fround;
@@ -56,12 +57,12 @@ export function rootStats(gridWords: Uint32Array): { min: number; max: number } 
 // ---------------------------------------------------------------------------
 // gridStats
 
-export interface GridStatsCpuOptions {
+export interface VDBGridStatsCpuOptions {
   /** Histogram bins (default 256). */
   histogramBins?: number;
 }
 
-export interface GridStatsCpuResult {
+export interface VDBGridStatsCpuResult {
   min: number;
   max: number;
   mean: number;
@@ -85,7 +86,7 @@ export interface GridStatsCpuResult {
  * a GPU with an inexact division may put a voxel in the neighbouring bin or
  * shift the mean by a fixed-point step.
  */
-export function gridStatsCpu(gridWords: Uint32Array, options: GridStatsCpuOptions = {}): GridStatsCpuResult {
+export function vdbGridStatsCpu(gridWords: Uint32Array, options: VDBGridStatsCpuOptions = {}): VDBGridStatsCpuResult {
   const bins = options.histogramBins ?? 256;
   const range = rootStats(gridWords);
   const fast = range.min >= 0;
@@ -106,7 +107,7 @@ export function gridStatsCpu(gridWords: Uint32Array, options: GridStatsCpuOption
         ijk[1] = y;
         ijk[2] = z;
         if (!isActive(gridWords, ijk)) continue;
-        const v = readValueF32(gridWords, ijk);
+        const v = vdbReadValueF32(gridWords, ijk);
         count++;
         if (v < min) min = v;
         if (v > max) max = v;
@@ -135,11 +136,11 @@ export function gridStatsCpu(gridWords: Uint32Array, options: GridStatsCpuOption
 // ---------------------------------------------------------------------------
 // decodeToAtlas
 
-export type AtlasFilter = "nearest" | "trilinear";
-export type AtlasFormat = "uint8" | "float32";
+export type VDBAtlasFilter = "nearest" | "trilinear";
+export type VDBAtlasFormat = "uint8" | "float32";
 
 export interface AtlasFromRawOptions {
-  format: AtlasFormat;
+  format: VDBAtlasFormat;
   normalize: boolean;
   range: { min: number; max: number };
 }
@@ -167,9 +168,9 @@ export function atlasFromRaw(raw: Float32Array, o: AtlasFromRawOptions): Uint8Ar
   return out;
 }
 
-export interface DecodeToAtlasCpuOptions {
+export interface VDBDecodeToAtlasCpuOptions {
   maxDim?: number;
-  filter?: AtlasFilter;
+  filter?: VDBAtlasFilter;
 }
 
 /**
@@ -179,9 +180,9 @@ export interface DecodeToAtlasCpuOptions {
  * the vendored trilinear (`'trilinear'`, the default). Feed the result to
  * {@link atlasFromRaw} for the formatted atlas.
  */
-export function decodeToAtlasCpu(
+export function vdbDecodeToAtlasCpu(
   gridWords: Uint32Array,
-  options: DecodeToAtlasCpuOptions = {},
+  options: VDBDecodeToAtlasCpuOptions = {},
 ): { raw: Float32Array; dims: [number, number, number] } {
   const bbox = indexBBox(gridWords);
   const size = bboxSize(bbox);
@@ -195,7 +196,7 @@ export function decodeToAtlasCpu(
       for (let x = 0; x < dims[0]; x++) {
         const g: Vec3 = [x, y, z];
         for (let a = 0; a < 3; a++) pos[a] = f(bbox.min[a]! + f(f(f(g[a]! + 0.5) / dims[a]!) * size[a]!));
-        raw[i++] = trilinear ? trilinearF32(gridWords, pos) : readValueF32(gridWords, [Math.floor(f(pos[0] + 0.5)), Math.floor(f(pos[1] + 0.5)), Math.floor(f(pos[2] + 0.5))]);
+        raw[i++] = trilinear ? trilinearF32(gridWords, pos) : vdbReadValueF32(gridWords, [Math.floor(f(pos[0] + 0.5)), Math.floor(f(pos[1] + 0.5)), Math.floor(f(pos[2] + 0.5))]);
       }
     }
   }
@@ -206,7 +207,7 @@ export function decodeToAtlasCpu(
 function trilinearF32(gridWords: Uint32Array, xyz: Vec3): number {
   const b: Vec3 = [Math.floor(xyz[0]), Math.floor(xyz[1]), Math.floor(xyz[2])];
   const u = [f(xyz[0] - b[0]), f(xyz[1] - b[1]), f(xyz[2] - b[2])];
-  const tap = (dx: number, dy: number, dz: number) => readValueF32(gridWords, [b[0] + dx, b[1] + dy, b[2] + dz]);
+  const tap = (dx: number, dy: number, dz: number) => vdbReadValueF32(gridWords, [b[0] + dx, b[1] + dy, b[2] + dz]);
   const mix = (a: number, c: number, t: number) => f(a + f(t * f(c - a)));
   const x00 = mix(tap(0, 0, 0), tap(1, 0, 0), u[0]!);
   const x10 = mix(tap(0, 1, 0), tap(1, 1, 0), u[0]!);
@@ -228,15 +229,15 @@ function trilinearF32(gridWords: Uint32Array, xyz: Vec3): number {
  * The image's statistics (root/node min, max, average, deviation) are NOT
  * recomputed: they describe the source values. Tools that trust them
  * (`gridStats`' range, `vdbNodeMax` skipping) see stale bounds; rebuild the
- * grid (e.g. `buildFromDense`) when they matter.
+ * grid (e.g. `vdbBuildFromDense`) when they matter.
  *
  * Float (GridType 1) only: quantized leaves would need re-encoding.
  */
 export function transformLeafValues(gridWords: Uint32Array, fn: (value: number) => number): Uint32Array {
-  if (typeof fn !== "function") throw new Error("transformLeafValues: fn must be a function (value: number) => number");
+  if (typeof fn !== "function") throw new VDBToolsError("VDB_BAD_OPTION", "transformLeafValues: fn must be a function (value: number) => number");
   const gridType = gridWords[GRID_OFF_GRID_TYPE >>> 2];
   if (gridType !== gridTypeIds.FLOAT) {
-    throw new Error(
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
       `transformLeafValues: grid type ${gridType} is not Float (${gridTypeIds.FLOAT}); quantized leaves would need re-encoding. ` +
         "Transform the Float source and quantize() afterwards.",
     );

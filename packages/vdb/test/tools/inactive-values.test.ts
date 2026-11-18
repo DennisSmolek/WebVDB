@@ -16,8 +16,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { buildFromVdbDetailed, readValue, type VdbFile } from "../../src/tools/index.js";
-import { VdbUnsupportedError } from "../../src/tools/vdb/errors.js";
+import { buildFromVdbDetailed, vdbReadValueCpu, type VdbFile } from "../../src/tools/index.js";
+import { VDBUnsupportedError } from "../../src/tools/vdb/errors.js";
 import { ByteReader } from "../../src/tools/vdb/byte-reader.js";
 import { FLOAT_FORMAT, VEC3S_FORMAT, readCompressedValues, type ValueFormat } from "../../src/tools/vdb/compression.js";
 import { readMetadataMap } from "../../src/tools/vdb/metadata.js";
@@ -208,10 +208,10 @@ describe("utahteapot interior (K4.9)", () => {
 
     // Through NanoVDB: the same point reads -background, inactive.
     const built = buildFromVdbDetailed(grid);
-    expect(readValue(built.image, inside)).toEqual({ value: -bg, active: false });
+    expect(vdbReadValueCpu(built.image, inside)).toEqual({ value: -bg, active: false });
     // Far away reads +background.
     expect(grid.readValue([100000, 0, 0])).toEqual({ value: bg, active: false });
-    expect(readValue(built.image, [100000, 0, 0])).toEqual({ value: bg, active: false });
+    expect(vdbReadValueCpu(built.image, [100000, 0, 0])).toEqual({ value: bg, active: false });
     // Active voxel count is unchanged by inactive tiles.
     expect(built.voxelCount).toBe(Number(grid.activeVoxelCount));
   });
@@ -265,9 +265,9 @@ describe("K4.9 synthetic inactive tiles", () => {
 
   it("carries them into NanoVDB with value, no active state and no stats or counts", () => {
     for (const ijk of [[8192, 7, 7], [259, 1, 1], [18, 0, 0]] as Coord[]) {
-      expect(readValue(built.image, ijk)).toEqual({ value: -2, active: false });
+      expect(vdbReadValueCpu(built.image, ijk)).toEqual({ value: -2, active: false });
     }
-    expect(readValue(built.image, [25, 0, 0])).toEqual({ value: 2, active: false });
+    expect(vdbReadValueCpu(built.image, [25, 0, 0])).toEqual({ value: 2, active: false });
     expect(built.tileCounts).toEqual({ lower: 0, upper: 0, root: 0 });
     expect(built.voxelCount).toBe(512);
     expect(built.indexBBox).toEqual({ min: [0, 0, 0], max: [7, 7, 7] });
@@ -333,9 +333,9 @@ describe("K4.14 parser hardening", () => {
       new DataView(copy).setUint32(8, version, true);
       return copy;
     };
-    expect(() => parseVdb(patch(226))).toThrow(VdbUnsupportedError);
+    expect(() => parseVdb(patch(226))).toThrow(VDBUnsupportedError);
     expect(() => parseVdb(patch(226))).toThrow(/226.*maximum supported version 225/);
-    expect(() => parseVdb(patch(0xffffffff))).toThrow(VdbUnsupportedError);
+    expect(() => parseVdb(patch(0xffffffff))).toThrow(VDBUnsupportedError);
     // 225 passes the version gate (it may fail later on the synthetic payload, but not as unsupported-version).
     try {
       parseVdb(patch(225));

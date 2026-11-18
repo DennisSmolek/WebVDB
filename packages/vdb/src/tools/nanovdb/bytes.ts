@@ -24,7 +24,7 @@
 // ---------------------------------------------------------------------------
 
 /** Grid-image magic `NanoVDB1` (u64, little-endian). This is what the raw grid
- *  buffer starts with — what `readValue`/`NanoVDBFile` sniff for. */
+ *  buffer starts with — what `readValue`/`NvdbFile` sniff for. */
 export const MAGIC_GRID = 0x314244566f6e614en; // "NanoVDB1"
 /** File-header magic `NanoVDB2` (u64) for the segment `.nvdb` container. */
 export const MAGIC_FILE = 0x324244566f6e614en; // "NanoVDB2"
@@ -94,7 +94,7 @@ export const GRID_OFF_DATA2 = 664;
 /**
  * GridData.mChecksum sentinel meaning "no checksum" (NanoVDB `ChecksumMode`
  * Disable == ~uint64_t(0)). We write this rather than a real CRC: neither the
- * CPU reader, the WGSL reader, nor `NanoVDBFile.fromArrayBuffer` validates the
+ * CPU reader, the WGSL reader, nor `NvdbFile.fromArrayBuffer` validates the
  * checksum (verified by reading their source — only magic, version and
  * mGridSize are cross-checked), so a disabled checksum round-trips cleanly.
  * Computing the native CRC48/Full checksum is deferred to the nanovdb_convert

@@ -9,7 +9,7 @@ import * as THREE from "three";
 import { LightsNode } from "three/webgpu";
 import { afterEach, describe, expect, it } from "vitest";
 import { readWvdb, wvdbDenseVolume, writeWvdb } from "../../src/tools/index.js";
-import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, VDBFrameVolume, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameCheckLightReset } from "../../src/three/index.js";
+import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, VDBFrameVolume, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameCheckLightReset } from "../../src/three/internal.js";
 import { vdbFrameRegisterLightNode, vdbFrameRenderId, vdbFrameResetInternalsCache, vdbFrameCheckFilterInputs, vdbFramePrecompiling } from "../../src/three/frame/three-internals.js";
 
 // A renderer as far as the host code reaches without a draw (initTarget clears a new map)

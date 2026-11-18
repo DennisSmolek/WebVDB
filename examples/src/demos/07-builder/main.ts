@@ -5,10 +5,10 @@
  * Pipeline (SPEC §3.3/§4, all pure-TS `@pmndrs/vdb/tools`):
  *
  *   generate a deterministic 96^3 dense fog field
- *     -> `buildFromDenseDetailed` (FLOAT NanoVDB grid image)
- *     -> optional `quantize(..., "fp8")`
+ *     -> `vdbBuildFromDenseDetailed` (FLOAT NanoVDB grid image)
+ *     -> optional `vdbQuantize(..., "fp8")`
  *     -> `writeNvdb([image])` (a real `.nvdb` file, in memory)
- *     -> `NanoVDBFile.fromArrayBuffer` (re-parse — the SAME loader demo 02/06
+ *     -> `NvdbFile.fromArrayBuffer` (re-parse — the SAME loader demo 02/06
  *        use for real files, proving this isn't a special-cased shortcut)
  *     -> `VDBGridPool` grid -> `VDBGridNode` -> `VDBVolumeMaterial` render.
  *        Regenerating replaces the same pool grid (`pool.replace`) and keeps
@@ -22,9 +22,9 @@
  * by design), then asserts two things and publishes them on
  * `window.__DEMO07__`:
  *
- *   (a) `roundTripOk` — the re-parsed file's `GridMetadata` (voxel count,
- *       index/world bbox, voxel size) agrees with what `buildFromDenseDetailed`
- *       itself computed from the same build. Note `quantize()` preserves
+ *   (a) `roundTripOk` — the re-parsed file's `NvdbGridMetadata` (voxel count,
+ *       index/world bbox, voxel size) agrees with what `vdbBuildFromDenseDetailed`
+ *       itself computed from the same build. Note `vdbQuantize()` preserves
  *       topology/metadata/transform (see its module doc), so this equality
  *       would hold even with quantization on; the interactive quantize
  *       toggle exercises that path too, just not under the strict test-mode
@@ -44,12 +44,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
+import { NvdbFile, vdbReadValueCpu } from "@pmndrs/vdb/tools";
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import type { WebGPURenderer } from "three/webgpu";
-import { buildFromDenseDetailed, quantize, writeNvdb } from "@pmndrs/vdb/tools";
-import type { BuiltGrid, GridMetadata } from "@pmndrs/vdb/tools";
+import { vdbBuildFromDenseDetailed, vdbQuantize, writeNvdb } from "@pmndrs/vdb/tools";
+import type { VDBBuiltGrid, NvdbGridMetadata } from "@pmndrs/vdb/tools";
 
 interface Demo07State {
   ready: boolean;
@@ -136,27 +136,27 @@ function pickProbes(
 // ---------------------------------------------------------------------------
 
 interface BuiltPipeline {
-  built: BuiltGrid;
+  built: VDBBuiltGrid;
   values: Float32Array;
   fileBuffer: ArrayBuffer;
   /** The re-parsed file's grid 0: image + metadata. */
-  reparsed: { image: Uint32Array; metadata: GridMetadata };
+  reparsed: { image: Uint32Array; metadata: NvdbGridMetadata };
 }
 
 function runPipeline(seed: number, quantizeToFp8: boolean): BuiltPipeline {
   const values = generateDense(DIM, seed);
-  const built = buildFromDenseDetailed(values, [DIM, DIM, DIM], {
+  const built = vdbBuildFromDenseDetailed(values, [DIM, DIM, DIM], {
     gridName: "builder_demo",
     background: 0,
   });
-  const image = quantizeToFp8 ? quantize(built.image, "fp8") : built.image;
+  const image = quantizeToFp8 ? vdbQuantize(built.image, "fp8") : built.image;
   const fileBuffer = writeNvdb([image]);
-  const file = NanoVDBFile.fromArrayBuffer(fileBuffer);
+  const file = NvdbFile.fromArrayBuffer(fileBuffer);
   return { built, values, fileBuffer, reparsed: { image: file.gridImage(0), metadata: file.grids[0]! } };
 }
 
-/** Compares the re-parsed file's metadata against what `buildFromDenseDetailed` itself computed. */
-function checkRoundTrip(built: BuiltGrid, reparsed: BuiltPipeline["reparsed"]): boolean {
+/** Compares the re-parsed file's metadata against what `vdbBuildFromDenseDetailed` itself computed. */
+function checkRoundTrip(built: VDBBuiltGrid, reparsed: BuiltPipeline["reparsed"]): boolean {
   const m = reparsed.metadata;
   if (m.voxelCount !== built.voxelCount) return false;
   for (let a = 0; a < 3; a++) {
@@ -176,7 +176,7 @@ function checkProbes(
 ): boolean {
   if (probes.length === 0) return false;
   for (const p of probes) {
-    const r = readValue(reparsed.image, p.ijk);
+    const r = vdbReadValueCpu(reparsed.image, p.ijk);
     if (!r.active || r.value !== p.value) return false;
   }
   return true;

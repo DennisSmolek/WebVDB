@@ -19,7 +19,7 @@
  * `?repeat=15`, `?variants=` (comma list). Results: `window.__VDB_K3_SAMPLE_BENCH__`.
  */
 import { VDBGridPool, vdbModuleWgsl, type VDBGridTypeName } from "@pmndrs/vdb";
-import { NanoVDBFile, buildFromVdb, nanoVdbToWvdb, parseVdb, readWvdb, vdbToWvdb, wvdbDenseToNanoVdb, wvdbDenseVolume, type WvdbDenseVolume } from "@pmndrs/vdb/tools";
+import { NvdbFile, buildFromVdb, nvdbToWvdb, parseVdb, readWvdb, vdbToWvdb, wvdbDenseToNvdb, wvdbDenseVolume, type WvdbDenseVolume } from "@pmndrs/vdb/tools";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
 type Vec3 = [number, number, number];
@@ -82,7 +82,7 @@ async function loadAsset(name: string): Promise<{ image: Uint32Array; dense: Wvd
   if (name === "cloud04" || name === "bunny") {
     const url = name === "cloud04" ? cloudWvdbUrl : "/fixtures/k3/bunny_cloud.wvdb";
     const dense = wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(url))), { mipmaps: false });
-    const grid = wvdbDenseToNanoVdb(dense);
+    const grid = wvdbDenseToNvdb(dense);
     return { image: grid.image, dense, indexBox: grid.textureIndexBox };
   }
   if (name === "smoke") {
@@ -91,8 +91,8 @@ async function loadAsset(name: string): Promise<{ image: Uint32Array; dense: Wvd
     return { image, dense: wvdbDenseVolume(readWvdb(vdbToWvdb(file, { resolution: 128 }).bytes), { mipmaps: false }) };
   }
   if (name === "wdas") {
-    const image = NanoVDBFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0);
-    return { image, dense: wvdbDenseVolume(readWvdb(nanoVdbToWvdb(image, { resolution: 128 }).bytes), { mipmaps: false }) };
+    const image = NvdbFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0);
+    return { image, dense: wvdbDenseVolume(readWvdb(nvdbToWvdb(image, { resolution: 128 }).bytes), { mipmaps: false }) };
   }
   throw new Error(`unknown asset ${name}`);
 }
