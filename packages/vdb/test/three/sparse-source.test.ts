@@ -97,8 +97,7 @@ describe("vdbSparseSource", () => {
     const s = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "none", images: { density: grid.image } });
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
     expect(volume.meanDensity).toBe(s.stats.meanNonZero);
-    // D29 / K3.2c: HDDA on by default.
-    expect(volume.hdda).toBe(false); // D30
+    expect(volume.hdda).toBe(false); // D30 / D31: off by default
     const u = vdbVolumeUniforms(s, { densityScale: 2 });
     expect(u.densityScale.value).toBeCloseTo(2 / s.stats.meanNonZero, 9);
     u.update(s, { densityScale: 4 });

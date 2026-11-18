@@ -81,8 +81,21 @@ sources ignore it.
 
 ## Lighting
 
-Settings live on `volume.frameRenderer.settings`, a renderer shared by every volume unless you pass another
-`frameRenderer`. Volumes in one renderer are lit together.
+Settings live on `volume.frameRenderer.settings`. They belong to the `VDBFrameRenderer`, not to a volume: every
+volume that uses the same renderer shares them, and volumes in one renderer are lit together. With no `frameRenderer`
+prop a volume uses the shared `vdbFrameRenderer()`, so changing a setting changes it for all of them. Use
+`vdbFrameRenderer(threeRenderer)` for an instance shared only within one three renderer. To give a volume its own
+settings, make a separate `new VDBFrameRenderer()` and pass it as `VDBFrameVolume(source, { frameRenderer })`.
+
+{/* snippet: frame-own-renderer */}
+```ts
+// Settings belong to the frame renderer, so volumes sharing one share its settings.
+// For different settings, give a volume its own renderer.
+const draft = new VDBFrameRenderer();
+draft.settings.depth = 16;
+const volume = new VDBFrameVolume(source, { frameRenderer: draft });
+// vdbFrameRenderer(threeRenderer) is the instance shared only within that three renderer.
+```
 
 {/* snippet: frame-lighting */}
 ```ts

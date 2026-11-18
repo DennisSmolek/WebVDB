@@ -2012,10 +2012,24 @@ export function setVolumeUniforms(material: { volumeUniforms: FrameVolumeUniform
   getFramePhaseSpectrum(frameVolume, u.framePhaseSpectrum.value);
 }
 
-/** The shared renderer of every `VDBFrameVolume` made without one (his `frameRenderer` singleton). */
+/** Per three renderer shared instances (`vdbFrameRenderer(renderer)`). */
+const sharedByRenderer = new WeakMap<object, VDBFrameRenderer>();
 let shared: VDBFrameRenderer | null = null;
 
-export function vdbFrameRenderer(): VDBFrameRenderer {
+/**
+ * The shared {@link VDBFrameRenderer} that a `VDBFrameVolume` uses when you pass no `frameRenderer`.
+ * Its `settings` are global to every volume that uses it (the froxel grid, shadows and scattering are
+ * built once for all of them). Pass a three renderer to get the instance shared by that renderer only
+ * (a WeakMap, so two three renderers never share targets or settings); with no argument you get the
+ * one process-wide default. For volumes that need different settings, make your own
+ * `new VDBFrameRenderer()` and pass it as `VDBFrameVolume({ frameRenderer })`.
+ */
+export function vdbFrameRenderer(renderer?: object): VDBFrameRenderer {
+  if (renderer) {
+    let r = sharedByRenderer.get(renderer);
+    if (!r) sharedByRenderer.set(renderer, (r = new VDBFrameRenderer()));
+    return r;
+  }
   shared ??= new VDBFrameRenderer();
   return shared;
 }

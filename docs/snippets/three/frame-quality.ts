@@ -2,7 +2,8 @@
 
 // #endregion
 
-import type { VDBFrameVolume } from '@pmndrs/vdb/three';
+import { VDBFrameRenderer, VDBFrameVolume, vdbFrameRenderer } from '@pmndrs/vdb/three';
+import type { VDBThreeVolumeSource } from '@pmndrs/vdb/three';
 
 export function frameQuality(volume: VDBFrameVolume): void {
     // #region frame-quality
@@ -19,4 +20,17 @@ export function frameQuality(volume: VDBFrameVolume): void {
     volume.mipmaps = true; // sample the source's coarser levels when a froxel spans many voxels
     volume.hdda = true; // sparse sources: skip empty space in the shadow march (same image, off by default)
     // #endregion
+}
+
+export function frameSeparateSettings(source: VDBThreeVolumeSource): void {
+    // #region frame-own-renderer
+    // Settings belong to the frame renderer, so volumes sharing one share its settings.
+    // For different settings, give a volume its own renderer.
+    const draft = new VDBFrameRenderer();
+    draft.settings.depth = 16;
+    const volume = new VDBFrameVolume(source, { frameRenderer: draft });
+    // vdbFrameRenderer(threeRenderer) is the instance shared only within that three renderer.
+    // #endregion
+    void volume;
+    void vdbFrameRenderer;
 }
