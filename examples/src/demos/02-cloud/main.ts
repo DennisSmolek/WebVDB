@@ -62,7 +62,7 @@ declare global {
 }
 
 /**
- * Compatibility shim (three r185 × this Chromium/SwiftShader build).
+ * Compatibility shim (three r185–r187 × this Chromium/SwiftShader build).
  *
  * three's `GPUTextureViewDescriptor` unconditionally sets `swizzle: 'rgba'`
  * (a string) on EVERY texture-view, assuming browsers without the
@@ -306,7 +306,7 @@ async function run(): Promise<void> {
     const pixels = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as Uint8Array;
     renderer.setRenderTarget(null);
 
-    // GPU readback is bottom-up and three r185 preserves WebGPU's 256-byte
+    // GPU readback is bottom-up and three r185–r187 preserves WebGPU's 256-byte
     // row alignment. Derive that padded source stride from the returned byte
     // length, then copy only the tightly-packed RGBA8 pixels into ImageData.
     const packedStride = vw * 4;

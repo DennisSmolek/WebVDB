@@ -3,7 +3,7 @@
 //
 // Assumes `pnpm build` has already produced packages/vdb/dist. Steps:
 //   1. npm pack packages/vdb into a temp dir
-//   2. install that tarball plus three@0.185.1 into a fresh consumer project
+//   2. install that tarball plus three@0.187.0 into a fresh consumer project
 //   3. node -e: import each subpath and check import.meta.resolve points into
 //      node_modules/@pmndrs/vdb/dist/, and that the .wgsl export is a real file
 // Exits non-zero with a message on any failure. The temp dir is always removed.
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkgDir = path.join(repoRoot, "packages", "vdb");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const THREE_VERSION = "0.185.1";
+const THREE_VERSION = "0.187.0";
 
 class VerifyError extends Error {}
 

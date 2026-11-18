@@ -172,7 +172,7 @@ async function run(): Promise<void> {
     },
   });
 
-  // r185 accepts an externally-created device: WebGPURenderer forwards
+  // r185–r187 accepts an externally-created device: WebGPURenderer forwards
   // `parameters.device` to WebGPUBackend, which uses it verbatim instead of
   // calling requestAdapter/requestDevice itself (see WebGPUBackend.js ~L250).
   const renderer = new WebGPURenderer({ device, antialias: false });

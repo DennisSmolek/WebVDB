@@ -64,7 +64,7 @@
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
-    "three": ">=0.178.0"
+    "three": ">=0.187.0 <0.188.0"
   },
   "peerDependenciesMeta": {
     "three": {
@@ -72,8 +72,8 @@
     }
   },
   "devDependencies": {
-    "@types/three": "^0.185.1",
-    "three": "^0.185.1",
+    "@types/three": "0.187.0",
+    "three": "0.187.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"
   }
