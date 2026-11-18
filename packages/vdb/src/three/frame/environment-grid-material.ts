@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/FrameEnvironmentGridMaterial.js L35–283 (the grey pass).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
-// Changes: TypeScript; grey only (the spectral branch is K3.5); octaves off (K3.4).
+// Changes: TypeScript; grey only (the spectral branch is K3.5). K3.4: the octave uniform and terms.
 // Divergences: DIVERGES.md (K3.3 rows).
 
 /**
@@ -54,6 +54,8 @@ export class VDBFrameEnvironmentGridMaterial extends NodeMaterial {
   );
   // NOTE Multiple scattering of the renderer settings (phase.ts). 0.0 is single scattering.
   readonly frameMultipleScattering = uniform(0.0);
+  // NOTE Scattering octaves of the renderer settings (phase.ts). Count 0 is off.
+  readonly frameScatteringOctaves = uniform(new THREE.Vector4());
 
   constructor(readonly frameUniforms: VDBFrameEnvironmentGridMaterialOptions) {
     super();
@@ -76,6 +78,7 @@ export class VDBFrameEnvironmentGridMaterial extends NodeMaterial {
     const { frameEnvironmentGridCascade, frameEnvironmentGridColumns, frameEnvironmentGridAtlasSize } = environmentGridUniforms;
     const { frameEnvironmentUnshadowed } = lightUniforms;
     const ms = this.frameMultipleScattering;
+    const octaves = this.frameScatteringOctaves;
 
     this.colorNode = Fn(() => {
       const cascade = frameEnvironmentGridCascade;
@@ -88,7 +91,8 @@ export class VDBFrameEnvironmentGridMaterial extends NodeMaterial {
       const gridMin = frameGridMin.element(cascade).toVar();
       const gridSize = frameGridSize.element(cascade).toVar();
       const worldPosition = gridMin.add(gridUvw.mul(gridSize)).toVar();
-      const result = vec4(frameEnvironmentUnshadowed.mul(frameShadowTotal(float(1.0))), 1.0).toVar();
+      // NOTE Octaves: unshadowed light also gets the octaves
+      const result = vec4(frameEnvironmentUnshadowed.mul(frameShadowTotal(float(1.0), octaves)), 1.0).toVar();
 
       const extinctionAt = (position: VDBTslNode) => grid.sampleGrid(this.frameShadowDensityMap, cascade, position.sub(gridMin).div(gridSize)).r;
 
@@ -123,7 +127,7 @@ export class VDBFrameEnvironmentGridMaterial extends NodeMaterial {
                 .or(uvw.x.greaterThan(1.0))
                 .or(uvw.y.greaterThan(1.0))
                 .or(uvw.z.greaterThan(1.0))
-                .or(frameShadowMarchDepth(depths, ms).greaterThan(6.0)),
+                .or(frameShadowMarchDepth(depths, ms, octaves).greaterThan(6.0)),
               () => {
                 Break();
               },
@@ -143,7 +147,7 @@ export class VDBFrameEnvironmentGridMaterial extends NodeMaterial {
           const depths = marchDepths(direction);
 
           // NOTE Environment lights are isotropic: total transmittance, no phase
-          const shadow = frameShadowTransmittance(depths, ms);
+          const shadow = frameShadowTransmittance(depths, ms, octaves);
 
           // NOTE Diffusion: two-sided total (frameIsotropicDiffusion). It needs the march in the opposite direction too.
           const diffusion = ms.greaterThan(0.0);
@@ -153,7 +157,7 @@ export class VDBFrameEnvironmentGridMaterial extends NodeMaterial {
             backDepths.assign(marchDepths(direction.negate()));
           });
 
-          const total = select(diffusion, frameIsotropicDiffusion(depths.z, backDepths.z, depths.y), frameShadowTotal(shadow.y));
+          const total = select(diffusion, frameIsotropicDiffusion(depths.z, backDepths.z, depths.y), frameShadowTotal(shadow.y, octaves));
 
           irradiance.addAssign(this.frameLightColors.element(i).mul(total));
         });

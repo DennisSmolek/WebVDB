@@ -402,3 +402,55 @@ export {
   frameEnvironmentMapHeight as vdbFrameEnvironmentMapHeight,
 } from "./frame/environment.js";
 export type { VDBFrameEnvironmentMode, VDBFrameEnvironmentSettings, VDBFrameEnvironmentScene, VDBFrameEnvironmentLight, VDBFrameEnvironmentResult } from "./frame/environment.js";
+
+/**
+ * K3.4: mjurczyk's phase functions and multiple-scattering modes as CPU twins: per-channel and
+ * Lorenz-Mie phases (the Mie table generator, a port of his BHMIE script, and the table read),
+ * scattering octaves, two-sided slab diffusion, the octave shadow total, and the neural indirect
+ * network (forward pass, inputs, grid mips). His trained weights are a separate data module
+ * (`vdbFrameNeuralWeights`, MIT; provenance in THIRD_PARTY.md).
+ */
+export {
+  vdbFrameHenyeyGreensteinColor,
+  vdbFramePhaseColor,
+  vdbFramePhaseWeightScaled,
+  vdbFrameOctavesOff,
+  vdbFrameMaxScatteringOctaves,
+  vdbFrameScatteringOctaves,
+  vdbFrameShadowMarchDepth,
+  vdbFrameShadowOpticalDepth,
+  vdbFrameOctaveLight,
+  vdbFrameShadowTotal,
+  vdbFrameTwoSidedDiffusion,
+  vdbFrameShadowedLightColor,
+} from "./frame/index.js";
+export type { VDBFrameOctaveSettings, Vec2 as VDBFrameVec2, Vec3 as VDBFrameVec3, Vec4 as VDBFrameVec4 } from "./frame/index.js";
+export type { VDBFrameTransmittanceModes } from "./frame/grid.js";
+export {
+  vdbFrameMieTable,
+  vdbFrameMieTexels,
+  vdbFrameMieTexel,
+  vdbFrameMiePhase,
+  vdbFrameMieRgbPhase,
+  vdbFrameMieFormat,
+  vdbFrameMieTableSize,
+  vdbFrameMieAsymmetry,
+  vdbFrameMieRgbMode,
+  vdbFrameMieChannel,
+  vdbFrameMieRgbChannels,
+} from "./frame/mie.js";
+export type { VDBFrameMieTableOptions, VDBFrameMieTableResult } from "./frame/mie.js";
+export {
+  vdbFrameNeuralLayout,
+  vdbFrameNeuralCheck,
+  vdbFrameNeuralForward,
+  vdbFrameNeuralSampleLevel,
+  vdbFrameNeuralUnit,
+  vdbFrameNeuralInputs,
+  vdbFrameNeuralLight,
+  vdbFrameTileAtlasLayout,
+  vdbFrameGridMipLevel,
+  vdbFrameNeuralMipResolution,
+} from "./frame/neural.js";
+export type { VDBFrameNeuralNetwork, VDBFrameNeuralMip } from "./frame/neural.js";
+export { vdbFrameNeuralWeights } from "./frame/neural-weights.js";

@@ -151,9 +151,12 @@ describe("VDBFrameVolume and the view code", () => {
 });
 
 describe("K3.3 'frame' lighting host side", () => {
-  it("settings: his 'frame' subset with his defaults; lighting stays 'volume' and temporal off until K3.4 (V33)", () => {
-    const s = new VDBFrameRenderer().settings;
-    expect([s.lighting, s.temporal, s.multipleScattering]).toEqual(["volume", false, true]);
+  it("settings: his defaults, flipped together in K3.4 (V33): 'frame' lighting, temporal, 'neural'; his octave defaults", () => {
+    const fr = new VDBFrameRenderer();
+    const s = fr.settings;
+    expect([s.lighting, s.temporal, s.multipleScattering]).toEqual(["frame", true, "neural"]);
+    expect([s.scatteringOctaves, s.scatteringOctaveExtinction, s.scatteringOctaveContribution, s.scatteringOctavePhase]).toEqual([4, 0.5, 0.5, 0.5]);
+    expect(fr.neuralNetwork?.weights.length).toBe(1764);
     expect([s.temporalBlend, s.shadowResolution, s.shadowCascades, s.shadowDistance]).toEqual([0.2, 64, 1, 512]);
     expect([s.phase, s.phaseG, s.phaseBackG, s.phaseBackWeight, s.phaseGExponent]).toEqual(["henyey-greenstein", 0.8, -0.3, 0.2, 0]);
     expect([s.environmentLighting, s.environmentSamples, s.environmentShOrder]).toEqual(["directional", 8, 1]);

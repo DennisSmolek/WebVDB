@@ -6,14 +6,16 @@
 //   (createVolumeUniforms, the part that is not the source), L1208–1228 (tile uniforms and vertex);
 //   K3.3: L72–80 (frameLoad, frameFullscreenVertex), L403–414 (frameIsotropicDiffusion), L450–462
 //   (frameShadowTotal, octaves off), L624–686 (the hemisphere, light-probe, sky and environment light
-//   uniforms), L1030–1206 (shadow grid uniforms and nodes).
+//   uniforms), L1030–1206 (shadow grid uniforms and nodes);
+//   K3.4: L206–219 and L250–271 (the Lorenz-Mie texture, frameMieTexel, frameMiePhase, frameMieRgbPhase),
+//   L273–328 (the Mie branches of framePhaseWeight / framePhaseColor, framePhaseWeightScaled), L342–399
+//   (octave march depth and transmittance, frameShadowOpticalDepth, frameOctaveLight), L416–462
+//   (frameTwoSidedDiffusion, frameShadowTotal with octaves), L464–481 (frameShadowedLight with octaves).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; the source half of createVolumeUniforms/createVolumeNodes is
-// `../volume-source.ts`; Lorenz-Mie, octaves, two-sided/isotropic diffusion, spectral variants,
-// hemisphere/probe/environment light uniforms and the grid chunks are not ported yet (K3.3–K3.5);
-// `framePhaseWeight` / `framePhaseColor` compile the Mie branch out; `frameShadowTotal` has no
-// octave branch (K3.4). The Shadertoy `blackBody()`
-// is not ported (R1 §7, DIVERGES V24). Divergences: DIVERGES.md (K3.1 rows), V23–V25.
+// `../volume-source.ts`; the spectral variants are K3.5; the Mie table texture is made on first use
+// from our generator's tables (tools/frame/mie-table.ts, his numbers). The Shadertoy `blackBody()`
+// is not ported (R1 §7, DIVERGES V24). Divergences: DIVERGES.md (K3.1, K3.4 rows), V23–V25.
 
 /**
  * Shared TSL of the froxel passes (K3.1, R1 §6 Step 1): the subset his `'volume'` lighting uses.
@@ -29,10 +31,12 @@ import * as TSL from "three/tsl";
 import type { VDBTslNode } from "../grid-node.js";
 import type { VDBVolumeNodes, VDBVolumeUniforms } from "../volume-source.js";
 import { vdbMaxComponent, vdbMinComponent } from "../volume-source.js";
+import { vdbFrameMieTableSize } from "../../tools/frame/mie.js";
+import { frameMaxScatteringOctaves, frameMieAsymmetry, frameMieRgbMode, getFrameMieTexels } from "./phase.js";
 
 // NOTE TSL's r187 typings narrow node types; the ported shader code is written against untyped nodes,
 // as volume-source.ts is (VDBTslNode).
-const { If, ceil, clamp, dot, exp, exp2, float, floor, fract, int, instanceIndex, ivec2, length, log, max, min, mix, mod, positionGeometry, pow, screenCoordinate, select, smoothstep, sqrt, uniform, uniformArray, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { Break, If, Loop, abs, acos, ceil, clamp, dot, exp, exp2, float, floor, fract, int, instanceIndex, ivec2, length, log, max, min, mix, mod, positionGeometry, pow, screenCoordinate, select, smoothstep, sqrt, step, texture, uniform, uniformArray, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
 type N = VDBTslNode;
 
@@ -173,7 +177,7 @@ export const frameHenyeyGreenstein = (cosTheta: N, g: N): N => {
 };
 
 // NOTE Henyey-Greenstein phase of each channel, g of each channel
-const frameHenyeyGreensteinColor = (cosTheta: N, g: N): N => {
+export const frameHenyeyGreensteinColor = (cosTheta: N, g: N): N => {
   const g2 = g.mul(g);
 
   return vec3(1.0)
@@ -181,37 +185,87 @@ const frameHenyeyGreensteinColor = (cosTheta: N, g: N): N => {
     .div(pow(max(vec3(1.0).add(g2).sub(g.mul(2.0).mul(cosTheta)), vec3(1e-4)), vec3(1.5)));
 };
 
+// NOTE Lorenz-Mie phase tables, see getFrameMieTexels. Float values, read with load and a linear blend.
+// Made on first use (one texture for all shaders).
+let frameMieMap: N | null = null;
+
+export const getFrameMieMap = (): N => {
+  if (!frameMieMap) {
+    const mieTexture = new THREE.DataTexture(getFrameMieTexels(), vdbFrameMieTableSize, 1, THREE.RGBAFormat, THREE.FloatType);
+
+    mieTexture.minFilter = THREE.NearestFilter;
+    mieTexture.magFilter = THREE.NearestFilter;
+    mieTexture.needsUpdate = true;
+    frameMieMap = texture(mieTexture);
+  }
+
+  return frameMieMap;
+};
+
+// NOTE Table texel u is at the scattering angle PI * u^2. Red, green, blue: 'lorenz-mie-rgb'. Alpha: 'lorenz-mie'.
+export const frameMieTexel = (cosTheta: N): N => {
+  const map = getFrameMieMap();
+  const u = sqrt(acos(clamp(cosTheta, -1.0, 1.0)).mul(1.0 / Math.PI));
+  const texel = u.mul(vdbFrameMieTableSize - 1).toVar();
+  const index = min(int(texel), int(vdbFrameMieTableSize - 2)).toVar();
+  const a = map.load(ivec2(index, 0));
+  const b = map.load(ivec2(index.add(1), 0));
+
+  return mix(a, b, texel.sub(float(index)));
+};
+
+const frameMiePhase = (cosTheta: N): N => frameMieTexel(cosTheta).a;
+
+const frameMieRgbPhase = (cosTheta: N): N => frameMieTexel(cosTheta).rgb;
+
 // NOTE framePhase is (forward g, back g, back weight, Lorenz-Mie mode), see phase.ts. Call in a Fn body.
 // NOTE rayDirection: from the camera to the sample. lightDirection: from the sample to the light.
-// NOTE The Lorenz-Mie branch (framePhase.w > 0) is not compiled in Step 1 (K3.4).
 export const framePhaseWeight = (framePhase: N, rayDirection: N, lightDirection: N): N => {
   const cosTheta = dot(rayDirection, lightDirection).toVar();
+  const weight = mix(frameHenyeyGreenstein(cosTheta, framePhase.x), frameHenyeyGreenstein(cosTheta, framePhase.y), framePhase.z).toVar();
 
-  return mix(frameHenyeyGreenstein(cosTheta, framePhase.x), frameHenyeyGreenstein(cosTheta, framePhase.y), framePhase.z).toVar();
+  If(framePhase.w.greaterThan(0.0), () => {
+    weight.assign(mix(weight, frameMiePhase(cosTheta), framePhase.w));
+  });
+
+  return weight;
 };
 
 // NOTE Phase of each channel (red, green, blue). Call in a Fn body.
-// NOTE phaseSpectrum is (red g scale, blue g scale, flag). Flag 0.0: the same phase for all channels. No Mie RGB branch.
+// NOTE phaseSpectrum is (red g scale, blue g scale, flag), see phase.ts. Flag 0.0: the same phase for all channels.
 export const framePhaseColor = (framePhase: N, phaseSpectrum: N, rayDirection: N, lightDirection: N): N => {
   const color = vec3(0.0).toVar();
 
   If(phaseSpectrum.z.lessThan(0.5), () => {
     color.assign(vec3(framePhaseWeight(framePhase, rayDirection, lightDirection)));
-  }).Else(() => {
-    const cosTheta = dot(rayDirection, lightDirection).toVar();
-    const scale = vec3(phaseSpectrum.x, 1.0, phaseSpectrum.y).toVar();
+  })
+    .ElseIf(framePhase.w.greaterThan(frameMieRgbMode - 0.5), () => {
+      color.assign(frameMieRgbPhase(dot(rayDirection, lightDirection)));
+    })
+    .Else(() => {
+      const cosTheta = dot(rayDirection, lightDirection).toVar();
+      const scale = vec3(phaseSpectrum.x, 1.0, phaseSpectrum.y).toVar();
 
-    color.assign(
-      mix(
-        frameHenyeyGreensteinColor(cosTheta, clamp(scale.mul(framePhase.x), -0.99, 0.99)),
-        frameHenyeyGreensteinColor(cosTheta, clamp(scale.mul(framePhase.y), -0.99, 0.99)),
-        framePhase.z,
-      ),
-    );
-  });
+      color.assign(
+        mix(
+          frameHenyeyGreensteinColor(cosTheta, clamp(scale.mul(framePhase.x), -0.99, 0.99)),
+          frameHenyeyGreensteinColor(cosTheta, clamp(scale.mul(framePhase.y), -0.99, 0.99)),
+          framePhase.z,
+        ),
+      );
+    });
 
   return color;
 };
+
+// NOTE Phase with all g multiplied by gScale. Lorenz-Mie uses Henyey-Greenstein with the table asymmetry g.
+// 'lorenz-mie-rgb' too: it is the same for all channels.
+export const framePhaseWeightScaled = (framePhase: N, cosTheta: N, gScale: N): N =>
+  mix(
+    mix(frameHenyeyGreenstein(cosTheta, framePhase.x.mul(gScale)), frameHenyeyGreenstein(cosTheta, framePhase.y.mul(gScale)), framePhase.z),
+    frameHenyeyGreenstein(cosTheta, gScale.mul(frameMieAsymmetry)),
+    min(framePhase.w, 1.0),
+  );
 
 // NOTE Absorption of the shadow extinction: the part of the light that the albedo (linear luminance) does not scatter
 export const frameShadowAbsorption = (extinction: N, albedo: N): N =>
@@ -231,19 +285,59 @@ export const frameShadowStep = (extinction: N, absorption: N, multipleScattering
 export const frameShadowDepth = (depths: N, multipleScattering: N): N =>
   select(multipleScattering.greaterThan(0.0), min(depths.x, depths.y.add(log(depths.z.mul(0.75).add(1.0)))), depths.x);
 
-// NOTE Optical depth of the least shadowed light term. Marches stop when it is large. (No octaves in Step 1.)
-export const frameShadowMarchDepth = (depths: N, multipleScattering: N): N => frameShadowDepth(depths, multipleScattering);
+// NOTE octaves is (count N, extinction a, contribution b, phase c) of the indirect light octaves (phase.ts). N 0 is off.
+
+// NOTE Optical depth of the least shadowed light term. Marches stop when it is large.
+// Octaves: the last octave has extinction * a^N, so the march goes deeper.
+export const frameShadowMarchDepth = (depths: N, multipleScattering: N, octaves: N): N =>
+  select(octaves.x.greaterThan(0.0), depths.x.mul(pow(octaves.y, octaves.x)), frameShadowDepth(depths, multipleScattering));
 
 // NOTE Shadow values (direct, total) transmittance. Direct light gets the phase function, scattered light (total - direct) is isotropic.
-export const frameShadowTransmittance = (depths: N, multipleScattering: N): N =>
-  vec2(exp(depths.x.negate()), exp(frameShadowDepth(depths, multipleScattering).negate()));
+// NOTE Octaves: y is 1 / (1 + optical depth). Half float targets keep it for deep volumes, and 1.0 is no shadow.
+export const frameShadowTransmittance = (depths: N, multipleScattering: N, octaves: N): N =>
+  vec2(exp(depths.x.negate()), select(octaves.x.greaterThan(0.0), float(1.0).div(depths.x.add(1.0)), exp(frameShadowDepth(depths, multipleScattering).negate())));
+
+// NOTE Optical depth from the y shadow value of octaves
+export const frameShadowOpticalDepth = (shadowY: N): N => max(float(1.0).div(max(shadowY, 1e-6)).sub(1.0), 0.0);
+
+// NOTE Sum of b^n * phase(g * c^n) * exp(-a^n * optical depth), n 1 to N. Call in a Fn body.
+// NOTE framePhase null is isotropic (phase 1).
+export const frameOctaveLight = (octaves: N, opticalDepth: N, framePhase: N | null, cosTheta: N | null): N => {
+  const light = float(0.0).toVar();
+  const extinctionScale = float(1.0).toVar();
+  const contribution = float(1.0).toVar();
+  const gScale = float(1.0).toVar();
+
+  Loop(frameMaxScatteringOctaves, ({ i }: { i: N }) => {
+    If(float(i.add(1)).greaterThan(octaves.x), () => {
+      Break();
+    });
+
+    extinctionScale.mulAssign(octaves.y);
+    contribution.mulAssign(octaves.z);
+    gScale.mulAssign(octaves.w);
+
+    const phase = framePhase ? framePhaseWeightScaled(framePhase, cosTheta, gScale) : float(1.0);
+
+    light.addAssign(contribution.mul(phase).mul(exp(opticalDepth.mul(extinctionScale).negate())));
+  });
+
+  return light;
+};
 
 // NOTE Light of a shadowed light of each channel, divided by the light color: phase * direct + scattered. Call in a Fn body.
-// Diffusion or single scattering: the scattered light (total - direct) is isotropic. (No octaves in Step 1.)
-export const frameShadowedLight = (framePhase: N, phaseSpectrum: N, rayDirection: N, lightDirection: N, shadow: N): N => {
+// Diffusion or single scattering: the scattered light (total - direct) is isotropic.
+// Octaves: sum of b^n * phase(g * c^n) * exp(-a^n * optical depth), n 1 to N.
+export const frameShadowedLight = (framePhase: N, phaseSpectrum: N, octaves: N, rayDirection: N, lightDirection: N, shadow: N): N => {
   const light = framePhaseColor(framePhase, phaseSpectrum, rayDirection, lightDirection).mul(shadow.x).toVar();
 
-  light.addAssign(vec3(shadow.y.sub(shadow.x)));
+  If(octaves.x.greaterThan(0.0), () => {
+    const opticalDepth = frameShadowOpticalDepth(shadow.y).toVar();
+
+    light.addAssign(vec3(frameOctaveLight(octaves, opticalDepth, framePhase, dot(rayDirection, lightDirection).toVar())));
+  }).Else(() => {
+    light.addAssign(vec3(shadow.y.sub(shadow.x)));
+  });
 
   return light;
 };
@@ -261,8 +355,53 @@ export const frameIsotropicDiffusion = (frontReduced: N, backReduced: N, frontEf
     .div(frontReduced.add(backReduced).add(2.0 * frameDiffusionExtrapolation))
     .mul(exp(frontEffective.negate()));
 
-// NOTE Total transmittance of isotropic light (no phase) from the y shadow value. Octaves off (K3.4): the value itself.
-export const frameShadowTotal = (shadowY: N): N => float(shadowY);
+// NOTE multipleScattering 'two-sided': total transmittance of a light direction (direct and scattered light).
+// Diffusion with a collimated source in the volume between the light side and the far side: front reduced depth f
+// (toward the light), back reduced depth b (away from the light), L = f + b. Light also leaves at the sides: the volume
+// is as wide as it is deep (L), so phi'' - k^2 phi = -3 exp(-x) with k^2 = 2 (PI / (L + 2 z0))^2, the lowest side mode.
+// Robin boundaries phi = z0 phi' at x = 0 and phi = -z0 phi' at x = L, z0 = 2/3. Then the reduced beam exp(-f),
+// times exp(-effective front) for absorption, never less than the direct light.
+export const frameTwoSidedDiffusion = (direct: N, frontReduced: N, frontEffective: N, backReduced: N): N => {
+  const z0 = frameDiffusionExtrapolation;
+  const slab = frontReduced.add(backReduced);
+  const k0 = float(Math.SQRT2 * Math.PI).div(slab.add(2.0 * z0));
+  // NOTE k = 1 has no particular solution of this form. A small shift keeps the result continuous.
+  const k = k0.add(float(1.0).sub(step(0.01, abs(float(1.0).sub(k0.mul(k0))))).mul(0.01)).toVar();
+  const p = float(-3.0).div(float(1.0).sub(k.mul(k))).toVar();
+  const kl = k.mul(slab);
+  const coshKl = exp(kl).add(exp(kl.negate())).mul(0.5).toVar();
+  const sinhKl = exp(kl).sub(exp(kl.negate())).mul(0.5).toVar();
+  const c12 = k.mul(-z0);
+  const r1 = p.mul(-(1.0 + z0));
+  const c21 = coshKl.add(k.mul(z0).mul(sinhKl));
+  const c22 = sinhKl.add(k.mul(z0).mul(coshKl));
+  const r2 = p.negate().mul(exp(slab.negate())).mul(1.0 - z0);
+  const det = c22.sub(c12.mul(c21)).toVar();
+  const c = r1.mul(c22).sub(c12.mul(r2)).div(det);
+  const d = r2.sub(c21.mul(r1)).div(det);
+  const kf = k.mul(frontReduced);
+  const beam = exp(frontReduced.negate());
+  const diffuse = p
+    .mul(beam)
+    .add(c.mul(exp(kf).add(exp(kf.negate())).mul(0.5)))
+    .add(d.mul(exp(kf).sub(exp(kf.negate())).mul(0.5)));
+
+  return max(direct, diffuse.add(beam).mul(exp(frontEffective.negate())));
+};
+
+// NOTE Total transmittance of isotropic light (no phase) from the y shadow value. Call in a Fn body.
+// Octaves: sum of b^n * exp(-a^n * optical depth), n 0 (direct) to N.
+export const frameShadowTotal = (shadowY: N, octaves: N): N => {
+  const total = float(shadowY).toVar();
+
+  If(octaves.x.greaterThan(0.0), () => {
+    const opticalDepth = frameShadowOpticalDepth(shadowY).toVar();
+
+    total.assign(exp(opticalDepth.negate()).add(frameOctaveLight(octaves, opticalDepth, null, null)));
+  });
+
+  return total;
+};
 
 export const frameMaxLights = 16;
 

@@ -14,6 +14,10 @@ export { VDBFrameLightingMaterial } from "./lighting-material.js";
 export { VDBFrameTemporalMaterial } from "./temporal-material.js";
 export { VDBFrameEnvironmentMaterial, VDBFrameEnvironmentMapMaterial } from "./environment-material.js";
 export { VDBFrameEnvironmentGridMaterial } from "./environment-grid-material.js";
+// K3.4: phase functions and multiple scattering (two-sided, octaves, neural)
+export { VDBFrameGridMipMaterial } from "./grid-mip-material.js";
+export { createNeuralNodes } from "./neural.js";
+export { frameNeuralMipLevels } from "./transmittance-material.js";
 export { VDBFrameInjectMaterial } from "./inject-material.js";
 export type { VDBFrameInjectMaterialOptions } from "./inject-material.js";
 export { VDBFrameIntegrateMaterial } from "./integrate-material.js";
@@ -23,6 +27,9 @@ export {
   getFramePhaseSpectrum,
   getFramePhaseAsymmetry,
   getFrameMultipleScattering,
+  getFrameScatteringOctaves,
+  getFrameTwoSidedDiffusion,
+  getFrameMieTexels,
   isFrameDiffusion,
 } from "./phase.js";
 export type { VDBFramePhase, VDBFrameMultipleScattering, VDBFramePhaseSource } from "./phase.js";

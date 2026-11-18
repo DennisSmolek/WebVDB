@@ -7,8 +7,13 @@
 //   src/three-openvdb/frame/webgpu/FrameIntegrateMaterial.js L219–293 (slice march and composite);
 //   src/three-openvdb/frame/core/frameView.js L258–271 (getFroxelSlice, getFroxelSliceRange).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
-// Changes: CPU (f64) twins of the TSL shader maths, used as test oracles; no Lorenz-Mie, octaves or
-// two-sided terms (K3.4). Divergences: DIVERGES.md (K3.1 rows).
+//   K3.4: frameShaderChunks.js L196–203 (frameHenyeyGreensteinColor), L273–328 (the Lorenz-Mie branches
+//   of framePhaseWeight / framePhaseColor, framePhaseWeightScaled), L342–399 (octave march depth and
+//   transmittance, frameShadowOpticalDepth, frameOctaveLight), L416–462 (frameTwoSidedDiffusion,
+//   frameShadowTotal), L464–481 (frameShadowedLight with octaves); core/framePhase.js L110–129
+//   (getFrameScatteringOctaves).
+// Changes: CPU (f64) twins of the TSL shader maths, used as test oracles (grey; the spectral variants
+// are K3.5). Divergences: DIVERGES.md (K3.1 and K3.4 rows).
 
 /**
  * CPU twins of the froxel pipeline maths (K3.1, R1 §6 Step 1; CLAUDE.md "every WGSL entry has a CPU
@@ -16,6 +21,8 @@
  * the GPU passes can be checked against it (e2e `k3-frame` probe) and the maths can move into `core`
  * as WGSL later (K3.8) with the same oracle. Engine-free: plain numbers and tuples.
  */
+
+import { vdbFrameMieAsymmetry, vdbFrameMiePhase, vdbFrameMieRgbMode, vdbFrameMieRgbPhase } from "./mie.js";
 
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
@@ -116,15 +123,53 @@ export function vdbFrameHenyeyGreenstein(cosTheta: number, g: number): number {
 }
 
 /**
- * framePhaseWeight without the Lorenz-Mie term: `phase` is (forward g, back g, back weight, Mie
- * mode); dual-lobe is a mix of two HG lobes. `rayDirection` camera → sample, `lightDirection`
- * sample → light (both unit).
+ * framePhaseWeight: `phase` is (forward g, back g, back weight, Lorenz-Mie mode); dual-lobe is a mix
+ * of two HG lobes; mode > 0 mixes the 'lorenz-mie' table in by the mode (his code; only modes 0 and 1
+ * reach it, 'lorenz-mie-rgb' takes the per-channel branch of {@link vdbFramePhaseColor}).
+ * `rayDirection` camera → sample, `lightDirection` sample → light (both unit).
  */
 export function vdbFramePhaseWeight(phase: Vec4, rayDirection: Vec3, lightDirection: Vec3): number {
   const c = dot3(rayDirection, lightDirection);
   const a = vdbFrameHenyeyGreenstein(c, phase[0]);
   const b = vdbFrameHenyeyGreenstein(c, phase[1]);
-  return a + (b - a) * phase[2];
+  const w = a + (b - a) * phase[2];
+  return phase[3] > 0 ? w + (vdbFrameMiePhase(c) - w) * phase[3] : w;
+}
+
+/** frameHenyeyGreensteinColor: HG of each channel, g of each channel. */
+export function vdbFrameHenyeyGreensteinColor(cosTheta: number, g: Vec3): Vec3 {
+  return [vdbFrameHenyeyGreenstein(cosTheta, g[0]), vdbFrameHenyeyGreenstein(cosTheta, g[1]), vdbFrameHenyeyGreenstein(cosTheta, g[2])];
+}
+
+/**
+ * framePhaseColor: the phase of each channel. `phaseSpectrum` is (red g scale, blue g scale, flag)
+ * (`getFramePhaseSpectrum`): flag 0 the same phase for all channels; 'lorenz-mie-rgb' its three
+ * tables; else per-channel g = clamp(g × scale, ±0.99) of both lobes (`phaseGExponent`).
+ */
+export function vdbFramePhaseColor(phase: Vec4, phaseSpectrum: Vec3, rayDirection: Vec3, lightDirection: Vec3): Vec3 {
+  const c = dot3(rayDirection, lightDirection);
+  if (phaseSpectrum[2] < 0.5) {
+    const w = vdbFramePhaseWeight(phase, rayDirection, lightDirection);
+    return [w, w, w];
+  }
+  if (phase[3] > vdbFrameMieRgbMode - 0.5) return vdbFrameMieRgbPhase(c);
+  const scale: Vec3 = [phaseSpectrum[0], 1, phaseSpectrum[1]];
+  const g = (base: number) => scale.map((s) => clamp(s * base, -0.99, 0.99)) as Vec3;
+  const a = vdbFrameHenyeyGreensteinColor(c, g(phase[0]));
+  const b = vdbFrameHenyeyGreensteinColor(c, g(phase[1]));
+  return [0, 1, 2].map((i) => a[i]! + (b[i]! - a[i]!) * phase[2]) as Vec3;
+}
+
+/**
+ * framePhaseWeightScaled: the phase with every g × gScale; the Lorenz-Mie modes use HG with the table
+ * asymmetry (0.8526) × gScale, mixed in by min(mode, 1).
+ */
+export function vdbFramePhaseWeightScaled(phase: Vec4, cosTheta: number, gScale: number): number {
+  const a = vdbFrameHenyeyGreenstein(cosTheta, phase[0] * gScale);
+  const b = vdbFrameHenyeyGreenstein(cosTheta, phase[1] * gScale);
+  const lobes = a + (b - a) * phase[2];
+  const mie = vdbFrameHenyeyGreenstein(cosTheta, gScale * vdbFrameMieAsymmetry);
+  return lobes + (mie - lobes) * Math.min(phase[3], 1);
 }
 
 /** frameShadowAbsorption: the part of the extinction the albedo (Rec. 709 luminance) does not scatter. */
@@ -144,32 +189,135 @@ export function vdbFrameShadowDepth(depths: Vec3, multipleScattering: number): n
   return multipleScattering > 0 ? Math.min(depths[0], depths[1] + Math.log(depths[2] * 0.75 + 1)) : depths[0];
 }
 
-/** frameShadowTransmittance (octaves off): (direct, total). */
-export function vdbFrameShadowTransmittance(depths: Vec3, multipleScattering: number): Vec2 {
-  return [Math.exp(-depths[0]), Math.exp(-vdbFrameShadowDepth(depths, multipleScattering))];
+/** Octaves off: (count 0, …). */
+export const vdbFrameOctavesOff: Vec4 = [0, 0, 0, 0];
+
+/** Most octaves (his `frameMaxScatteringOctaves`). */
+export const vdbFrameMaxScatteringOctaves = 8;
+
+/** The renderer settings {@link vdbFrameScatteringOctaves} reads (his `frameRenderer.settings`). */
+export interface VDBFrameOctaveSettings {
+  multipleScattering: boolean | string;
+  scatteringOctaves: number;
+  scatteringOctaveExtinction: number;
+  scatteringOctaveContribution: number;
+  scatteringOctavePhase: number;
+}
+
+const clampUnit = (value: unknown, fallback: number) => Math.min(1, Math.max(0, Number.isFinite(Number(value)) ? Number(value) : fallback));
+
+/**
+ * getFrameScatteringOctaves: (count N, extinction a, contribution b, phase c) of multipleScattering
+ * 'octaves' (octave n = 1..N has extinction × aⁿ, light × bⁿ, phase g × cⁿ); (0, 0, 0, 0) otherwise.
+ */
+export function vdbFrameScatteringOctaves(settings: VDBFrameOctaveSettings): Vec4 {
+  if (settings.multipleScattering !== "octaves") return [0, 0, 0, 0];
+  const count = Math.min(vdbFrameMaxScatteringOctaves, Math.max(1, Math.round(Number(settings.scatteringOctaves) || 1)));
+  return [count, clampUnit(settings.scatteringOctaveExtinction, 0.5), clampUnit(settings.scatteringOctaveContribution, 0.5), clampUnit(settings.scatteringOctavePhase, 0.5)];
+}
+
+/** frameShadowMarchDepth: the optical depth that stops a march; with octaves the last octave's σ·aᴺ depth. */
+export function vdbFrameShadowMarchDepth(depths: Vec3, multipleScattering: number, octaves: Vec4 = vdbFrameOctavesOff): number {
+  return octaves[0] > 0 ? depths[0] * Math.pow(octaves[1], octaves[0]) : vdbFrameShadowDepth(depths, multipleScattering);
+}
+
+/** frameShadowTransmittance: (direct, total); with octaves the total slot holds 1 / (1 + optical depth). */
+export function vdbFrameShadowTransmittance(depths: Vec3, multipleScattering: number, octaves: Vec4 = vdbFrameOctavesOff): Vec2 {
+  return [Math.exp(-depths[0]), octaves[0] > 0 ? 1 / (depths[0] + 1) : Math.exp(-vdbFrameShadowDepth(depths, multipleScattering))];
+}
+
+/** frameShadowOpticalDepth: the optical depth back from the octave shadow value 1 / (1 + τ). */
+export function vdbFrameShadowOpticalDepth(shadowY: number): number {
+  return Math.max(1 / Math.max(shadowY, 1e-6) - 1, 0);
+}
+
+/** frameOctaveLight: Σₙ₌₁..N bⁿ · phase(g cⁿ) · exp(−aⁿ τ); `phase` null is isotropic (phase 1). */
+export function vdbFrameOctaveLight(octaves: Vec4, opticalDepth: number, phase: Vec4 | null, cosTheta: number): number {
+  let light = 0;
+  let extinctionScale = 1;
+  let contribution = 1;
+  let gScale = 1;
+  for (let i = 0; i < vdbFrameMaxScatteringOctaves; i++) {
+    if (i + 1 > octaves[0]) break;
+    extinctionScale *= octaves[1];
+    contribution *= octaves[2];
+    gScale *= octaves[3];
+    const p = phase ? vdbFramePhaseWeightScaled(phase, cosTheta, gScale) : 1;
+    light += contribution * p * Math.exp(-opticalDepth * extinctionScale);
+  }
+  return light;
+}
+
+/** frameShadowTotal: total transmittance of isotropic light from the y shadow value; octaves: exp(−τ) + Σ bⁿ exp(−aⁿ τ). */
+export function vdbFrameShadowTotal(shadowY: number, octaves: Vec4 = vdbFrameOctavesOff): number {
+  if (!(octaves[0] > 0)) return shadowY;
+  const tau = vdbFrameShadowOpticalDepth(shadowY);
+  return Math.exp(-tau) + vdbFrameOctaveLight(octaves, tau, null, 0);
 }
 
 /**
- * The shadow march of the inject pass (`volumeTransmittance`, octaves off), over given extinction
- * samples per unit length already multiplied by the world step and absorbance (`stepScale`).
- * Returns (direct, total, reduced depth, effective depth), stopping when the march depth exceeds 8.
+ * frameTwoSidedDiffusion (multipleScattering 'two-sided'): 1D slab diffusion with a collimated source
+ * between the light side (front reduced depth f) and the far side (back b), the lowest side mode
+ * (k² = 2 (π / (f + b + 2 z₀))²), Robin boundaries with z₀ = ⅔; the diffuse plus the reduced beam
+ * exp(−f), times exp(−effective front), never below the direct light.
  */
-export function vdbFrameShadowMarch(scaledExtinctions: readonly number[], albedo: Vec3, multipleScattering: number): Vec4 {
+export function vdbFrameTwoSidedDiffusion(direct: number, frontReduced: number, frontEffective: number, backReduced: number): number {
+  const z0 = 2 / 3;
+  const slab = frontReduced + backReduced;
+  const k0 = (Math.SQRT2 * Math.PI) / (slab + 2 * z0);
+  // k = 1 has no particular solution of this form; a small shift keeps the result continuous (step(0.01, |1 − k0²|)).
+  const k = k0 + (1 - (Math.abs(1 - k0 * k0) >= 0.01 ? 1 : 0)) * 0.01;
+  const p = -3 / (1 - k * k);
+  const kl = k * slab;
+  const coshKl = (Math.exp(kl) + Math.exp(-kl)) * 0.5;
+  const sinhKl = (Math.exp(kl) - Math.exp(-kl)) * 0.5;
+  const c12 = k * -z0;
+  const r1 = p * -(1 + z0);
+  const c21 = coshKl + k * z0 * sinhKl;
+  const c22 = sinhKl + k * z0 * coshKl;
+  const r2 = -p * Math.exp(-slab) * (1 - z0);
+  const det = c22 - c12 * c21;
+  const c = (r1 * c22 - c12 * r2) / det;
+  const d = (r2 - c21 * r1) / det;
+  const kf = k * frontReduced;
+  const beam = Math.exp(-frontReduced);
+  const diffuse = p * beam + c * (Math.exp(kf) + Math.exp(-kf)) * 0.5 + d * (Math.exp(kf) - Math.exp(-kf)) * 0.5;
+  return Math.max(direct, (diffuse + beam) * Math.exp(-frontEffective));
+}
+
+/**
+ * The shadow march of the inject pass (`volumeTransmittance`), over given extinction samples per unit
+ * length already multiplied by the world step and absorbance (`stepScale`). Returns (direct, total,
+ * reduced depth, effective depth), stopping when the march depth exceeds 8.
+ */
+export function vdbFrameShadowMarch(scaledExtinctions: readonly number[], albedo: Vec3, multipleScattering: number, octaves: Vec4 = vdbFrameOctavesOff): Vec4 {
   const depths: Vec3 = [0, 0, 0];
   for (const e of scaledExtinctions) {
     const s = vdbFrameShadowStep(e, vdbFrameShadowAbsorption(e, albedo), multipleScattering);
     depths[0] += s[0];
     depths[1] += s[1];
     depths[2] += s[2];
-    if (vdbFrameShadowDepth(depths, multipleScattering) > 8) break;
+    if (vdbFrameShadowMarchDepth(depths, multipleScattering, octaves) > 8) break;
   }
-  const t = vdbFrameShadowTransmittance(depths, multipleScattering);
+  const t = vdbFrameShadowTransmittance(depths, multipleScattering, octaves);
   return [t[0], t[1], depths[2], depths[1]];
 }
 
-/** frameShadowedLight (grey, octaves off): phase × direct + (total − direct). */
-export function vdbFrameShadowedLight(phase: Vec4, rayDirection: Vec3, lightDirection: Vec3, shadow: Vec2): number {
-  return vdbFramePhaseWeight(phase, rayDirection, lightDirection) * shadow[0] + (shadow[1] - shadow[0]);
+/**
+ * frameShadowedLight (grey): phase × direct + scattered; the scattered light is (total − direct)
+ * (isotropic), or with octaves Σ bⁿ phase(g cⁿ) exp(−aⁿ τ) from the octave shadow value.
+ */
+export function vdbFrameShadowedLight(phase: Vec4, rayDirection: Vec3, lightDirection: Vec3, shadow: Vec2, octaves: Vec4 = vdbFrameOctavesOff): number {
+  const direct = vdbFramePhaseWeight(phase, rayDirection, lightDirection) * shadow[0];
+  if (octaves[0] > 0) return direct + vdbFrameOctaveLight(octaves, vdbFrameShadowOpticalDepth(shadow[1]), phase, dot3(rayDirection, lightDirection));
+  return direct + (shadow[1] - shadow[0]);
+}
+
+/** frameShadowedLight of each channel (per-channel phases: `phaseSpectrum`, see {@link vdbFramePhaseColor}). */
+export function vdbFrameShadowedLightColor(phase: Vec4, phaseSpectrum: Vec3, octaves: Vec4, rayDirection: Vec3, lightDirection: Vec3, shadow: Vec2): Vec3 {
+  const p = vdbFramePhaseColor(phase, phaseSpectrum, rayDirection, lightDirection);
+  const scattered = octaves[0] > 0 ? vdbFrameOctaveLight(octaves, vdbFrameShadowOpticalDepth(shadow[1]), phase, dot3(rayDirection, lightDirection)) : shadow[1] - shadow[0];
+  return [p[0] * shadow[0] + scattered, p[1] * shadow[0] + scattered, p[2] * shadow[0] + scattered];
 }
 
 /**

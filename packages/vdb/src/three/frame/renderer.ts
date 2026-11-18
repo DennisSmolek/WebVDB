@@ -9,14 +9,19 @@
 //   transmittanceUnchanged, renderShadowDensity, updateGridVersion), L1347–1474 (pool setup,
 //   updatePool, getFroxelRect, getCascadeCount, updateGrid, getGridRange), L1476–1716 (light
 //   records, visitLight, updateLights), L1718–1784 (dispose);
-//   src/three-openvdb/frame/webgpu/frameShaderChunks.js L800–830 (setVolumeUniforms).
+//   src/three-openvdb/frame/webgpu/frameShaderChunks.js L800–830 (setVolumeUniforms);
+//   K3.4: FrameRenderer.js L232–242 (multipleScattering 'neural' default, octave settings), L291–296 and
+//   L642–699 (isNeural, the grid mip targets, renderGridMips), L1052–1056 and L1086–1098 (octaves,
+//   two-sided and neural uniforms of the inject and transmittance passes), L1132 and L1201 (octaves of the
+//   density and lighting passes), L506–518 and L559 (octaves in the environment grid signature and pass),
+//   L1213–1226 (the neural, two-sided and octave fields of the transmittance signature).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; one inject, density and shadow density material per volume source (the
-// source is compiled into each; DIVERGES V30); grey only (spectral is K3.5); the neural network,
-// 'two-sided' and octaves wait for K3.4 (they warn and run as true/false), mesh shadows and
+// source is compiled into each; DIVERGES V30); grey only (spectral is K3.5); mesh shadows and
 // emission lights for K3.6; 'volume' lighting does not read hemisphere, probe or environment
-// lights yet; per-pass timing hooks and a redraw-skip counter. Divergences: DIVERGES.md (K3.1 and
-// K3.3 rows), V23–V25, V30–V34.
+// lights yet; the neural network is a settable value (`neuralNetwork`; null: diffusion, with a
+// warning); per-pass timing hooks and a redraw-skip counter. Divergences: DIVERGES.md (K3.1, K3.3
+// and K3.4 rows), V23–V25, V30–V34.
 
 /**
  * The froxel renderer (K3.1 `'volume'` lighting, K3.3 `'frame'` lighting; R1 §2). Each
@@ -68,11 +73,14 @@ import { VDBFrameInjectMaterial } from "./inject-material.js";
 import { VDBFrameIntegrateMaterial } from "./integrate-material.js";
 import { getAtlasLayout, getFroxelSize } from "./layout.js";
 import { VDBFrameLightingMaterial } from "./lighting-material.js";
-import { getFramePhase, getFramePhaseSpectrum, getFrameMultipleScattering, isFrameDiffusion, type VDBFrameMultipleScattering, type VDBFramePhase } from "./phase.js";
+import { getFramePhase, getFramePhaseSpectrum, getFrameMultipleScattering, getFrameScatteringOctaves, getFrameTwoSidedDiffusion, isFrameDiffusion, type VDBFrameMultipleScattering, type VDBFramePhase } from "./phase.js";
+import { VDBFrameGridMipMaterial } from "./grid-mip-material.js";
+import { vdbFrameNeuralCheck, type VDBFrameNeuralNetwork } from "../../tools/frame/neural.js";
+import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
 import { getFrameExtinctionSpectrum } from "./spectrum.js";
 import { VDBFrameTemporalMaterial } from "./temporal-material.js";
-import { VDBFrameTransmittanceMaterial, frameShadowLightSlots } from "./transmittance-material.js";
+import { VDBFrameTransmittanceMaterial, frameNeuralMipLevels, frameShadowLightSlots } from "./transmittance-material.js";
 import { FrameVolumeCollector, getFrameFadeRadius, getFroxelArea, getFroxelRect, getFroxelSliceRange, type FrameVolumeEntry, type FrameVolumeRecord } from "./view.js";
 import type { VDBFrameVolume } from "./volume.js";
 import type { VDBVolumeUniforms } from "../volume-source.js";
@@ -97,11 +105,11 @@ export interface VDBFrameRendererSettings {
   fadeRadius: number;
   /** Golden-ratio jitter of the sub-steps, shadow start and grid marches (default false). */
   jitter: boolean;
-  /** His froxel reprojection with a neighbourhood clamp (his default true; ours false until K3.4, DIVERGES V33). */
+  /** His froxel reprojection with a neighbourhood clamp (default true, his; K3.4 flipped it with `lighting` and `multipleScattering`, V33). */
   temporal: boolean;
   /** History weight of the temporal pass (0.01–1; his default 0.2). */
   temporalBlend: number;
-  /** `'volume'`: each volume lights itself with its own shadow march. `'frame'`: the world shadow grid (his default; ours `'volume'` until K3.4, V33). */
+  /** `'volume'`: each volume lights itself with its own shadow march. `'frame'`: the world shadow grid (default, his; since K3.4, V33). */
   lighting: "volume" | "frame";
   /** `'frame'` lighting: voxels on each side of each shadow grid cascade (default 64). */
   shadowResolution: number;
@@ -128,18 +136,26 @@ export interface VDBFrameRendererSettings {
   /** SH order of `'spherical-harmonics'` (1 or 2, default 1). */
   environmentShOrder: number;
   /**
-   * Multiple scattering in the shadow marches: false (single scattering) or true (1D diffusion).
-   * `'neural'` (his default) runs as true until K3.4 ports the network (it is the same as true with
-   * `'volume'` lighting, and for environment-only `'frame'` scenes); `'two-sided'` and `'octaves'`
-   * are K3.4: they warn and run as true and false.
+   * Multiple scattering in the shadow marches: false (single scattering), true (1D diffusion toward the
+   * light), `'two-sided'` (2D slab diffusion toward and away from the light), `'octaves'` (indirect light
+   * octaves, `scatteringOctave*`) or `'neural'` (default, his: the scattered light of the scene light
+   * slots from a small network in `'frame'` lighting, diffusion elsewhere; `neuralNetwork`).
    */
   multipleScattering: VDBFrameMultipleScattering;
+  /** `'octaves'`: octaves N (1–8, default 4). Octave n has extinction × aⁿ, light × bⁿ, phase g × cⁿ. */
+  scatteringOctaves: number;
+  /** `'octaves'`: a (0–1, default 0.5). */
+  scatteringOctaveExtinction: number;
+  /** `'octaves'`: b (0–1, default 0.5). */
+  scatteringOctaveContribution: number;
+  /** `'octaves'`: c (0–1, default 0.5). */
+  scatteringOctavePhase: number;
   /** Grey only (K3.5). */
   spectral: boolean;
 }
 
 /** Per-pass hook (D25: timings are provisional). */
-export type VDBFramePass = "froxels" | "inject" | "shadowDensity" | "transmittance" | "environmentGrid" | "density" | "lighting" | "temporal";
+export type VDBFramePass = "froxels" | "inject" | "shadowDensity" | "gridMips" | "transmittance" | "environmentGrid" | "density" | "lighting" | "temporal";
 
 export interface VDBFramePassHook {
   begin?(pass: VDBFramePass, detail?: { volume: VDBFrameVolume }): void;
@@ -249,6 +265,21 @@ const pushCasterSource = (values: number[], frameVolume: VDBFrameVolume) => {
   }
 };
 
+// NOTE An id for each network object (the transmittance signature: a swapped network draws again)
+const networkIds = new WeakMap<object, number>();
+let nextNetworkId = 1;
+
+const networkId = (network: VDBFrameNeuralNetwork): number => {
+  let id = networkIds.get(network);
+
+  if (id === undefined) {
+    id = nextNetworkId++;
+    networkIds.set(network, id);
+  }
+
+  return id;
+};
+
 interface LightRecord {
   position: THREE.Vector4;
   color: THREE.Vector4;
@@ -299,9 +330,9 @@ export class VDBFrameRenderer {
     far: Infinity,
     fadeRadius: Infinity,
     jitter: false,
-    temporal: false,
+    temporal: true,
     temporalBlend: 0.2,
-    lighting: "volume",
+    lighting: "frame",
     shadowResolution: 64,
     shadowCascades: 1,
     shadowDistance: 512,
@@ -314,9 +345,20 @@ export class VDBFrameRenderer {
     environmentLighting: "directional",
     environmentSamples: 8,
     environmentShOrder: 1,
-    multipleScattering: true,
+    multipleScattering: "neural",
+    scatteringOctaves: 4,
+    scatteringOctaveExtinction: 0.5,
+    scatteringOctaveContribution: 0.5,
+    scatteringOctavePhase: 0.5,
     spectral: false,
   };
+
+  /**
+   * The network of multipleScattering `'neural'` (default: his trained weights, `@pmndrs/vdb/tools`
+   * `vdbFrameNeuralWeights`; see THIRD_PARTY.md for their provenance). Set another network of the same
+   * shape to swap it, or null to run `'neural'` as 1D diffusion (warns once). Not his (his is a module import).
+   */
+  neuralNetwork: VDBFrameNeuralNetwork | null = vdbFrameNeuralWeights;
 
   /** Per-pass hooks (timing, debugging). */
   passHook: VDBFramePassHook | null = null;
@@ -348,6 +390,8 @@ export class VDBFrameRenderer {
   readonly densityShadowUniforms = createDensityShadowUniforms();
   readonly lightUniforms = createLightUniforms();
   readonly environmentGridUniforms = createEnvironmentGridUniforms();
+  // NOTE Octaves of the settings (getFrameScatteringOctaves), for the signatures
+  readonly scatteringOctaves = new THREE.Vector4();
 
   readonly integrateMaterial: VDBFrameIntegrateMaterial;
   readonly lightingMaterial: VDBFrameLightingMaterial;
@@ -399,6 +443,13 @@ export class VDBFrameRenderer {
   environmentGridTarget: THREE.RenderTarget | null = null;
   environmentGridSignature: number[] = [];
   nextEnvironmentGridSignature: number[] = [];
+
+  // NOTE multipleScattering 'neural': mips of the last grid cascade, levels 1 and up (VDBFrameGridMipMaterial)
+  readonly gridMipMaterial = new VDBFrameGridMipMaterial();
+  readonly gridMipScene = createScene();
+  readonly gridMipMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
+  gridMipTargets: THREE.RenderTarget[] = [];
+  gridMipSignature: number[] = [];
 
   atlasTarget: THREE.RenderTarget | null = null;
   densityTarget: THREE.RenderTarget | null = null;
@@ -464,8 +515,9 @@ export class VDBFrameRenderer {
     this.temporalMesh = new THREE.Mesh(this.areaGeometry, this.temporalMaterial);
     this.environmentMapMesh = new THREE.Mesh(createFullscreenGeometry(), this.environmentMapMaterial);
     this.environmentGridMesh = new THREE.Mesh(createFullscreenGeometry(), this.environmentGridMaterial);
+    this.gridMipMesh = new THREE.Mesh(createFullscreenGeometry(), this.gridMipMaterial);
 
-    for (const mesh of [this.injectMesh, this.lightingMesh, this.transmittanceMesh, this.temporalMesh, this.densityClearMesh, this.environmentMapMesh, this.environmentGridMesh]) {
+    for (const mesh of [this.injectMesh, this.lightingMesh, this.transmittanceMesh, this.temporalMesh, this.densityClearMesh, this.environmentMapMesh, this.environmentGridMesh, this.gridMipMesh]) {
       mesh.frustumCulled = false;
     }
 
@@ -482,6 +534,7 @@ export class VDBFrameRenderer {
     this.transmittanceScene.add(this.transmittanceMesh);
     this.environmentMapScene.add(this.environmentMapMesh);
     this.environmentGridScene.add(this.environmentGridMesh);
+    this.gridMipScene.add(this.gridMipMesh);
   }
 
   private warnOnce(key: string, message: string): void {
@@ -601,22 +654,82 @@ export class VDBFrameRenderer {
 
   private checkSettings(): void {
     const s = this.settings;
-    const frame = this.isFrameLighting();
     if (s.spectral) this.warnOnce("spectral", "spectral is not ported yet (K3.5); rendering grey.");
-    if (s.multipleScattering === "two-sided" || s.multipleScattering === "octaves") {
-      this.warnOnce("ms", `multipleScattering '${s.multipleScattering}' is not ported yet (K3.4); running it as ${s.multipleScattering === "two-sided" ? "true" : "false"}.`);
-    }
-    if (frame && s.multipleScattering === "neural") {
-      this.warnOnce("neural", "multipleScattering 'neural' is not ported yet (K3.4); the scene light slots use 1D diffusion (true). Environment-only scenes are the same.");
+    if (this.isFrameLighting() && s.multipleScattering === "neural" && !this.neuralNetwork) {
+      this.warnOnce("neural", "multipleScattering 'neural' has no network (neuralNetwork is null); the scene light slots use 1D diffusion (true).");
     }
   }
 
-  /** The multiple scattering mode actually run (see settings.multipleScattering). */
+  /** The multiple scattering mode (settings.multipleScattering; 'neural' is diffusion outside the network). */
   private multipleScatteringMode(): VDBFrameMultipleScattering {
-    const ms = this.settings.multipleScattering;
-    if (ms === "two-sided" || ms === "neural") return true;
-    if (ms === "octaves") return false;
-    return ms;
+    return this.settings.multipleScattering;
+  }
+
+  // NOTE multipleScattering 'neural' uses the network only with grey 'frame' lighting. Other cases use diffusion.
+  isNeural(): boolean {
+    if (this.settings.multipleScattering !== "neural" || this.settings.spectral || !this.neuralNetwork) return false;
+    const problem = vdbFrameNeuralCheck(this.neuralNetwork);
+    if (problem) {
+      this.warnOnce("neural-shape", `neuralNetwork ${this.neuralNetwork.name ?? ""} does not fit the shader (${problem}); using 1D diffusion.`);
+      return false;
+    }
+    return true;
+  }
+
+  // NOTE Mips of the last grid cascade for the network. Drawn again only when the grid changes.
+  renderGridMips(renderer: RendererLike, camera: THREE.Camera): void {
+    const { frameGridResolution, frameGridColumns, frameGridCount } = this.gridUniforms;
+    const resolution = frameGridResolution.value as number;
+    const source = this.shadowDensityTarget!;
+    const signature = [this.gridState.gridVersion, source.texture.id, resolution, frameGridCount.value as number, frameGridColumns.value as number];
+
+    if (vdbSameValues(signature, this.gridMipSignature)) {
+      return;
+    }
+
+    this.gridMipSignature = signature;
+    this.gridMipMesh.layers.mask = camera.layers.mask;
+
+    const material = this.gridMipMaterial;
+    const { frameNeuralMipMaps, frameNeuralMipLayouts } = this.transmittanceMaterial;
+    // NOTE Source of the next level: the grid atlas first, then the level before
+    let previous: { target: THREE.RenderTarget; side: number; layout: { columns: number; width: number; height: number } } | null = null;
+
+    for (let level = 1; level <= frameNeuralMipLevels; level++) {
+      const side = Math.max(1, resolution >> level);
+      const layout = getAtlasLayout(side, side, side);
+      let target = this.gridMipTargets[level - 1];
+
+      if (!target || target.width !== layout.width || target.height !== layout.height) {
+        target?.dispose();
+        target = createRenderTarget(layout.width, layout.height, { format: THREE.RGFormat });
+        this.gridMipTargets[level - 1] = target;
+      }
+
+      if (previous) {
+        material.frameMipSource.value = previous.target.texture;
+        material.frameMipSourceResolution.value = previous.side;
+        material.frameMipSourceColumns.value = previous.layout.columns;
+        material.frameMipSourceTile.value = 0;
+        material.frameMipSourceSize.value.set(previous.layout.width, previous.layout.height);
+      } else {
+        material.frameMipSource.value = source.texture;
+        material.frameMipSourceResolution.value = resolution;
+        material.frameMipSourceColumns.value = frameGridColumns.value as number;
+        material.frameMipSourceTile.value = ((frameGridCount.value as number) - 1) * resolution;
+        material.frameMipSourceSize.value.set(source.width, source.height);
+      }
+
+      material.frameMipResolution.value = side;
+      material.frameMipColumns.value = layout.columns;
+      material.frameMipSize.value.set(layout.width, layout.height);
+      renderer.setRenderTarget(target);
+      renderer.render(this.gridMipScene, camera);
+
+      frameNeuralMipMaps[level - 1]!.value = target.texture;
+      frameNeuralMipLayouts[level - 1]!.value.set(layout.columns, layout.width, layout.height);
+      previous = { target, side, layout };
+    }
   }
 
   updateTargets(renderer: RendererLike): void {
@@ -854,10 +967,6 @@ export class VDBFrameRenderer {
       const { frameVolume, volume } = volumes[i]!;
       const injectMaterial = this.getInjectMaterial(frameVolume);
 
-      if (frameVolume.phase === "lorenz-mie" || frameVolume.phase === "lorenz-mie-rgb") {
-        this.warnOnce("mie", "Lorenz-Mie phases are not ported yet (K3.4); they render as isotropic.");
-      }
-
       // NOTE Draw only the froxel rectangle and the slices of this volume. One instance for each slice.
       if (!this.getFroxelRect(volume, camera, injectMaterial.frameRect.value)) {
         continue;
@@ -874,6 +983,8 @@ export class VDBFrameRenderer {
       injectMaterial.frameLights.value = frameVolume.lights;
       injectMaterial.frameShadowSteps.value = frameVolume.shadowSteps;
       injectMaterial.frameMultipleScattering.value = getFrameMultipleScattering(this.multipleScatteringMode(), frameVolume);
+      getFrameScatteringOctaves(this.settings, injectMaterial.frameScatteringOctaves.value);
+      injectMaterial.frameTwoSided.value = getFrameTwoSidedDiffusion(this.settings.multipleScattering);
 
       this.passHook?.begin?.("inject", { volume: frameVolume });
       renderer.setRenderTarget(atlasTarget);
@@ -966,6 +1077,7 @@ export class VDBFrameRenderer {
   renderFrameLighting(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, volumes: FrameVolumeCollector<VDBFrameVolume>["volumes"], casters: FrameVolumeCollector<VDBFrameVolume>["casters"]): void {
     const lights = this.prepareLightScene(scene, camera, this.lightingMesh);
     const ms = getFrameMultipleScattering(this.multipleScatteringMode(), this.settings);
+    const octaves = getFrameScatteringOctaves(this.settings, this.scatteringOctaves);
 
     // NOTE Shadow pass. Extinction of all casters in one world grid, then transmittance to each light.
     // It is before the density pass. Then the density pass can sample the shadows of each volume.
@@ -982,7 +1094,16 @@ export class VDBFrameRenderer {
       material.frameShadowDensityMap.value = this.shadowDensityTarget!.texture;
       material.frameShadowLightCount.value = lights.shadowLightCount;
       material.frameMultipleScattering.value = ms;
+      material.frameScatteringOctaves.value.copy(octaves);
+      material.frameTwoSided.value = getFrameTwoSidedDiffusion(this.settings.multipleScattering);
       this.transmittanceMesh.layers.mask = camera.layers.mask;
+      material.setNeural(this.isNeural() ? this.neuralNetwork : null);
+
+      if (material.neural) {
+        this.passHook?.begin?.("gridMips");
+        this.renderGridMips(renderer, camera);
+        this.passHook?.end?.("gridMips");
+      }
 
       if (this.transmittanceUnchanged(lights.shadowLightCount)) {
         this.redrawStats.transmittance.skipped++;
@@ -997,7 +1118,7 @@ export class VDBFrameRenderer {
 
     if (useEnvironmentGrid) {
       this.passHook?.begin?.("environmentGrid");
-      this.renderEnvironmentGrid(renderer, camera, casters, lights.environmentGridLights, ms);
+      this.renderEnvironmentGrid(renderer, camera, casters, lights.environmentGridLights, ms, octaves);
       this.passHook?.end?.("environmentGrid");
     }
 
@@ -1012,6 +1133,7 @@ export class VDBFrameRenderer {
     densityShadowUniforms.frameShadowSceneLightCount.value = lights.environmentShadowSlot;
     getFramePhase(this.settings, densityShadowUniforms.framePhase.value);
     getFramePhaseSpectrum(this.settings, densityShadowUniforms.framePhaseSpectrum.value);
+    densityShadowUniforms.frameScatteringOctaves.value.copy(octaves);
     densityShadowUniforms.frameDiffusion.value = isFrameDiffusion(this.multipleScatteringMode()) ? 1 : 0;
     densityShadowUniforms.frameEnvironmentGridMap.value = this.environmentGridTarget!.texture;
     densityShadowUniforms.frameEnvironmentMode.value = useEnvironmentGrid
@@ -1020,10 +1142,6 @@ export class VDBFrameRenderer {
         ? frameDensityEnvironment.none
         : frameDensityEnvironment.outward;
     densityShadowUniforms.frameCameraMatrixWorld.value.copy(camera.matrixWorld);
-
-    if (this.settings.phase === "lorenz-mie" || this.settings.phase === "lorenz-mie-rgb") {
-      this.warnOnce("mie", "Lorenz-Mie phases are not ported yet (K3.4); they render as isotropic.");
-    }
 
     this.copyEnvironment(this.densityScene, scene);
 
@@ -1052,6 +1170,7 @@ export class VDBFrameRenderer {
     lightingMaterial.frameCameraMatrixWorld.value.copy(camera.matrixWorld);
     getFramePhase(this.settings, lightingMaterial.framePhase.value);
     getFramePhaseSpectrum(this.settings, lightingMaterial.framePhaseSpectrum.value);
+    lightingMaterial.frameScatteringOctaves.value.copy(octaves);
 
     this.passHook?.begin?.("lighting");
     renderer.setRenderTarget(this.atlasTarget);
@@ -1068,6 +1187,9 @@ export class VDBFrameRenderer {
 
     values.length = 0;
     values.push(this.gridState.gridVersion, this.shadowDensityTarget!.texture.id, this.transmittanceTarget!.texture.id, shadowLightCount, material.frameMultipleScattering.value as number);
+    // NOTE The network: on/off and which weights (a swapped network draws again)
+    values.push(material.neural ? networkId(material.neural) : 0, material.frameTwoSided.value as number);
+    vdbSignaturePushVector(values, material.frameScatteringOctaves.value);
     vdbSignaturePushVector(values, this.lightUniforms.frameSkyDirection.value);
 
     const shadowLights = material.frameShadowLights.array as THREE.Vector4[];
@@ -1148,7 +1270,7 @@ export class VDBFrameRenderer {
 
   // NOTE Environment grid of the last cascade. It is drawn again only when its signature changes.
   // NOTE Signature: the grid lights, the last cascade, and the caster data that the shadow density pass reads.
-  renderEnvironmentGrid(renderer: RendererLike, camera: THREE.Camera, casters: FrameVolumeCollector<VDBFrameVolume>["casters"], gridLights: LightResult["environmentGridLights"], ms: number): void {
+  renderEnvironmentGrid(renderer: RendererLike, camera: THREE.Camera, casters: FrameVolumeCollector<VDBFrameVolume>["casters"], gridLights: LightResult["environmentGridLights"], ms: number, octaves: THREE.Vector4): void {
     const { frameGridMin, frameGridSize, frameGridCount, frameGridResolution } = this.gridUniforms;
     const cascade = (frameGridCount.value as number) - 1;
     const previous = this.environmentGridSignature;
@@ -1158,6 +1280,7 @@ export class VDBFrameRenderer {
 
     signature.length = 0;
     signature.push(frameGridResolution.value as number, cascade, 0, ms);
+    vdbSignaturePushVector(signature, octaves);
     vdbSignaturePushVector(signature, (frameGridMin.array as THREE.Vector3[])[cascade]!);
     vdbSignaturePushVector(signature, (frameGridSize.array as THREE.Vector3[])[cascade]!);
 
@@ -1184,6 +1307,7 @@ export class VDBFrameRenderer {
     material.frameShadowDensityMap.value = this.shadowDensityTarget!.texture;
     material.frameLightCount.value = gridLights.length;
     material.frameMultipleScattering.value = ms;
+    material.frameScatteringOctaves.value.copy(octaves);
 
     const directions = material.frameLightDirections.array as THREE.Vector3[];
     const colors = material.frameLightColors.array as THREE.Vector3[];
@@ -1601,6 +1725,9 @@ export class VDBFrameRenderer {
     this.environmentLights = new VDBFrameEnvironmentLights((renderer, scene) => this.renderEnvironmentMap(renderer, scene));
     this.environment = null;
     this.environmentGridSignature = [];
+    this.gridMipTargets.forEach((target) => target.dispose());
+    this.gridMipTargets = [];
+    this.gridMipSignature = [];
 
     for (const { mesh, geometry } of [...this.densityPool, ...this.shadowPool]) {
       mesh.parent?.remove(mesh);
@@ -1612,14 +1739,14 @@ export class VDBFrameRenderer {
     this.shadowDrawnVersion = -1;
     this.shadowDrawnTarget = null;
 
-    for (const material of [this.integrateMaterial, this.lightingMaterial, this.transmittanceMaterial, this.temporalMaterial, this.densityClearMaterial, this.environmentMapMaterial, this.environmentGridMaterial]) {
+    for (const material of [this.integrateMaterial, this.lightingMaterial, this.transmittanceMaterial, this.temporalMaterial, this.densityClearMaterial, this.environmentMapMaterial, this.environmentGridMaterial, this.gridMipMaterial]) {
       material.dispose();
     }
 
     this.injectMesh.geometry.dispose();
     (this.injectMesh.material as THREE.Material).dispose();
 
-    for (const mesh of [this.transmittanceMesh, this.environmentMapMesh, this.environmentGridMesh]) {
+    for (const mesh of [this.transmittanceMesh, this.environmentMapMesh, this.environmentGridMesh, this.gridMipMesh]) {
       mesh.geometry.dispose();
     }
 

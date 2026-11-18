@@ -35,15 +35,24 @@
  * environment grid, density and lighting passes vs their CPU twins from read-back targets; the grid
  * chunk probe always runs), `?redraw=N` (N more frames, then the redraw-skip counters),
  * `?temporalCheck=N` (N jittered frames without and with temporal reprojection: convergence).
+ *
+ * K3.4 (phase functions + multiple scattering, R1 §6 Step 4): `?ms=0|1|two-sided|octaves|neural` (default: the
+ * scene's; his default 'neural' for the Step 4 scenes), `?octaves=N&octaveExtinction=&octaveContribution=&octavePhase=`,
+ * `?phase=isotropic|henyey-greenstein|dual-lobe|lorenz-mie|lorenz-mie-rgb&phaseG=&phaseBackG=&phaseBackWeight=&phaseGExponent=`
+ * (the renderer's 'frame' phase and the volume's 'volume' phase), `?extinction=`; his Step 4 scenes (`step4-*`, as
+ * is and `*-dir-isolated`); `?furnace=1`: his white furnace (utils/furnace.js): a uniform environment of radiance
+ * L = 0.5 as background and lighting, a white (non-absorbing) volume, no scene light; the result's `furnace` has the
+ * 9 × 9 centre mean / L (his readout) and volume-pixel statistics of radiance / L. With `?twins=1` also the K3.4
+ * chunk probe (`scatterProbe`) and, with 'neural', the grid mip twin.
  * Results: `window.__VDB_K3_FRAME__` (e2e/k3-frame.spec.ts writes PNGs to artifacts/k3/ours/).
  */
 import * as THREE from "three";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameChunks, vdbSparseSource, type VDBFrameRedrawStats, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { densityTwin, environmentGridTwin, lightingTwin, probeGrid, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
+import { densityTwin, environmentGridTwin, furnaceEnvironment, gridMipTwin, lightingTwin, probeGrid, probeScattering, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
 import {
   wvdbDenseToNanoVdb,
   readWvdb,
@@ -60,6 +69,7 @@ import {
   vdbFrameSliceDepth,
   vdbFrameSrgbBlend,
   vdbSrgbOetf,
+  vdbSrgbEotf as vdbSrgbEotfLocal,
   wvdbDenseVolume,
   type VDBFrameFroxelSample,
 } from "@pmndrs/vdb/tools";
@@ -75,7 +85,7 @@ interface SceneDef {
   /** Lights of his `lightSetup` we can render ('dir': his sun; 'none': no scene light). */
   lightSetup: "dir" | "environment" | "none";
   lighting: "volume" | "frame";
-  multipleScattering: boolean;
+  multipleScattering: VDBFrameMultipleScattering;
   /** True when the port can match his capture of this scene. */
   parityExpected: boolean;
   why?: string;
@@ -87,6 +97,10 @@ interface SceneDef {
   twoBunnies?: boolean;
   /** His `environment` field: the UltraHDR map `/fixtures/k3/<name>-HDR.jpg` as scene.environment (intensity 0.4). */
   environment?: string;
+  /** K3.4: renderer settings of the scene (his `frame-phase*` and `scatteringOctave*` GUI fields). */
+  settings?: Partial<VDBFrameRendererSettings>;
+  /** K3.4: his volume phase fields (`phaseG`, ...: 'volume' lighting). */
+  volumePhase?: { phaseG?: number; phaseBackG?: number; phaseBackWeight?: number; phaseGExponent?: number };
 }
 
 // K3.3 (R1 §6 Step 3): his 'frame' lighting scenes. The as-is captures use his 'environment' light setup:
@@ -117,6 +131,39 @@ const STEP3_SCENES: Record<string, SceneDef> = Object.fromEntries(
     step3("step3-two-bunnies-dir-isolated", { twoBunnies: true }, true),
     step3("step3-environment-sky-midday-env-isolated", { lightSetup: "none", environment: "sky-midday" }, true),
   ].map((d) => [d.name, d]),
+);
+
+// K3.4 (R1 §6 Step 4): his frame-phase-*, multiple-scattering-* and octave* validation scenes (tests/validation-set/
+// demo-1-*.json). The as-is ones use his 'environment' light setup (INFO, as Step 3); the `*-dir-isolated` variants
+// (capture-reference.mjs `isolate: 'frame'`, his sun only) gate. His default multipleScattering is 'neural'.
+const STEP4_WHY_ENV = STEP3_WHY_ENV;
+const step4 = (name: string, settings: Partial<VDBFrameRendererSettings>, extra: Partial<SceneDef> = {}): SceneDef[] => [
+  step3(`${name}-asis`, { lightSetup: "environment", multipleScattering: "neural", settings, ...extra }, false, STEP4_WHY_ENV),
+  step3(`${name}-dir-isolated`, { multipleScattering: "neural", settings, ...extra }, true),
+];
+const STEP4_SCENES: Record<string, SceneDef> = Object.fromEntries(
+  [
+    ...step4("step4-default-neural", {}),
+    ...step4("step4-multiple-scattering-two-sided", { multipleScattering: "two-sided" }),
+    ...step4("step4-multiple-scattering-octaves", { multipleScattering: "octaves" }),
+    ...step4("step4-octaves-1", { multipleScattering: "octaves", scatteringOctaves: 1 }),
+    ...step4("step4-octaves-8", { multipleScattering: "octaves", scatteringOctaves: 8 }),
+    ...step4("step4-octave-extinction-high", { multipleScattering: "octaves", scatteringOctaveExtinction: 1 }),
+    ...step4("step4-octave-contribution-high", { multipleScattering: "octaves", scatteringOctaveContribution: 1 }),
+    ...step4("step4-octave-phase-low", { multipleScattering: "octaves", scatteringOctavePhase: 0 }),
+    ...step4("step4-frame-phase-isotropic", { phase: "isotropic" }),
+    ...step4("step4-frame-phase-g-low", { phaseG: -0.5 }),
+    ...step4("step4-frame-phase-dual-lobe", { phase: "dual-lobe" }),
+    ...step4("step4-frame-phase-dual-lobe-back-g-high", { phase: "dual-lobe", phaseBackG: 0.5 }),
+    ...step4("step4-frame-phase-dual-lobe-back-weight-high", { phase: "dual-lobe", phaseBackWeight: 1 }),
+    ...step4("step4-frame-phase-lorenz-mie", { phase: "lorenz-mie" }),
+    ...step4("step4-frame-phase-lorenz-mie-rgb", { phase: "lorenz-mie-rgb" }),
+    ...step4("step4-frame-phase-g-exponent", { phaseGExponent: 1 }),
+    // 'volume' lighting with his volume phase field (demo-1-lighting-volume-phase-g-low): `isolate: true`
+    ...step4("step4-lighting-volume-phase-g-low", {}, { lighting: "volume", volumePhase: { phaseG: -0.5 } }),
+  ]
+    .flat()
+    .map((d) => [d.name, d]),
 );
 
 // His frame.js scene list (capture-reference.mjs SCENARIOS). `multipleScattering` 'neural' (his default) is the
@@ -158,6 +205,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
   "step0-bunny": { name: "step0-bunny", file: "/fixtures/k3/bunny_cloud.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: true, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
   "step0-smoke": { name: "step0-smoke", file: "/fixtures/k3/smoke.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: true, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
   ...STEP3_SCENES,
+  ...STEP4_SCENES,
 };
 
 interface ChunkProbe {
@@ -211,6 +259,11 @@ interface Result {
   densityTwin?: TwinStats & { covered: number };
   environment?: { mode: string; count: number; directions: number[][]; colors: number[][]; frames: number } | null;
   redraw?: VDBFrameRedrawStats;
+  // K3.4
+  firstFrameMs?: number;
+  scatterProbe?: TwinStats;
+  gridMipTwin?: TwinStats & { levels: number };
+  furnace?: { radiance: number; centerRatio: number[]; corner: number[]; volumePixels: number; meanRatio: number; minRatio: number; maxRatio: number; meanAbsDeviation: number; p05: number; p95: number; environment: { mode: string; count: number } | null };
   temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
 }
 
@@ -244,13 +297,35 @@ const CASCADES = Number(params.get("cascades") ?? def?.shadowCascades ?? 1);
 const SHADOW_RES = Number(params.get("shadowRes") ?? def?.shadowResolution ?? 64);
 const SHADOW_DISTANCE = Number(params.get("shadowDistance") ?? 512);
 const TWO = params.has("second") ? params.get("second") === "1" : !!def?.twoBunnies;
-const ENV = params.get("env") ?? (def?.environment ? `/fixtures/k3/${def.environment}-HDR.jpg` : null);
-const ENV_INTENSITY = Number(params.get("envIntensity") ?? (ENV === "synthetic" ? 1.0 : 0.4));
+const FURNACE = params.get("furnace") === "1";
+const DEFAULTS = params.get("defaults") === "1";
+const FURNACE_RADIANCE = 0.5;
+const ENV =params.get("env") ?? (FURNACE ? "furnace" : def?.environment ? `/fixtures/k3/${def.environment}-HDR.jpg` : null);
+const ENV_INTENSITY = Number(params.get("envIntensity") ?? (ENV === "synthetic" || ENV === "furnace" ? 1.0 : 0.4));
 const ENV_MODE = (params.get("envMode") ?? "directional") as "outward" | "directional" | "spherical-harmonics";
 const TWINS = params.get("twins") === "1";
 const TEMPORAL_CHECK = Number(params.get("temporalCheck") ?? 0);
 const REDRAW_FRAMES = Number(params.get("redraw") ?? 0);
-const LIGHT_SETUP = (params.get("lights") ?? def?.lightSetup ?? "dir") as SceneDef["lightSetup"] | "dir-hemi";
+const LIGHT_SETUP = (params.get("lights") ?? (FURNACE ? "none" : def?.lightSetup) ?? "dir") as SceneDef["lightSetup"] | "dir-hemi";
+// K3.4: ?ms=0|1|two-sided|octaves|neural
+const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
+const MS: VDBFrameMultipleScattering = params.has("ms") ? parseMs(params.get("ms")!) : (def?.multipleScattering ?? true);
+const num = (k: string): number | undefined => (params.has(k) ? Number(params.get(k)) : undefined);
+const PHASE_OVERRIDES: Partial<VDBFrameRendererSettings> = Object.fromEntries(
+  (
+    [
+      ["phase", params.get("phase") as VDBFramePhase | null],
+      ["phaseG", num("phaseG")],
+      ["phaseBackG", num("phaseBackG")],
+      ["phaseBackWeight", num("phaseBackWeight")],
+      ["phaseGExponent", num("phaseGExponent")],
+      ["scatteringOctaves", num("octaves")],
+      ["scatteringOctaveExtinction", num("octaveExtinction")],
+      ["scatteringOctaveContribution", num("octaveContribution")],
+      ["scatteringOctavePhase", num("octavePhase")],
+    ] as [string, unknown][]
+  ).filter(([, v]) => v !== null && v !== undefined),
+);
 // His examples page: scene.background 0x598eff until the environment loads (main.jsx L41).
 const BACKGROUND = new THREE.Color(0x598eff);
 
@@ -378,7 +453,7 @@ async function main(): Promise<void> {
     jitter: params.get("jitter") === "1",
     temporal: params.get("temporal") === "1",
     lighting: LIGHTING,
-    multipleScattering: params.has("ms") ? params.get("ms") === "1" : def.multipleScattering,
+    multipleScattering: MS,
     // K3.3: his 'frame' settings for the scene; his demos set the renderer phase to 2HG (utils/phase.js).
     shadowCascades: CASCADES,
     shadowResolution: SHADOW_RES,
@@ -387,8 +462,20 @@ async function main(): Promise<void> {
     phaseG: 0.8,
     phaseBackG: -0.3,
     phaseBackWeight: 0.2,
+    phaseGExponent: 0.0,
     environmentLighting: ENV_MODE,
+    // K3.4: the scene's GUI fields, then the query
+    ...(def.settings ?? {}),
+    ...PHASE_OVERRIDES,
   });
+  if (params.has("ms")) frameRenderer.settings.multipleScattering = MS;
+  // K3.4 `?defaults=1`: the renderer's own lighting / temporal / multipleScattering defaults (his set since K3.4)
+  if (DEFAULTS) {
+    const fresh = new VDBFrameRenderer().settings;
+    frameRenderer.settings.lighting = fresh.lighting;
+    frameRenderer.settings.temporal = fresh.temporal;
+    frameRenderer.settings.multipleScattering = fresh.multipleScattering;
+  }
   result.froxels = [...FROXELS];
   result.lighting = LIGHTING;
   result.sourceKind = SOURCE_KIND;
@@ -419,6 +506,9 @@ async function main(): Promise<void> {
   const center = bbox.getCenter(new THREE.Vector3());
 
   // His frame.js demo params (L93–116, utils/phase.js phaseParams): dual-lobe 0.8 / -0.3 / 0.2, extinction 100.
+  // K3.4: his volume phase fields (`def.volumePhase`), and `?phase*` for 'volume' lighting.
+  const volumePhase = { phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0, ...(def.volumePhase ?? {}) };
+  for (const k of ["phaseG", "phaseBackG", "phaseBackWeight", "phaseGExponent"] as const) if (PHASE_OVERRIDES[k] !== undefined) volumePhase[k] = PHASE_OVERRIDES[k];
   const volume = new VDBFrameVolume(source, {
     frameRenderer,
     bbox,
@@ -427,11 +517,9 @@ async function main(): Promise<void> {
     densityScale: 1.0,
     normalizeDensity: true,
     opacity: 1.0,
-    extinction: def.smoke ? 40 : 100,
-    phase: "dual-lobe",
-    phaseG: 0.8,
-    phaseBackG: -0.3,
-    phaseBackWeight: 0.2,
+    extinction: num("extinction") ?? (def.smoke ? 40 : 100),
+    phase: (PHASE_OVERRIDES.phase as VDBFramePhase | undefined) ?? "dual-lobe",
+    ...volumePhase,
     shadowSteps: SHADOW_STEPS,
     mipmaps: MIPS,
   });
@@ -524,11 +612,15 @@ async function main(): Promise<void> {
     const envTexture: THREE.Texture =
       ENV === "synthetic"
         ? syntheticEnvironment()
-        : await new Promise<THREE.Texture>((resolve, reject) => {
+        : ENV === "furnace"
+          ? furnaceEnvironment(FURNACE_RADIANCE)
+          : await new Promise<THREE.Texture>((resolve, reject) => {
             new UltraHDRLoader().load(ENV, (t) => resolve(t), undefined, (e) => reject(new Error(`UltraHDR ${ENV}: ${String(e)} (his maps are not committed: copy ${ENV.split("/").pop()} from his clone into fixtures/k3/)`)));
           });
     envTexture.mapping = THREE.EquirectangularReflectionMapping;
     scene.environment = envTexture;
+    // His furnace: the uniform environment is the background too (the volume must vanish against it).
+    if (FURNACE) scene.background = new THREE.Color().setRGB(FURNACE_RADIANCE, FURNACE_RADIANCE, FURNACE_RADIANCE, THREE.LinearSRGBColorSpace);
     const captured = manifest?.metadata?.environment;
     scene.environmentIntensity = params.has("envIntensity") || !captured ? ENV_INTENSITY : captured.intensity;
     if (captured?.rotation) scene.environmentRotation.set(captured.rotation[0], captured.rotation[1], captured.rotation[2], captured.rotation[3] as THREE.EulerOrder);
@@ -574,14 +666,20 @@ async function main(): Promise<void> {
 
   const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
 
+  let frames = 0;
   async function frame(): Promise<Float32Array> {
+    const t0 = performance.now();
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
-    return readHalf(renderer, rt, W, H);
+    const out = await readHalf(renderer, rt, W, H);
+    // K3.4: the first frame's wall time includes the WGSL / pipeline compile (D25: provisional, SwiftShader)
+    if (frames++ === 0) result.firstFrameMs = performance.now() - t0;
+    return out;
   }
 
   if (ENV && LIGHTING === "frame" && ENV_MODE !== "outward") {
+    // K3.4 furnace / any environment: wait for the 'directional' lights (async readback).
     let tries = 0;
     while (!frameRenderer.environment && tries++ < 60) {
       await frame();
@@ -631,6 +729,51 @@ async function main(): Promise<void> {
     log(`integrate twin: ${result.twin.pixels} pixels (${result.twin.covered} with volume), max |GPU - CPU| ${result.twin.maxAbs.toExponential(2)}, ${result.twin.over} over`, result.twin.over === 0 ? "ok" : "fail");
   }
 
+  // --- K3.4: the white furnace (his utils/furnace.js) ------------------------------------------------
+  if (FURNACE) {
+    // The furnace frame (background L) and the same frame over black: per pixel (sRGB blending, the integrate
+    // pass's default) OETF(r_L) = OETF(L)(1 − α) + α OETF(v) and OETF(r_0) = α OETF(v), so α and the volume's
+    // own radiance v follow; v / L = 1 is a passed furnace. Pixels with α > 0.5 only (the volume, not its edge).
+    const L = FURNACE_RADIANCE;
+    scene.background = new THREE.Color(0, 0, 0);
+    const black = await frame();
+    scene.background = new THREE.Color().setRGB(L, L, L, THREE.LinearSRGBColorSpace);
+    const oetf = (x: number) => Math.min(1, Math.max(0, vdbSrgbOetf(Math.max(0, x))));
+    const eL = oetf(L);
+    const ratios: number[] = [];
+    for (let i = 0; i < firstLinear.length; i += 4) {
+      const r1 = oetf(firstLinear[i + 1]!);
+      const r0 = oetf(black[i + 1]!);
+      const alpha = (eL + r0 - r1) / eL;
+      if (!(alpha > 0.5)) continue;
+      const v = vdbSrgbEotfLocal(r0 / alpha);
+      ratios.push(v / L);
+    }
+    ratios.sort((a, b) => a - b);
+    const meanOf = (x: number, y: number, n: number) => {
+      const m = [0, 0, 0];
+      for (let dy = 0; dy < n; dy++) for (let dx = 0; dx < n; dx++) for (let c = 0; c < 3; c++) m[c]! += firstLinear[((y + dy) * W + x + dx) * 4 + c]! / (n * n);
+      return m;
+    };
+    const center = meanOf(Math.floor(W / 2 - 4.5), Math.floor(H / 2 - 4.5), 9);
+    const mean = ratios.reduce((a, b) => a + b, 0) / Math.max(1, ratios.length);
+    const env = frameRenderer.environment as { mode: string; count: number } | null;
+    result.furnace = {
+      radiance: L,
+      centerRatio: center.map((v) => v / L),
+      corner: meanOf(0, 0, 9),
+      volumePixels: ratios.length,
+      meanRatio: mean,
+      minRatio: ratios[0] ?? NaN,
+      maxRatio: ratios[ratios.length - 1] ?? NaN,
+      meanAbsDeviation: ratios.reduce((a, b) => a + Math.abs(b - 1), 0) / Math.max(1, ratios.length),
+      p05: ratios[Math.floor(ratios.length * 0.05)] ?? NaN,
+      p95: ratios[Math.floor(ratios.length * 0.95)] ?? NaN,
+      environment: env ? { mode: env.mode, count: env.count } : null,
+    };
+    log(`furnace (ms ${String(frameRenderer.settings.multipleScattering)}): ${JSON.stringify(result.furnace)}`);
+  }
+
   // --- K3.3 'frame' lighting: grid layout, grid chunks, pass twins, redraw skips, temporal convergence ---------
   if (LIGHTING === "frame") {
     const g = frameRenderer.gridUniforms;
@@ -657,6 +800,15 @@ async function main(): Promise<void> {
         `transmittance twin: ${result.transmittanceTwin.compared} values (${result.transmittanceTwin.marched} marched voxels), max |d| ${result.transmittanceTwin.maxAbs.toExponential(2)}, ${result.transmittanceTwin.over} over; lighting twin: ${result.lightingTwin.compared} values (${result.lightingTwin.lit} froxels), max |d| ${result.lightingTwin.maxAbs.toExponential(2)}, ${result.lightingTwin.over} over`,
         result.transmittanceTwin.over + result.lightingTwin.over === 0 ? "ok" : "fail",
       );
+    }
+    if (TWINS) {
+      // K3.4: the scattering chunks; the neural input mips
+      result.scatterProbe = await probeScattering(renderer);
+      log(`scattering probe: ${result.scatterProbe.compared} values, max |d| ${result.scatterProbe.maxAbs.toExponential(2)} (max rel ${result.scatterProbe.maxRel.toExponential(2)}), ${result.scatterProbe.over} over`, result.scatterProbe.over === 0 ? "ok" : "fail");
+      if (frameRenderer.transmittanceMaterial.neural) {
+        result.gridMipTwin = await gridMipTwin(renderer, frameRenderer);
+        log(`grid mip twin: ${result.gridMipTwin.compared} values over ${result.gridMipTwin.levels} levels, max |d| ${result.gridMipTwin.maxAbs.toExponential(2)}, ${result.gridMipTwin.over} over`, result.gridMipTwin.over === 0 ? "ok" : "fail");
+      }
     }
     result.gridProbe = await probeGrid(renderer, frameRenderer);
     log(`grid chunk probe: ${result.gridProbe.compared} values, max |d| ${result.gridProbe.maxAbs.toExponential(2)}, ${result.gridProbe.over} over`, result.gridProbe.over === 0 ? "ok" : "fail");
@@ -750,6 +902,7 @@ async function main(): Promise<void> {
       if (LIGHTING === "frame") {
         frameRenderer.shadowDrawnVersion = -1;
         frameRenderer.transmittanceSignature = [];
+        frameRenderer.gridMipSignature = [];
         frameRenderer.environmentGridSignature = [];
         frameRenderer.renderFroxels(renderer, scene, camera);
         const redrawMs = await resolve();
@@ -880,16 +1033,16 @@ async function probeChunks(renderer: WebGPURenderer): Promise<ChunkProbe> {
         const absorption = C.frameShadowAbsorption(e, alb).toVar();
         const s = C.frameShadowStep(e, absorption, msU).toVar();
         const depths = s.mul(3.0).toVar();
-        out.assign(vec4(s.y, C.frameShadowDepth(depths, msU), C.frameShadowTransmittance(depths, msU).y, absorption));
+        out.assign(vec4(s.y, C.frameShadowDepth(depths, msU), C.frameShadowTransmittance(depths, msU, vec4(0.0)).y, absorption));
       })
       .Else(() => {
         const shadow = vec2(e.negate().exp(), e.mul(-0.5).exp()).toVar();
         const s = C.frameShadowStep(e, C.frameShadowAbsorption(e, alb), float(0.0)).mul(2.0).toVar();
         out.assign(
           vec4(
-            C.frameShadowedLight(phaseU, vec3(1.0, 1.0, 0.0), ray, light, shadow).x,
+            C.frameShadowedLight(phaseU, vec3(1.0, 1.0, 0.0), vec4(0.0), ray, light, shadow).x,
             C.frameShadowDepth(s, float(0.0)),
-            C.frameShadowTransmittance(s, float(0.0)).x,
+            C.frameShadowTransmittance(s, float(0.0), vec4(0.0)).x,
             select(a.greaterThan(0.5), C.framePhaseColor(phaseU, vec3(1.0, 1.0, 0.0), ray, light).y, float(0.0)),
           ),
         );

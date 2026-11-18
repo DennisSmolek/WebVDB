@@ -1,12 +1,15 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/core/framePhase.js L5–58 (getFramePhase, getFramePhaseSpectrum),
 //   L79–108 (getFramePhaseAsymmetry, isFrameDiffusion, getFrameTwoSidedDiffusion,
-//   getFrameMultipleScattering).
+//   getFrameMultipleScattering); K3.4: L61–76 (getFrameMieTexels, via tools/frame/mie.ts), L110–129
+//   (frameMaxScatteringOctaves, getFrameScatteringOctaves).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
-// Changes: TypeScript; Lorenz-Mie tables (getFrameMieTexels) and the octave packing
-// (getFrameScatteringOctaves) wait for K3.4. Divergences: DIVERGES.md (K3.1 rows).
+// Changes: TypeScript; the Mie tables are our generator's output (tools/frame/mie-table.ts, identical
+// numbers). Divergences: DIVERGES.md (K3.1, K3.4 rows).
 
 import type { Vector3, Vector4 } from "three";
+import { vdbFrameMieAsymmetry, vdbFrameMieRgbMode, vdbFrameMieTexels } from "../../tools/frame/mie.js";
+import { vdbFrameMaxScatteringOctaves, vdbFrameScatteringOctaves, type VDBFrameOctaveSettings } from "../../tools/frame/index.js";
 import { frameSpectrumWavelengths } from "./spectrum.js";
 
 /** Phase functions of a volume (his `phase` prop). */
@@ -27,15 +30,20 @@ const clampG = (g: unknown) => Math.min(0.99, Math.max(-0.99, Number(g) || 0.0))
 const clampWeight = (weight: unknown) => Math.min(1.0, Math.max(0.0, Number(weight) || 0.0));
 
 /** Lorenz-Mie mode of 'lorenz-mie-rgb' in the phase vector. */
-export const frameMieRgbMode = 2.0;
+export const frameMieRgbMode = vdbFrameMieRgbMode;
 
-/** Asymmetry g of his Lorenz-Mie table (frameMieTable.js). */
-export const frameMieAsymmetry = 0.8526;
+/** Asymmetry g of the Lorenz-Mie table. */
+export const frameMieAsymmetry = vdbFrameMieAsymmetry;
+
+/**
+ * Texels of the Lorenz-Mie texture: the 'lorenz-mie-rgb' tables in red, green, blue and the
+ * 'lorenz-mie' table in alpha (one texture keeps the texture count of the shaders below 16).
+ */
+export const getFrameMieTexels = vdbFrameMieTexels;
 
 /**
  * Writes (forward g, back g, back weight, Lorenz-Mie mode) to target. Isotropic is (0, 0, 0, 0).
- * The Step 1 shaders compile the Lorenz-Mie term out; a Mie phase falls back to isotropic HG with
- * a warning from the renderer (K3.4 ports the tables).
+ * Lorenz-Mie mode: 0 off, 1 the 550 nm table, 2 the red, green and blue tables (frameMieRgbMode).
  */
 export const getFramePhase = (source: VDBFramePhaseSource, target: Vector4) => {
   if (source.phase === "henyey-greenstein") {
@@ -102,3 +110,11 @@ export const getFrameTwoSidedDiffusion = (mode: VDBFrameMultipleScattering) => (
 /** Multiple scattering value of the shadow marches: 1 − g for the diffusion modes, else 0. */
 export const getFrameMultipleScattering = (mode: VDBFrameMultipleScattering, source: VDBFramePhaseSource) =>
   isFrameDiffusion(mode) ? 1.0 - getFramePhaseAsymmetry(source) : 0.0;
+
+export const frameMaxScatteringOctaves = vdbFrameMaxScatteringOctaves;
+
+/**
+ * Indirect light octaves of multipleScattering 'octaves': writes (count N, extinction a, contribution b,
+ * phase c) to target. Octave n (1 to N) has extinction × aⁿ, light × bⁿ and phase g × cⁿ. Count 0 is off.
+ */
+export const getFrameScatteringOctaves = (settings: VDBFrameOctaveSettings, target: Vector4) => target.fromArray(vdbFrameScatteringOctaves(settings));
