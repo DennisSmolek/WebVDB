@@ -14,6 +14,8 @@ import {
   NanoVDBFile,
   NvdbFormatError,
   NvdbStreamReader,
+  nvdbResponseLength,
+  type NvdbProgress,
   nvdbLodName,
   parseNvdbLodName,
   parseVdb,
@@ -382,3 +384,61 @@ describe("bakeCoarseFirst (K4.16)", () => {
   });
 });
 
+
+describe("progress: bytesReceived and bytesTotal (K4.20)", () => {
+  for (const codec of ["none", "zip"] as const) {
+    it(`codec ${codec}: bytesTotal is the file size once the metadata is in; onProgress fires per push`, () => {
+      const file = new Uint8Array(writeNvdb([A, B], { codec }));
+      const seen: NvdbProgress[] = [];
+      const reader = new NvdbStreamReader({ onProgress: (p) => seen.push(p) });
+      expect(reader.bytesTotal).toBeNull();
+      const grids = pushAll(file, 100, reader);
+      const metaEnd = 16 + 2 * 176 + "density.lod8\0".length + "density\0".length;
+      const known = seen.filter((p) => p.bytesTotal !== null);
+      expect(seen.length).toBe(Math.ceil(file.length / 100));
+      expect(seen[0]!.bytesTotal).toBeNull();
+      expect(seen[0]!.bytesReceived).toBe(100);
+      expect(seen.at(-1)).toEqual({ bytesReceived: file.length, bytesTotal: file.length, gridsEmitted: 2 });
+      expect(known.every((p) => p.bytesTotal === file.length)).toBe(true);
+      expect(known[0]!.bytesReceived).toBeGreaterThanOrEqual(metaEnd);
+      expect(known[0]!.bytesReceived - 100).toBeLessThan(metaEnd);
+      expect(grids.map((g) => g.bytesTotal)).toEqual([file.length, file.length]);
+      expect(reader.progress.bytesTotal).toBe(file.length);
+    });
+  }
+
+  it("several segments: the total is the end of the latest segment seen, the bytesTotal option wins", () => {
+    const one = new Uint8Array(writeNvdb([B]));
+    const two = new Uint8Array(one.length * 2);
+    two.set(one, 0);
+    two.set(one, one.length);
+    const reader = new NvdbStreamReader();
+    const totals: (number | null)[] = [];
+    for (const g of pushAll(two, 4096, reader)) totals.push(g.bytesTotal);
+    expect(totals).toEqual([one.length, two.length]);
+    const declared = new NvdbStreamReader({ bytesTotal: 12345 });
+    declared.push(one.subarray(0, 100));
+    expect(declared.bytesTotal).toBe(12345);
+    expect(() => new NvdbStreamReader({ bytesTotal: -1 })).toThrow(/bytesTotal/);
+  });
+
+  it("nvdbResponseLength: Content-Length unless the body is content-encoded", () => {
+    const h = (o: Record<string, string>) => ({ headers: new Headers(o) });
+    expect(nvdbResponseLength(h({ "content-length": "1234" }))).toBe(1234);
+    expect(nvdbResponseLength(h({ "content-length": "1234", "content-encoding": "gzip" }))).toBeNull();
+    expect(nvdbResponseLength(h({ "content-length": "1234", "content-encoding": "identity" }))).toBe(1234);
+    expect(nvdbResponseLength(h({}))).toBeNull();
+    expect(nvdbResponseLength(h({ "content-length": "abc" }))).toBeNull();
+  });
+
+  it("readNvdbStream takes a Response and reports its Content-Length", async () => {
+    const file = new Uint8Array(writeNvdb([A, B], { codec: "zip" }));
+    const seen: NvdbProgress[] = [];
+    const res = new Response(file as BlobPart, { headers: { "content-length": String(file.length) } });
+    const grids: NvdbStreamGrid[] = [];
+    for await (const g of readNvdbStream(res, { onProgress: (p) => seen.push(p) })) grids.push(g);
+    expect(grids.length).toBe(2);
+    expect(seen[0]!.bytesTotal).toBe(file.length); // known from the first chunk
+    expect(grids[0]!.bytesTotal).toBe(file.length);
+  });
+});

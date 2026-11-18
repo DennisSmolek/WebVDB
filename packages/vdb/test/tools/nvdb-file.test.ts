@@ -2,7 +2,15 @@ import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { zlibSync } from "fflate";
 import { describe, expect, it } from "vitest";
-import { Codec, FILE_HEADER_SIZE, FILE_METADATA_SIZE, NanoVDBFile } from "../../src/tools/index.js";
+import {
+  Codec,
+  FILE_HEADER_SIZE,
+  FILE_METADATA_SIZE,
+  NanoVDBFile,
+  NvdbFormatError,
+  VdbFormatError,
+  VdbUnsupportedError,
+} from "../../src/tools/index.js";
 
 /**
  * Parses all 9 baked primitive fixtures (fixtures/primitives/*.nvdb) with
@@ -175,6 +183,30 @@ describe("NanoVDBFile — error handling", () => {
     expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/codec NONE or ZIP/);
   });
 
+  it("malformed input is an NvdbFormatError (a VdbFormatError), BLOSC a VdbUnsupportedError (K4.20)", () => {
+    const garbage = new ArrayBuffer(32);
+    new Uint8Array(garbage).set([..."NotANvdb"].map((c) => c.charCodeAt(0)), 0);
+    for (const bad of [garbage, new ArrayBuffer(10)]) {
+      let err: unknown;
+      try {
+        NanoVDBFile.fromArrayBuffer(bad);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(NvdbFormatError);
+      expect(err).toBeInstanceOf(VdbFormatError);
+      expect((err as Error).name).toBe("NvdbFormatError");
+      expect((err as Error).message).toMatch(/^@pmndrs\/vdb\/tools: malformed \.nvdb: NanoVDBFile: /);
+    }
+    const blosc = new ArrayBuffer(FILE_HEADER_SIZE);
+    new Uint8Array(blosc).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
+    const v = new DataView(blosc);
+    v.setUint32(8, (32 << 21) | (9 << 10) | 1, true);
+    v.setUint16(12, 1, true);
+    v.setUint16(14, Codec.BLOSC, true);
+    expect(() => NanoVDBFile.fromArrayBuffer(blosc)).toThrow(VdbUnsupportedError);
+  });
+
   it("throws for a truncated buffer (short FileHeader)", () => {
     const buffer = new ArrayBuffer(10);
     new Uint8Array(buffer).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
@@ -278,6 +310,7 @@ describe("NanoVDBFile — error handling", () => {
     bytes.set([...name].map((c) => c.charCodeAt(0)), meta + FILE_METADATA_SIZE);
 
     expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrowError(/unrepresentable gridSize/);
+    expect(() => NanoVDBFile.fromArrayBuffer(buffer)).toThrow(NvdbFormatError);
   });
 });
 
