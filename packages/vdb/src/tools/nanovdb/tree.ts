@@ -11,12 +11,24 @@
  * trips exactly. A block with no active voxel collapses to an inactive
  * background tile in its parent lower node — so empty space stays sparse.
  *
- * This builder deliberately does NOT collapse uniform *active* regions into
- * active tiles (native `nanovdb_convert` does). Consequences:
- *  - correctness is unaffected — `readValue` returns identical values;
- *  - the image is larger than native's for big uniform interiors. Acceptable
- *    for the desktop-scale grids v1 targets; active-tile compression is a
- *    documented follow-up (K4.6).
+ * ## Collapsing uniform regions (K4.6)
+ *
+ * With `collapse` on, uniform nodes become tiles bottom-up, as OpenVDB's
+ * `tools::prune(tree, tolerance = 0)` (`TolerancePruneOp`) would do it:
+ *  - a leaf whose 512 voxels all have the same active state and exactly equal
+ *    values (`===`, so `-0` equals `0`, `NaN` never collapses) becomes a lower
+ *    tile with that state and value (the leaf's first value);
+ *  - a lower node with no child leaf whose 4096 slots all have one state and
+ *    one value becomes an upper tile; an upper node likewise a root tile;
+ *  - a tile that ends up inactive with the background value is the default
+ *    slot, so it is not stored (an upper node that collapses to one is erased
+ *    from the root, as `RootNode::eraseBackgroundTiles` does after a prune).
+ * Values read back identically. Stats follow GridStats' tile weighting (see
+ * below), so an upper or root average that mixes a collapsed region with other
+ * data weights it differently from the leaves it replaced, exactly as a native
+ * image of the pruned tree would. min/max, bbox and the active-voxel count do
+ * not change. Off by default here; the public builders choose (see
+ * `serialize.ts`).
  *
  * ## Active tiles passed in (K4.1)
  *
@@ -115,6 +127,16 @@ export interface BuildTreeOptions {
   origin: [number, number, number];
   background: number;
   activeThreshold: number | undefined;
+  /** Collapse uniform nodes into tiles (K4.6). Default false. */
+  collapse?: boolean;
+}
+
+/** Options of {@link buildTreeFromLeaves} beyond the leaves and tiles. */
+export interface CollapseOptions {
+  /** Collapse uniform nodes into tiles (K4.6). Default false. */
+  collapse?: boolean;
+  /** The grid background: an inactive tile with this value is not stored. Default 0 / [0, 0, 0]. */
+  background?: TileValue;
 }
 
 function floorDiv(a: number, b: number): number {
@@ -205,7 +227,7 @@ export function buildTree(
     }
   }
 
-  return assembleTree([...leafMap.values()]);
+  return assembleTree([...leafMap.values()], [], 1, { collapse: opts.collapse === true, background: opts.background });
 }
 
 /**
@@ -219,6 +241,7 @@ export function buildTreeFromLeaves(
   source: Iterable<LeafInput>,
   tiles: Iterable<TileInput> = [],
   components: Components = 1,
+  options: CollapseOptions = {},
 ): BuiltTree {
   const leaves: Leaf[] = [];
   for (const src of source) {
@@ -252,7 +275,8 @@ export function buildTreeFromLeaves(
       memIndex: -1,
     });
   }
-  return assembleTree(leaves, tiles, components);
+  const background = options.background ?? (components === 3 ? ([0, 0, 0] as const) : 0);
+  return assembleTree(leaves, tiles, components, { collapse: options.collapse === true, background });
 }
 
 /** Minimal shape a leaf source must provide to `buildTreeFromLeaves`. */
@@ -290,7 +314,12 @@ const TILE_STATS_WEIGHT: Record<number, number> = { 8: 512, 128: 4096, 4096: 327
  * a flat list of leaves. Shared by the dense (`buildTree`) and leaf-iterator
  * (`buildTreeFromLeaves`) build paths.
  */
-function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], components: Components = 1): BuiltTree {
+function assembleTree(
+  leafList: Leaf[],
+  tileList: Iterable<TileInput>,
+  components: Components,
+  collapseOpts: { collapse: boolean; background: TileValue },
+): BuiltTree {
   const newStats = (): StatsAccumulator => (components === 3 ? new Vec3StatsAccumulator() : new StatsAccumulator());
   // -- Assemble lower/upper nodes from leaves ------------------------------
   const upperMap = new Map<string, UpperNode>();
@@ -408,6 +437,60 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
   }
   for (const [key, tile] of rootTileMap) if (upperMap.has(key)) overlap("the root", tile.origin);
 
+  // -- Collapse uniform nodes into tiles, bottom-up (K4.6) ------------------
+  if (collapseOpts.collapse) {
+    const background = collapseOpts.background;
+    const placeTile = (
+      tiles: Map<number, TileValue>,
+      inactive: Map<number, TileValue>,
+      slot: number,
+      c: { value: TileValue; active: boolean },
+    ): void => {
+      if (c.active) tiles.set(slot, c.value);
+      else if (!tileValuesEqual(c.value, background)) inactive.set(slot, c.value);
+    };
+    // Leaves -> lower-node tiles.
+    for (const lower of lowerMap.values()) {
+      for (const [slot, leaf] of lower.children) {
+        const c = constantLeaf(leaf, components);
+        if (!c) continue;
+        lower.children.delete(slot);
+        placeTile(lower.tiles, lower.inactiveTiles, slot, c);
+        if (c.active) {
+          tileCounts.lower++;
+          tileVoxels += 512;
+        }
+      }
+    }
+    // Lower nodes -> upper-node tiles.
+    for (const upper of upperMap.values()) {
+      for (const [slot, lower] of upper.children) {
+        const c = constantInternal(lower, LOWER_SLOTS, background);
+        if (!c) continue;
+        upper.children.delete(slot);
+        lowerMap.delete(nodeKey(...lower.origin));
+        placeTile(upper.tiles, upper.inactiveTiles, slot, c);
+        if (c.active) {
+          tileCounts.lower -= LOWER_SLOTS;
+          tileCounts.upper++;
+        }
+      }
+    }
+    // Upper nodes -> root tiles (an inactive background tile is erased).
+    for (const [key, upper] of upperMap) {
+      const c = constantInternal(upper, UPPER_SLOTS, background);
+      if (!c) continue;
+      upperMap.delete(key);
+      if (c.active) {
+        rootTileMap.set(key, { origin: upper.origin, value: c.value, active: true });
+        tileCounts.upper -= UPPER_SLOTS;
+        tileCounts.root++;
+      } else if (!tileValuesEqual(c.value, background)) {
+        rootTileMap.set(key, { origin: upper.origin, value: c.value, active: false });
+      }
+    }
+  }
+
   // -- Deterministic breadth-first ordering + memIndex assignment ----------
   const byOrigin = (a: { origin: [number, number, number] }, b: { origin: [number, number, number] }) =>
     a.origin[0] - b.origin[0] || a.origin[1] - b.origin[1] || a.origin[2] - b.origin[2];
@@ -474,6 +557,65 @@ function assembleTree(leafList: Leaf[], tileList: Iterable<TileInput> = [], comp
     root,
     activeVoxelCount: leafVoxels + tileVoxels,
   };
+}
+
+const LOWER_SLOTS = 4096;
+const UPPER_SLOTS = 32768;
+
+/** Exact tile value equality (`===` per component: `-0` equals `0`, `NaN` equals nothing). */
+function tileValuesEqual(a: TileValue, b: TileValue): boolean {
+  if (typeof a === "number" || typeof b === "number") return a === b;
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
+/**
+ * OpenVDB `LeafNode::isConstant` at tolerance 0: every voxel has the same
+ * active state and every value equals the first. Returns the tile, or null.
+ */
+function constantLeaf(leaf: Leaf, components: Components): { value: TileValue; active: boolean } | null {
+  const mask = leaf.valueMask;
+  const w0 = mask[0]!;
+  if (w0 !== 0 && w0 !== 0xffffffff) return null;
+  for (let i = 1; i < 16; i++) if (mask[i] !== w0) return null;
+  const v = leaf.values;
+  if (components === 1) {
+    const first = v[0]!;
+    for (let n = 1; n < LEAF_TABLE_COUNT; n++) if (v[n] !== first) return null;
+    return { value: first, active: w0 !== 0 };
+  }
+  const x = v[0]!;
+  const y = v[1]!;
+  const z = v[2]!;
+  for (let n = 1; n < LEAF_TABLE_COUNT; n++) {
+    if (v[n * 3] !== x || v[n * 3 + 1] !== y || v[n * 3 + 2] !== z) return null;
+  }
+  return { value: [x, y, z], active: w0 !== 0 };
+}
+
+/**
+ * OpenVDB `InternalNode::isConstant` at tolerance 0: no child, every slot the
+ * same state, every slot value equal (slots not stored are inactive background).
+ */
+function constantInternal(
+  node: LowerNode | UpperNode,
+  slots: number,
+  background: TileValue,
+): { value: TileValue; active: boolean } | null {
+  if (node.children.size > 0) return null;
+  if (node.tiles.size === slots) {
+    const first = node.tiles.get(0)!;
+    for (const v of node.tiles.values()) if (!tileValuesEqual(v, first)) return null;
+    return { value: first, active: true };
+  }
+  if (node.tiles.size > 0) return null;
+  if (node.inactiveTiles.size === slots) {
+    const first = node.inactiveTiles.get(0)!;
+    for (const v of node.inactiveTiles.values()) if (!tileValuesEqual(v, first)) return null;
+    return { value: first, active: false };
+  }
+  // Some slots hold the background: the rest must too.
+  for (const v of node.inactiveTiles.values()) if (!tileValuesEqual(v, background)) return null;
+  return { value: background, active: false };
 }
 
 /** Adds an internal node's active tiles to its stats, in slot order (GridStats weighting). */

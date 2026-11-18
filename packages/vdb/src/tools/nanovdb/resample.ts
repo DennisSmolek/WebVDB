@@ -110,6 +110,13 @@ export interface ResampleOptions {
   gridName?: string;
   /** Output background. Default: the source's root background. */
   background?: number;
+  /**
+   * Collapse uniform target leaves and nodes into tiles (OpenVDB `prune`,
+   * tolerance 0; K4.6), before any quantization. Default true: a resample is a
+   * new build with no native topology to keep, and a uniform interior (a
+   * source tile, or a saturated core) costs one tile instead of leaves.
+   */
+  collapse?: boolean;
 }
 
 export interface ResampledGrid extends BuiltGrid {
@@ -489,7 +496,39 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
   }
   const voxel: Vec3 = [size[0] / dims[0], size[1] / dims[1], size[2] / dims[2]];
   const lattice: [Vec3, Vec3] = [[...boxMin], [boxMin[0] + size[0], boxMin[1] + size[1], boxMin[2] + size[2]]];
+  const leaves = filterLeaves(field, filter, dims, boxMin, size, background, options.cutoff);
 
+  const uniform = voxel[0] === voxel[1] && voxel[0] === voxel[2];
+  const worldOrigin: Vec3 = [boxMin[0] + voxel[0] / 2, boxMin[1] + voxel[1] / 2, boxMin[2] + voxel[2] / 2];
+  let built = buildFromLeavesDetailed(leaves, FLOAT_LEAF_CODEC, {
+    voxelSize: uniform ? voxel[0] : voxel,
+    worldOrigin,
+    background,
+    gridName: options.gridName ?? field.name ?? "grid",
+    gridClass: field.gridClass,
+    collapse: options.collapse ?? true,
+  });
+  if (options.quantize) built = quantizeDetailed(built, options.quantize, options.tolerance);
+  return { ...built, dimensions: dims, bbox: lattice, filter, sourceVoxelSize: srcVoxel };
+}
+
+/**
+ * Filters every target leaf whose footprint overlaps a source leaf or active
+ * tile, on the lattice of `dims` voxels over `[boxMin, boxMin + size]` (voxel
+ * `j` centred at `boxMin + ((j + 0.5) / dims) * size`). A zero `size` on an
+ * axis samples the nearest source voxel there. Leaves are sorted by origin.
+ */
+function filterLeaves(
+  field: SourceField,
+  filter: ResampleFilter,
+  dims: Vec3,
+  boxMin: Vec3,
+  size: Vec3,
+  background: number,
+  cutoff: number | undefined,
+): LeafInput[] {
+  const srcVoxel: Vec3 = [Math.abs(field.scale[0]), Math.abs(field.scale[1]), Math.abs(field.scale[2])];
+  const voxel: Vec3 = [size[0] / dims[0], size[1] / dims[1], size[2] / dims[2]];
   // Per-axis tables: target index -> source taps.
   const tables = [0, 1, 2].map((a) =>
     axisTable(filter, dims[a]!, boxMin[a]!, size[a]!, field.translation[a]!, field.inverse[a]!, voxel[a]! / srcVoxel[a]!),
@@ -521,24 +560,69 @@ export function resampleGrid(source: ResampleSource, options: ResampleOptions = 
 
   // Filter each candidate leaf.
   const leaves: LeafInput[] = [];
-  const cutoff = options.cutoff;
   for (const origin of candidates.values()) {
     const leaf = filterLeaf(field, tables, dims, origin, background, cutoff);
     if (leaf) leaves.push(leaf);
   }
   leaves.sort((p, q) => p.origin[0] - q.origin[0] || p.origin[1] - q.origin[1] || p.origin[2] - q.origin[2]);
+  return leaves;
+}
 
-  const uniform = voxel[0] === voxel[1] && voxel[0] === voxel[2];
-  const worldOrigin: Vec3 = [boxMin[0] + voxel[0] / 2, boxMin[1] + voxel[1] / 2, boxMin[2] + voxel[2] / 2];
-  let built = buildFromLeavesDetailed(leaves, FLOAT_LEAF_CODEC, {
-    voxelSize: uniform ? voxel[0] : voxel,
-    worldOrigin,
-    background,
-    gridName: options.gridName ?? field.name ?? "grid",
-    gridClass: field.gridClass,
-  });
-  if (options.quantize) built = quantizeDetailed(built, options.quantize, options.tolerance);
-  return { ...built, dimensions: dims, bbox: lattice, filter, sourceVoxelSize: srcVoxel };
+export interface ResampleDenseOptions {
+  /** World box `[min, max]`: target voxel `j` is centred at `min + ((j + 0.5) / dims) * (max - min)`. */
+  bbox: [Vec3, Vec3];
+  /** Target voxels per axis. */
+  dimensions: Vec3;
+  /** Default `'box'`. */
+  filter?: ResampleFilter;
+  /** Which grid of a `VdbFile`. Default: the first float grid. */
+  sourceGridName?: string;
+}
+
+/**
+ * {@link resampleGrid}'s filters onto a dense lattice (the `.wvdb` bake's,
+ * K4.13): `values` x fastest (`x + y*X + z*X*Y`), `active` 1 where the target
+ * voxel's footprint touches an active source voxel. Voxels in no emitted leaf
+ * (the footprint touches no active source voxel) hold the source background.
+ * Unlike `resampleGrid`, the box may have zero size on an axis (one voxel
+ * thick); that axis samples the nearest source voxel.
+ */
+export function resampleDense(
+  source: ResampleSource,
+  options: ResampleDenseOptions,
+): { values: Float32Array; active: Uint8Array; background: number } {
+  const filter = options.filter ?? "box";
+  if (filter !== "point" && filter !== "box" && filter !== "trilinear") {
+    throw new Error(`resampleDense: unknown filter "${String(filter)}"`);
+  }
+  const dims: Vec3 = [...options.dimensions];
+  if (!dims.every((d) => Number.isInteger(d) && d >= 1)) {
+    throw new Error(`resampleDense: dimensions must be positive integers, got ${JSON.stringify(dims)}`);
+  }
+  const boxMin: Vec3 = [...options.bbox[0]];
+  const size: Vec3 = [0, 1, 2].map((a) => options.bbox[1][a]! - boxMin[a]!) as Vec3;
+  if (!size.every((v) => v >= 0 && Number.isFinite(v)) || !boxMin.every(Number.isFinite)) {
+    throw new Error(`resampleDense: invalid bbox ${JSON.stringify(options.bbox)}`);
+  }
+  const field = toField(source, options.sourceGridName);
+  const background = field.background;
+  const [X, Y, Z] = dims;
+  const values = new Float32Array(X * Y * Z).fill(background);
+  const active = new Uint8Array(X * Y * Z);
+  for (const leaf of filterLeaves(field, filter, dims, boxMin, size, background, undefined)) {
+    const [ox, oy, oz] = leaf.origin;
+    for (let i = 0; i < 8 && ox + i < X; i++) {
+      for (let j = 0; j < 8 && oy + j < Y; j++) {
+        for (let k = 0; k < 8 && oz + k < Z; k++) {
+          const n = (i << 6) | (j << 3) | k;
+          const d = ox + i + (oy + j) * X + (oz + k) * X * Y;
+          values[d] = leaf.values[n]!;
+          active[d] = (leaf.valueMask[n >>> 5]! >>> (n & 31)) & 1;
+        }
+      }
+    }
+  }
+  return { values, active, background };
 }
 
 /** Gathers the source block a target leaf needs, runs the three 1D passes, and returns the leaf (or null if no voxel is active). */

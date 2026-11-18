@@ -7,5 +7,6 @@ export * from "./format.js";
 export * from "./read.js";
 export * from "./write.js";
 export * from "./bake.js";
+export * from "./level-set.js";
 export { sha256Hex } from "./sha256.js";
 export * from "./dense.js";

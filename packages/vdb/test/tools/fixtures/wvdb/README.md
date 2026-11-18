@@ -10,11 +10,13 @@ copy from [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) at commit `75e
 | `ground_explosion_0199.wvdb` | 1,199 | same folder (an all-empty frame) | CC0 (as above) |
 | `cloud_04_variant_0000.wvdb` | 86,879 | `src/docs/examples/public/assets/CloudPackVDB_wvdb/` | CC0 (Cloud Pack, JangaFX EmberGen) |
 | `smoke.wvdb.digest.json` | — | digest of `src/docs/examples/public/assets/smoke.wvdb` (808,752 bytes, not committed) | derived from `smoke.vdb`, an openvdb.org sample (CC BY-SA 4.0) |
+| `utahteapot.wvdb.digest.json` | — | digest of `src/docs/examples/public/assets/utahteapot.wvdb` (40,296 bytes, not committed; K4.13) | derived from `utahteapot.vdb`, an openvdb.org sample (CC BY-SA 4.0) |
 
 The JangaFX sets are CC0 1.0 (Public Domain); his repo carries their `LICENSE.txt` / `README.txt` next to the
 files. The `.wvdb` encoding is his MIT-licensed tool's output. The digest records only the header (chunk offsets
-zeroed) and SHA-256 sums of the inflated chunks, so the smoke re-bake test can run from our own
-`fixtures/vdb-samples/smoke.vdb` (`pnpm fixtures:vdb-samples`) without committing his larger file.
+zeroed) and SHA-256 sums of the inflated chunks, so the smoke re-bake test (and the K4.13 level-set re-bake of the
+teapot, `levelSetSampler: 'mjurczyk'`) can run from our own `fixtures/vdb-samples/*.vdb` (`pnpm fixtures:vdb-samples`)
+without committing his larger files. Our pinned `utahteapot.vdb` has the SHA-256 his header records.
 
 Tests that need his other committed files (`venusstatue.wvdb`, `utahteapot.wvdb`, `sphere_points.wvdb`,
 `smoke.wvdb`, `bunny_cloud.wvdb`) read them from a checkout named by `MJURCZYK_OPENVDB_DIR` (the repo root) and

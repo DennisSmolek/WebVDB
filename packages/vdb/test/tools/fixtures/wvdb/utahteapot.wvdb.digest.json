@@ -1,0 +1,141 @@
+{
+  "about": "Digest of mjurczyk/openvdb src/docs/examples/public/assets/utahteapot.wvdb at commit 75e7345 (MIT repo; utahteapot.vdb is an openvdb.org sample, CC BY-SA 4.0). The .wvdb itself is not committed (40,296 bytes). Header with chunk offsets/lengths zeroed, and the SHA-256 of each inflated chunk in spec section 9 order.",
+  "fileBytes": 40296,
+  "fileSha256": "b8c9f732398e420ade9309d21b061b7fe9bf6f0cec23cdf7c7a54f9e82909178",
+  "headerWithoutOffsets": {
+    "version": 1,
+    "source": {
+      "file": "utahteapot.vdb",
+      "sha256": "3808c6f3a6261f8b46ea156aa808186f8f615d5e96ee8160ac59855de156f1c9"
+    },
+    "bake": {
+      "grids": null,
+      "resolution": 128,
+      "lods": 3,
+      "bits": 8,
+      "layout": "sparse",
+      "pageBricks": 1024,
+      "bbox": null
+    },
+    "brickDim": 8,
+    "grids": [
+      {
+        "name": "ls_utahteapot",
+        "class": "level set",
+        "channels": 1,
+        "background": 0.300048828125,
+        "bbox": [
+          [
+            -50.00000074505806,
+            -23.100000344216824,
+            -30.800000458955765
+          ],
+          [
+            48.00000071525574,
+            23.100000344216824,
+            30.800000458955765
+          ]
+        ],
+        "meanDensity": 1,
+        "nonZeroVoxels": 28522,
+        "lods": [
+          {
+            "dimensions": [
+              32,
+              15,
+              20
+            ],
+            "bricks": 20,
+            "mask": {
+              "offset": 0,
+              "length": 0
+            },
+            "pages": [
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 20
+              }
+            ]
+          },
+          {
+            "dimensions": [
+              64,
+              30,
+              40
+            ],
+            "bricks": 94,
+            "mask": {
+              "offset": 0,
+              "length": 0
+            },
+            "pages": [
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 94
+              }
+            ]
+          },
+          {
+            "dimensions": [
+              128,
+              60,
+              80
+            ],
+            "bricks": 598,
+            "mask": {
+              "offset": 0,
+              "length": 0
+            },
+            "pages": [
+              {
+                "offset": 0,
+                "length": 0,
+                "bricks": 598
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "chunks": [
+    {
+      "lod": 0,
+      "kind": "mask",
+      "inflatedBytes": 4,
+      "inflatedSha256": "89448181be46b79a0812e9c1ea9e1036b485876735f169c664b87d4db6dc501b"
+    },
+    {
+      "lod": 0,
+      "kind": "page",
+      "inflatedBytes": 10484,
+      "inflatedSha256": "b54aa939ba48b17e4686d4d423100ffc29025505d4d8f2da72294649065a70ac"
+    },
+    {
+      "lod": 1,
+      "kind": "mask",
+      "inflatedBytes": 20,
+      "inflatedSha256": "59240b04d6d6d43489e87d88619d6a0f7c1f29b3c0a2887307bb451980ed049c"
+    },
+    {
+      "lod": 1,
+      "kind": "page",
+      "inflatedBytes": 45164,
+      "inflatedSha256": "83b9a96f09a34bd3358e4a4189af2e2d320f43810e713e544a5cf70435deb7a3"
+    },
+    {
+      "lod": 2,
+      "kind": "mask",
+      "inflatedBytes": 160,
+      "inflatedSha256": "176eb8cbc1b8eea5578ea61f81b8506bdcd14773ea05907e8ee66dcea64baaca"
+    },
+    {
+      "lod": 2,
+      "kind": "page",
+      "inflatedBytes": 214028,
+      "inflatedSha256": "43698e4c8e694c01d6b3d8273b29942efb6b8efb8823a3a339ec82c6fe64583e"
+    }
+  ]
+}

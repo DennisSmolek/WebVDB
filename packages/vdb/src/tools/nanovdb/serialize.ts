@@ -29,9 +29,9 @@
  * This wave's correctness bar is *value* parity through the repo's proven CPU
  * (`read-value.ts`) and WGSL readers, plus structural conformance, NOT byte
  * identity with `nanovdb_convert`. Three things differ from a native encode and
- * are intentionally out of scope here: (a) active-tile compression of uniform
- * regions (see tree.ts; active tiles that already exist in a leaf-path source
- * ARE written as tiles, K4.1), (b) the real Full/Partial CRC checksum (we write the
+ * are intentionally out of scope here: (a) tile topology: `buildFromDense`
+ * collapses uniform regions into tiles (K4.6, `collapse`), and the leaf path
+ * keeps the source's tiles as they are (K4.1), (b) the real Full/Partial CRC checksum (we write the
  * "disabled" sentinel — see bytes.ts), and (c) native's trailing grid padding.
  * All three are tracked for the byte-parity follow-up; none affects any value a
  * reader returns.
@@ -133,6 +133,14 @@ export interface BuildFromDenseOptions {
   gridName?: string;
   /** Grid class. Default "FogVolume". */
   gridClass?: GridClassName;
+  /**
+   * Collapse uniform regions into tiles, as OpenVDB `tools::prune` at
+   * tolerance 0 (K4.6): a leaf whose voxels are all active (or all inactive)
+   * with one value becomes a lower-node tile, a lower node made only of equal
+   * tiles an upper-node tile, and so on. Values read back identically.
+   * Default true: a dense build has no native topology to keep.
+   */
+  collapse?: boolean;
 }
 
 /** Grid classes the serializer writes (NanoVDB `GridClass`). */
@@ -206,7 +214,12 @@ export function buildFromDenseDetailed(
   }
 
   const codec = FLOAT_LEAF_CODEC;
-  const tree = buildTree(values, dims, { origin, background, activeThreshold: opts.activeThreshold });
+  const tree = buildTree(values, dims, {
+    origin,
+    background,
+    activeThreshold: opts.activeThreshold,
+    collapse: opts.collapse ?? true,
+  });
 
   const voxelSizeXYZ: [number, number, number] = [voxelSize, voxelSize, voxelSize];
   const image = layoutGrid(tree, codec, {
@@ -255,6 +268,13 @@ export interface BuildFromLeavesOptions {
    * tile may not share a slot with a leaf or child node. Default: none.
    */
   tiles?: Iterable<TileInput>;
+  /**
+   * Collapse uniform leaves and nodes into tiles (OpenVDB `prune`, tolerance 0;
+   * K4.6). Default false: this is the re-encoding path (`quantize`,
+   * `buildFromVdb`), which keeps the source's topology so an image of a native
+   * input keeps native's node counts and sizes.
+   */
+  collapse?: boolean;
 }
 
 /**
@@ -291,7 +311,7 @@ export function buildFromLeavesDetailed(
     );
   }
 
-  const tree = buildTreeFromLeaves(leaves, opts.tiles, components);
+  const tree = buildTreeFromLeaves(leaves, opts.tiles, components, { collapse: opts.collapse === true, background });
   const image = layoutGrid(tree, codec, {
     gridName,
     nameBytes,

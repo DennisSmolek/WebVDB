@@ -64,21 +64,22 @@ export type {
 } from "./nanovdb/index.js";
 
 /** Quantize a FLOAT grid image to Fp8/FpN (per-leaf min/quantum + packed codes). */
-export { quantize, quantizeDetailed } from "./nanovdb/index.js";
-export type { QuantizeMode } from "./nanovdb/index.js";
+export { collapseGrid, quantize, quantizeDetailed } from "./nanovdb/index.js";
+export type { QuantizeMode, QuantizeOptions } from "./nanovdb/index.js";
 
 /**
  * Resample-to-resolution bake (K4.4): a NanoVDB image or parsed `.vdb` grid
  * resampled over a world box with a point, box (default) or trilinear filter,
  * sparse, optionally quantized; and the comparison report's error metric.
  */
-export { resampleGrid, resampleError } from "./nanovdb/index.js";
+export { resampleGrid, resampleError, resampleDense } from "./nanovdb/index.js";
 export type {
   ResampleErrorOptions,
   ResampleErrorResult,
   ResampledGrid,
   ResampleFilter,
   ResampleOptions,
+  ResampleDenseOptions,
   ResampleSource,
 } from "./nanovdb/index.js";
 
@@ -239,12 +240,15 @@ export {
   wvdbLodByteRange,
   wvdbPrefixLength,
   WvdbStreamReader,
+  wvdbChunkByteLimit,
   writeWvdb,
   downsampleWvdbLevel,
   wvdbDensityStats,
   wvdbPointLods,
   bakeWvdb,
   sampleWvdbDense,
+  sampleWvdbDenseBox,
+  sampleWvdbLevelSetMjurczyk,
   wvdbFinestDimensions,
   wvdbSourceFromVdbGrid,
   wvdbSourceFromNanoVdb,
@@ -298,6 +302,7 @@ export type {
   WvdbMipAtlas,
   WvdbTexelStats,
   WvdbLodEvent,
+  WvdbStreamReaderOptions,
   WvdbDenseLevel,
   WvdbVolumeGridInput,
   WvdbPointsGridInput,
@@ -305,6 +310,10 @@ export type {
   WriteWvdbOptions,
   WriteWvdbResult,
   WvdbSampleSource,
+  WvdbSampling,
+  WvdbLevelSetSampler,
+  WvdbIndexAccess,
+  WvdbLevelSetSource,
   BakeWvdbOptions,
   VdbToWvdbOptions,
 } from "./wvdb/index.js";
