@@ -28,9 +28,12 @@ describe("vdbSparseSource", () => {
   it("checks the VDBGridNode's profile and helpers, the LOD name and the stats input", () => {
     expect(() => vdbSparseSource(fakeGrids([], "sample"), { density: 0 }, { images: { density: grid.image } })).toThrow(/profile 'march'/);
     expect(() => vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { lod: "node-average", images: { density: grid.image } })).toThrow(/nodeAverage/);
-    // The default LOD is the coarse pyramid: it needs the CPU image, not the nodeAverage helper.
-    expect(vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image } }).lod).toBe("coarse-pyramid");
+    // The default LOD is the coarse pyramid, built on the GPU by default (K3.2a): it needs the renderer, not the nodeAverage helper.
+    expect(() => vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image } })).toThrow(/initialized WebGPURenderer/);
+    expect(vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image }, pyramidBuild: "cpu" }).lod).toBe("coarse-pyramid");
     expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } })).toThrow(/the default/);
+    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { pyramidBuild: "cpu", stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } })).toThrow(/images.density/);
+    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { pyramidBuild: "gl" as never, images: { density: grid.image } })).toThrow(/unknown pyramidBuild/);
     expect(() => vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { lod: "none", images: { density: grid.image } })).not.toThrow();
     expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "mips" as never, images: { density: grid.image } })).toThrow(/unknown lod/);
     expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "none" })).toThrow(/images.density/);
@@ -54,18 +57,20 @@ describe("vdbSparseSource", () => {
     // World box: the cell box [−½, N − ½] through world = 2·ijk + (10, 20, 30).
     expect(s.bbox[0]).toEqual([9, 19, 29]);
     expect(s.bbox[1]).toEqual([10 + 2 * (dense.dimensions[0] - 0.5), 20 + 2 * (dense.dimensions[1] - 0.5), 30 + 2 * (dense.dimensions[2] - 0.5)]);
-    expect(s.gpuBytes).toEqual({ pool: 123_456, pyramid: 0 });
+    expect(s.gpuBytes).toEqual({ pool: 123_456, pyramid: 0, pyramidScratch: 0 });
     expect(s.channels).toEqual({ mask: false, albedo: false, emission: false });
   });
 
   it("LOD levels: node-average 7; coarse-pyramid L₀ + atlas levels, r16f bytes counted", () => {
     expect(vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "node-average", images: { density: grid.image } }).lodLevels).toBe(7);
-    const p = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", images: { density: grid.image }, indexBox: grid.textureIndexBox, pyramidMax: 32 });
+    const p = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", pyramidBuild: "cpu", images: { density: grid.image }, indexBox: grid.textureIndexBox, pyramidMax: 32 });
     // 128 voxels on the longest side, pyramidMax 32: L₀ = 2, base 21x32x11, atlas 5 levels.
     expect(p.pyramid!.level).toBe(2);
     expect(p.pyramid!.dimensions).toEqual([21, 32, 11]);
     expect(p.lodLevels).toBe(2 + p.pyramid!.atlas!.levels);
-    expect(p.gpuBytes.pyramid).toBe(2 * (21 * 32 * 11 + p.pyramid!.atlas!.data.length));
+    expect(p.gpuBytes.pyramid).toBe(2 * (21 * 32 * 11 + p.pyramid!.atlas!.data!.length));
+    expect(p.pyramid!.build).toBe("cpu");
+    expect(p.pyramidBuilds).toBe(0);
     p.dispose();
   });
 
@@ -73,7 +78,8 @@ describe("vdbSparseSource", () => {
     const s = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "none", images: { density: grid.image } });
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
     expect(volume.meanDensity).toBe(s.stats.meanNonZero);
-    expect(volume.hdda).toBe(false);
+    // D29 / K3.2c: HDDA on by default.
+    expect(volume.hdda).toBe(true);
     const u = vdbVolumeUniforms(s, { densityScale: 2 });
     expect(u.densityScale.value).toBeCloseTo(2 / s.stats.meanNonZero, 9);
     u.update(s, { densityScale: 4 });

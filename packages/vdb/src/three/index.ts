@@ -66,6 +66,7 @@ export type {
   VDBSparseSourceOptions,
   VDBThreeSparseSource,
   VDBSparseVolumeUniforms,
+  VDBSparsePyramid,
   VDBIndexBox,
 } from "./sparse-source.js";
 

@@ -116,6 +116,12 @@ export interface VDBGridInfo {
   imageOffset: number | null;
   /** True once the image bytes are on the GPU (after the `update` that wrote them). */
   resident: boolean;
+  /**
+   * The pool {@link VDBGridPool.revision} at this grid's last `add` or `replace`: changes exactly
+   * when the image's contents may have (not on `setTransform` / `setMajorant`). Data derived from the
+   * image (a coarse pyramid, K3.2a) rebuilds when it moves; ids reused after `remove` get a new one.
+   */
+  imageRevision: number;
   hasStats: boolean;
   hasBrickMajorant: boolean;
   majorantOffset: number | null;
@@ -165,6 +171,8 @@ interface GridState {
   retainedImage: Uint32Array | null;
   /** +1 per `replace`: tells a rollback whether the old buffer still holds this grid's current image. */
   imageSerial: number;
+  /** The pool `revision` of this grid's last `add` / `replace` (K3.2a: derived data rebuilds on a change). */
+  imageRevision: number;
   transform: Float64Array | null;
   affines: GridAffines;
   valueMaxOverride: number | undefined;
@@ -503,6 +511,7 @@ export class VDBGridPool {
       pendingImage: image,
       retainedImage: null,
       imageSerial: 0,
+      imageRevision: 0,
       transform,
       affines,
       valueMaxOverride,
@@ -521,6 +530,7 @@ export class VDBGridPool {
     }
     this.#grids[id] = grid;
     this.#touch(id);
+    grid.imageRevision = this.#revision;
     return id;
   }
 
@@ -548,6 +558,7 @@ export class VDBGridPool {
     grid.affines = composeGridAffines(header, grid.transform);
     this.#dropMajorant(grid);
     this.#touch(id);
+    grid.imageRevision = this.#revision;
   }
 
   /** Frees grid `id`'s ranges and clears its record; the id may be reused by the next `add`. */
@@ -630,6 +641,7 @@ export class VDBGridPool {
       capacity: g.capacity,
       imageOffset: g.image.range?.offset ?? null,
       resident: g.image.resident && g.pendingImage === null,
+      imageRevision: g.imageRevision,
       hasStats: h.hasStats,
       hasBrickMajorant: m !== null,
       majorantOffset: m?.range?.offset ?? null,

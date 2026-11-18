@@ -166,3 +166,14 @@ From v1; details in docs/handoffs/.
   `onBeforeRender` reach each draw. Shared texture nodes swap `.value` per frame.
 - `readRenderTargetPixelsAsync(rt, x, y, w, h, textureIndex)` reads an MRT attachment; an `RGFormat` half target
   reads back 2 channels per texel (rows still padded to 256 bytes).
+- A three texture written by the GPU (K3.2a pyramid): `new Data3DTexture(null, w, h, d)`, `source.dataReady = false`,
+  `needsUpdate = true`, then `renderer.initTexture(t)` allocates its `GPUTexture` (`COPY_DST`) without an upload;
+  write it by copy into `getGPUTexture(renderer, t)`. Without `dataReady = false` three tries to upload the null image.
+- `vdbSparseSource`'s GPU pyramid rebuilds inside a render (the `pyramidLevel` uniform's render update) when the
+  density grid's `imageRevision` moved; that render must come after the `pool.update(encoder)` was submitted (as
+  `grids.update()`): a growth's copies sit in that encoder, and the rebuild is its own submit.
+- three r187 render-pass timestamp uids (`r:<frameCalls>:<context>:f<frame>`) repeat when one frame renders the same
+  scene, camera and target twice; `examples/src/harness/k3-pass-timer.ts` makes them unique to time passes.
+  Chrome quantizes `timestamp-query` to 100 µs unless started with `--enable-webgpu-developer-features`.
+- A `playwright install` in another worktree removes other headless-shell revisions from the shared cache: point
+  `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` at the revision your `@playwright/test` expects (`browsers.json`; 1228 for 1.61.1).

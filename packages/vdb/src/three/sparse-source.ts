@@ -23,15 +23,19 @@
  * LOD (`lod`, his `sampleExtinction(localPos, lod)` at lod ≥ 1; R1 §4.3):
  * - `'none'`: level 0 always (no prefilter; aliases when a froxel spans many voxels). lodLevels 0.
  * - `'coarse-pyramid'` (default, the K3.2 A/B pick): a dense r16f pyramid from L₀ = max(1, ⌈log2(maxTexels / pyramidMax)⌉):
- *   the base is a box resample of the grid (`@pmndrs/vdb/tools` `vdbBoxPyramid`, CPU, so the density
- *   image is needed), the levels above it his box mip atlas. lod in (0, L₀) blends level 0 toward
- *   L₀; lod ≥ L₀ samples the pyramid as his mip atlas. GPU bytes: ~2 B × (base + atlas) texels.
+ *   the base is a box resample of the grid, the levels above it his box mip atlas. lod in (0, L₀)
+ *   blends level 0 toward L₀; lod ≥ L₀ samples the pyramid as his mip atlas. GPU bytes: ~2 B × (base
+ *   + atlas) texels. Built on the GPU from the pool grid by default (`pyramidBuild: 'gpu'`, K3.2a: the
+ *   core's `createBoxPyramid`, no CPU image needed) and rebuilt when the grid's image changes
+ *   (`pool.replace`: a sequence frame), checked once per render that samples it; `'cpu'` keeps the
+ *   K3.2 path (`@pmndrs/vdb/tools` `vdbBoxPyramid` from `images.density`, static). Both give the same
+ *   texels to ≤ 1 f16 ulp (e2e/k3-pyramid.spec.ts).
  * - `'node-average'`: no extra memory: trilinear over the node averages (`vdbNodeAverage`) at
  *   level 3 (leaves, the exact 8³ box mean for fog leaves) and level 7 (lower nodes, the mean of
  *   their active voxels); lod in (0, 3) blends level 0 → 3, (3, 7) blends 3 → 7. Needs stats.
  *
  * HDDA: `skipEmpty` lets a march jump samples that are provably 0 (`VDBFrameVolume` `hdda`, default
- * off after the K3.2 A/B; the image is the same either way).
+ * on since D29 / K3.2c; the image is the same either way).
  *
  * Mask, albedo and emission grids (optional, scalar; albedo may be three grids for RGB) are read at
  * level 0 only. One VDB module per shader: every grid goes through the one `VDBGridNode`.
@@ -42,7 +46,10 @@ import * as TSL from "three/tsl";
 import { wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
 import type { VDBVolumeChannels } from "../core/source/types.js";
-import { vdbBoxPyramid, type VDBBoxPyramid } from "../tools/frame/sparse.js";
+import { createBoxPyramid, type VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
+import { vdbBoxPyramid } from "../tools/frame/sparse.js";
+import { vdbBoxPyramidLayout } from "../tools/frame/pyramid-layout.js";
+import { getGPUTexture, webgpuBackendOf } from "./device.js";
 import { leafVoxels, treeNodes } from "../tools/cpu/march.js";
 import { vdbSample, type VDBGridNode, type VDBTslNode } from "./grid-node.js";
 import {
@@ -88,9 +95,16 @@ export interface VDBSparseSourceOptions {
   lod?: VDBSparseLod;
   /** `'coarse-pyramid'`: base level texels on the longest side at most (default 128). */
   pyramidMax?: number;
+  /**
+   * `'coarse-pyramid'`: where the pyramid is built. `'gpu'` (default, K3.2a): a compute pass over the
+   * pool grid on the renderer's device (the core's `createBoxPyramid`), rebuilt when the grid's
+   * `imageRevision` changes; needs an initialized WebGPURenderer behind the `VDBGridNode`. `'cpu'`:
+   * `vdbBoxPyramid` from `images.density` (the K3.2 path, static; the GPU build's twin).
+   */
+  pyramidBuild?: "gpu" | "cpu";
   /** `'none'` (default): raw floats. `'clamp01'`: clamp each density sample to [0, 1] (his 8-bit range; parity A/B). */
   normalize?: "none" | "clamp01";
-  /** CPU copies of the grid images: the density stats and the `'coarse-pyramid'` build read `density`. */
+  /** CPU copies of the grid images: the density stats (and a `pyramidBuild: 'cpu'` pyramid) read `density`. */
   images?: { density?: Uint32Array };
   /** Density stats (`normalizeDensity` divides by `meanNonZero`). Default: computed from `images.density`. */
   stats?: { meanNonZero: number; max: number; activeVoxels: number };
@@ -105,6 +119,27 @@ interface PoolInfoLike {
   info(id: number): { indexBBox: { min: Vec3; max: Vec3 }; indexToWorld: Float64Array; hasStats: boolean; capacity: number; type: string };
 }
 
+/** The coarse pyramid of a `'coarse-pyramid'` sparse source. */
+export interface VDBSparsePyramid {
+  /** Where it was built (see `pyramidBuild`). */
+  readonly build: "gpu" | "cpu";
+  /** L₀: the base level in level-0 voxels. */
+  readonly level: number;
+  /** Texels of the base level. */
+  readonly dimensions: [number, number, number];
+  /** His atlas of the levels above the base (null for a 1³ base); `data` on the CPU path only. */
+  readonly atlas: { readonly dimensions: [number, number, number]; readonly levels: number; readonly data?: Float32Array } | null;
+  /** L₀ + atlas levels. */
+  readonly lodLevels: number;
+  /** The base level's f32 texels (CPU path only). */
+  readonly data?: Float32Array;
+  /** r16f textures: the base level and the atlas. */
+  readonly map: THREE.Data3DTexture;
+  readonly mip: THREE.Data3DTexture | null;
+  /** The core GPU pyramid writing into `map` / `mip` (GPU path), else null. */
+  readonly gpu: VDBBoxPyramidGpu | null;
+}
+
 /** The sparse source in three. */
 export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   readonly grids: VDBGridNode;
@@ -113,10 +148,21 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   readonly normalize: "none" | "clamp01";
   /** The density index box the unit box covers. */
   readonly indexBox: VDBIndexBox;
-  /** `'coarse-pyramid'` only: the CPU pyramid and its textures. */
-  readonly pyramid: (VDBBoxPyramid & { readonly map: THREE.Data3DTexture; readonly mip: THREE.Data3DTexture | null }) | null;
-  /** GPU bytes: the grids' pool capacity and the pyramid textures (r16f). */
-  readonly gpuBytes: { readonly pool: number; readonly pyramid: number };
+  /** `'coarse-pyramid'` only: the pyramid and its textures. */
+  readonly pyramid: VDBSparsePyramid | null;
+  /**
+   * GPU bytes: the grids' pool capacity, the pyramid textures (r16f) and the GPU build's scratch
+   * buffers (kept for rebuilds; 0 on the CPU path).
+   */
+  readonly gpuBytes: { readonly pool: number; readonly pyramid: number; readonly pyramidScratch: number };
+  /** GPU pyramid builds recorded so far (the first, then one per image change). */
+  readonly pyramidBuilds: number;
+  /**
+   * GPU path: rebuilds the pyramid now (own encoder, submitted) if the density grid's image changed
+   * since the last build and it is resident; returns whether it did. Renders that sample the pyramid
+   * call it themselves; call it after `pool.update` was submitted, as `grids.update()`.
+   */
+  refreshPyramid(): boolean;
   /**
    * The source's WGSL helpers as `wgslFn` nodes (including the grid module), for probes and tests:
    * `vdbFrameNodeAverage(g, p, dim) -> f32` (CPU twin `tools` `vdbFrameNodeAverageSample`) and
@@ -176,12 +222,17 @@ function worldBox(box: VDBIndexBox, m: Float64Array): [Vec3, Vec3] {
   return [lo, hi];
 }
 
-/** A half-float r16f Data3DTexture (linear, clamp-to-edge, no mipmaps). */
-function halfTexture(data: Float32Array, dims: readonly number[]): THREE.Data3DTexture {
-  const half = new Uint16Array(data.length);
-  for (let i = 0; i < data.length; i++) half[i] = THREE.DataUtils.toHalfFloat(data[i]!);
+/** A half-float r16f Data3DTexture (linear, clamp-to-edge, no mipmaps); `data` null: GPU-written (no upload). */
+function halfTexture(data: Float32Array | null, dims: readonly number[]): THREE.Data3DTexture {
+  let half: Uint16Array | null = null;
+  if (data) {
+    half = new Uint16Array(data.length);
+    for (let i = 0; i < data.length; i++) half[i] = THREE.DataUtils.toHalfFloat(data[i]!);
+  }
   const [w, h, d] = dims as Vec3;
   const texture = new THREE.Data3DTexture(half, w, h, d);
+  // A GPU-written texture: three allocates it (createTexture) but never uploads (no data to upload).
+  if (!half) texture.source.dataReady = false;
   texture.format = THREE.RedFormat;
   texture.type = THREE.HalfFloatType;
   texture.minFilter = THREE.LinearFilter;
@@ -280,9 +331,12 @@ class SparseSource implements VDBThreeSparseSource {
   readonly stats: { meanNonZero: number; max: number; activeVoxels: number };
   readonly boxToSource: Float32Array;
   readonly bbox: [Vec3, Vec3];
-  readonly pyramid: VDBThreeSparseSource["pyramid"];
-  readonly gpuBytes: { pool: number; pyramid: number };
-  version = 0;
+  readonly pyramid: VDBSparsePyramid | null;
+  readonly gpuBytes: { pool: number; pyramid: number; pyramidScratch: number };
+  pyramidBuilds = 0;
+  private poolRevisionSeen = -1;
+  private readonly poolIds: number[];
+  private versionSeen = { poolRevision: -1, value: 0 };
   private nodeAverageCache: ((...a: unknown[]) => VDBTslNode) | null = null;
   private nodeLodCache: ((...a: unknown[]) => VDBTslNode) | null = null;
   private skipCache: ((...a: unknown[]) => VDBTslNode) | null = null;
@@ -325,17 +379,108 @@ class SparseSource implements VDBThreeSparseSource {
     this.boxToSource = new Float32Array([sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, b.min[0] - 0.5 + 0.5 * sx, b.min[1] - 0.5 + 0.5 * sy, b.min[2] - 0.5 + 0.5 * sz, 1]);
     this.bbox = o.bbox ? [[...o.bbox[0]], [...o.bbox[1]]] : worldBox(b, density.indexToWorld);
 
-    let pyramid: VDBThreeSparseSource["pyramid"] = null;
+    let pyramid: VDBSparsePyramid | null = null;
     if (lod === "coarse-pyramid") {
-      if (!image) throw bad("lod 'coarse-pyramid' (the default) builds the pyramid on the CPU from images.density; pass it, or choose lod 'node-average' or 'none'.");
-      const p = vdbBoxPyramid(image, { indexBox: b, ...(o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {}) });
-      pyramid = { ...p, map: halfTexture(p.data, p.dimensions), mip: p.atlas ? halfTexture(p.atlas.data, p.atlas.dimensions) : null };
+      const build = o.pyramidBuild ?? "gpu";
+      if (build !== "gpu" && build !== "cpu") throw bad(`unknown pyramidBuild ${JSON.stringify(build)}; use 'gpu' or 'cpu'.`);
+      const pyramidMax = o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {};
+      if (build === "cpu") {
+        if (!image) throw bad("pyramidBuild 'cpu' builds the pyramid from images.density; pass it, or use pyramidBuild 'gpu' (the default).");
+        const p = vdbBoxPyramid(image, { indexBox: b, ...pyramidMax });
+        pyramid = {
+          build,
+          level: p.level,
+          dimensions: p.dimensions,
+          atlas: p.atlas,
+          lodLevels: p.lodLevels,
+          data: p.data,
+          map: halfTexture(p.data, p.dimensions),
+          mip: p.atlas ? halfTexture(p.atlas.data, p.atlas.dimensions) : null,
+          gpu: null,
+        };
+      } else {
+        const renderer = (grids as { renderer?: unknown }).renderer;
+        let device: GPUDevice;
+        try {
+          device = webgpuBackendOf(renderer, "vdbSparseSource").device;
+        } catch {
+          throw bad("pyramidBuild 'gpu' (the default for lod 'coarse-pyramid') needs the VDBGridNode's initialized WebGPURenderer; use pyramidBuild 'cpu' with images.density otherwise.");
+        }
+        const initTexture = (renderer as { initTexture?: (t: THREE.Texture) => void }).initTexture;
+        if (typeof initTexture !== "function") throw bad("pyramidBuild 'gpu' needs renderer.initTexture (three r187 WebGPURenderer).");
+        const layout = vdbBoxPyramidLayout(this.texels, pyramidMax);
+        const map = halfTexture(null, layout.dimensions);
+        const mip = layout.atlas ? halfTexture(null, layout.atlas.dimensions) : null;
+        map.name = "vdbSparseSource pyramid base";
+        if (mip) mip.name = "vdbSparseSource pyramid atlas";
+        for (const t of [map, mip]) if (t) initTexture.call(renderer, t);
+        const gpu = createBoxPyramid(device, grids.pool as never, ids.density, {
+          indexBox: b,
+          ...pyramidMax,
+          targets: { base: getGPUTexture(renderer as never, map), atlas: mip ? getGPUTexture(renderer as never, mip) : null },
+          label: "vdbSparseSource pyramid",
+        });
+        pyramid = {
+          build,
+          level: layout.level,
+          dimensions: [...layout.dimensions],
+          atlas: layout.atlas ? { dimensions: [...layout.atlas.dimensions], levels: layout.atlas.levels.length } : null,
+          lodLevels: layout.lodLevels,
+          map,
+          mip,
+          gpu,
+        };
+      }
     }
     this.pyramid = pyramid;
     this.lodLevels = lod === "none" ? 0 : lod === "node-average" ? 7 : pyramid!.lodLevels;
     const poolIds = new Set([ids.density, ids.mask, ids.emission, ...(Array.isArray(ids.albedo) ? ids.albedo : [ids.albedo])].filter((v): v is number => v !== undefined));
-    const pyramidBytes = pyramid ? 2 * (pyramid.data.length + (pyramid.atlas?.data.length ?? 0)) : 0;
-    this.gpuBytes = { pool: [...poolIds].reduce((s, id) => s + info(id).capacity, 0), pyramid: pyramidBytes };
+    this.poolIds = [...poolIds];
+    const atlasTexels = pyramid?.atlas ? pyramid.atlas.dimensions[0] * pyramid.atlas.dimensions[1] * pyramid.atlas.dimensions[2] : 0;
+    const pyramidBytes = pyramid ? 2 * (pyramid.dimensions[0] * pyramid.dimensions[1] * pyramid.dimensions[2] + atlasTexels) : 0;
+    this.gpuBytes = { pool: [...poolIds].reduce((s, id) => s + info(id).capacity, 0), pyramid: pyramidBytes, pyramidScratch: pyramid?.gpu?.gpuBytes.scratch ?? 0 };
+    this.refreshPyramid();
+  }
+
+  /**
+   * Content version: the newest `imageRevision` of the channel grids (K3.2a), so a `pool.replace` (a
+   * sequence frame) changes it and the 'frame' lighting caster signature (V44) draws the shadow grid
+   * again. Read through the pool's `revision` first (cheap when nothing changed).
+   */
+  get version(): number {
+    const pool = this.grids.pool as unknown as { revision?: number; info(id: number): { imageRevision?: number } };
+    if (typeof pool.revision !== "number") return 0;
+    if (pool.revision !== this.versionSeen.poolRevision) {
+      let value = 0;
+      for (const id of this.poolIds) {
+        try {
+          value = Math.max(value, pool.info(id).imageRevision ?? 0);
+        } catch {
+          // A removed grid: keep the others' revision.
+        }
+      }
+      this.versionSeen = { poolRevision: pool.revision, value };
+    }
+    return this.versionSeen.value;
+  }
+
+  refreshPyramid(): boolean {
+    const gpu = this.pyramid?.gpu;
+    if (!gpu) return false;
+    // Cheap test first: the pool's revision moves on any change; the grid's imageRevision tells whether this one did.
+    const pool = this.grids.pool as unknown as { revision: number; device: GPUDevice };
+    if (pool.revision === this.poolRevisionSeen) return false;
+    const device = pool.device;
+    const encoder = device.createCommandEncoder({ label: "vdbSparseSource pyramid" });
+    if (!gpu.update(encoder)) {
+      // Not resident yet (the update that writes it is still to come): look again next time.
+      if (!gpu.stale) this.poolRevisionSeen = pool.revision;
+      return false;
+    }
+    device.queue.submit([encoder.finish()]);
+    this.poolRevisionSeen = pool.revision;
+    this.pyramidBuilds++;
+    return true;
   }
 
   nodeAverageFn(): (...a: unknown[]) => VDBTslNode {
@@ -378,7 +523,8 @@ class SparseSource implements VDBThreeSparseSource {
       offset3D: uniform(new THREE.Vector3().copy((p.offset3D ?? { x: 0, y: 0, z: 0 }) as THREE.Vector3)),
       wrap3D: uniform(p.wrap3D ?? THREE.ClampToEdgeWrapping, "int"),
       boxes: { density: boxUniform(this.indexBox), mask: boxUniform(this.auxBoxes.mask), albedo: boxUniform(this.auxBoxes.albedo), emission: boxUniform(this.auxBoxes.emission) },
-      pyramidLevel: uniform(pyr?.level ?? 0),
+      // The GPU pyramid rebuilds (on an image change) from here: once per render that samples it.
+      pyramidLevel: pyr?.gpu ? uniform(pyr.level).onRenderUpdate(() => void this.refreshPyramid()) : uniform(pyr?.level ?? 0),
       pyramidLevels: uniform(pyr?.atlas?.levels ?? 0),
       pyramidTexels: uniform(new THREE.Vector3(...(pyr?.dimensions ?? [1, 1, 1]))),
       pyramidAtlasSize: uniform(new THREE.Vector3(...(pyr?.atlas?.dimensions ?? [1, 1, 1]))),
@@ -506,6 +652,7 @@ class SparseSource implements VDBThreeSparseSource {
   }
 
   dispose(): void {
+    this.pyramid?.gpu?.destroy();
     this.pyramid?.map.dispose();
     this.pyramid?.mip?.dispose();
   }
@@ -514,7 +661,8 @@ class SparseSource implements VDBThreeSparseSource {
 /**
  * A sparse volume source over pool grids (see the file comment). `grids` must be a `VDBGridNode`
  * made with profile `'march'` and helpers `['cellBoundTrilinear', 'hddaCellEnd']` (+ `'nodeAverage'`
- * for that LOD). The source holds no GPU buffer of its own (the pool's), only the pyramid textures.
+ * for that LOD). The source holds no grid buffer of its own (the pool's), only the pyramid textures
+ * (and, building on the GPU, the build's scratch buffers).
  */
 export function vdbSparseSource(grids: VDBGridNode, ids: VDBSparseSourceGrids, options: VDBSparseSourceOptions = {}): VDBThreeSparseSource {
   if (!grids || typeof grids !== "object" || !("module" in grids)) throw bad("pass a VDBGridNode.");

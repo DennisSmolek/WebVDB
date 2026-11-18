@@ -70,8 +70,8 @@ export interface VDBFrameVolumeProps {
   emissionColor?: VDBVolumeNodesOptions["emissionColor"];
   /**
    * HDDA empty-space skipping in the shadow march (sparse sources; K3.2). Skipped samples are exactly
-   * 0, so the image does not change (within float noise); dense sources ignore it. Default false: on
-   * SwiftShader it cost more than it saved in every K3.2 scene (provisional, D25; hardware rerun K3.2c).
+   * 0, so the image does not change (within float noise); dense sources ignore it. Default true (owner
+   * decision D29; the hardware timings are in docs/handoffs/K3-2a.md).
    */
   hdda?: boolean;
 }
@@ -155,7 +155,7 @@ export class VDBFrameVolume extends THREE.Group {
       shadowSteps = 32,
       mipmaps = true,
       emissionColor,
-      hdda = false,
+      hdda = true,
     } = props;
 
     this.source = source;

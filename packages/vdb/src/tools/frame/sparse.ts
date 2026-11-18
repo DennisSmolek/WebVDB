@@ -26,17 +26,11 @@
 import { cellBoundTrilinear, hddaCellEnd, hddaInit, hddaStep, indexBBox, leafVoxels, nodeAverage, nodeMax, treeNodes, type Vec3 } from "../cpu/march.js";
 import { resampleGrid } from "../nanovdb/resample.js";
 import { GRID_OFF_MAP, MAP_OFF_MATD, MAP_OFF_VECD } from "../nanovdb/bytes.js";
+import { vdbBoxPyramidLayout, vdbPyramidBaseLevel, vdbPyramidLevelSize as levelSize } from "./pyramid-layout.js";
+
+export { vdbPyramidBaseLevel };
 
 const f = Math.fround;
-
-/** frameMipmaps.js L14 `getLevelSize`: ceil sizes. */
-const levelSize = (size: number, level: number): number => Math.max(1, Math.ceil(size / 2 ** level));
-
-/** The base level of the coarse pyramid: max(1, ⌈log2(maxTexels / pyramidMax)⌉) (R1 §4.3). */
-export function vdbPyramidBaseLevel(texels: readonly number[], pyramidMax = 128): number {
-  const maxTexels = Math.max(...texels, 1);
-  return Math.max(1, Math.ceil(Math.log2(maxTexels / Math.max(1, pyramidMax))));
-}
 
 /** A float mip atlas in his layout: levels 1..n side by side on x. */
 export interface VDBFloatMipAtlas {
@@ -133,8 +127,9 @@ export function vdbBoxPyramid(image: Uint32Array, o: VDBBoxPyramidOptions = {}):
   const box = o.indexBox ?? indexBBox(image);
   const texels: Vec3 = [box.max[0] - box.min[0] + 1, box.max[1] - box.min[1] + 1, box.max[2] - box.min[2] + 1];
   if (texels.some((t) => !(t > 0))) throw new Error("vdbBoxPyramid: empty index box");
-  const level = o.level ?? vdbPyramidBaseLevel(texels, o.pyramidMax ?? 128);
-  const dims: Vec3 = [levelSize(texels[0], level), levelSize(texels[1], level), levelSize(texels[2], level)];
+  const layout = vdbBoxPyramidLayout(texels, { ...(o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {}), ...(o.level !== undefined ? { level: o.level } : {}) });
+  const level = layout.level;
+  const dims: Vec3 = [...layout.dimensions];
   // The index cell box [min − ½, max + ½] in world (NanoVDB: world = matd · ijk + vecd).
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   const mat = Array.from({ length: 9 }, (_, i) => view.getFloat64(GRID_OFF_MAP + MAP_OFF_MATD + i * 8, true));
