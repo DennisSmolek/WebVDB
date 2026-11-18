@@ -23,6 +23,9 @@
 //   #    --executable <p>  Chrome/Chromium binary (default: Playwright's Chromium)
 //   #    --headed          show the browser window
 //   #    --force           overwrite an existing capture directory
+//   #    --out <dir>       output directory (default fixtures/k3-reference/75e7345)
+//   #    --merge           add to an existing capture directory: the captured scenarios replace theirs in
+//   #                      manifest.json, every other scenario (and file) stays (no --force needed)
 //
 //   # 4. Compare our renders with the captures (Step 1 bar: PSNR >= 40 dB, <= 0.5% pixels > 8/255):
 //   node scripts/k3/compare.mjs --ours artifacts/k3/ours --reference fixtures/k3-reference/75e7345 --heatmap artifacts/k3/diff
@@ -99,6 +102,32 @@ const SCENARIOS = [
   { name: "step3-shadow-grid-high-dir-isolated", step: 3, fields: { demo: "frame", lightSetup: "dir", multipleScattering: true, shadowResolution: 160 }, sanity: null, isolate: "frame" },
   { name: "step3-two-bunnies-dir-isolated", step: 3, fields: { demo: "frame", lightSetup: "dir", multipleScattering: true, source: "twoBunnies" }, sanity: null, isolate: "frame" },
   { name: "step3-environment-sky-midday-env-isolated", step: 3, fields: { demo: "frame", lightSetup: "none", multipleScattering: true, environment: "sky-midday" }, sanity: null, isolate: "environment" },
+  // K3.4 (R1 §6 Step 4): phase functions and multiple scattering modes, his tests/validation-set demo-1-frame-phase-*,
+  // -multiple-scattering-*, -octave* and -lighting-volume-phase-g-low fields (his default multipleScattering 'neural').
+  // `*-asis`: his GUI fields as is ('environment' light setup), checked against his JPEG where he has one (INFO for
+  // our parity). `*-dir-isolated`: + his sun only, `isolate: 'frame'` ('volume' lighting: `isolate: true`), the gate.
+  ...[
+    ["step4-default-neural", {}, "demo-1.jpg"],
+    ["step4-multiple-scattering-two-sided", { multipleScattering: "two-sided" }, null],
+    ["step4-multiple-scattering-octaves", { multipleScattering: "octaves" }, "demo-1-multiple-scattering-octaves.jpg"],
+    ["step4-octaves-1", { multipleScattering: "octaves", scatteringOctaves: 1 }, "demo-1-octaves-1.jpg"],
+    ["step4-octaves-8", { multipleScattering: "octaves", scatteringOctaves: 8 }, "demo-1-octaves-8.jpg"],
+    ["step4-octave-extinction-high", { multipleScattering: "octaves", scatteringOctaveExtinction: 1 }, "demo-1-octave-extinction-high.jpg"],
+    ["step4-octave-contribution-high", { multipleScattering: "octaves", scatteringOctaveContribution: 1 }, "demo-1-octave-contribution-high.jpg"],
+    ["step4-octave-phase-low", { multipleScattering: "octaves", scatteringOctavePhase: 0 }, "demo-1-octave-phase-low.jpg"],
+    ["step4-frame-phase-isotropic", { "frame-phase": "isotropic" }, "demo-1-frame-phase-isotropic.jpg"],
+    ["step4-frame-phase-g-low", { "frame-phaseG": -0.5 }, "demo-1-frame-phase-g-low.jpg"],
+    ["step4-frame-phase-dual-lobe", { "frame-phase": "dual-lobe" }, "demo-1-frame-phase-dual-lobe.jpg"],
+    ["step4-frame-phase-dual-lobe-back-g-high", { "frame-phase": "dual-lobe", "frame-phaseBackG": 0.5 }, "demo-1-frame-phase-dual-lobe-back-g-high.jpg"],
+    ["step4-frame-phase-dual-lobe-back-weight-high", { "frame-phase": "dual-lobe", "frame-phaseBackWeight": 1 }, "demo-1-frame-phase-dual-lobe-back-weight-high.jpg"],
+    ["step4-frame-phase-lorenz-mie", { "frame-phase": "lorenz-mie" }, "demo-1-frame-phase-lorenz-mie.jpg"],
+    ["step4-frame-phase-lorenz-mie-rgb", { "frame-phase": "lorenz-mie-rgb" }, null],
+    ["step4-frame-phase-g-exponent", { "frame-phaseGExponent": 1 }, null],
+    ["step4-lighting-volume-phase-g-low", { lighting: "volume", phaseG: -0.5 }, "demo-1-lighting-volume-phase-g-low.jpg"],
+  ].flatMap(([name, extra, sanity]) => [
+    { name: `${name}-asis`, step: 4, fields: { demo: "frame", ...extra }, sanity },
+    { name: `${name}-dir-isolated`, step: 4, fields: { demo: "frame", lightSetup: "dir", ...extra }, sanity: null, isolate: extra.lighting === "volume" ? true : "frame" },
+  ]),
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.
@@ -124,7 +153,7 @@ const argv = process.argv.slice(2);
 const opt = { port: "5406" };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === "--dry-run" || a === "--headed" || a === "--force") opt[a.slice(2)] = true;
+  if (a === "--dry-run" || a === "--headed" || a === "--force" || a === "--merge") opt[a.slice(2)] = true;
   else if (a === "--help" || a === "-h") {
     console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").filter((l) => l.startsWith("//")).join("\n"));
     process.exit(0);
@@ -178,8 +207,10 @@ const scenarios = SCENARIOS.filter((s) => !wanted || wanted.has(s.name));
 if (wanted) for (const n of wanted) if (!SCENARIOS.some((s) => s.name === n)) fail(`unknown scenario ${n}; known: ${SCENARIOS.map((s) => s.name).join(", ")}`);
 for (const s of scenarios) if (s.sanity && !existsSync(path.join(validationSet, s.sanity))) fail(`his reference ${s.sanity} is missing from ${validationSet}`);
 
-const outDir = path.join(repoRoot, "fixtures", "k3-reference", PINNED_SHORT);
-if (existsSync(outDir) && readdirSync(outDir).length && !opt.force) fail(`${outDir} is not empty; pass --force to overwrite`);
+const outDir = opt.out ? path.resolve(String(opt.out)) : path.join(repoRoot, "fixtures", "k3-reference", PINNED_SHORT);
+if (existsSync(outDir) && readdirSync(outDir).length && !opt.force && !opt.merge) fail(`${outDir} is not empty; pass --merge to add scenarios or --force to overwrite`);
+// --merge: the existing manifest's other scenarios are kept (K3.4: Step 4 captures added to the Step 0-3 set)
+const previousManifest = opt.merge && existsSync(path.join(outDir, "manifest.json")) ? JSON.parse(readFileSync(path.join(outDir, "manifest.json"), "utf8")) : null;
 const port = Number(opt.port);
 if (!Number.isInteger(port) || port < 1024) fail(`bad --port ${opt.port}`);
 const baseURL = `http://127.0.0.1:${port}/`;
@@ -415,7 +446,16 @@ async function capture(context, scenario, fields, type) {
   if (scenario.isolate) {
     await isolateVolumes(page, scenario.isolate);
     // 'frame' lighting reads the environment lights from an async readback; let a changed environment settle.
-    if (scenario.isolate !== true) await waitForIdle(page, pending, errors);
+    if (scenario.isolate !== true) {
+      await waitForIdle(page, pending, errors);
+      // His environment lights are made on the update() after the async map readback lands, and the clock is paused
+      // (waitForIdle never renders a frame), so without frames here the captured frame still takes the 'outward'
+      // path. Run frames until the readback is consumed (real time passes for the GPU between them).
+      for (let i = 0; i < 6; i++) {
+        await page.clock.runFor(FRAME_TIME);
+        await page.waitForTimeout(150);
+      }
+    }
   }
   await page.clock.runFor(FRAME_TIME);
   await page.waitForTimeout(10);
@@ -513,6 +553,11 @@ try {
   failed = true;
   console.error(`\ncapture failed: ${e?.stack ?? e}`);
 } finally {
+  if (previousManifest) {
+    const captured = new Set(manifest.scenarios.map((e) => e.name));
+    manifest.scenarios = [...(previousManifest.scenarios ?? []).filter((e) => !captured.has(e.name)), ...manifest.scenarios];
+    manifest.merged = [...(previousManifest.merged ?? [{ capturedAt: previousManifest.capturedAt, browser: previousManifest.browser }]), { capturedAt: manifest.capturedAt, browser: manifest.browser, scenarios: [...captured] }];
+  }
   writeFileSync(path.join(outDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   await browser.close();
   stopServer();

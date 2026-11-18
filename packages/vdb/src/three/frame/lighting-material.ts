@@ -2,7 +2,8 @@
 //   src/three-openvdb/frame/webgpu/FrameLightingMaterial.js L43–119 (constructor, uniforms),
 //   L277–437 (the grey `createFragmentNode`).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
-// Changes: TypeScript; grey only (the spectral variant is K3.5); octaves off (K3.4); source-free.
+// Changes: TypeScript; grey only (the spectral variant is K3.5); source-free. K3.4: the octave uniform
+// (L71–72) and the octave light of lights without a shadow slot (L386–397).
 // Divergences: DIVERGES.md (K3.3 rows).
 
 /**
@@ -43,6 +44,8 @@ export class VDBFrameLightingMaterial extends NodeMaterial {
   // NOTE One phase for all volumes, from the renderer settings
   readonly framePhase = uniform(new THREE.Vector4());
   readonly framePhaseSpectrum = uniform(new THREE.Vector3());
+  // NOTE Scattering octaves of the renderer settings (phase.ts). Count 0 is off.
+  readonly frameScatteringOctaves = uniform(new THREE.Vector4());
   // NOTE Environment lights with a shadow slot (0 or 1). Light i has slot frameEnvironmentShadowSlot + i.
   readonly frameEnvironmentLightCount = uniform(0, "int");
   readonly frameEnvironmentShadowSlot = uniform(0, "int");
@@ -146,11 +149,11 @@ export class VDBFrameLightingMaterial extends NodeMaterial {
 
         // NOTE Directional position xyz is the direction to the light
         const lightDirection = select(position.w.lessThan(1.5), position.xyz, normalize(lightVector)).toVar();
-        const unshadowed = frameShadowedLight(this.framePhase, this.framePhaseSpectrum, rayDirection, lightDirection, vec2(1.0));
+        const unshadowed = frameShadowedLight(this.framePhase, this.framePhaseSpectrum, this.frameScatteringOctaves, rayDirection, lightDirection, vec2(1.0));
         const hasSlot = i.lessThan(this.frameShadowLightCount).toVar();
 
         // NOTE A light with a shadow slot: the density pass stored phase * direct + scattered light.
-        // A light with no shadow slot: no shadow.
+        // A light with no shadow slot: no shadow, then octaves still add their light.
         const lightFactor = select(hasSlot, vec3(shadow), unshadowed).toVar();
 
         If(colorPhase.and(hasSlot), () => {

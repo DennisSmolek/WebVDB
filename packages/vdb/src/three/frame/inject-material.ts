@@ -1,13 +1,14 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/FrameInjectMaterial.js L59–101 (constructor, blending),
 //   L142–284 (froxel pre-integration, shadow march), L395–398 (ambient), L453–532 (scene lights,
-//   radiance, premultiplied output).
+//   radiance, premultiplied output); K3.4: L73–76 (octave and two-sided uniforms), L270–277 (octave
+//   march depth and transmittance), L488–512 (the two-sided back march, frameShadowedLight with octaves).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; reads density only through `vdbVolumeNodes` (the VDBVolumeSource seam), so
-// one material is built per volume source; grey only (no spectral outputs); no octaves, two-sided,
-// hemisphere, light-probe or environment terms yet (K3.3–K3.5); with a sparse source the shadow
-// march skips empty space through the source's HDDA query (K3.2, same lattice, same values).
-// Divergences: DIVERGES.md (K3.1 and K3.2 rows), V23–V25.
+// one material is built per volume source; grey only (no spectral outputs); no hemisphere,
+// light-probe or environment terms yet (they read the 'frame' lighting uniforms; a later step);
+// with a sparse source the shadow march skips empty space through the source's HDDA query (K3.2,
+// same lattice, same values). Divergences: DIVERGES.md (K3.1, K3.2 and K3.4 rows), V23–V25.
 
 /**
  * `'volume'` lighting (R1 §2): lights one volume in each froxel with a shadow march through that
@@ -33,6 +34,7 @@ import {
   frameShadowTransmittance,
   frameShadowedLight,
   frameTileVertex,
+  frameTwoSidedDiffusion,
   getBoxSteps,
   getFroxelLod,
   getSampledLod,
@@ -75,6 +77,10 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
   readonly frameShadowSteps = uniform(32, "int");
   // NOTE Multiple scattering of this volume (phase.ts). 0.0 is single scattering.
   readonly frameMultipleScattering = uniform(0.0);
+  // NOTE Scattering octaves of the renderer settings (phase.ts). Count 0 is off.
+  readonly frameScatteringOctaves = uniform(new THREE.Vector4());
+  // NOTE multipleScattering 'two-sided' (phase.ts): scene light shadows also march away from the light
+  readonly frameTwoSided = uniform(0.0);
   readonly frameCameraMatrixWorld = uniform(new THREE.Matrix4());
   // NOTE The froxel rectangle and the slices of the volume of this draw. One instance for each slice.
   readonly frameRect = uniform(new THREE.Vector4());
@@ -247,7 +253,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
 
                 depths.addAssign(frameShadowStep(extinction, frameShadowAbsorption(extinction, albedo), this.frameMultipleScattering));
 
-                If(frameShadowMarchDepth(depths, this.frameMultipleScattering).greaterThan(8.0), () => {
+                If(frameShadowMarchDepth(depths, this.frameMultipleScattering, this.frameScatteringOctaves).greaterThan(8.0), () => {
                   Break();
                 });
 
@@ -261,7 +267,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
 
                 depths.addAssign(frameShadowStep(extinction, frameShadowAbsorption(extinction, albedo), this.frameMultipleScattering));
 
-                If(frameShadowMarchDepth(depths, this.frameMultipleScattering).greaterThan(8.0), () => {
+                If(frameShadowMarchDepth(depths, this.frameMultipleScattering, this.frameScatteringOctaves).greaterThan(8.0), () => {
                   Break();
                 });
 
@@ -269,7 +275,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
               });
             }
 
-            const shadow = frameShadowTransmittance(depths, this.frameMultipleScattering);
+            const shadow = frameShadowTransmittance(depths, this.frameMultipleScattering, this.frameScatteringOctaves);
 
             result.assign(vec4(shadow.x, shadow.y, depths.z, depths.y));
           });
@@ -310,7 +316,14 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
           const lightDirection = select(isDirectional, position.xyz, normalize(position.xyz.sub(worldPosition)));
           const shadow = volumeTransmittance(localDirection, maxDistance);
 
-          const light = frameShadowedLight(volumeUniforms.framePhase, volumeUniforms.framePhaseSpectrum, rayDirection, lightDirection, shadow.xy.toVar());
+          // NOTE Two-sided: diffusion of the slab between the light side and the far side (frameTwoSidedDiffusion)
+          If(this.frameTwoSided.greaterThan(0.5), () => {
+            const back = volumeTransmittance(localDirection.negate(), float(1e6));
+
+            shadow.y.assign(frameTwoSidedDiffusion(shadow.x, shadow.z, shadow.w, back.z));
+          });
+
+          const light = frameShadowedLight(volumeUniforms.framePhase, volumeUniforms.framePhaseSpectrum, this.frameScatteringOctaves, rayDirection, lightDirection, shadow.xy.toVar());
 
           irradiance.addAssign(color.rgb.mul(light).mul(spotAttenuation));
         });

@@ -10,6 +10,12 @@
  *   density targets (ambient, hemisphere, directional slots, the environment slot).
  * - `syntheticEnvironment`: a deterministic equirect sky with a sun (half floats), for 'directional'
  *   environment lighting without an HDR file.
+ * K3.4 (phase functions + multiple scattering):
+ * - the twins above take the octave, two-sided and neural modes and the per-channel / Lorenz-Mie phase
+ *   from the renderer's uniforms; `gridMipTwin`: the neural input mips vs `vdbFrameGridMipLevel`.
+ * - `probeScattering`: the K3.4 TSL chunks (Mie table read, per-channel phase, octaves, two-sided
+ *   diffusion, the octave shadow total and shadowed light) vs their CPU twins.
+ * - `furnaceEnvironment`: a uniform equirect map of radiance L (his utils/furnace.js white furnace).
  */
 import * as THREE from "three";
 import { NodeMaterial, type WebGPURenderer } from "three/webgpu";
@@ -18,6 +24,24 @@ import type { VDBFrameRenderer, VDBFrameVolume } from "@pmndrs/vdb/three";
 import { vdbFrameChunks } from "@pmndrs/vdb/three";
 import {
   sampleWvdbDenseTexture,
+  vdbFrameGridMipLevel,
+  vdbFrameHenyeyGreensteinColor,
+  vdbFrameMieTexel,
+  vdbFrameNeuralLight,
+  vdbFrameNeuralMipResolution,
+  vdbFrameOctaveLight,
+  vdbFramePhaseColor,
+  vdbFramePhaseWeight,
+  vdbFramePhaseWeightScaled,
+  vdbFrameShadowMarchDepth,
+  vdbFrameShadowOpticalDepth,
+  vdbFrameShadowTotal,
+  vdbFrameShadowTransmittance,
+  vdbFrameShadowedLightColor,
+  vdbFrameSampleShadows,
+  vdbFrameTwoSidedDiffusion,
+  type VDBFrameNeuralMip,
+  type VDBFrameTransmittanceModes,
   vdbFrameDensityFroxel,
   type VDBFrameDensityInputs,
   type WvdbDenseVolume,
@@ -38,7 +62,7 @@ type N = any;
 type V2 = [number, number];
 type V3 = [number, number, number];
 type V4 = [number, number, number, number];
-const { Fn, float, screenCoordinate, vec3, vec4, If, int } = TSL as unknown as Record<string, N>;
+const { Fn, float, screenCoordinate, vec2, vec3, vec4, If, int } = TSL as unknown as Record<string, N>;
 
 export interface TwinStats {
   compared: number;
@@ -122,6 +146,7 @@ export async function transmittanceTwin(renderer: WebGPURenderer, fr: VDBFrameRe
   const sky = fr.lightUniforms.frameSkyDirection.value;
   const ms = tm.frameMultipleScattering.value as number;
   const jitter = fr.froxelUniforms.frameJitter.value as number;
+  const modes = await transmittanceModes(renderer, fr, density, grid);
   const stats = newStats();
   let marched = 0;
   for (let y = 0; y < density.height; y += step) {
@@ -131,16 +156,57 @@ export async function transmittanceTwin(renderer: WebGPURenderer, fr: VDBFrameRe
       const touched = gpu.some((v) => v.some((c) => c !== 1));
       if (touched) marched++;
       else if ((x + y) % (step * 7) !== 0) continue;
-      const cpu = vdbFrameTransmittanceVoxel(density, grid, [x + 0.5, y + 0.5], lights, [sky.x, sky.y, sky.z], ms, jitter);
+      const cpu = vdbFrameTransmittanceVoxel(density, grid, [x + 0.5, y + 0.5], lights, [sky.x, sky.y, sky.z], ms, jitter, modes);
       for (let t = 0; t < 4; t++) for (let c = 0; c < 4; c++) accumulate(stats, gpu[t]![c]!, cpu[t]![c]!, 2e-3, 4e-3, { x, y, t, c });
     }
   }
   return { ...finish(stats), marched };
 }
 
+/** The read-back neural input mips (levels 1 and up) of the renderer's last grid mip pass. */
+export async function readNeuralMips(renderer: WebGPURenderer, fr: VDBFrameRenderer): Promise<VDBFrameNeuralMip[]> {
+  const resolution = fr.gridUniforms.frameGridResolution.value as number;
+  const layouts = fr.transmittanceMaterial.frameNeuralMipLayouts;
+  return Promise.all(
+    fr.gridMipTargets.map(async (t, i) => ({ atlas: await readAtlas(renderer, t, 2), resolution: vdbFrameNeuralMipResolution(resolution, i + 1), columns: layouts[i]!.value.x as number })),
+  );
+}
+
+/** The K3.4 modes of the transmittance material (octaves, two-sided, the network over the read-back mips). */
+async function transmittanceModes(renderer: WebGPURenderer, fr: VDBFrameRenderer, density: VDBFrameAtlas, grid: VDBFrameGridLayout): Promise<VDBFrameTransmittanceModes> {
+  const tm = fr.transmittanceMaterial;
+  const o = tm.frameScatteringOctaves.value;
+  const modes: VDBFrameTransmittanceModes = { octaves: [o.x, o.y, o.z, o.w], twoSided: (tm.frameTwoSided.value as number) > 0.5 };
+  if (tm.neural) {
+    const network = tm.neural;
+    const mips = await readNeuralMips(renderer, fr);
+    modes.neural = (world, direction, opticalDepth) => vdbFrameNeuralLight(network, grid, density, mips, world, direction, opticalDepth);
+  }
+  return modes;
+}
+
+/**
+ * The neural input mips (VDBFrameGridMipMaterial) vs `vdbFrameGridMipLevel`: level 1 from the read-back
+ * grid atlas (the last cascade's tiles), level k from the read-back level k − 1. Every texel.
+ */
+export async function gridMipTwin(renderer: WebGPURenderer, fr: VDBFrameRenderer): Promise<TwinStats & { levels: number }> {
+  const density = await readAtlas(renderer, fr.shadowDensityTarget!, 2);
+  const mips = await readNeuralMips(renderer, fr);
+  const g = fr.gridUniforms;
+  const resolution = g.frameGridResolution.value as number;
+  const stats = newStats();
+  mips.forEach((mip, i) => {
+    const source = i === 0 ? { atlas: density, resolution, columns: g.frameGridColumns.value as number, tile: ((g.frameGridCount.value as number) - 1) * resolution } : { ...mips[i - 1]!, tile: 0 };
+    const cpu = vdbFrameGridMipLevel(source.atlas, source.resolution, source.columns, source.tile, mip.resolution);
+    if (cpu.atlas.width !== mip.atlas.width || cpu.atlas.height !== mip.atlas.height) throw new Error(`gridMipTwin: level ${i + 1} is ${mip.atlas.width}x${mip.atlas.height}, the twin ${cpu.atlas.width}x${cpu.atlas.height}`);
+    for (let k = 0; k < cpu.atlas.data.length; k++) accumulate(stats, mip.atlas.data[k]!, cpu.atlas.data[k]!, 1e-3, 2e-3, { level: i + 1, k });
+  });
+  return { ...finish(stats), levels: mips.length };
+}
+
 /**
  * The lighting pass vs `vdbFrameLightingFroxel` from the read-back density targets, over the froxel
- * area. Needs a scene without spot/point lights, light probes or per-channel phases.
+ * area. Needs a scene without spot/point lights or light probes (per-channel phases: K3.4).
  */
 export async function lightingTwin(renderer: WebGPURenderer, fr: VDBFrameRenderer, step = 2): Promise<TwinStats & { lit: number }> {
   const targets = await Promise.all([0, 1, 2, 3].map((i) => readAtlas(renderer, fr.densityTarget!, 4, i)));
@@ -164,6 +230,15 @@ export async function lightingTwin(renderer: WebGPURenderer, fr: VDBFrameRendere
   const hs = lu.frameHemiSkyColor.value;
   const hg = lu.frameHemiGroundColor.value;
   const phase = lm.framePhase.value;
+  const oct = lm.frameScatteringOctaves.value;
+  const spectrum = lm.framePhaseSpectrum.value;
+  const colorPhase = spectrum.z > 0.5 && (fr.densityShadowUniforms.frameUseShadows.value as number) === 1;
+  const directMaps = colorPhase ? await Promise.all([2, 3].map((i) => readAtlas(renderer, fr.transmittanceTarget!, 4, i))) : null;
+  const grid0 = gridLayout(fr);
+  const directAt = directMaps ? (world: V3) => {
+    const s = vdbFrameSampleShadows(directMaps, grid0, world);
+    return [s[0]![0]!, s[0]![1]!, s[0]![2]!, s[0]![3]!, s[1]![0]!, s[1]![1]!];
+  } : undefined;
   const stats = newStats();
   let lit = 0;
   const w = atlas.width;
@@ -182,6 +257,9 @@ export async function lightingTwin(renderer: WebGPURenderer, fr: VDBFrameRendere
         lights,
         shadowLightCount: lm.frameShadowLightCount.value as number,
         phase: [phase.x, phase.y, phase.z, phase.w],
+        octaves: [oct.x, oct.y, oct.z, oct.w],
+        phaseSpectrum: [spectrum.x, spectrum.y, spectrum.z],
+        ...(directAt ? { directAt } : {}),
         environmentColors: envColors,
         environmentShadowSlot: lm.frameEnvironmentShadowSlot.value as number,
       });
@@ -237,6 +315,8 @@ export async function densityTwin(renderer: WebGPURenderer, fr: VDBFrameRenderer
     sceneLightCount,
     lightPositions: (lu.frameLightPositions.array as THREE.Vector4[]).slice(0, Math.max(sceneLightCount, 0)).map((v) => [v.x, v.y, v.z, v.w] as V4),
     phase: [phase.x, phase.y, phase.z, phase.w],
+    phaseSpectrum: [ds.framePhaseSpectrum.value.x, ds.framePhaseSpectrum.value.y, ds.framePhaseSpectrum.value.z],
+    octaves: [ds.frameScatteringOctaves.value.x, ds.frameScatteringOctaves.value.y, ds.frameScatteringOctaves.value.z, ds.frameScatteringOctaves.value.w],
   };
   if ((ds.frameEnvironmentMode.value as number) === 2) {
     const u = lu.frameEnvironmentUnshadowed.value;
@@ -281,14 +361,17 @@ export async function environmentGridTwin(renderer: WebGPURenderer, fr: VDBFrame
   const u = fr.lightUniforms.frameEnvironmentUnshadowed.value;
   const columns = fr.environmentGridUniforms.frameEnvironmentGridColumns.value as number;
   const ms = em.frameMultipleScattering.value as number;
+  const ov = em.frameScatteringOctaves.value;
+  const octaves: V4 = [ov.x, ov.y, ov.z, ov.w];
+  const outside = vdbFrameShadowTotal(1, octaves);
   const stats = newStats();
   let marched = 0;
   for (let y = 0; y < out.height; y += step) {
     for (let x = 0; x < out.width; x += step) {
       const o = (y * out.width + x) * 4;
       const gpu = [out.data[o]!, out.data[o + 1]!, out.data[o + 2]!, out.data[o + 3]!];
-      const cpu = vdbFrameEnvironmentGridVoxel(density, grid, columns, [x + 0.5, y + 0.5], lights, [u.x, u.y, u.z], ms);
-      if (cpu[0] !== u.x || cpu[1] !== u.y || cpu[2] !== u.z) marched++;
+      const cpu = vdbFrameEnvironmentGridVoxel(density, grid, columns, [x + 0.5, y + 0.5], lights, [u.x, u.y, u.z], ms, octaves);
+      if (cpu[0] !== u.x * outside || cpu[1] !== u.y * outside || cpu[2] !== u.z * outside) marched++;
       for (let c = 0; c < 4; c++) accumulate(stats, gpu[c]!, cpu[c]!, 2e-3, 4e-3, { x, y, c });
     }
   }
@@ -372,7 +455,7 @@ export async function probeGrid(renderer: WebGPURenderer, fr: VDBFrameRenderer):
       })
       .Else(() => {
         const f = a.mul(5.0);
-        out.assign(vec4(C.frameIsotropicDiffusion(f, a.mul(3.0), a), C.frameIsotropicDiffusion(a, f, float(0.0)), C.frameShadowTotal(a), float(0.0)));
+        out.assign(vec4(C.frameIsotropicDiffusion(f, a.mul(3.0), a), C.frameIsotropicDiffusion(a, f, float(0.0)), C.frameShadowTotal(a, vec4(0.0)), float(0.0)));
       });
     return out;
   })();
@@ -444,6 +527,148 @@ export function syntheticEnvironment(sun: V3 = [0.45, 0.75, 0.48]): THREE.DataTe
   tex.minFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
   tex.flipY = false;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * The K3.4 TSL chunks vs their CPU twins (one RGBA32F value per channel, 64 angles × 6 rows): the Lorenz-Mie
+ * table read and phase weight, the per-channel phase (phaseGExponent and 'lorenz-mie-rgb'), the scaled
+ * phase, octave light / march depth / transmittance / shadow total, two-sided diffusion and the shadowed light
+ * with octaves.
+ */
+export async function probeScattering(renderer: WebGPURenderer): Promise<TwinStats> {
+  const C = vdbFrameChunks;
+  const PW = 64;
+  const PH = 6;
+  const dual: V4 = [0.8, -0.3, 0.2, 0];
+  const mie: V4 = [0, 0, 0, 1];
+  const mieRgb: V4 = [0, 0, 0, 2];
+  const exponentSpectrum: V3 = [Math.pow(650 / 550, -1), Math.pow(450 / 550, -1), 1];
+  const octaves: V4 = [4, 0.5, 0.5, 0.5];
+  const material = new NodeMaterial();
+  material.fragmentNode = Fn(() => {
+    const px = screenCoordinate.x.floor();
+    const row = screenCoordinate.y.floor().toVar();
+    const a = px.add(0.5).div(PW).toVar();
+    const out = vec4(0.0).toVar();
+    const cosT = a.mul(2.0).sub(1.0).toVar();
+    const sinT = float(1.0).sub(cosT.mul(cosT)).max(0.0).sqrt();
+    const ray = vec3(0.0, 0.0, 1.0);
+    const light = vec3(sinT, 0.0, cosT);
+    const oct = vec4(...octaves);
+    const tau = a.mul(6.0).toVar();
+    If(row.lessThan(0.5), () => {
+      // Mie table: 'lorenz-mie' weight, then the rgb table texel
+      const t = C.frameMieTexel(cosT);
+      out.assign(vec4(C.framePhaseWeight(vec4(...mie), ray, light), t.r, t.g, t.b));
+    })
+      .ElseIf(row.lessThan(1.5), () => {
+        const rgb = C.framePhaseColor(vec4(...mieRgb), vec3(1.0, 1.0, 1.0), ray, light);
+        const exp = C.framePhaseColor(vec4(...dual), vec3(...exponentSpectrum), ray, light);
+        out.assign(vec4(rgb.b, exp.r, exp.g, exp.b));
+      })
+      .ElseIf(row.lessThan(2.5), () => {
+        out.assign(
+          vec4(
+            C.framePhaseWeightScaled(vec4(...dual), cosT, float(0.5)),
+            C.framePhaseWeightScaled(vec4(...mie), cosT, float(0.25)),
+            C.frameOctaveLight(oct, tau, vec4(...dual), cosT),
+            C.frameOctaveLight(oct, tau, null, null),
+          ),
+        );
+      })
+      .ElseIf(row.lessThan(3.5), () => {
+        const depths = vec3(tau, tau.mul(0.3), tau.mul(0.6)).toVar();
+        const t = C.frameShadowTransmittance(depths, float(0.42), oct);
+        out.assign(vec4(C.frameShadowMarchDepth(depths, float(0.42), oct), t.x, t.y, C.frameShadowTotal(t.y, oct)));
+      })
+      .ElseIf(row.lessThan(4.5), () => {
+        const f = a.mul(8.0).toVar();
+        out.assign(
+          vec4(
+            C.frameTwoSidedDiffusion(float(0.0), f, a.mul(0.5), float(8.0).sub(f)),
+            C.frameTwoSidedDiffusion(float(0.0), f, float(0.0), a.mul(2.0)),
+            C.frameTwoSidedDiffusion(float(0.9), a.mul(0.1), float(0.0), float(0.2)),
+            C.frameOctaveLight(vec4(8.0, 0.7, 0.9, 0.3), tau, vec4(...mie), cosT),
+          ),
+        );
+      })
+      .Else(() => {
+        const shadow = vec2(tau.negate().exp(), float(1.0).div(tau.add(1.0))).toVar();
+        const lit = C.frameShadowedLight(vec4(...dual), vec3(...exponentSpectrum), oct, ray, light, shadow);
+        const plain = C.frameShadowedLight(vec4(...dual), vec3(1.0, 1.0, 0.0), vec4(0.0), ray, light, vec2(shadow.x, tau.mul(-0.5).exp()));
+        out.assign(vec4(lit.r, lit.g, lit.b, plain.g));
+      });
+    return out;
+  })();
+  material.vertexNode = vec4(TSL.positionGeometry.xy, 0.0, 1.0);
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+  quad.frustumCulled = false;
+  const scene = new THREE.Scene();
+  scene.add(quad);
+  const target = new THREE.RenderTarget(PW, PH, { type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+  renderer.setRenderTarget(target);
+  renderer.render(scene, new THREE.OrthographicCamera());
+  renderer.setRenderTarget(null);
+  const raw = (await renderer.readRenderTargetPixelsAsync(target, 0, 0, PW, PH)) as unknown as Float32Array;
+  const gpu = tightRows(raw, PW, PH, 4);
+  target.dispose();
+  material.dispose();
+  const stats = newStats();
+  for (let row = 0; row < PH; row++) {
+    for (let x = 0; x < PW; x++) {
+      const a = (x + 0.5) / PW;
+      const cosT = a * 2 - 1;
+      const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
+      const ray: V3 = [0, 0, 1];
+      const light: V3 = [sinT, 0, cosT];
+      const tau = a * 6;
+      let cpu: number[];
+      if (row === 0) {
+        const t = vdbFrameMieTexel(cosT);
+        cpu = [vdbFramePhaseWeight(mie, ray, light), t[0], t[1], t[2]];
+      } else if (row === 1) {
+        const rgb = vdbFramePhaseColor(mieRgb, [1, 1, 1], ray, light);
+        cpu = [rgb[2], ...vdbFramePhaseColor(dual, exponentSpectrum, ray, light)];
+      } else if (row === 2) {
+        cpu = [vdbFramePhaseWeightScaled(dual, cosT, 0.5), vdbFramePhaseWeightScaled(mie, cosT, 0.25), vdbFrameOctaveLight(octaves, tau, dual, cosT), vdbFrameOctaveLight(octaves, tau, null, 0)];
+      } else if (row === 3) {
+        const depths: V3 = [tau, tau * 0.3, tau * 0.6];
+        const t = vdbFrameShadowTransmittance(depths, 0.42, octaves);
+        cpu = [vdbFrameShadowMarchDepth(depths, 0.42, octaves), t[0], t[1], vdbFrameShadowTotal(t[1], octaves)];
+      } else if (row === 4) {
+        const f = a * 8;
+        cpu = [vdbFrameTwoSidedDiffusion(0, f, a * 0.5, 8 - f), vdbFrameTwoSidedDiffusion(0, f, 0, a * 2), vdbFrameTwoSidedDiffusion(0.9, a * 0.1, 0, 0.2), vdbFrameOctaveLight([8, 0.7, 0.9, 0.3], tau, mie, cosT)];
+      } else {
+        const shadow: V2 = [Math.exp(-tau), 1 / (tau + 1)];
+        const lit = vdbFrameShadowedLightColor(dual, exponentSpectrum, octaves, ray, light, shadow);
+        const plain = vdbFrameShadowedLightColor(dual, [1, 1, 0], [0, 0, 0, 0], ray, light, [shadow[0], Math.exp(-tau * 0.5)]);
+        cpu = [lit[0], lit[1], lit[2], plain[1]];
+      }
+      // f32 vs f64, relative: the Mie peak (~4e3) and HG near-forward peaks are large. The table reads (rows 0–1)
+      // get 1e-3: the GPU's f32 acos moves the texel coordinate (u = √(acos(c)/π) · 2047), and the table is steep
+      // around the fogbow (2.6e-4 seen at cos −0.83 on SwiftShader).
+      const rel = row <= 1 ? 1e-3 : 2e-4;
+      for (let c = 0; c < 4; c++) accumulate(stats, gpu[(row * PW + x) * 4 + c]!, cpu[c]!, 1e-5, rel, { row, x, c });
+    }
+  }
+  void vdbFrameHenyeyGreensteinColor;
+  void vdbFrameShadowOpticalDepth;
+  return finish(stats);
+}
+
+/** His white furnace (utils/furnace.js): a uniform equirect environment of radiance `radiance` (linear, float). */
+export function furnaceEnvironment(radiance = 0.5): THREE.DataTexture {
+  const w = 64;
+  const h = 32;
+  const data = new Float32Array(w * h * 4);
+  for (let i = 0; i < w * h; i++) data.set([radiance, radiance, radiance, 1.0], i * 4);
+  const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.LinearSRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
   tex.needsUpdate = true;
   return tex;
 }

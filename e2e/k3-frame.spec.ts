@@ -145,6 +145,27 @@ const PARITY_SCENES = [
   "step3-shadow-grid-high",
   "step3-two-bunnies",
   "step3-environment-sky-midday",
+  // K3.4 (R1 §6 Step 4): phase functions and multiple scattering. The *-dir-isolated variants gate (his sun only,
+  // capture-reference.mjs `isolate: 'frame'`; 'volume' lighting `isolate: true`); the *-asis ones are INFO.
+  ...[
+    "step4-default-neural",
+    "step4-multiple-scattering-two-sided",
+    "step4-multiple-scattering-octaves",
+    "step4-octaves-1",
+    "step4-octaves-8",
+    "step4-octave-extinction-high",
+    "step4-octave-contribution-high",
+    "step4-octave-phase-low",
+    "step4-frame-phase-isotropic",
+    "step4-frame-phase-g-low",
+    "step4-frame-phase-dual-lobe",
+    "step4-frame-phase-dual-lobe-back-g-high",
+    "step4-frame-phase-dual-lobe-back-weight-high",
+    "step4-frame-phase-lorenz-mie",
+    "step4-frame-phase-lorenz-mie-rgb",
+    "step4-frame-phase-g-exponent",
+    "step4-lighting-volume-phase-g-low",
+  ].flatMap((name) => [`${name}-dir-isolated`, `${name}-asis`]),
 ];
 for (const scene of PARITY_SCENES) {
   test(`K3.1 parity render: ${scene}`, async ({ page }) => {

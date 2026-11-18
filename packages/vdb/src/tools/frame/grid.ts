@@ -13,8 +13,8 @@
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: engine-free (plain `{ x, y, z }` vectors and boxes instead of three's `Box3`/`Vector3`,
 // so `tools` stays free of three; the three adapter passes its own objects, which fit); the shader
-// maths as f64 CPU twins (test oracles of the `./three` 'frame' lighting passes); no octaves,
-// two-sided, neural or spectral terms (K3.4/K3.5). Divergences: DIVERGES.md (K3.3 rows).
+// maths as f64 CPU twins (test oracles of the `./three` 'frame' lighting passes); K3.4 adds the octave,
+// two-sided and neural (callback) terms; no spectral terms (K3.5). Divergences: DIVERGES.md (K3.3, K3.4 rows).
 
 /**
  * The world shadow grid of mjurczyk's `'frame'` lighting (K3.3, R1 §6 Step 3), engine-free: the
@@ -29,10 +29,14 @@ import {
   vdbFrameDistanceFade,
   vdbFrameFroxel,
   vdbFrameNoise,
-  vdbFramePhaseWeight,
-  vdbFrameShadowDepth,
+  vdbFrameOctavesOff,
+  vdbFramePhaseColor,
+  vdbFrameShadowMarchDepth,
   vdbFrameShadowStep,
+  vdbFrameShadowTotal,
   vdbFrameShadowTransmittance,
+  vdbFrameShadowedLightColor,
+  vdbFrameTwoSidedDiffusion,
   vdbFrameViewPosition,
   type Vec2,
   type Vec3,
@@ -406,10 +410,11 @@ export function vdbFrameGridExtinction(atlas: VDBFrameAtlas, grid: VDBFrameGridL
 }
 
 /**
- * The transmittance pass `march` (grey, octaves off): one voxel of the finest cascade at the probe per
- * step along the direction's fastest axis, coarser cascades after leaving a fine one, stop outside the
- * grid, at `maxDistance` or past optical depth 6. Each step samples `jitter` of the way along it.
- * Returns (direct, total, reduced depth, effective depth).
+ * The transmittance pass `march` (grey): one voxel of the finest cascade at the probe per step along the
+ * direction's fastest axis, coarser cascades after leaving a fine one, stop outside the grid, at
+ * `maxDistance` or past march depth 6 (with octaves, the last octave's). Each step samples `jitter` of the
+ * way along it. Returns (direct, total, reduced depth, effective depth); `out.opticalDepth` gets the direct
+ * optical depth (the neural input).
  */
 export function vdbFrameGridMarch(
   extinctionAt: (world: Vec3) => Vec2,
@@ -419,13 +424,15 @@ export function vdbFrameGridMarch(
   maxDistance: number,
   jitter: number,
   multipleScattering: number,
+  octaves: Vec4 = vdbFrameOctavesOff,
+  out?: { opticalDepth: number },
 ): Vec4 {
   const depths: Vec3 = [0, 0, 0];
   let traveled = 0;
   const probe: Vec3 = [...origin];
   for (let i = 0; i < 1024; i++) {
     const cascade = vdbFrameFindCascade(grid, probe, 0);
-    if (cascade < 0 || traveled >= maxDistance || vdbFrameShadowDepth(depths, multipleScattering) > 6) break;
+    if (cascade < 0 || traveled >= maxDistance || vdbFrameShadowMarchDepth(depths, multipleScattering, octaves) > 6) break;
     const voxel = grid.gridVoxel[cascade]!;
     const perUnit = Math.max(Math.abs(direction[0]) / voxel[0], Math.abs(direction[1]) / voxel[1], Math.abs(direction[2]) / voxel[2]);
     const step = Math.min(1 / perUnit, maxDistance - traveled);
@@ -437,7 +444,8 @@ export function vdbFrameGridMarch(
     for (let c = 0; c < 3; c++) probe[c] = probe[c]! + direction[c]! * step;
     traveled += step;
   }
-  const t = vdbFrameShadowTransmittance(depths, multipleScattering);
+  const t = vdbFrameShadowTransmittance(depths, multipleScattering, octaves);
+  if (out) out.opticalDepth = depths[0];
   return [t[0], t[1], depths[2], depths[1]];
 }
 
@@ -460,11 +468,24 @@ const normalize3 = (v: Vec3): Vec3 => {
 /** One grid light slot of the transmittance pass: position xyz, w < 1.5 a direction to the light, else a position. */
 export type VDBFrameShadowLight = Vec4;
 
+/** The multiple scattering modes of the transmittance pass beyond the diffusion value (K3.4). */
+export interface VDBFrameTransmittanceModes {
+  /** `getFrameScatteringOctaves` (count 0: off). */
+  octaves?: Vec4;
+  /** multipleScattering 'two-sided': the light slots also march away from the light (frameTwoSidedDiffusion). */
+  twoSided?: boolean;
+  /**
+   * multipleScattering 'neural': the network's scattered light of a slot at a world position, for the unit
+   * direction to the light and the slot's direct optical depth (`vdbFrameNeuralLight` bound to its inputs).
+   */
+  neural?: ((world: Vec3, direction: Vec3, opticalDepth: number) => number) | null;
+}
+
 /**
- * The transmittance pass (grey, no neural/two-sided/octaves) at one grid voxel: the 4 MRT outputs
- * (vec4 each) his `colorNode` writes, for `lights` (≤ 6 slots) and the sky direction. `fragCoord`
- * is the voxel's atlas pixel (for the jitter noise; `jitter` < 0 is off). Voxels with no extinction
- * within half a voxel keep 1.0 everywhere, as his pass.
+ * The transmittance pass (grey) at one grid voxel: the 4 MRT outputs (vec4 each) his `colorNode` writes,
+ * for `lights` (≤ 6 slots) and the sky direction. `fragCoord` is the voxel's atlas pixel (for the jitter
+ * noise; `jitter` < 0 is off). Voxels with no extinction within half a voxel keep 1.0 everywhere, as his
+ * pass. `modes`: octaves, two-sided or neural (K3.4).
  */
 export function vdbFrameTransmittanceVoxel(
   atlas: VDBFrameAtlas,
@@ -474,7 +495,9 @@ export function vdbFrameTransmittanceVoxel(
   skyDirection: Vec3,
   multipleScattering: number,
   jitterValue: number,
+  modes: VDBFrameTransmittanceModes = {},
 ): [Vec4, Vec4, Vec4, Vec4] {
+  const octaves = modes.octaves ?? vdbFrameOctavesOff;
   const out: [Vec4, Vec4, Vec4, Vec4] = [
     [1, 1, 1, 1],
     [1, 1, 1, 1],
@@ -502,11 +525,18 @@ export function vdbFrameTransmittanceVoxel(
     const isDirection = l[3] < 1.5;
     const toLight: Vec3 = [l[0] - world[0], l[1] - world[1], l[2] - world[2]];
     const dir = isDirection ? normalize3([l[0], l[1], l[2]]) : normalize3(toLight);
-    return vdbFrameGridMarch(extinctionAt, grid, world, dir, isDirection ? 1e20 : Math.hypot(...toLight), jitter, multipleScattering);
+    const optical = { opticalDepth: 0 };
+    const result = vdbFrameGridMarch(extinctionAt, grid, world, dir, isDirection ? 1e20 : Math.hypot(...toLight), jitter, multipleScattering, octaves, optical);
+    if (modes.twoSided) {
+      const back = vdbFrameGridMarch(extinctionAt, grid, world, [-dir[0], -dir[1], -dir[2]], 1e20, jitter, multipleScattering, octaves);
+      result[1] = vdbFrameTwoSidedDiffusion(result[0], result[2], result[3], back[2]);
+    }
+    if (modes.neural) result[1] = result[0] + modes.neural(world, dir, optical.opticalDepth);
+    return result;
   };
   const ls = [0, 1, 2, 3, 4, 5].map(slot);
-  const up = vdbFrameGridMarch(extinctionAt, grid, world, sky, 1e20, jitter, multipleScattering);
-  const down = vdbFrameGridMarch(extinctionAt, grid, world, [-sky[0], -sky[1], -sky[2]], 1e20, jitter, multipleScattering);
+  const up = vdbFrameGridMarch(extinctionAt, grid, world, sky, 1e20, jitter, multipleScattering, octaves);
+  const down = vdbFrameGridMarch(extinctionAt, grid, world, [-sky[0], -sky[1], -sky[2]], 1e20, jitter, multipleScattering, octaves);
   const skyTotal = (f: Vec4, b: Vec4) => (multipleScattering > 0 ? vdbFrameIsotropicDiffusion(f[2], b[2], f[3]) : f[1]);
   out[0] = [skyTotal(up, down), skyTotal(down, up), ls[0]![1], ls[1]![1]];
   out[1] = [ls[2]![1], ls[3]![1], ls[4]![1], ls[5]![1]];
@@ -571,6 +601,9 @@ export interface VDBFrameDensityInputs {
   sceneLightCount: number;
   lightPositions: readonly Vec4[];
   phase: Vec4;
+  /** The renderer's phase spectrum (`getFramePhaseSpectrum`; default (1, 1, 0): one phase) and octaves (K3.4). */
+  phaseSpectrum?: Vec3;
+  octaves?: Vec4;
   /** Environment mode 'grid': the environment grid atlas (last cascade), its tile columns and the unshadowed light. */
   environmentGrid?: { atlas: VDBFrameAtlas; columns: number; unshadowed: Vec3 } | null;
 }
@@ -650,22 +683,28 @@ export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs)
     [shadow1, 2],
     [shadow1, 3],
   ];
+  const octaves = p.octaves ?? vdbFrameOctavesOff;
+  const phaseSpectrum = p.phaseSpectrum ?? [1, 1, 0];
   slotRef.forEach(([s, c], index) => {
     if (index < p.sceneLightCount) {
       const l = p.lightPositions[index]!;
       const lightDir = l[3] < 1.5 ? ([l[0], l[1], l[2]] as Vec3) : normalize3([l[0] - visibleWorld[0], l[1] - visibleWorld[1], l[2] - visibleWorld[2]]);
-      const direct = directs[index]!;
-      const phase = vdbFramePhaseWeight(p.phase, ray, lightDir);
-      s[c] = phase * direct + (s[c]! - direct);
+      // frameShadowedLight(...).g: the green phase × direct + the scattered light
+      s[c] = vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [directs[index]!, s[c]!])[1];
+    } else {
+      s[c] = vdbFrameShadowTotal(s[c]!, octaves);
     }
   });
+  shadow0[0] = vdbFrameShadowTotal(shadow0[0]!, octaves);
+  shadow0[1] = vdbFrameShadowTotal(shadow0[1]!, octaves);
   const ext = (v: number[]) => v.map((x) => Math.min(x * extinction, 6.0e4)) as Vec4;
   const emission: Vec3 = [...p.scatterColor];
   if (p.environmentGrid && p.shadows) {
-    // sampleEnvironmentGrid: the last cascade, its own atlas; the unshadowed light outside it
+    // sampleEnvironmentGrid: the last cascade, its own atlas; the unshadowed light (× the octave total) outside it
     const g = p.shadows.grid;
     const uvw = vdbFrameGridUvw(g, g.count - 1, visibleWorld);
-    const env = vdbFrameInsideGrid(g.resolution, uvw) ? vdbFrameSampleTiles(p.environmentGrid.atlas, g.resolution, 0, p.environmentGrid.columns, uvw) : p.environmentGrid.unshadowed;
+    const outside = vdbFrameShadowTotal(1, octaves);
+    const env = vdbFrameInsideGrid(g.resolution, uvw) ? vdbFrameSampleTiles(p.environmentGrid.atlas, g.resolution, 0, p.environmentGrid.columns, uvw) : p.environmentGrid.unshadowed.map((v) => v * outside);
     for (let c = 0; c < 3; c++) emission[c] = emission[c]! + (p.baseColor[c]! * env[c]!) / Math.PI;
   }
   return [
@@ -677,7 +716,7 @@ export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs)
 }
 
 /**
- * The environment grid pass (FrameEnvironmentGridMaterial, grey, octaves off) at one voxel of the last
+ * The environment grid pass (FrameEnvironmentGridMaterial, grey) at one voxel of the last
  * cascade: `fragCoord` is the pixel of the environment grid atlas (`envColumns` tile columns), `lights`
  * the environment lights without a shadow slot, `unshadowed` their colour sum (the value outside the
  * casters). One-voxel steps that stay in the last cascade; with diffusion the two-sided total of the
@@ -691,6 +730,7 @@ export function vdbFrameEnvironmentGridVoxel(
   lights: readonly { direction: Vec3; color: Vec3 }[],
   unshadowed: Vec3,
   multipleScattering: number,
+  octaves: Vec4 = vdbFrameOctavesOff,
 ): Vec4 {
   const cascade = grid.count - 1;
   const res = grid.resolution;
@@ -708,7 +748,9 @@ export function vdbFrameEnvironmentGridVoxel(
     const c: Vec3 = [(i & 1) - 0.5, ((i >> 1) & 1) - 0.5, ((i >> 2) & 1) - 0.5];
     near += sample([world[0] + c[0] * voxel[0], world[1] + c[1] * voxel[1], world[2] + c[2] * voxel[2]])[0]!;
   }
-  if (!(z < res && near > 0)) return [unshadowed[0], unshadowed[1], unshadowed[2], 1];
+  // Octaves: the unshadowed light gets the octaves too
+  const outside = vdbFrameShadowTotal(1, octaves);
+  if (!(z < res && near > 0)) return [unshadowed[0] * outside, unshadowed[1] * outside, unshadowed[2] * outside, 1];
   const marchDepths = (dir: Vec3): Vec3 => {
     const perUnit = Math.max(Math.abs(dir[0]) / voxel[0], Math.abs(dir[1]) / voxel[1], Math.abs(dir[2]) / voxel[2]);
     const step = 1 / perUnit;
@@ -716,7 +758,7 @@ export function vdbFrameEnvironmentGridVoxel(
     const depths: Vec3 = [0, 0, 0];
     for (let i = 0; i < 1024; i++) {
       const uvw = uvwOf(probe);
-      if (uvw.some((v) => v < 0 || v > 1) || vdbFrameShadowDepth(depths, multipleScattering) > 6) break;
+      if (uvw.some((v) => v < 0 || v > 1) || vdbFrameShadowMarchDepth(depths, multipleScattering, octaves) > 6) break;
       const v = vdbFrameSampleGrid(atlas, grid, cascade, uvw);
       const d = vdbFrameShadowStep(v[0]!, v[1]!, multipleScattering);
       for (let c = 0; c < 3; c++) {
@@ -732,7 +774,7 @@ export function vdbFrameEnvironmentGridVoxel(
     const total =
       multipleScattering > 0
         ? vdbFrameIsotropicDiffusion(depths[2], marchDepths([-light.direction[0], -light.direction[1], -light.direction[2]])[2], depths[1])
-        : vdbFrameShadowTransmittance(depths, multipleScattering)[1];
+        : vdbFrameShadowTotal(vdbFrameShadowTransmittance(depths, multipleScattering, octaves)[1], octaves);
     for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + light.color[c]! * total;
   }
   return [Math.max(irradiance[0], 0), Math.max(irradiance[1], 0), Math.max(irradiance[2], 0), 1];
@@ -771,7 +813,7 @@ export function vdbFrameReproject(
   return { uv, slice, blend };
 }
 
-/** The lights {@link vdbFrameLightingFroxel} reads (the renderer's light uniforms; light probe off, grey phase). */
+/** The lights {@link vdbFrameLightingFroxel} reads (the renderer's light uniforms; light probe off). */
 export interface VDBFrameLightingInputs {
   ambient: Vec3;
   hemiSky: Vec3;
@@ -781,6 +823,11 @@ export interface VDBFrameLightingInputs {
   shadowLightCount: number;
   /** The renderer phase (forward g, back g, back weight, Mie mode). */
   phase: Vec4;
+  /** `getFrameScatteringOctaves` (K3.4; lights without a shadow slot get the octaves too). */
+  octaves?: Vec4;
+  /** K3.4 per-channel phases: the renderer's phase spectrum, and the 6 slots' direct transmittance at a world position (sampleShadows of the direct maps). */
+  phaseSpectrum?: Vec3;
+  directAt?: (world: Vec3) => number[];
   /** Environment lights with a shadow slot (colours), from `environmentShadowSlot`. */
   environmentColors: Vec3[];
   environmentShadowSlot: number;
@@ -799,7 +846,7 @@ const distanceAttenuation = (d: number, cutoff: number, decay: number) => {
 
 /**
  * The lighting pass of 'frame' lighting at one froxel (FrameLightingMaterial `createFragmentNode`,
- * grey, octaves off, light probe off, one phase for all channels): from the 4 density targets
+ * grey, light probe off): from the 4 density targets
  * (albedo·σ, σ), (emission·σ, t·σ), (sky up, sky down, slot 0, slot 1)·σ, (slots 2–5)·σ, the froxel's
  * view segment and the camera matrix (column-major). Returns the premultiplied (radiance·α, α), or
  * zeros when σ ≤ 0 (the pass discards; the target is cleared).
@@ -825,8 +872,10 @@ export function vdbFrameLightingFroxel(
   const slots = [s0[2]!, s0[3]!, s1[0]!, s1[1]!, s1[2]!, s1[3]!];
   const skyUp = s0[0]! * 0.5;
   const skyDown = s0[1]! * 0.5;
+  const spectrum = inputs.phaseSpectrum ?? [1, 1, 0];
+  const colorPhase = spectrum[2] > 0.5;
+  const directs = colorPhase && inputs.directAt ? inputs.directAt(world) : [1, 1, 1, 1, 1, 1];
   const irradiance: Vec3 = [0, 1, 2].map((c) => inputs.ambient[c]! + inputs.hemiSky[c]! * skyUp + inputs.hemiGround[c]! * skyDown) as Vec3;
-  const hg = (cos: number, g: number) => (1 - g * g) / Math.pow(Math.max(1 + g * g - 2 * g * cos, 1e-4), 1.5);
   inputs.lights.forEach((light, i) => {
     const p = light.position;
     const toLight: Vec3 = [p[0] - world[0], p[1] - world[1], p[2] - world[2]];
@@ -834,11 +883,18 @@ export function vdbFrameLightingFroxel(
     const dir = p[3] < 1.5 ? ([p[0], p[1], p[2]] as Vec3) : normalize3(toLight);
     const spot = p[3] > 2.5 && light.spot ? smoothstep(light.spot[3], light.penumbra ?? 1, normalize3(toLight)[0] * light.spot[0] + normalize3(toLight)[1] * light.spot[1] + normalize3(toLight)[2] * light.spot[2]) : 1;
     const dist = p[3] > 1.5 ? distanceAttenuation(lightDistance, light.falloff?.[0] ?? 0, light.falloff?.[1] ?? 0) : 1;
-    const cos = ray[0] * dir[0] + ray[1] * dir[1] + ray[2] * dir[2];
-    const a = hg(cos, inputs.phase[0]);
-    const unshadowed = a + (hg(cos, inputs.phase[1]) - a) * inputs.phase[2];
-    const factor = i < inputs.shadowLightCount ? (i < 6 ? slots[i]! : 1) : unshadowed;
-    for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + light.color[c]! * factor * spot * dist;
+    // A light with no shadow slot: no shadow (1, 1); octaves still add their light.
+    const unshadowed = vdbFrameShadowedLightColor(inputs.phase, spectrum, inputs.octaves ?? vdbFrameOctavesOff, ray, dir, [1, 1]);
+    const hasSlot = i < inputs.shadowLightCount;
+    const shadow = i < 6 ? slots[i]! : 1;
+    const factor: Vec3 = hasSlot ? [shadow, shadow, shadow] : unshadowed;
+    // Per-channel phases: the slot holds the green phase; the direct light adds the red and blue difference.
+    if (colorPhase && hasSlot) {
+      const phase = vdbFramePhaseColor(inputs.phase, spectrum, ray, dir);
+      const direct = i < 6 ? directs[i]! : 1;
+      for (let c = 0; c < 3; c++) factor[c] = factor[c]! + (phase[c]! - phase[1]) * direct;
+    }
+    for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + light.color[c]! * factor[c]! * spot * dist;
   });
   inputs.environmentColors.forEach((color, i) => {
     const slot = inputs.environmentShadowSlot + i;

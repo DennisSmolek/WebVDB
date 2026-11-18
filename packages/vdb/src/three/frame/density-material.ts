@@ -4,7 +4,8 @@
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; reads density only through `vdbVolumeNodes` (the VDBVolumeSource seam), so
 // one material is built per volume source (DIVERGES V30); grey only (the spectral variant is K3.5);
-// octaves off (K3.4). Divergences: DIVERGES.md (K3.3 rows), V23–V25, V30.
+// K3.4: the octave uniform (L57–58) and its frameShadowedLight / frameShadowTotal terms (L272–294, L344).
+// Divergences: DIVERGES.md (K3.3, K3.4 rows), V23–V25, V30.
 
 /**
  * The density pass of `'frame'` lighting (R1 §2 step 3): per froxel per volume (one instance per
@@ -57,6 +58,8 @@ export const createDensityShadowUniforms = () => ({
   // NOTE One phase for all volumes, from the renderer settings
   framePhase: uniform(new THREE.Vector4()),
   framePhaseSpectrum: uniform(new THREE.Vector3()),
+  // NOTE Scattering octaves of the renderer settings (phase.ts). Count 0 is off.
+  frameScatteringOctaves: uniform(new THREE.Vector4()),
   // NOTE 1 with diffusion multiple scattering. Then sky up and down have two-sided totals (frameIsotropicDiffusion).
   frameDiffusion: uniform(0, "int"),
   frameUseShadows: uniform(0, "int"),
@@ -240,6 +243,8 @@ export class VDBFrameDensityMaterial extends VDBFrameEnvironmentMaterial {
         [shadow1, "w", direct1.y],
       ];
 
+      const { frameScatteringOctaves } = densityShadowUniforms;
+
       lightSlots.forEach(([shadow, channel, direct], index) => {
         If(int(index).lessThan(densityShadowUniforms.frameShadowSceneLightCount), () => {
           const light = lightUniforms.frameLightPositions.element(index).toVar();
@@ -248,18 +253,19 @@ export class VDBFrameDensityMaterial extends VDBFrameEnvironmentMaterial {
             frameShadowedLight(
               densityShadowUniforms.framePhase,
               densityShadowUniforms.framePhaseSpectrum,
+              frameScatteringOctaves,
               rayDirection,
               select(light.w.lessThan(1.5), light.xyz, normalize(light.xyz.sub(visibleWorldPosition))),
               vec2(direct, shadow[channel]),
             ).g,
           );
         }).Else(() => {
-          shadow[channel].assign(frameShadowTotal(shadow[channel]));
+          shadow[channel].assign(frameShadowTotal(shadow[channel], frameScatteringOctaves));
         });
       });
 
-      shadow0.x.assign(frameShadowTotal(shadow0.x));
-      shadow0.y.assign(frameShadowTotal(shadow0.y));
+      shadow0.x.assign(frameShadowTotal(shadow0.x, frameScatteringOctaves));
+      shadow0.y.assign(frameShadowTotal(shadow0.y, frameScatteringOctaves));
 
       const { frameEnvironmentMode } = densityShadowUniforms;
 
@@ -299,7 +305,7 @@ export class VDBFrameDensityMaterial extends VDBFrameEnvironmentMaterial {
           densityShadowUniforms.frameEnvironmentGridMap,
           environmentGridUniforms,
           worldPosition,
-          vec4(lightUniforms.frameEnvironmentUnshadowed.mul(frameShadowTotal(float(1.0))), 1.0),
+          vec4(lightUniforms.frameEnvironmentUnshadowed.mul(frameShadowTotal(float(1.0), frameScatteringOctaves)), 1.0),
         );
 
         emission.addAssign(albedo.mul(environment.rgb).mul(1.0 / Math.PI));
