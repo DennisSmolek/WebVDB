@@ -72,5 +72,9 @@ From v1; details in docs/handoffs/.
   and lower stats stay f32. Use the fork's `*_get_*_float` readers or `tools` `nodeStats`.
 - One VDB module per shader: generated symbols are declared once, so two modules (two profiles or two pools) in
   one shader redeclare everything. Generate the largest profile you need; several grids share one module by id.
+- A `WebGPURenderer` built without `{ device }` destroys its own device in `renderer.dispose()`, and every
+  pool buffer on it. Create the device yourself and pass it when a pool must outlive the renderer.
+- `@types/three` r187's `Backend` doesn't declare `get`: type renderers structurally as `{ backend: object }`
+  and check the internals at runtime (`three/device.ts`), or a real `WebGPURenderer` won't type-check.
 - Node stats bound ACTIVE values only. A trilinear sample reads one voxel past its cell, so the cell's own max
   doesn't bound it; use the 2x2x2 support (see `tools/cpu/march.ts`).
