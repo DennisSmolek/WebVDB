@@ -40,3 +40,14 @@ export type { VolumeRendererOptions, CapabilityReport, RequiredLimits } from "./
 // K2.3: compute wrappers over the core tools (renderer in, promise out).
 export { gridStats, decodeToAtlas, valueTransform } from "./compute.js";
 export type { GridStatsOptions, GridStatsResult, DecodeToAtlasOptions, DecodeToAtlasResult } from "./compute.js";
+
+// K3.0: the dense `.wvdb` volume source (R1 §4.2) in his createVolumeNodes() shape.
+export { vdbDenseTextures, vdbVolumeUniforms, vdbVolumeNodes, vdbMinComponent, vdbMaxComponent } from "./volume-source.js";
+export type {
+  VDBDenseChannelTextures,
+  VDBThreeDenseSource,
+  VDBVolumeNodes,
+  VDBVolumeNodesOptions,
+  VDBVolumeUniformParameters,
+  VDBVolumeUniforms,
+} from "./volume-source.js";

@@ -30,3 +30,6 @@ fixtures/parity/
 
 # Agent worktrees
 .claude/worktrees/
+
+# K3 reference captures of mjurczyk/openvdb (scripts/k3/capture-reference.mjs; owner-run, never committed)
+fixtures/k3-reference/

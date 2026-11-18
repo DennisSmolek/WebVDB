@@ -70,3 +70,7 @@ export type {
   VDBValueTransform,
   VDBValueTransformPreset,
 } from "./compute/index.js";
+// K3.0: the volume-source seam (R1 §4.2) and its dense `.wvdb` source.
+export { vdbDenseSource } from "./source/dense.js";
+export type { VDBDenseSource, VDBDenseSourceOptions } from "./source/dense.js";
+export type { VDBVolumeChannels, VDBVolumeSource, VDBVolumeSourceInfo, VDBVolumeSourceWgslOptions } from "./source/types.js";
