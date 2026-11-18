@@ -81,7 +81,9 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 | K3.4 | Step 4: phase functions + multiple-scattering modes (two-sided, octaves, neural) | T3 | ✅ | Neural weights pending R10. |
 | K3.5 | Step 5: spectral media + presets | T2 | ✅ | |
 | K3.6 | Step 6: mesh shadows + emission (three internals, r187) | T3 | ⬜ | |
-| K3.7 | Step 7: level sets + points | T3 | ⬜ | Needs K4.2. |
+| K3.7 | Step 7: level sets + points | T3 | 🟨 | Needs K4.2. |
+| K3.7a | Capture the Step 7 scenes and run `scripts/k3/compare-step7.mjs` (IoU ≥ 0.99, point count) | coord | ⬜ | Command in docs/handoffs/K3-7.md. |
+| K3.7b | Level-set follow-ups: Fp8/FpN level sets through the tracer; `.wvdb` points LOD streaming into `VDBPoints`; surface-nets mesh if wanted; `VDBLevelSetMaterial` shadow-map e2e | T2 | ⬜ | |
 | K3.8 | Lift each green step's shading into `core` WGSL with CPU twins | T3 | ⬜ | Rolling, after each step. |
 | K3.9 | Gate run: WDAS quarter cloud on sparse at a named preset ≥ 60 fps 1080p; goldens per lighting mode; A/B record | T2 | ⬜ | Timing part deferred to a quiet machine (D25); goldens and A/B image metrics still gate. |
 

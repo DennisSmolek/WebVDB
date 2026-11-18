@@ -189,3 +189,6 @@ From v1; details in docs/handoffs/.
   code versions across its page loads (and a reload can land mid-run). Two runs with the same `--port` share one Vite
   server, and the first to finish kills it. Use a distinct port per run and don't edit sources while timing.
 - three r187 `TextureNode` uniform hash is the texture's uuid: texture nodes holding the same texture when a shader is built share one binding. Never park placeholder/unused slots on another slot's texture if that slot may later get its own (K3.5, V53).
+- three r187 `NodeMaterial.setupOutgoingLight()` is `vec3(0)` for lit materials when the scene has no light, so `colorNode` draws black: draw debug output through `emissiveNode`; output colours clamp at 0 (encode signed values, e.g. `n * 0.5 + 0.5`).
+- A ray built from interpolated proxy-box positions (`positionWorld`, `positionViewDirection`) is ~0.02 px off the pixel centre; trace from `viewportUV` through `cameraProjectionMatrixInverse` when a CPU twin compares per pixel.
+- `VDBPoints`' disc map is mipmapped (his defaults): judge stray pixels against the sprite quad, coverage against the disc.
