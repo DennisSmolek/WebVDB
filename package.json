@@ -31,7 +31,7 @@
     "parity:native": "node scripts/run-native-parity.mjs",
     "hardware:smoke": "node scripts/run-hardware-checks.mjs",
     "hardware:perf": "WEBVDB_PERF=1 node scripts/run-hardware-checks.mjs",
-    "k3:parity": "K3_FRAME_PARITY=1 playwright test e2e/k3-frame.spec.ts -g \"parity render\" && node scripts/k3/compare.mjs --ours artifacts/k3/ours --reference fixtures/k3-reference/75e7345 --heatmap artifacts/k3/diff"
+    "k3:parity": "K3_FRAME_PARITY=1 playwright test e2e/k3-frame.spec.ts e2e/k3-levelset.spec.ts -g \"parity render\" && node scripts/k3/compare.mjs --ours artifacts/k3/ours --reference fixtures/k3-reference/75e7345 --heatmap artifacts/k3/diff && node scripts/k3/compare-step7.mjs --ours artifacts/k3/ours-step7 --reference fixtures/k3-reference/75e7345"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

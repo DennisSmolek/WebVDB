@@ -21,6 +21,7 @@
  */
 
 import type { VDBGridTypeName } from "../types.js";
+import { levelSetWgsl } from "./level-set.js";
 import type { VDBModuleHelper } from "./types.js";
 
 /** Options the API layer depends on (normalized by the generator). */
@@ -468,6 +469,8 @@ function helperFunctions(o: ApiOptions): string[] {
     return vdb_lower_get_ave_float(t, b, (*acc).inner.lower);
 }`);
   }
+  // K3.7: the level-set zero-crossing finder and normal (./level-set.ts).
+  if (o.helpers.includes("levelSet")) out.push(...levelSetWgsl());
   return out;
 }
 

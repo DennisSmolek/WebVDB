@@ -47,9 +47,9 @@ describe("wgslNameProblems (helper)", () => {
 });
 
 describe("vdbModuleWgsl: every variant", () => {
-  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage", () => {
+  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage + K3.7 levelSet", () => {
     expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(132);
-    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(60);
+    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(72);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {
@@ -428,6 +428,18 @@ describe("opt-in helpers (K1.7a)", () => {
     expect(vdbModuleWgsl({ ...march, profile: "sample", helpers: ["fastTrilinear"] })).toContain("fn vdbSampleFast(");
     expect(() => vdbModuleWgsl({ ...march, profile: "read", helpers: ["fastTrilinear"] })).toThrow(/helper 'fastTrilinear' needs profile 'sample'/);
     expect(() => vdbModuleWgsl({ ...march, sampler: "nearest", helpers: ["fastTrilinear"] })).toThrow(/helper 'fastTrilinear' needs sampler 'trilinear'/);
+  });
+
+  it("levelSet (K3.7) appends the zero-crossing finder, its gradient and normal, and needs march", () => {
+    const plain = vdbModuleWgsl(march);
+    const code = vdbModuleWgsl({ ...march, helpers: ["levelSet"] });
+    expect(code.startsWith(plain.slice(0, -1))).toBe(true);
+    expect(declaredNames(code.slice(plain.length - 1))).toEqual(["vdb_ls_skip", "vdbLevelSetHit", "vdbLevelSetGradient", "vdbLevelSetNormal"]);
+    expect(code).toContain("fn vdbLevelSetHit(g: u32, o: vec3f, d: vec3f, t: ptr<function, vec2f>, sdfToIndex: f32, maxSamples: u32) -> bool {");
+    // Clipped to the trilinear support box; W^T of the record's world-to-index for the normal.
+    expect(code).toContain("vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)) - vec3f(1.0), vec3f(vdbIndexMax(g)) + vec3f(1.0), o, &t0, d, &t1);");
+    expect(code).toContain("dot(vdbWorldToIndexDir(g, vec3f(1.0, 0.0, 0.0)), gi)");
+    expect(() => vdbModuleWgsl({ ...march, profile: "sample", helpers: ["levelSet"] })).toThrow(/helper 'levelSet' needs profile 'march'/);
   });
 
   it("say which profile a helper needs", () => {

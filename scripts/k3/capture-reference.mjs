@@ -146,6 +146,23 @@ const SCENARIOS = [
   // FrameVolume `lights` untouched): the 'volume'-lighting environment terms (his inject pass's environment lights).
   { name: "step5-lighting-volume-sky-midday-env-isolated", step: 5, fields: { demo: "frame", lighting: "volume", lightSetup: "none", environment: "sky-midday" }, sanity: null, isolate: "environment" },
   { name: "step5-lighting-volume-medium-cloud-sky-midday-env-isolated", step: 5, fields: { demo: "frame", lighting: "volume", lightSetup: "none", environment: "sky-midday", medium: "cloud" }, sanity: null, isolate: "environment" },
+  // K3.7 (R1 §6 Step 7): level sets (demo 5, `levelset`) and points (demo 7, `points`). His frame-demo parity fields
+  // (jitter, temporal, animateLights) do not exist on these demos: `parityOverrides: false`. `*-asis`: his GUI fields
+  // as in his tests/validation-set JSON, checked against his JPEG (INFO for our parity: his 'environment' lights).
+  // `isolate: 'normals'`: his public three API only, after the build: every light hidden, scene.environment and
+  // background null, clear colour black, every mesh but the level set hidden, and the level set drawn unlit as
+  // view-space normal * 0.5 + 0.5 (LevelSetSurface: its MeshStandardNodeMaterial gets emissiveNode = normalView * 0.5
+  // + 0.5, colour black, toneMapped false; LevelSetMesh: a MeshBasicNodeMaterial with that colourNode). `format: 'vdb'`
+  // reads the same .vdb bytes as ours (utahteapot.vdb SHA-1 4ecf3a74; venusstatue.vdb from his assets).
+  // `isolate: 'points'`: VDBPoints white (toneMapped false) on black, every other object and light hidden.
+  { name: "step7-utah-teapot-surface-asis", step: 7, fields: { demo: "levelset", model: "utahteapot", render: "surface" }, sanity: "demo-5-utah-teapot-render-surface.jpg", parityOverrides: false },
+  { name: "step7-venus-statue-surface-asis", step: 7, fields: { demo: "levelset", render: "surface" }, sanity: "demo-5-render-surface.jpg", parityOverrides: false },
+  { name: "step7-utah-teapot-mesh-asis", step: 7, fields: { demo: "levelset", model: "utahteapot" }, sanity: "demo-5-model-utah-teapot.jpg", parityOverrides: false },
+  { name: "step7-utah-teapot-surface-normals", step: 7, fields: { demo: "levelset", model: "utahteapot", format: "vdb", render: "surface" }, sanity: null, isolate: "normals", parityOverrides: false },
+  { name: "step7-venus-statue-surface-normals", step: 7, fields: { demo: "levelset", format: "vdb", render: "surface" }, sanity: null, isolate: "normals", parityOverrides: false },
+  { name: "step7-utah-teapot-mesh-normals", step: 7, fields: { demo: "levelset", model: "utahteapot", format: "vdb", render: "mesh" }, sanity: null, isolate: "normals", parityOverrides: false },
+  { name: "step7-sphere-points-asis", step: 7, fields: { demo: "points", model: "sphere_points", format: "vdb" }, sanity: "demo-7.jpg", parityOverrides: false },
+  { name: "step7-sphere-points-isolated", step: 7, fields: { demo: "points", model: "sphere_points", format: "vdb" }, sanity: null, isolate: "points", parityOverrides: false },
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.
@@ -358,6 +375,26 @@ async function readMetadata(page) {
       });
       out.volumes = [];
       scene.updateMatrixWorld(true);
+      // K3.7: his level sets (LevelSetSurface / LevelSetMesh: local space = the grid's world) and VDBPoints.
+      out.levelSets = [];
+      out.points = [];
+      scene.traverse((o) => {
+        if (o.isLevelSetSurface || o.isLevelSetMesh) {
+          const t = o.distanceTexture?.image;
+          out.levelSets.push({
+            kind: o.isLevelSetSurface ? "surface" : "mesh",
+            matrixWorld: o.matrixWorld.toArray(),
+            bbox: o.bbox ? [o.bbox.min.toArray(), o.bbox.max.toArray()] : null,
+            resolution: o.resolution ?? null,
+            distanceTexture: t ? [t.width, t.height, t.depth] : null,
+            background: o.material?.background?.value ?? null,
+            vertices: o.geometry?.attributes?.position?.count ?? null,
+          });
+        }
+        if (o.isVDBPoints) {
+          out.points.push({ matrixWorld: o.matrixWorld.toArray(), pointCount: o.pointCount, count: o.count, spacing: o.spacing, size: o.size, pixelScale: o.pixelScale?.value ?? null });
+        }
+      });
       scene.traverse((o) => {
         if (!o.isFrameVolume) return;
         out.volumes.push({
@@ -421,6 +458,46 @@ async function isolateVolumes(page, mode) {
   }, mode);
 }
 
+/**
+ * K3.7 `isolate: 'normals' | 'points'` (see SCENARIOS). three's own API on his scene objects. TSL comes from his dev
+ * server's pre-bundled deps: the URL of three/webgpu that his main.jsx imports, with three_tsl.js beside it.
+ */
+async function isolateStep7(page, mode) {
+  await page.evaluate(async (m) => {
+    const { scene, renderer } = await import("/src/main.jsx");
+    const source = await (await fetch("/src/main.jsx")).text();
+    const webgpuUrl = source.match(/\/node_modules\/\.vite\/deps\/three_webgpu\.js(\?v=[0-9a-z]+)?/)?.[0];
+    if (!webgpuUrl) throw new Error("isolateStep7: three/webgpu's pre-bundled URL is not in his main.jsx");
+    const webgpu = await import(webgpuUrl);
+    const tsl = await import(webgpuUrl.replace("three_webgpu.js", "three_tsl.js"));
+    const normalColor = () => tsl.normalView.mul(0.5).add(0.5);
+    let kept = 0;
+    scene.traverse((o) => {
+      if (o.isLight) o.visible = false;
+      else if (m === "normals" && o.isLevelSetSurface) {
+        o.material.color.setRGB(0, 0, 0);
+        o.material.emissiveNode = normalColor();
+        o.material.toneMapped = false;
+        o.material.needsUpdate = true;
+        kept++;
+      } else if (m === "normals" && o.isLevelSetMesh) {
+        o.material = new webgpu.MeshBasicNodeMaterial({ toneMapped: false });
+        o.material.colorNode = normalColor();
+        kept++;
+      } else if (m === "points" && o.isVDBPoints) {
+        o.material.color.setRGB(1, 1, 1);
+        o.material.toneMapped = false;
+        o.material.needsUpdate = true;
+        kept++;
+      } else if (o.isMesh || o.isPoints || o.isLine || o.isSprite) o.visible = false;
+    });
+    if (kept !== 1) throw new Error(`isolateStep7(${m}): expected one level set / points object, found ${kept}`);
+    scene.environment = null;
+    scene.background = null;
+    renderer.setClearColor(0x000000, 1.0);
+  }, mode);
+}
+
 async function capture(context, scenario, fields, type) {
   const page = await context.newPage();
   const pending = new Set();
@@ -461,7 +538,15 @@ async function capture(context, scenario, fields, type) {
   const { demo, ...rest } = fields;
   await setFields(page, { demo, ...rest });
   await waitForIdle(page, pending, errors);
-  if (scenario.isolate) {
+  if (scenario.isolate === "normals" || scenario.isolate === "points") {
+    await isolateStep7(page, scenario.isolate);
+    await waitForIdle(page, pending, errors);
+    // The replaced materials build their pipelines on the next renders.
+    for (let i = 0; i < 3; i++) {
+      await page.clock.runFor(FRAME_TIME);
+      await page.waitForTimeout(150);
+    }
+  } else if (scenario.isolate) {
     await isolateVolumes(page, scenario.isolate);
     // 'frame' lighting reads the environment lights from an async readback; let a changed environment settle.
     if (scenario.isolate !== true) {
@@ -547,7 +632,7 @@ let failed = false;
 try {
   for (const s of scenarios) {
     process.stdout.write(`${s.name} … `);
-    const fields = { ...s.fields, ...PARITY_OVERRIDES };
+    const fields = s.parityOverrides === false ? { ...s.fields } : { ...s.fields, ...PARITY_OVERRIDES };
     const parity = await capture(context, s, fields, "png");
     const file = `${s.name}.png`;
     writeFileSync(path.join(outDir, file), parity.bytes);

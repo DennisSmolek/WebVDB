@@ -20,13 +20,15 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { checkModule, vdbModuleEntries, vdbModuleWgsl } from "../packages/vdb/dist/core/index.js";
 import { buildMarchProbe, compareMarchProbe, marchProbeAvailable, runMarchProbeInPage } from "./lib/march-probe.mjs";
-import { CHECK_SLOT, MARCH_HELPERS, SAMPLE_HELPERS, TYPE_SETS, checkKernel, variantMatrix, wgslSizes } from "./lib/wgsl-variants.mjs";
+import { CHECK_SLOT, MARCH_HELPERS, MARCH_LEVEL_SET_HELPERS, SAMPLE_HELPERS, TYPE_SETS, checkKernel, variantMatrix, wgslSizes } from "./lib/wgsl-variants.mjs";
 
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../packages/vdb/dist");
 
 const CHROMIUM_EXECUTABLE = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ?? "/opt/pw-browsers/chromium";
 const SIZES_ONLY = process.argv.includes("--sizes-only");
 const NO_PROBE = process.argv.includes("--no-probe");
+/** `--only <text>`: compile only the variants whose id contains <text> (e.g. `--only levelSet`). */
+const ONLY = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : null;
 
 function printSizes() {
   const kb = (n) => (n / 1024).toFixed(1);
@@ -41,6 +43,7 @@ function printSizes() {
     ["march", { outside: "zero" }],
     ["sample", { helpers: SAMPLE_HELPERS }],
     ["march", { helpers: MARCH_HELPERS }],
+    ["march", { helpers: MARCH_LEVEL_SET_HELPERS }],
   ];
   console.log("\nSizes (slot mode; KiB = 1024 B; min / gz per §3.5, gz = gzip -9 of min):\n");
   console.log(`| Variant | ${TYPE_SETS.map((t) => t.join("+")).join(" | ")} |`);
@@ -63,7 +66,7 @@ function printSizes() {
 }
 
 async function main() {
-  const variants = variantMatrix().map(({ id, options }) => {
+  const variants = variantMatrix().filter(({ id }) => ONLY === null || id.includes(ONLY)).map(({ id, options }) => {
     // Sanity: the JS-side check agrees the module covers its own types.
     checkModule({ types: options.types, layoutVersion: 1 }, options);
     const module = vdbModuleWgsl(options);

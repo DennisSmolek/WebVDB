@@ -34,8 +34,14 @@ export type VDBModuleProfile = "read" | "sample" | "march" | "majorant";
  *   lower node's +x/+y/+z face (or, with `outside: 'zero'`, whose taps leave
  *   the index bbox) calls `vdbSample`. Reuse the accessor across samples to
  *   keep its cached lower node.
+ * - `'levelSet'` (`march`, K3.7): `vdbLevelSetHit(g, o, d, t, sdfToIndex, maxSamples) -> bool`,
+ *   the first zero crossing of a level set's trilinear SDF along an index-space
+ *   ray (HDDA skip of tile and background cells above 0, sphere trace, bisection
+ *   + secant), `vdbLevelSetGradient(acc, xyz, h) -> vec3f` (central differences,
+ *   index space) and `vdbLevelSetNormal(g, xyz, h) -> vec3f` (world unit normal).
+ *   CPU twins: `tools` `levelSetHit`, `levelSetGradient`, `levelSetNormal`.
  */
-export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "nodeAverage" | "rayClipSupport" | "fastTrilinear";
+export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "levelSet" | "nodeAverage" | "rayClipSupport" | "fastTrilinear";
 
 /** Options every binding mode shares. */
 export interface VDBModuleCommonOptions {

@@ -20,6 +20,8 @@ export const MARCH_FRAME_HELPERS = ["cellBoundTrilinear", "hddaCellEnd", "nodeAv
 /** K3.2d: vdbSampleFast, alone on `sample` and in the sparse volume source's module (its own variants, appended). */
 export const FAST_HELPERS = ["fastTrilinear"];
 export const MARCH_FRAME_FAST_HELPERS = [...MARCH_FRAME_HELPERS, "fastTrilinear"];
+/** K3.7: `VDBLevelSetMaterial`'s module (the level-set zero-crossing finder). Its own variant, appended. */
+export const MARCH_LEVEL_SET_HELPERS = ["levelSet"];
 
 /**
  * Every generator variant that must compile: read/sample/march × type set ×
@@ -44,6 +46,7 @@ export function variantMatrix() {
         if (profile === "march") extras.push({ helpers: MARCH_HELPERS }, { helpers: MARCH_FRAME_HELPERS });
         if (profile === "sample") extras.push({ helpers: FAST_HELPERS });
         if (profile === "march") extras.push({ helpers: MARCH_FRAME_FAST_HELPERS });
+        if (profile === "march") extras.push({ helpers: MARCH_LEVEL_SET_HELPERS });
         for (const extra of extras) {
           const options = { ...binding, types, profile, ...extra };
           const tag = Object.entries(extra)
@@ -87,6 +90,14 @@ export function checkKernel(module, options) {
     helpers.has("hddaCellEnd") ? "    s += vdbHddaCellEnd(&h);\n" : "",
     helpers.has("nodeAverage") ? "    s += vdbNodeAverage(&a, ijk, 8u) + vdbNodeAverage(&a, ijk, 128u);\n" : "",
     helpers.has("fastTrilinear") ? "    s += vdbSampleFast(&a, p);\n" : "",
+    helpers.has("levelSet")
+      ? `    var tl = vec2f(0.0, 1.0e30);
+    if vdbLevelSetHit(g, p, d, &tl, 1.0, 64u) {
+        s += tl.x;
+    }
+    s += vdbLevelSetNormal(g, p, 1.0).x + vdbLevelSetGradient(&a, p, 0.5).y;
+`
+      : "",
   ].join("");
   return `${module}
 ${host}@group(0) @binding(0) var<storage, read_write> checkOut: array<f32>;

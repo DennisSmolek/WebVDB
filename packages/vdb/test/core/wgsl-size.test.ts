@@ -19,7 +19,9 @@ const VARIANTS: { id: string; options: VDBModuleOptions }[] = variantMatrix();
 /** The §3.6 row for a variant (see `rule` in size-budgets.json), in bytes. */
 function budgetBytes(options: VDBModuleOptions): number {
   const helpers = [...(options.helpers ?? [])];
-  const key = helpers.includes("nodeAverage")
+  const key = helpers.includes("levelSet")
+    ? `${options.profile}+levelSet`
+    : helpers.includes("nodeAverage")
     ? `${options.profile}+nodeAverage${helpers.includes("fastTrilinear") ? "+fastTrilinear" : ""}`
     : helpers.length > 0
       ? `${options.profile}+helpers`

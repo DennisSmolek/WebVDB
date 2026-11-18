@@ -31,6 +31,12 @@ export {
 } from "./material.js";
 export type { VDBVolumeMaterialParameters, VDBProxyGridInfo, VDBUintUniform } from "./material.js";
 export { VDBSequence } from "./sequence.js";
+
+// K3.7 (R1 §6 Step 7): level-set surfaces traced on the sparse pool, and point grids as sprites.
+export { VDBLevelSetMaterial, VDB_LEVEL_SET_SAMPLES_CAP } from "./level-set-material.js";
+export type { VDBLevelSetMaterialParameters } from "./level-set-material.js";
+export { VDBPoints, vdbAttenuatedPointSize, vdbPointDiscTexture } from "./points.js";
+export type { VDBPointsData, VDBPointsOptions } from "./points.js";
 export type {
   VDBSequenceOptions,
   VDBSequenceStats,
