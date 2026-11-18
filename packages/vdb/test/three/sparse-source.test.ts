@@ -61,6 +61,25 @@ describe("vdbSparseSource", () => {
     expect(s.channels).toEqual({ mask: false, albedo: false, emission: false });
   });
 
+  it("K3.2d level-0 sampler: vdbSampleFast when the node has 'fastTrilinear' (asked for without it: an error), one accessor per invocation by default", () => {
+    const base = { lod: "none" as const, images: { density: grid.image } };
+    const plain = vdbSparseSource(fakeGrids(), { density: 0 }, base);
+    expect([plain.fastTrilinear, plain.cacheAccessor]).toEqual([false, true]);
+    const fast = vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"]), { density: 0 }, base);
+    expect([fast.fastTrilinear, fast.cacheAccessor]).toEqual([true, true]);
+    const off = vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd", "fastTrilinear"]), { density: 0 }, { ...base, fastTrilinear: false, cacheAccessor: false });
+    expect([off.fastTrilinear, off.cacheAccessor]).toEqual([false, false]);
+    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { ...base, fastTrilinear: true })).toThrow(/helper 'fastTrilinear'/);
+  });
+
+  it("K3.2e: stats follow the density image; without a pool revision or a resident image there is nothing to read back", async () => {
+    const s = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "none", images: { density: grid.image } });
+    expect(s.statsUpdates).toBe(0);
+    // The fake pool has no revision, device or buffer: refreshStats does nothing (and never throws).
+    await expect(s.refreshStats()).resolves.toBe(false);
+    expect(s.statsUpdates).toBe(0);
+  });
+
   it("LOD levels: node-average 7; coarse-pyramid L₀ + atlas levels, r16f bytes counted", () => {
     expect(vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "node-average", images: { density: grid.image } }).lodLevels).toBe(7);
     const p = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", pyramidBuild: "cpu", images: { density: grid.image }, indexBox: grid.textureIndexBox, pyramidMax: 32 });

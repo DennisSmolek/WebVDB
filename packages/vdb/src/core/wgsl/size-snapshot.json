@@ -6,6 +6,10 @@
       "gz": 5880,
       "min": 33073
     },
+    "march/float+fp8+fpn/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6148,
+      "min": 34280
+    },
     "march/float+fp8+fpn/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5749,
       "min": 32138
@@ -29,6 +33,10 @@
     "march/float+fp8+fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5921,
       "min": 33123
+    },
+    "march/float+fp8+fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6189,
+      "min": 34330
     },
     "march/float+fp8+fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5791,
@@ -54,6 +62,10 @@
       "gz": 5367,
       "min": 30003
     },
+    "march/float/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5636,
+      "min": 31210
+    },
     "march/float/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5240,
       "min": 29072
@@ -77,6 +89,10 @@
     "march/float/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5408,
       "min": 30053
+    },
+    "march/float/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5676,
+      "min": 31260
     },
     "march/float/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5281,
@@ -102,6 +118,10 @@
       "gz": 5727,
       "min": 31972
     },
+    "march/fp16/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5993,
+      "min": 33179
+    },
     "march/fp16/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5599,
       "min": 31041
@@ -125,6 +145,10 @@
     "march/fp16/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5767,
       "min": 32022
+    },
+    "march/fp16/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6034,
+      "min": 33229
     },
     "march/fp16/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5640,
@@ -150,6 +174,10 @@
       "gz": 5724,
       "min": 31966
     },
+    "march/fp4/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5991,
+      "min": 33173
+    },
     "march/fp4/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5596,
       "min": 31035
@@ -173,6 +201,10 @@
     "march/fp4/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5765,
       "min": 32016
+    },
+    "march/fp4/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6032,
+      "min": 33223
     },
     "march/fp4/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5637,
@@ -198,6 +230,10 @@
       "gz": 5725,
       "min": 31966
     },
+    "march/fp8/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5992,
+      "min": 33173
+    },
     "march/fp8/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5597,
       "min": 31035
@@ -221,6 +257,10 @@
     "march/fp8/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5766,
       "min": 32016
+    },
+    "march/fp8/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6033,
+      "min": 33223
     },
     "march/fp8/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5638,
@@ -246,6 +286,10 @@
       "gz": 5784,
       "min": 32215
     },
+    "march/fpn/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6050,
+      "min": 33422
+    },
     "march/fpn/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5656,
       "min": 31284
@@ -269,6 +313,10 @@
     "march/fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5824,
       "min": 32265
+    },
+    "march/fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 6092,
+      "min": 33472
     },
     "march/fpn/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
       "gz": 5697,
@@ -386,6 +434,10 @@
       "gz": 3504,
       "min": 19053
     },
+    "sample/float+fp8+fpn/buffer/helpers=fastTrilinear": {
+      "gz": 4467,
+      "min": 23615
+    },
     "sample/float+fp8+fpn/buffer/helpers=rayClipSupport": {
       "gz": 4207,
       "min": 22678
@@ -409,6 +461,10 @@
     "sample/float+fp8+fpn/buffer/sampler=nearest": {
       "gz": 4012,
       "min": 21462
+    },
+    "sample/float+fp8+fpn/slot/helpers=fastTrilinear": {
+      "gz": 4507,
+      "min": 23665
     },
     "sample/float+fp8+fpn/slot/helpers=rayClipSupport": {
       "gz": 4247,
@@ -434,6 +490,10 @@
       "gz": 4053,
       "min": 21512
     },
+    "sample/float/buffer/helpers=fastTrilinear": {
+      "gz": 4079,
+      "min": 21333
+    },
     "sample/float/buffer/helpers=rayClipSupport": {
       "gz": 3819,
       "min": 20396
@@ -457,6 +517,10 @@
     "sample/float/buffer/sampler=nearest": {
       "gz": 3625,
       "min": 19180
+    },
+    "sample/float/slot/helpers=fastTrilinear": {
+      "gz": 4118,
+      "min": 21383
     },
     "sample/float/slot/helpers=rayClipSupport": {
       "gz": 3859,
@@ -482,6 +546,10 @@
       "gz": 3664,
       "min": 19230
     },
+    "sample/fp16/buffer/helpers=fastTrilinear": {
+      "gz": 4332,
+      "min": 22624
+    },
     "sample/fp16/buffer/helpers=rayClipSupport": {
       "gz": 4072,
       "min": 21687
@@ -505,6 +573,10 @@
     "sample/fp16/buffer/sampler=nearest": {
       "gz": 3878,
       "min": 20471
+    },
+    "sample/fp16/slot/helpers=fastTrilinear": {
+      "gz": 4372,
+      "min": 22674
     },
     "sample/fp16/slot/helpers=rayClipSupport": {
       "gz": 4112,
@@ -530,6 +602,10 @@
       "gz": 3918,
       "min": 20521
     },
+    "sample/fp4/buffer/helpers=fastTrilinear": {
+      "gz": 4330,
+      "min": 22618
+    },
     "sample/fp4/buffer/helpers=rayClipSupport": {
       "gz": 4069,
       "min": 21681
@@ -553,6 +629,10 @@
     "sample/fp4/buffer/sampler=nearest": {
       "gz": 3875,
       "min": 20465
+    },
+    "sample/fp4/slot/helpers=fastTrilinear": {
+      "gz": 4370,
+      "min": 22668
     },
     "sample/fp4/slot/helpers=rayClipSupport": {
       "gz": 4108,
@@ -578,6 +658,10 @@
       "gz": 3915,
       "min": 20515
     },
+    "sample/fp8/buffer/helpers=fastTrilinear": {
+      "gz": 4331,
+      "min": 22618
+    },
     "sample/fp8/buffer/helpers=rayClipSupport": {
       "gz": 4070,
       "min": 21681
@@ -601,6 +685,10 @@
     "sample/fp8/buffer/sampler=nearest": {
       "gz": 3876,
       "min": 20465
+    },
+    "sample/fp8/slot/helpers=fastTrilinear": {
+      "gz": 4372,
+      "min": 22668
     },
     "sample/fp8/slot/helpers=rayClipSupport": {
       "gz": 4109,
@@ -626,6 +714,10 @@
       "gz": 3916,
       "min": 20515
     },
+    "sample/fpn/buffer/helpers=fastTrilinear": {
+      "gz": 4387,
+      "min": 22867
+    },
     "sample/fpn/buffer/helpers=rayClipSupport": {
       "gz": 4128,
       "min": 21930
@@ -649,6 +741,10 @@
     "sample/fpn/buffer/sampler=nearest": {
       "gz": 3934,
       "min": 20714
+    },
+    "sample/fpn/slot/helpers=fastTrilinear": {
+      "gz": 4427,
+      "min": 22917
     },
     "sample/fpn/slot/helpers=rayClipSupport": {
       "gz": 4168,

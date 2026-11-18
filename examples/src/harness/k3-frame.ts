@@ -490,7 +490,7 @@ async function main(): Promise<void> {
     const id = pool.add(grid.image);
     pool.flush();
     await pool.settled();
-    const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] });
+    const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "fastTrilinear"] });
     source = vdbSparseSource(grids, { density: id }, {
       lod: (params.get("lod") ?? "coarse-pyramid") as "coarse-pyramid",
       images: { density: grid.image },

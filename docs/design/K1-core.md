@@ -502,6 +502,11 @@ Order: K1.3a → (K1.3b ∥ K1.4a) → K1.4b → K1.5 ∥ K1.6 → K1.7. K1.8 ca
 5. **Trilinear cost.** The cloud system measured the 8-tap accessor trilinear at 2.2–2.7× a hardware fetch.
    *Recommendation:* a same-leaf fast path in `vdbSample` (decode 8 taps from one leaf when they share it, about
    2/3 of interior samples) as a K3 perf item behind the existing parity rows, not a K1 change.
+   *Settled by K3.2d* ([docs/handoffs/K3-2d.md](../handoffs/K3-2d.md)): the same-leaf path was measured and lost
+   (10–25% slower on the Apple GPU: the 1/3 of lanes that fall back make most SIMD groups run both paths). What
+   shipped is the opt-in helper `fastTrilinear` (`vdbSampleFast`): every lane reads its 8 taps as lower-node child
+   lookups from the cached lower node, bit-identical to `vdbSample`, 1.5–2× faster sparse source passes. `vdbSample`
+   itself is unchanged (module bytes and budgets kept; the helper has its own budget rows).
 
 ## 10. Records to add when K1 lands
 

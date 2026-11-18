@@ -17,6 +17,9 @@ export const SAMPLE_HELPERS = ["rayClipSupport"];
 export const MARCH_HELPERS = ["cellBoundTrilinear", "hddaCellEnd", "rayClipSupport"];
 /** K3.2: the sparse volume source's module (`vdbSparseSource` with `lod: 'node-average'`). Its own variant, so the ids above keep their bytes. */
 export const MARCH_FRAME_HELPERS = ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage"];
+/** K3.2d: vdbSampleFast, alone on `sample` and in the sparse volume source's module (its own variants, appended). */
+export const FAST_HELPERS = ["fastTrilinear"];
+export const MARCH_FRAME_FAST_HELPERS = [...MARCH_FRAME_HELPERS, "fastTrilinear"];
 
 /**
  * Every generator variant that must compile: read/sample/march × type set ×
@@ -39,6 +42,8 @@ export function variantMatrix() {
         // ids above, and their snapshot entries, are unchanged).
         if (profile === "sample") extras.push({ helpers: SAMPLE_HELPERS });
         if (profile === "march") extras.push({ helpers: MARCH_HELPERS }, { helpers: MARCH_FRAME_HELPERS });
+        if (profile === "sample") extras.push({ helpers: FAST_HELPERS });
+        if (profile === "march") extras.push({ helpers: MARCH_FRAME_FAST_HELPERS });
         for (const extra of extras) {
           const options = { ...binding, types, profile, ...extra };
           const tag = Object.entries(extra)
@@ -81,6 +86,7 @@ export function checkKernel(module, options) {
     helpers.has("cellBoundTrilinear") ? "    s += vdbCellBoundTrilinear(&a, ijk, 8u);\n" : "",
     helpers.has("hddaCellEnd") ? "    s += vdbHddaCellEnd(&h);\n" : "",
     helpers.has("nodeAverage") ? "    s += vdbNodeAverage(&a, ijk, 8u) + vdbNodeAverage(&a, ijk, 128u);\n" : "",
+    helpers.has("fastTrilinear") ? "    s += vdbSampleFast(&a, p);\n" : "",
   ].join("");
   return `${module}
 ${host}@group(0) @binding(0) var<storage, read_write> checkOut: array<f32>;

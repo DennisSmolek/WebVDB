@@ -75,6 +75,15 @@ interface Result {
     /** The source's content version before and after the replace (the 'frame' caster signature reads it). */
     versions: [number, number];
     gpuBytes: { pool: number; pyramid: number; pyramidScratch: number };
+    /** K3.2e: the density stats before the replace, after it (read back from the pool), a fresh source's on the new image, and the scale uniform. */
+    stats: {
+      before: { meanNonZero: number; max: number; activeVoxels: number };
+      after: { meanNonZero: number; max: number; activeVoxels: number };
+      expected: { meanNonZero: number; max: number; activeVoxels: number };
+      updates: number;
+      scale: [number, number];
+      expectedScale: number;
+    };
   };
   warnings: string[];
   uncaptured: string[];
@@ -379,12 +388,27 @@ async function threeCheck(device: GPUDevice): Promise<void> {
   const buildsAfterReplace = gpuSource.pyramidBuilds;
   await render();
   const buildsAfterSecondRender = gpuSource.pyramidBuilds;
+  // K3.2e: the render after the replace started a readback of the new image; the next render applies its mean.
+  const statsBefore = { ...cpuSource.stats };
+  const scaleBefore = volume.sourceUniforms.densityScale.value as number;
+  await gpuSource.refreshStats();
+  await render();
+  const fresh = vdbSparseSource(grids, { density: id }, { images: { density: next }, indexBox: cloud.indexBox!, lod: "none" });
+  const stats = {
+    before: statsBefore,
+    after: { ...gpuSource.stats },
+    expected: { ...fresh.stats },
+    updates: gpuSource.statsUpdates,
+    scale: [scaleBefore, volume.sourceUniforms.densityScale.value as number] as [number, number],
+    expectedScale: volume.densityScale / fresh.stats.meanNonZero,
+  };
+  fresh.dispose();
   const cpuNext = cpuPyramid(next, cloud.indexBox!, 32);
   const replaced = {
     base: compare(await readThree(g.map), cpuNext.base),
     atlas: g.mip && cpuNext.atlas ? compare(await readThree(g.mip), cpuNext.atlas) : null,
   };
-  result.three = { gpuVsCpu, buildsAfterCreate, buildsAfterRender, buildsAfterReplace, buildsAfterSecondRender, replaced, versions: [versionBefore, gpuSource.version], gpuBytes: { ...gpuSource.gpuBytes } };
+  result.three = { gpuVsCpu, buildsAfterCreate, buildsAfterRender, buildsAfterReplace, buildsAfterSecondRender, replaced, versions: [versionBefore, gpuSource.version], gpuBytes: { ...gpuSource.gpuBytes }, stats };
   log(`three: ${JSON.stringify(result.three)}`, gpuVsCpu.base.over === 0 && replaced.base.over === 0 && buildsAfterSecondRender === 2 ? "ok" : "fail");
   volume.dispose();
   gpuSource.dispose();

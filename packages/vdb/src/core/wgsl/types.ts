@@ -26,8 +26,16 @@ export type VDBModuleProfile = "read" | "sample" | "march" | "majorant";
  * - `'rayClipSupport'` (`sample`+): `vdbRayClipSupport(g, o, d, t) -> bool`,
  *   `vdbRayClip` against the sampler's support box: `[min - 1, max + 1)` for
  *   trilinear, `[min - 0.5, max + 0.5)` for nearest.
+ * - `'fastTrilinear'` (`sample`+, sampler `'trilinear'`; K3.2d): `vdbSampleFast(acc, xyz) -> f32`,
+ *   bit-identical to `vdbSample`: it takes the base voxel's lower node (the
+ *   accessor's cached one, else one descent) and reads each of the 8 taps as
+ *   one lower-node child lookup, the same work in every lane (no per-tap tree
+ *   walk, no leaf-cache thrash where the cell straddles leaves); a base on a
+ *   lower node's +x/+y/+z face (or, with `outside: 'zero'`, whose taps leave
+ *   the index bbox) calls `vdbSample`. Reuse the accessor across samples to
+ *   keep its cached lower node.
  */
-export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "nodeAverage" | "rayClipSupport";
+export type VDBModuleHelper = "cellBoundTrilinear" | "hddaCellEnd" | "nodeAverage" | "rayClipSupport" | "fastTrilinear";
 
 /** Options every binding mode shares. */
 export interface VDBModuleCommonOptions {

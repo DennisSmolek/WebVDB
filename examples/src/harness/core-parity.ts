@@ -298,7 +298,7 @@ function nodeProbes(image: Uint32Array): NodeProbe[] {
 // ---------------------------------------------------------------------------
 // The variant matrix.
 
-type Test = "read" | "meta" | "dead" | "sample" | "xform" | "world" | "clip" | "nodemax" | "walk" | "helpers";
+type Test = "read" | "meta" | "dead" | "sample" | "xform" | "world" | "clip" | "nodemax" | "walk" | "helpers" | "fast";
 
 interface Spec {
   id: string;
@@ -342,6 +342,10 @@ const SPECS: Spec[] = [
   // K1.7a opt-in helpers: vdbCellBoundTrilinear / vdbRayClipSupport as query ops, vdbHddaCellEnd as the walk's cell end.
   { id: "march/all/helpers", profile: "march", types: ALL, mode: "slot", helpers: ["cellBoundTrilinear", "hddaCellEnd", "rayClipSupport"], tests: [...MARCH, "clip", "helpers"] },
   { id: "sample/all/nearest,helpers", profile: "sample", types: ALL, mode: "slot", sampler: "nearest", helpers: ["rayClipSupport"], tests: [...SAMPLE, "helpers"] },
+  // K3.2d: vdbSampleFast (helper fastTrilinear) is bit-identical to vdbSample, fresh or with a warmed accessor, on
+  // points across leaf and lower-node faces; with outside 'zero' too, and in the sparse source's march module.
+  { id: "sample/all/fast", profile: "sample", types: ALL, mode: "slot", helpers: ["fastTrilinear"], tests: [...SAMPLE, "fast"] },
+  { id: "march/all/outside=zero,fast", profile: "march", types: ALL, mode: "slot", outside: "zero", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"], tests: [...MARCH, "fast"] },
 ];
 
 function moduleOptions(s: Spec): VDBModuleOptions {
@@ -427,6 +431,25 @@ function kernel(s: Spec, module: string): string {
   if (helpers.has("cellBoundTrilinear")) {
     cases.push(`        case 7u: {
             qOut[o] = vdbCellBoundTrilinear(&a, ijk, u32(qv(i, 5u)));
+        }`);
+  }
+  if (helpers.has("fastTrilinear")) {
+    // vdbSample with a fresh accessor; vdbSampleFast fresh, after vdbSample warmed the accessor at p, and after a
+    // warm-up at p + d (another leaf / lower node: the cached-node paths). One call site each (SwiftShader compiles
+    // every inlined tree walk slowly): k 0 vdbSample fresh -> 0, 1 fast warm -> 2, 2 fast fresh -> 1, 3 vdbSample at
+    // p + d fresh -> 4, 4 fast warmed elsewhere -> 3.
+    cases.push(`        case 9u: {
+            var f = a;
+            for (var k = 0u; k < 5u; k++) {
+                if k == 2u || k == 3u {
+                    f = a;
+                }
+                if k == 0u || k == 3u {
+                    qOut[o + select(0u, 4u, k == 3u)] = vdbSample(&f, select(p, p + d, k == 3u));
+                } else {
+                    qOut[o + select(select(1u, 2u, k == 1u), 3u, k == 4u)] = vdbSampleFast(&f, p);
+                }
+            }
         }`);
   }
   if (helpers.has("rayClipSupport")) {
@@ -670,6 +693,31 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
           const d = Math.abs(got - want);
           if (tri) c.rec("sample", d <= SAMPLE_TOL * Math.max(1, Math.abs(want)), () => `${tag(`trilinear ${p}`)()}: gpu ${got} want ${want}`, d);
           else c.val("sample", got, fr(want), tag(`nearest ${p}`));
+        });
+      }
+    }
+
+    if (has("fast") && ok) {
+      // Random points plus points on leaf (8k + 7 + f) and lower-node (128k + 127 + f) faces and their corners.
+      const r = rng(9000 + g.id);
+      const pts = samplePoints(g, 7000 + g.id);
+      const { min, max } = g.bbox;
+      for (let k = 0; k < 96; k++) {
+        const p = [0, 1, 2].map((a) => min[a]! - 2 + r() * (max[a]! - min[a]! + 4)) as Vec3;
+        const face = k % 3 === 0 ? 8 : 128;
+        for (let a = 0; a < 3; a++) {
+          if (r() < 0.6) p[a] = Math.floor(p[a]! / face) * face + face - 1 + r();
+        }
+        pts.push(p.map(fr) as Vec3);
+      }
+      const bits = (v: number) => new Uint32Array(new Float32Array([v]).buffer)[0]!;
+      for (const p of pts) {
+        const d = [0, 1, 2].map(() => fr(Math.round((r() * 2 - 1) * 12))) as Vec3;
+        b.add(9, g.id, [...p, ...d], (out, o) => {
+          const want = bits(out[o]!);
+          for (const [name, k] of [["fresh", 1], ["warm", 2], ["warm elsewhere", 3]] as const) {
+            c.rec("fast-sample", bits(out[o + k]!) === want, () => `${tag(`vdbSampleFast ${name} at ${p} (warm-up offset ${d})`)()}: ${out[o + k]} vs vdbSample ${out[o]}`);
+          }
         });
       }
     }

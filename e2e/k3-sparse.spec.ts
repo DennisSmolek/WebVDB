@@ -10,7 +10,8 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // K3.2 (R1 §6 Step 2): the sparse VDBGridPool source behind the VDBVolumeSource seam
 // (examples/src/harness/k3-sparse.ts). Gates: the identical-voxel A/B (the committed CC0 cloud's
 // .wvdb texels converted to a NanoVDB FLOAT grid: dense vs sparse 'none' differ only in the sampler)
-// at PSNR >= 38 dB; HDDA skipping changes nothing (identical within float noise); every LOD strategy
+// at PSNR >= 38 dB; HDDA skipping changes nothing (identical within float noise); the K3.2d level-0 sampler
+// is bit-identical to the K3.2 one (fresh accessor + vdbSample per sample); every LOD strategy
 // renders deterministically without validation errors; the sparse WGSL helpers match their CPU twins.
 // The report-only runs (smoke.vdb, WDAS, his bunny, flicker per LOD strategy, timings) are opt-in:
 // K3_SPARSE_REPORT=1 (see docs/handoffs/K3-2.md).
@@ -83,6 +84,13 @@ async function gate(page: Page, q: string, lods: string[], tag: string): Promise
     console.log(`[k3-sparse] ${tag} ${lod}: HDDA on vs off PSNR ${cmp.psnr === Infinity ? "inf" : cmp.psnr.toFixed(2)}, max channel diff ${cmp.maxDiff}, ${cmp.above} px > 8/255`);
     expect(cmp.psnr, `${lod} ${JSON.stringify(cmp)}`).toBeGreaterThanOrEqual(60);
     expect(cmp.above).toBe(0);
+    // K3.2d: the fast level-0 sampler (vdbSampleFast, one accessor per invocation) is bit-identical to the K3.2 one.
+    const taps = first.variants.find((v) => v.name === `${lod}-nohdda-taps`);
+    if (taps) {
+      const same = compareImages(image(first, byName(first, `${lod}-nohdda`)), image(first, taps));
+      console.log(`[k3-sparse] ${tag} ${lod}: K3.2d sampler vs K3.2 taps PSNR ${same.psnr === Infinity ? "inf" : same.psnr.toFixed(2)}, max channel diff ${same.maxDiff}`);
+      expect(same.maxDiff, `${lod} fast vs taps ${JSON.stringify(same)}`).toBe(0);
+    }
     const vs = compareImages(image(first, dense), image(first, byName(first, lod)));
     console.log(`[k3-sparse] ${tag} dense vs sparse '${lod}': PSNR ${vs.psnr.toFixed(2)} dB, ${vs.above} px > 8/255`);
   }
@@ -96,9 +104,9 @@ async function gate(page: Page, q: string, lods: string[], tag: string): Promise
   return first;
 }
 
-test("K3.2 sparse source: identical voxels match dense (PSNR >= 38 dB), HDDA changes nothing, deterministic, WGSL twins", async ({ page }) => {
+test("K3.2 sparse source: identical voxels match dense (PSNR >= 38 dB), HDDA changes nothing, K3.2d sampler = K3.2 taps, deterministic, WGSL twins", async ({ page }) => {
   test.setTimeout(600_000);
-  const first = await gate(page, "?asset=cloud04&variants=dense,none,none-nohdda,pyramid,pyramid-nohdda&probe=1", ["none", "pyramid"], "cloud04");
+  const first = await gate(page, "?asset=cloud04&variants=dense,none,none-nohdda,none-nohdda-taps,pyramid,pyramid-nohdda,pyramid-nohdda-taps&probe=1", ["none", "pyramid"], "cloud04");
   const ab = compareImages(image(first, byName(first, "dense")), image(first, byName(first, "none")));
   console.log(`[k3-sparse] ${first.adapter}: dense vs sparse 'none' (identical voxels) PSNR ${ab.psnr.toFixed(2)} dB, ${ab.above} px > 8/255`);
   expect(ab.psnr, JSON.stringify(ab)).toBeGreaterThanOrEqual(38);
