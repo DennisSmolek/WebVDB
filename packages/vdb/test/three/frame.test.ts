@@ -149,3 +149,56 @@ describe("VDBFrameVolume and the view code", () => {
     expect(collector.collect(scene, camera, { near: 0.1, far: Infinity }, false).volumes.length).toBe(0);
   });
 });
+
+describe("K3.3 'frame' lighting host side", () => {
+  it("settings: his 'frame' subset with his defaults; lighting stays 'volume' and temporal off until K3.4 (V33)", () => {
+    const s = new VDBFrameRenderer().settings;
+    expect([s.lighting, s.temporal, s.multipleScattering]).toEqual(["volume", false, true]);
+    expect([s.temporalBlend, s.shadowResolution, s.shadowCascades, s.shadowDistance]).toEqual([0.2, 64, 1, 512]);
+    expect([s.phase, s.phaseG, s.phaseBackG, s.phaseBackWeight, s.phaseGExponent]).toEqual(["henyey-greenstein", 0.8, -0.3, 0.2, 0]);
+    expect([s.environmentLighting, s.environmentSamples, s.environmentShOrder]).toEqual(["directional", 8, 1]);
+  });
+
+  it("light slots: scene lights first; the dominant 'directional' environment light takes the next slot without diffusion, the grid with it", () => {
+    const fr = new VDBFrameRenderer();
+    fr.settings.lighting = "frame";
+    const scene = new THREE.Scene();
+    const sun = new THREE.DirectionalLight(0xffffff, 2);
+    sun.position.set(0, 10, 0);
+    const hemi = new THREE.HemisphereLight(0x0000ff, 0x00ff00, 1);
+    hemi.position.set(0, 0, 3);
+    scene.add(sun, sun.target, hemi, new THREE.AmbientLight(0xff0000, 0.5));
+    scene.updateMatrixWorld(true);
+    const camera = new THREE.PerspectiveCamera();
+    fr.environment = {
+      mode: "directional",
+      count: 3,
+      directions: [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+      ],
+      colors: [
+        [3, 3, 3],
+        [1, 1, 1],
+        [0.5, 0.5, 0.5],
+      ],
+    };
+
+    fr.settings.multipleScattering = false;
+    let r = fr.updateLights(scene, camera);
+    expect([r.shadowLightCount, r.environmentLightCount, r.environmentShadowSlot, r.environmentGridLights.length]).toEqual([2, 1, 1, 2]);
+    const shadowLights = fr.transmittanceMaterial.frameShadowLights.array as THREE.Vector4[];
+    expect(shadowLights[0]!.toArray()).toEqual([0, 1, 0, 1]);
+    expect(shadowLights[1]!.toArray()).toEqual([1, 0, 0, 1]);
+    expect(fr.lightUniforms.frameEnvironmentUnshadowed.value.toArray()).toEqual([1.5, 1.5, 1.5]);
+    expect(fr.lightUniforms.frameSkyDirection.value.toArray()).toEqual([0, 0, 1]);
+    expect(fr.lightUniforms.frameAmbientColor.value.toArray()).toEqual([0.5, 0, 0]);
+    expect(fr.lightUniforms.frameHemiSkyColor.value.toArray()).toEqual([0, 0, 1]);
+
+    // Diffusion: every environment light goes to the environment grid (opposite pairs share one march)
+    fr.settings.multipleScattering = true;
+    r = fr.updateLights(scene, camera);
+    expect([r.shadowLightCount, r.environmentLightCount, r.environmentGridLights.length]).toEqual([1, 0, 3]);
+  });
+});

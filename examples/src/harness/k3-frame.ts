@@ -24,13 +24,28 @@
  * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?timing=1` (per-pass
  * GPU ms: scene, froxels (inject), integrate; `?timingFrames=300&timingWarmup=60` for medians; provisional per
  * D25), `?file=`, `?debug=1` (raw chunk-probe values in the result).
+ *
+ * K3.3 ('frame' lighting, R1 §6 Step 3): `?lighting=frame` (his Step 3 scenes set it: `step3-default`,
+ * `step3-shadow-cascades-4`, `step3-shadow-grid-high`, `step3-two-bunnies`, `step3-environment-sky-midday`
+ * and their `*-dir-isolated` / `*-env-isolated` parity variants), `?source=sparse` (the same texels as a
+ * NanoVDB grid, `?lod=` default 'coarse-pyramid'), `?cascades=`, `?shadowRes=`, `?shadowDistance=`,
+ * `?second=1` (his second bunny), `?lights=dir|dir-hemi|none` (his sun; + his hemisphere and ambient
+ * lights), `?env=synthetic|<UltraHDR url>` (`?envIntensity=`, `?envMode=directional|spherical-harmonics|outward`),
+ * `?dist=` (smoke camera distance / diagonal), `?jitter=1`, `?temporal=1`, `?twins=1` (transmittance,
+ * environment grid, density and lighting passes vs their CPU twins from read-back targets; the grid
+ * chunk probe always runs), `?redraw=N` (N more frames, then the redraw-skip counters),
+ * `?temporalCheck=N` (N jittered frames without and with temporal reprojection: convergence).
  * Results: `window.__VDB_K3_FRAME__` (e2e/k3-frame.spec.ts writes PNGs to artifacts/k3/ours/).
  */
 import * as THREE from "three";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
-import { VDBFrameRenderer, VDBFrameVolume, vdbDenseTextures, vdbFrameChunks } from "@pmndrs/vdb/three";
+import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
+import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameChunks, vdbSparseSource, type VDBFrameRedrawStats, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBGridPool } from "@pmndrs/vdb";
+import { densityTwin, environmentGridTwin, lightingTwin, probeGrid, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
 import {
+  wvdbDenseToNanoVdb,
   readWvdb,
   vdbFrameDistanceFade,
   vdbFrameHenyeyGreenstein,
@@ -57,15 +72,52 @@ const { Fn, float, screenCoordinate, vec2, vec3, vec4, If, select } = TSL as unk
 interface SceneDef {
   name: string;
   file: string;
-  /** Lights of his `lightSetup` we can render ('dir' only in Step 1). */
-  lightSetup: "dir" | "environment";
+  /** Lights of his `lightSetup` we can render ('dir': his sun; 'none': no scene light). */
+  lightSetup: "dir" | "environment" | "none";
   lighting: "volume" | "frame";
   multipleScattering: boolean;
-  /** True when the Step 1 port can match his capture of this scene. */
+  /** True when the port can match his capture of this scene. */
   parityExpected: boolean;
   why?: string;
   smoke?: boolean;
+  /** K3.3 renderer settings of the scene (his GUI fields). */
+  shadowCascades?: number;
+  shadowResolution?: number;
+  /** His `source: 'twoBunnies'`: a second bunny overlapping the first. */
+  twoBunnies?: boolean;
+  /** His `environment` field: the UltraHDR map `/fixtures/k3/<name>-HDR.jpg` as scene.environment (intensity 0.4). */
+  environment?: string;
 }
+
+// K3.3 (R1 §6 Step 3): his 'frame' lighting scenes. The as-is captures use his 'environment' light setup:
+// three-environment-shadows scene lights found in the HDR map + the map without them + a grounded skybox, none of
+// which this harness renders, so only the `*-isolated` variants (capture-reference.mjs `isolate: 'frame'`) gate.
+const STEP3_WHY_ENV =
+  "his 'environment' light setup: three-environment-shadows scene lights extracted from the UltraHDR map, the map without them as scene.environment, and the grounded skybox (not ported; the *-isolated variant gates)";
+const step3 = (name: string, extra: Partial<SceneDef>, parityExpected: boolean, why?: string): SceneDef => ({
+  name,
+  file: "/fixtures/k3/bunny_cloud.wvdb",
+  lightSetup: "dir",
+  lighting: "frame",
+  multipleScattering: true,
+  parityExpected,
+  ...(why ? { why } : {}),
+  ...extra,
+});
+const STEP3_SCENES: Record<string, SceneDef> = Object.fromEntries(
+  [
+    step3("step3-default", { lightSetup: "environment" }, false, STEP3_WHY_ENV),
+    step3("step3-shadow-cascades-4", { lightSetup: "environment", shadowCascades: 4 }, false, STEP3_WHY_ENV),
+    step3("step3-shadow-grid-high", { lightSetup: "environment", shadowResolution: 160 }, false, STEP3_WHY_ENV),
+    step3("step3-two-bunnies", { lightSetup: "environment", twoBunnies: true }, false, STEP3_WHY_ENV),
+    step3("step3-environment-sky-midday", { lightSetup: "environment", environment: "sky-midday" }, false, STEP3_WHY_ENV),
+    step3("step3-default-dir-isolated", {}, true),
+    step3("step3-shadow-cascades-4-dir-isolated", { shadowCascades: 4 }, true),
+    step3("step3-shadow-grid-high-dir-isolated", { shadowResolution: 160 }, true),
+    step3("step3-two-bunnies-dir-isolated", { twoBunnies: true }, true),
+    step3("step3-environment-sky-midday-env-isolated", { lightSetup: "none", environment: "sky-midday" }, true),
+  ].map((d) => [d.name, d]),
+);
 
 // His frame.js scene list (capture-reference.mjs SCENARIOS). `multipleScattering` 'neural' (his default) is the
 // same as true with 'volume' lighting (the network runs only in 'frame' lighting).
@@ -105,6 +157,7 @@ const HIS_SCENES: Record<string, SceneDef> = {
   "step1-multiple-scattering-off": { name: "step1-multiple-scattering-off", file: "/fixtures/k3/bunny_cloud.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: false, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
   "step0-bunny": { name: "step0-bunny", file: "/fixtures/k3/bunny_cloud.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: true, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
   "step0-smoke": { name: "step0-smoke", file: "/fixtures/k3/smoke.wvdb", lightSetup: "environment", lighting: "frame", multipleScattering: true, parityExpected: false, why: "'frame' lighting + environment (K3.3/K3.4)" },
+  ...STEP3_SCENES,
 };
 
 interface ChunkProbe {
@@ -143,9 +196,22 @@ interface Result {
   nonBackground?: number;
   chunkProbe?: ChunkProbe;
   twin?: TwinCheck;
-  timings?: { provisional: true; note: string; sceneMs: number | null; froxelsMs: number | null; fullMs: number | null; integrateMs: number | null };
+  timings?: { provisional: true; note: string; sceneMs: number | null; froxelsMs: number | null; fullMs: number | null; integrateMs: number | null; passes?: Record<string, number | null> };
   warnings: string[];
   uncaptured: string[];
+  // K3.3 ('frame' lighting)
+  lighting?: "volume" | "frame";
+  sourceKind?: "dense" | "sparse";
+  settings?: Record<string, unknown>;
+  grid?: { count: number; resolution: number; gridMin: number[][]; gridVoxel: number[][] };
+  gridProbe?: TwinStats;
+  transmittanceTwin?: TwinStats & { marched: number };
+  lightingTwin?: TwinStats & { lit: number };
+  environmentGridTwin?: TwinStats & { marched: number };
+  densityTwin?: TwinStats & { covered: number };
+  environment?: { mode: string; count: number; directions: number[][]; colors: number[][]; frames: number } | null;
+  redraw?: VDBFrameRedrawStats;
+  temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
 }
 
 declare global {
@@ -171,6 +237,20 @@ const TWIN = params.get("twin") === "1";
 const OCCLUDER = params.get("occluder") === "1";
 const NOVOLUME = params.get("novolume") === "1";
 const MANIFEST = params.get("manifest") ?? "/fixtures/k3-reference/75e7345/manifest.json";
+// K3.3
+const LIGHTING = (params.get("lighting") ?? def?.lighting ?? "volume") as "volume" | "frame";
+const SOURCE_KIND = (params.get("source") ?? "dense") as "dense" | "sparse";
+const CASCADES = Number(params.get("cascades") ?? def?.shadowCascades ?? 1);
+const SHADOW_RES = Number(params.get("shadowRes") ?? def?.shadowResolution ?? 64);
+const SHADOW_DISTANCE = Number(params.get("shadowDistance") ?? 512);
+const TWO = params.has("second") ? params.get("second") === "1" : !!def?.twoBunnies;
+const ENV = params.get("env") ?? (def?.environment ? `/fixtures/k3/${def.environment}-HDR.jpg` : null);
+const ENV_INTENSITY = Number(params.get("envIntensity") ?? (ENV === "synthetic" ? 1.0 : 0.4));
+const ENV_MODE = (params.get("envMode") ?? "directional") as "outward" | "directional" | "spherical-harmonics";
+const TWINS = params.get("twins") === "1";
+const TEMPORAL_CHECK = Number(params.get("temporalCheck") ?? 0);
+const REDRAW_FRAMES = Number(params.get("redraw") ?? 0);
+const LIGHT_SETUP = (params.get("lights") ?? def?.lightSetup ?? "dir") as SceneDef["lightSetup"] | "dir-hemi";
 // His examples page: scene.background 0x598eff until the environment loads (main.jsx L41).
 const BACKGROUND = new THREE.Color(0x598eff);
 
@@ -228,7 +308,12 @@ function toDisplay(linear: Float32Array): Uint8Array {
 
 interface ManifestScenario {
   name: string;
-  metadata?: { camera?: { matrixWorld: number[]; projectionMatrix: number[]; near: number; far: number; fov: number; aspect: number }; volumes?: { matrixWorld: number[] }[] };
+  metadata?: {
+    camera?: { matrixWorld: number[]; projectionMatrix: number[]; near: number; far: number; fov: number; aspect: number };
+    volumes?: { matrixWorld: number[] }[];
+    /** K3.3 captures: scene.environment intensity and rotation. */
+    environment?: { intensity: number; rotation: [number, number, number, string] } | null;
+  };
 }
 
 async function loadManifest(name: string): Promise<ManifestScenario | null> {
@@ -259,7 +344,7 @@ async function main(): Promise<void> {
   const info = adapter.info;
   result.adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" ");
   const features: GPUFeatureName[] = TIMING && adapter.features.has("timestamp-query") ? ["timestamp-query"] : [];
-  const device = await adapter.requestDevice({ requiredFeatures: features });
+  const device = await adapter.requestDevice({ requiredFeatures: features, ...(SOURCE_KIND === "sparse" ? { requiredLimits: VDBGridPool.requiredLimits(adapter) } : {}) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
 
   // --- the dense volume (his bytes) ----------------------------------------------------------
@@ -290,14 +375,45 @@ async function main(): Promise<void> {
     height: FROXELS[1],
     depth: FROXELS[2],
     subSteps: SUBSTEPS,
-    jitter: false,
-    temporal: false,
-    lighting: "volume",
+    jitter: params.get("jitter") === "1",
+    temporal: params.get("temporal") === "1",
+    lighting: LIGHTING,
     multipleScattering: params.has("ms") ? params.get("ms") === "1" : def.multipleScattering,
+    // K3.3: his 'frame' settings for the scene; his demos set the renderer phase to 2HG (utils/phase.js).
+    shadowCascades: CASCADES,
+    shadowResolution: SHADOW_RES,
+    shadowDistance: SHADOW_DISTANCE,
+    phase: "dual-lobe",
+    phaseG: 0.8,
+    phaseBackG: -0.3,
+    phaseBackWeight: 0.2,
+    environmentLighting: ENV_MODE,
   });
   result.froxels = [...FROXELS];
+  result.lighting = LIGHTING;
+  result.sourceKind = SOURCE_KIND;
+  result.settings = { ...frameRenderer.settings };
 
-  const source = vdbDenseTextures(dense);
+  // Dense: his bytes. Sparse: the same texels as a NanoVDB FLOAT grid (wvdbDenseToNanoVdb, voxel-exact), the K3.2
+  // default LOD ('coarse-pyramid', D28), normalized by the dense mean so only the sampler differs (K3.2 A/B).
+  let source: VDBThreeVolumeSource;
+  if (SOURCE_KIND === "sparse") {
+    const grid = wvdbDenseToNanoVdb(dense);
+    const pool = await VDBGridPool.create(device, { label: "k3-frame" });
+    const id = pool.add(grid.image);
+    pool.flush();
+    await pool.settled();
+    const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] });
+    source = vdbSparseSource(grids, { density: id }, {
+      lod: (params.get("lod") ?? "coarse-pyramid") as "coarse-pyramid",
+      images: { density: grid.image },
+      indexBox: grid.textureIndexBox,
+      stats: { meanNonZero: dense.meanDensity, max: dense.maxDensity, activeVoxels: dense.activeTexels },
+      ...(dense.bbox ? { bbox: dense.bbox as [[number, number, number], [number, number, number]] } : {}),
+    });
+  } else {
+    source = vdbDenseTextures(dense);
+  }
   const bbox = new THREE.Box3(new THREE.Vector3(...(dense.bbox?.[0] ?? [-0.5, -0.5, -0.5])), new THREE.Vector3(...(dense.bbox?.[1] ?? [0.5, 0.5, 0.5])));
   const size = bbox.getSize(new THREE.Vector3());
   const center = bbox.getCenter(new THREE.Vector3());
@@ -344,7 +460,7 @@ async function main(): Promise<void> {
     const diag = size.length();
     camera.near = diag * 0.01;
     camera.far = diag * 20;
-    camera.position.copy(center).add(new THREE.Vector3(0.9, 0.35, 1.1).normalize().multiplyScalar(diag * 0.75));
+    camera.position.copy(center).add(new THREE.Vector3(0.9, 0.35, 1.1).normalize().multiplyScalar(diag * Number(params.get("dist") ?? 0.75)));
     camera.lookAt(center);
     camera.updateProjectionMatrix();
   } else {
@@ -363,12 +479,59 @@ async function main(): Promise<void> {
   }
   if (!NOVOLUME) scene.add(volume);
 
-  if (def.lightSetup === "dir") {
+  // K3.3 his `source: 'twoBunnies'` (frame.js L456–470): a second bunny overlapping the first by about 40% of its
+  // width, at (0.6, 0.1, -0.2) × size from the first, turning about y (his interval; 0 here unless the manifest has it).
+  const volumes: VDBFrameVolume[] = [volume];
+  if (TWO) {
+    const second = new VDBFrameVolume(source, {
+      frameRenderer,
+      bbox,
+      extinction: def.smoke ? 40 : 100,
+      phase: "dual-lobe",
+      shadowSteps: SHADOW_STEPS,
+      mipmaps: MIPS,
+    });
+    const capture = manifest?.metadata?.volumes?.[1];
+    if (capture) {
+      second.matrixAutoUpdate = false;
+      second.matrix.fromArray(capture.matrixWorld);
+      second.matrixWorld.copy(second.matrix);
+    } else {
+      second.position.copy(volume.position).add(new THREE.Vector3(size.x * 0.6, size.y * 0.1, -size.z * 0.2).multiplyScalar(volume.scale.x));
+      second.scale.copy(volume.scale);
+    }
+    if (!NOVOLUME) scene.add(second);
+    volumes.push(second);
+  }
+
+  if (LIGHT_SETUP === "dir" || LIGHT_SETUP === "dir-hemi") {
     // His sun: DirectionalLight(0xffffff, 1.0) at (100, 200, 100), target at the origin (frame.js L191–194).
     const sun = new THREE.DirectionalLight(0xffffff, 1.0);
     sun.position.set(100.0, 200.0, 100.0);
     scene.add(sun);
     scene.add(sun.target);
+  }
+  if (LIGHT_SETUP === "dir-hemi") {
+    // His hemisphere and ambient lights (frame.js L196–200), for the 'frame' lighting twin (sky up / down slots).
+    scene.add(new THREE.HemisphereLight(0x88aaff, 0x443322, 0.5));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+  }
+
+  // K3.3 environment: his UltraHDR map (owner copies it into fixtures/k3/; intensity 0.4 as his resources.js) or a
+  // synthetic sky with a sun. 'directional' environment lights come from a PMREM readback (async), so the first
+  // frames render with the 'outward' path; frames are rendered until the lights exist (or 60 tries).
+  if (ENV) {
+    const envTexture: THREE.Texture =
+      ENV === "synthetic"
+        ? syntheticEnvironment()
+        : await new Promise<THREE.Texture>((resolve, reject) => {
+            new UltraHDRLoader().load(ENV, (t) => resolve(t), undefined, (e) => reject(new Error(`UltraHDR ${ENV}: ${String(e)} (his maps are not committed: copy ${ENV.split("/").pop()} from his clone into fixtures/k3/)`)));
+          });
+    envTexture.mapping = THREE.EquirectangularReflectionMapping;
+    scene.environment = envTexture;
+    const captured = manifest?.metadata?.environment;
+    scene.environmentIntensity = params.has("envIntensity") || !captured ? ENV_INTENSITY : captured.intensity;
+    if (captured?.rotation) scene.environmentRotation.set(captured.rotation[0], captured.rotation[1], captured.rotation[2], captured.rotation[3] as THREE.EulerOrder);
   }
 
   const volumeCenter = new THREE.Vector3();
@@ -418,6 +581,17 @@ async function main(): Promise<void> {
     return readHalf(renderer, rt, W, H);
   }
 
+  if (ENV && LIGHTING === "frame" && ENV_MODE !== "outward") {
+    let tries = 0;
+    while (!frameRenderer.environment && tries++ < 60) {
+      await frame();
+      await frameRenderer.environmentLights.settled;
+    }
+    const e = frameRenderer.environment as { mode: string; count: number; directions: number[][]; colors: number[][] } | null;
+    result.environment = e ? { mode: e.mode, count: e.count, directions: e.directions.slice(0, e.count).map((d) => [...d]), colors: e.colors.slice(0, e.count).map((c) => [...c]), frames: tries } : null;
+    if (!e) throw new Error("the environment lights did not arrive within 60 frames");
+  }
+
   const firstLinear = await frame();
   const first = toDisplay(firstLinear);
   const second = toDisplay(await frame());
@@ -457,6 +631,88 @@ async function main(): Promise<void> {
     log(`integrate twin: ${result.twin.pixels} pixels (${result.twin.covered} with volume), max |GPU - CPU| ${result.twin.maxAbs.toExponential(2)}, ${result.twin.over} over`, result.twin.over === 0 ? "ok" : "fail");
   }
 
+  // --- K3.3 'frame' lighting: grid layout, grid chunks, pass twins, redraw skips, temporal convergence ---------
+  if (LIGHTING === "frame") {
+    const g = frameRenderer.gridUniforms;
+    const count = g.frameGridCount.value as number;
+    result.grid = {
+      count,
+      resolution: g.frameGridResolution.value as number,
+      gridMin: (g.frameGridMin.array as THREE.Vector3[]).slice(0, count).map((v) => v.toArray()),
+      gridVoxel: (g.frameGridVoxel.array as THREE.Vector3[]).slice(0, count).map((v) => v.toArray()),
+    };
+    // The last frame drew the passes the twins read (identical frames; the targets hold the last draw).
+    if (TWINS) {
+      result.transmittanceTwin = await transmittanceTwin(renderer, frameRenderer);
+      result.lightingTwin = await lightingTwin(renderer, frameRenderer);
+      if (SOURCE_KIND === "dense" && volumes.length === 1) {
+        result.densityTwin = await densityTwin(renderer, frameRenderer, volume, dense);
+        log(`density twin: ${result.densityTwin.compared} values (${result.densityTwin.covered} froxels), max |d| ${result.densityTwin.maxAbs.toExponential(2)}, ${result.densityTwin.over} over`, result.densityTwin.over === 0 ? "ok" : "fail");
+      }
+      if (frameRenderer.environmentGridMaterial.frameLightCount.value > 0 && frameRenderer.redrawStats.environmentGrid.drawn > 0) {
+        result.environmentGridTwin = await environmentGridTwin(renderer, frameRenderer);
+        log(`environment grid twin: ${result.environmentGridTwin.compared} values (${result.environmentGridTwin.marched} marched), max |d| ${result.environmentGridTwin.maxAbs.toExponential(2)}, ${result.environmentGridTwin.over} over`, result.environmentGridTwin.over === 0 ? "ok" : "fail");
+      }
+      log(
+        `transmittance twin: ${result.transmittanceTwin.compared} values (${result.transmittanceTwin.marched} marched voxels), max |d| ${result.transmittanceTwin.maxAbs.toExponential(2)}, ${result.transmittanceTwin.over} over; lighting twin: ${result.lightingTwin.compared} values (${result.lightingTwin.lit} froxels), max |d| ${result.lightingTwin.maxAbs.toExponential(2)}, ${result.lightingTwin.over} over`,
+        result.transmittanceTwin.over + result.lightingTwin.over === 0 ? "ok" : "fail",
+      );
+    }
+    result.gridProbe = await probeGrid(renderer, frameRenderer);
+    log(`grid chunk probe: ${result.gridProbe.compared} values, max |d| ${result.gridProbe.maxAbs.toExponential(2)}, ${result.gridProbe.over} over`, result.gridProbe.over === 0 ? "ok" : "fail");
+
+    for (let f = 0; f < REDRAW_FRAMES; f++) await frame();
+    result.redraw = JSON.parse(JSON.stringify(frameRenderer.redrawStats)) as VDBFrameRedrawStats;
+    log(`redraws (drawn/skipped): ${JSON.stringify(result.redraw)}`);
+  }
+
+  if (TEMPORAL_CHECK > 0) {
+    // Jittered frames without and with temporal reprojection (static camera): the temporal frames settle toward
+    // the mean of the jittered frames and change less from frame to frame.
+    const mask: number[] = [];
+    for (let i = 0; i < first.length; i += 4) {
+      if (Math.abs(first[i]! - bgBytes[0]!) + Math.abs(first[i + 1]! - bgBytes[1]!) + Math.abs(first[i + 2]! - bgBytes[2]!) > 6) mask.push(i);
+    }
+    const run = async (temporal: boolean): Promise<Float32Array[]> => {
+      frameRenderer.settings.jitter = true;
+      frameRenderer.settings.temporal = temporal;
+      frameRenderer.jitterIndex = 0;
+      const out: Float32Array[] = [];
+      for (let k = 0; k < TEMPORAL_CHECK; k++) out.push(await frame());
+      return out;
+    };
+    const diffs = (frames: Float32Array[]) =>
+      frames.slice(1).map((f, k) => {
+        const a = toDisplay(frames[k]!);
+        const b = toDisplay(f);
+        let s = 0;
+        for (const i of mask) s += Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!);
+        return s / Math.max(1, mask.length * 3);
+      });
+    const psnr = (a: Uint8Array, b: Uint8Array) => {
+      let se = 0;
+      for (const i of mask) for (let c = 0; c < 3; c++) se += (a[i + c]! - b[i + c]!) ** 2;
+      const mse = se / Math.max(1, mask.length * 3);
+      return mse === 0 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+    };
+    const off = await run(false);
+    const mean = new Float32Array(off[0]!.length);
+    for (const f of off) for (let i = 0; i < f.length; i++) mean[i] = mean[i]! + f[i]! / off.length;
+    const on = await run(true);
+    const meanDisplay = toDisplay(mean);
+    result.temporalCheck = {
+      frames: TEMPORAL_CHECK,
+      diffsOff: diffs(off),
+      diffsOn: diffs(on),
+      psnrSingleVsMean: psnr(toDisplay(off[0]!), meanDisplay),
+      psnrTemporalVsMean: psnr(toDisplay(on[on.length - 1]!), meanDisplay),
+      volumePixels: mask.length,
+    };
+    frameRenderer.settings.jitter = false;
+    frameRenderer.settings.temporal = false;
+    log(`temporal: ${JSON.stringify(result.temporalCheck)}`);
+  }
+
   // --- per-pass timing (D25: provisional) ---------------------------------------------------------
   if (TIMING && features.length > 0) {
     const resolve = async () => {
@@ -469,7 +725,7 @@ async function main(): Promise<void> {
     };
     const frames = Number(params.get("timingFrames") ?? 1);
     const warmup = Number(params.get("timingWarmup") ?? 0);
-    const samples = { scene: [] as (number | null)[], froxels: [] as (number | null)[], integrate: [] as (number | null)[], full: [] as (number | null)[] };
+    const samples = { scene: [] as (number | null)[], froxels: [] as (number | null)[], integrate: [] as (number | null)[], full: [] as (number | null)[], grid: [] as (number | null)[] };
     await resolve();
     for (let f = 0; f < warmup + frames; f++) {
       // Scene alone (volume hidden); the froxel (inject) passes alone; scene + integrate over the held atlas; the full frame.
@@ -488,19 +744,32 @@ async function main(): Promise<void> {
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
       const fullMs = await resolve();
+      // K3.3 'frame' lighting: the froxel passes again with the grid passes forced (signatures reset): the cost of a
+      // redraw of the shadow density, transmittance and environment grid.
+      let gridMs: number | null = null;
+      if (LIGHTING === "frame") {
+        frameRenderer.shadowDrawnVersion = -1;
+        frameRenderer.transmittanceSignature = [];
+        frameRenderer.environmentGridSignature = [];
+        frameRenderer.renderFroxels(renderer, scene, camera);
+        const redrawMs = await resolve();
+        gridMs = redrawMs !== null && froxelsMs !== null ? redrawMs - froxelsMs : null;
+      }
       if (f < warmup) continue;
       samples.scene.push(sceneMs);
       samples.froxels.push(froxelsMs);
       samples.integrate.push(heldMs !== null && sceneMs !== null ? heldMs - sceneMs : null);
       samples.full.push(fullMs);
+      samples.grid.push(gridMs);
     }
     result.timings = {
       provisional: true,
-      note: `D25: not from a quiet machine; median of ${frames} frame(s) after ${warmup} warm-up; never gate on it. full is three's figure for the whole render (nested froxel passes may not be included)`,
+      note: `D25: not from a quiet machine; median of ${frames} frame(s) after ${warmup} warm-up; never gate on it. full is three's figure for the whole render (nested froxel passes may not be included). 'frame' lighting: froxels is a frame with the grid passes skipped (static scene), gridRedraw the extra cost when they are drawn`,
       sceneMs: median(samples.scene),
       froxelsMs: median(samples.froxels),
       integrateMs: median(samples.integrate),
       fullMs: median(samples.full),
+      ...(LIGHTING === "frame" ? { passes: { gridRedrawMs: median(samples.grid) } } : {}),
     };
     log(`timings (provisional, D25): ${JSON.stringify(result.timings)}`, "warn");
   } else {

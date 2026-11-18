@@ -152,3 +152,17 @@ From v1; details in docs/handoffs/.
 - `vdbSparseSource` needs a `VDBGridNode` with profile `'march'` and helpers `cellBoundTrilinear`,
   `hddaCellEnd` (+ `nodeAverage` for that LOD); with other helpers in other shaders, make the one node with the
   union (one module per shader).
+- Harness query strings: `URLSearchParams` decodes `+` as a space. `?lights=dir+hemi` silently became "no light"
+  in K3.3 (the frame still rendered); use `-` or `,` in option values.
+- His shadow grid's fine cascades sit within `shadowDistance` and a quarter of the casters' size around the
+  camera, so with his demo camera (~130 units from a 100-unit bunny) `shadowCascades: 4` gives one cascade
+  (his `shadow-cascades-4` scene ≈ the default). To exercise cascades, put the camera inside the casters' box
+  (`k3-frame ?dist=0.3`).
+- `'frame'` lighting's `'directional'` environment lights come from an async readback: the frame that requests
+  it renders the `'outward'` path. Harnesses render until `frameRenderer.environment` is set and await
+  `frameRenderer.environmentLights.settled`.
+- Pool meshes that share one material across draws (his density / shadow-density pools; ours share a volume's
+  material across cascades) rely on three r187 `uniform()` being per-object (`objectGroup`): values set in
+  `onBeforeRender` reach each draw. Shared texture nodes swap `.value` per frame.
+- `readRenderTargetPixelsAsync(rt, x, y, w, h, textureIndex)` reads an MRT attachment; an `RGFormat` half target
+  reads back 2 channels per texel (rows still padded to 256 bytes).

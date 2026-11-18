@@ -3,12 +3,16 @@
 //   and maths, distance fade, LOD and sub-steps, IGN noise, Henyey-Greenstein), L273–315
 //   (framePhaseWeight, framePhaseColor), L330–373 (shadow absorption, step, depth, march depth,
 //   transmittance), L464–481 (frameShadowedLight), L624–686 (light uniforms), L727–763
-//   (createVolumeUniforms, the part that is not the source), L1208–1228 (tile uniforms and vertex).
+//   (createVolumeUniforms, the part that is not the source), L1208–1228 (tile uniforms and vertex);
+//   K3.3: L72–80 (frameLoad, frameFullscreenVertex), L403–414 (frameIsotropicDiffusion), L450–462
+//   (frameShadowTotal, octaves off), L624–686 (the hemisphere, light-probe, sky and environment light
+//   uniforms), L1030–1206 (shadow grid uniforms and nodes).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; the source half of createVolumeUniforms/createVolumeNodes is
 // `../volume-source.ts`; Lorenz-Mie, octaves, two-sided/isotropic diffusion, spectral variants,
 // hemisphere/probe/environment light uniforms and the grid chunks are not ported yet (K3.3–K3.5);
-// `framePhaseWeight` / `framePhaseColor` compile the Mie branch out. The Shadertoy `blackBody()`
+// `framePhaseWeight` / `framePhaseColor` compile the Mie branch out; `frameShadowTotal` has no
+// octave branch (K3.4). The Shadertoy `blackBody()`
 // is not ported (R1 §7, DIVERGES V24). Divergences: DIVERGES.md (K3.1 rows), V23–V25.
 
 /**
@@ -28,7 +32,7 @@ import { vdbMaxComponent, vdbMinComponent } from "../volume-source.js";
 
 // NOTE TSL's r187 typings narrow node types; the ported shader code is written against untyped nodes,
 // as volume-source.ts is (VDBTslNode).
-const { If, ceil, clamp, dot, exp, exp2, float, floor, fract, int, instanceIndex, length, log, max, min, mix, mod, positionGeometry, pow, screenCoordinate, select, sqrt, uniform, uniformArray, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { If, ceil, clamp, dot, exp, exp2, float, floor, fract, int, instanceIndex, ivec2, length, log, max, min, mix, mod, positionGeometry, pow, screenCoordinate, select, smoothstep, sqrt, uniform, uniformArray, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
 type N = VDBTslNode;
 
@@ -37,6 +41,12 @@ export const minComponent = vdbMinComponent;
 export const maxComponent = vdbMaxComponent;
 
 export const frameFragCoord = (targetSize: N): N => vec2(screenCoordinate.x, targetSize.y.sub(screenCoordinate.y));
+
+// NOTE Bottom-left texel of a render target texture
+export const frameLoad = (textureNode: N, texel: N, targetSize: N): N => textureNode.load(ivec2(texel.x, int(targetSize.y).sub(texel.y).sub(1)));
+
+// NOTE Fullscreen triangle. Positions are clip coordinates.
+export const frameFullscreenVertex: N = vec4(positionGeometry.xy, 0.0, 1.0);
 
 // NOTE Bottom-left uv of a render target texture. Level 0, then sampling is allowed in loops and branches.
 export const frameSample = (textureNode: N, uv: N): N => textureNode.sample(vec2(uv.x, float(1.0).sub(uv.y))).level(float(0.0));
@@ -238,16 +248,58 @@ export const frameShadowedLight = (framePhase: N, phaseSpectrum: N, rayDirection
   return light;
 };
 
+// NOTE Total transmittance of isotropic light (environment, sky) with diffusion multiple scattering.
+// Two-sided slab diffusion: 2 * (back + z0) / (front + back + 2 z0) of the reduced depths, z0 = 2/3, times exp(-effective front).
+// Light that is scattered and not absorbed is not lost: opposite directions sum to 2. In a white volume, a uniform
+// environment then gives the same light inside and outside (white furnace test). Front is toward the light.
+const frameDiffusionExtrapolation = 2.0 / 3.0;
+
+export const frameIsotropicDiffusion = (frontReduced: N, backReduced: N, frontEffective: N): N =>
+  backReduced
+    .add(frameDiffusionExtrapolation)
+    .mul(2.0)
+    .div(frontReduced.add(backReduced).add(2.0 * frameDiffusionExtrapolation))
+    .mul(exp(frontEffective.negate()));
+
+// NOTE Total transmittance of isotropic light (no phase) from the y shadow value. Octaves off (K3.4): the value itself.
+export const frameShadowTotal = (shadowY: N): N => float(shadowY);
+
 export const frameMaxLights = 16;
 
-// NOTE Scene lights in world space. Lights are in slot order: directional, point, spot.
+export const frameMaxHemisphereLights = 4;
+export const frameMaxEnvironmentLights = 12;
+
+// NOTE Scene lights in world space. Lights are in shadow slot order: directional, point, spot.
 // NOTE Position w: 1.0 directional (xyz is the direction to the light), 2.0 point, 3.0 spot.
 // NOTE Color rgb is color * intensity, color w is the spot penumbra cosine.
 // NOTE Spot xyz is the direction from the target to the light, spot w is the cone cosine.
 // NOTE Falloff x is the light distance, falloff y is the decay. Point and spot lights only.
-// NOTE Step 1 subset: ambient and the scene light slots. Hemisphere, light probe and environment lights: K3.3/K3.4.
+// NOTE 'volume' lighting (inject) reads the ambient and the scene light slots; the hemisphere, probe and
+// environment uniforms are read by 'frame' lighting (K3.3).
 export const createLightUniforms = () => ({
   frameAmbientColor: uniform(new THREE.Color(0x000000)),
+  frameLightProbe: uniformArray(
+    Array.from({ length: 9 }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  // NOTE Sums of all hemisphere lights, for combined lighting. Sky direction is from the first one.
+  frameHemiSkyColor: uniform(new THREE.Color(0x000000)),
+  frameHemiGroundColor: uniform(new THREE.Color(0x000000)),
+  frameSkyDirection: uniform(new THREE.Vector3(0.0, 1.0, 0.0)),
+  // NOTE Each hemisphere light, for per-volume lighting. Directions point up (sky).
+  frameHemiCount: uniform(0, "int"),
+  frameHemiSkyColors: uniformArray(
+    Array.from({ length: frameMaxHemisphereLights }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  frameHemiGroundColors: uniformArray(
+    Array.from({ length: frameMaxHemisphereLights }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  frameHemiDirections: uniformArray(
+    Array.from({ length: frameMaxHemisphereLights }, () => new THREE.Vector3()),
+    "vec3",
+  ),
   frameLightCount: uniform(0, "int"),
   frameLightPositions: uniformArray(
     Array.from({ length: frameMaxLights }, () => new THREE.Vector4()),
@@ -265,6 +317,19 @@ export const createLightUniforms = () => ({
     Array.from({ length: frameMaxLights }, () => new THREE.Vector2()),
     "vec2",
   ),
+  // NOTE Environment lights (settings.environmentLighting). World directions to the light.
+  // Colors are isotropic irradiance, no phase. Count is 0 with the 'outward' environment.
+  frameEnvironmentCount: uniform(0, "int"),
+  frameEnvironmentDirections: uniformArray(
+    Array.from({ length: frameMaxEnvironmentLights }, () => new THREE.Vector3(0.0, 1.0, 0.0)),
+    "vec3",
+  ),
+  frameEnvironmentColors: uniformArray(
+    Array.from({ length: frameMaxEnvironmentLights }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  // NOTE Environment grid lights with no shadow, clamped to 0 or more. Used outside the environment grid.
+  frameEnvironmentUnshadowed: uniform(new THREE.Vector3()),
 });
 
 export type LightUniforms = ReturnType<typeof createLightUniforms>;
@@ -287,6 +352,160 @@ export const createFrameVolumeUniforms = () => ({
 });
 
 export type FrameVolumeUniforms = ReturnType<typeof createFrameVolumeUniforms>;
+
+export const frameMaxShadowCascades = 4;
+
+// NOTE World-space shadow grid cascades. Cascade 0 is the finest, near the camera.
+// All cascades are z slices (tiles) in one 2D atlas.
+export const createGridUniforms = (frameJitter: N) => ({
+  frameGridMin: uniformArray(
+    Array.from({ length: frameMaxShadowCascades }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  frameGridSize: uniformArray(
+    Array.from({ length: frameMaxShadowCascades }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  frameGridVoxel: uniformArray(
+    Array.from({ length: frameMaxShadowCascades }, () => new THREE.Vector3()),
+    "vec3",
+  ),
+  frameGridCount: uniform(0, "int"),
+  frameGridResolution: uniform(1.0),
+  frameGridColumns: uniform(1.0),
+  frameGridAtlasSize: uniform(new THREE.Vector2(1.0, 1.0)),
+  frameJitter,
+});
+
+export type GridUniforms = ReturnType<typeof createGridUniforms>;
+
+// NOTE Environment grid: environment light of each voxel of the last shadow grid cascade, in its own atlas
+export const createEnvironmentGridUniforms = () => ({
+  frameEnvironmentGridCascade: uniform(0, "int"),
+  frameEnvironmentGridColumns: uniform(1.0),
+  frameEnvironmentGridAtlasSize: uniform(new THREE.Vector2(1.0, 1.0)),
+});
+
+export type EnvironmentGridUniforms = ReturnType<typeof createEnvironmentGridUniforms>;
+
+export const createGridNodes = (grid: GridUniforms) => {
+  const { frameGridMin, frameGridSize, frameGridCount, frameGridResolution, frameGridColumns } = grid;
+
+  const gridUvw = (cascade: N, worldPosition: N): N => worldPosition.sub(frameGridMin.element(cascade)).div(frameGridSize.element(cascade));
+
+  // NOTE Half a voxel inside the cascade. Then the linear filter does not read the clamped edge.
+  const insideGrid = (uvw: N): N => {
+    const inset = float(0.5).div(frameGridResolution);
+
+    return minComponent(uvw)
+      .greaterThanEqual(inset)
+      .and(maxComponent(uvw).lessThanEqual(float(1.0).sub(inset)));
+  };
+
+  // NOTE Finest cascade from the first cascade that contains the position, or -1
+  const findCascade = (worldPosition: N, firstCascade: N): N => {
+    let cascade: N = int(-1);
+
+    for (let i = frameMaxShadowCascades - 1; i >= 0; i--) {
+      cascade = select(
+        int(i)
+          .lessThan(frameGridCount)
+          .and(int(i).greaterThanEqual(firstCascade))
+          .and(insideGrid(gridUvw(int(i), worldPosition))),
+        int(i),
+        cascade,
+      );
+    }
+
+    return cascade;
+  };
+
+  // NOTE Hardware bilinear filter in the slice, manual linear filter between slices.
+  // NOTE The grid is the z slices (tiles) from tileOffset in an atlas with columns tile columns.
+  // resolution: voxels on each side of the grid (each tile is resolution x resolution).
+  const sampleTiles = (atlas: N, resolution: N, tileOffset: N, columns: N, atlasSize: N, uvw: N): N => {
+    const z = uvw.z.mul(resolution).sub(0.5);
+    const z0 = clamp(floor(z), 0.0, resolution.sub(1.0));
+    const z1 = min(z0.add(1.0), resolution.sub(1.0));
+    const blend = clamp(z.sub(z0), 0.0, 1.0);
+    const xy = clamp(uvw.xy.mul(resolution), vec2(0.5), vec2(resolution.sub(0.5)));
+
+    const tileUv = (index: N): N => {
+      const tile = vec2(mod(index, columns), floor(index.div(columns)));
+
+      return tile.mul(resolution).add(xy).div(atlasSize);
+    };
+
+    return mix(frameSample(atlas, tileUv(tileOffset.add(z0))), frameSample(atlas, tileUv(tileOffset.add(z1))), blend);
+  };
+
+  const sampleGrid = (atlas: N, cascade: N, uvw: N): N =>
+    sampleTiles(atlas, frameGridResolution, float(cascade).mul(frameGridResolution), frameGridColumns, grid.frameGridAtlasSize, uvw);
+
+  // NOTE Environment grid: the last cascade only, in its own atlas. outside is the value outside it.
+  // NOTE Call in a Fn body. Returns a vec4 variable.
+  const sampleEnvironmentGrid = (map: N, environmentGrid: EnvironmentGridUniforms, worldPosition: N, outside: N): N => {
+    const value = vec4(outside).toVar();
+    const uvw = gridUvw(environmentGrid.frameEnvironmentGridCascade, worldPosition).toVar();
+
+    If(insideGrid(uvw), () => {
+      value.assign(sampleTiles(map, frameGridResolution, float(0.0), environmentGrid.frameEnvironmentGridColumns, environmentGrid.frameEnvironmentGridAtlasSize, uvw));
+    });
+
+    return value;
+  };
+
+  // NOTE Transmittance of the shadow slots at a world position. 1.0 outside the grid.
+  // Call in a Fn body. Returns one vec4 variable for each map.
+  const sampleShadows = (maps: N[], worldPosition: N): N[] => {
+    const shadows = maps.map(() => vec4(1.0).toVar());
+    const cascade = findCascade(worldPosition, int(0)).toVar();
+
+    If(cascade.greaterThanEqual(0), () => {
+      const uvw = gridUvw(cascade, worldPosition).toVar();
+
+      maps.forEach((map, index) => {
+        shadows[index]!.assign(sampleGrid(map, cascade, uvw));
+      });
+
+      // NOTE Blend to the next cascade near the sides of this cascade. Then cascade borders are not visible.
+      const sideDistance = min(uvw, vec3(1.0).sub(uvw));
+      const blend = float(1.0).sub(smoothstep(0.0, 0.1, minComponent(sideDistance))).toVar();
+
+      If(blend.greaterThan(0.0), () => {
+        const nextCascade = findCascade(worldPosition, cascade.add(1)).toVar();
+
+        If(nextCascade.greaterThanEqual(0), () => {
+          const nextUvw = gridUvw(nextCascade, worldPosition).toVar();
+
+          maps.forEach((map, index) => {
+            shadows[index]!.assign(mix(shadows[index]!, sampleGrid(map, nextCascade, nextUvw), blend));
+          });
+        });
+      });
+    });
+
+    return shadows;
+  };
+
+  // NOTE Cascade and grid position of an atlas pixel
+  const getGridCell = (fragCoord: N): { cascade: N; gridUvw: N } => {
+    const resolution = frameGridResolution;
+    const tile = floor(fragCoord.div(resolution));
+    const tileIndex = tile.y.mul(frameGridColumns).add(tile.x);
+    const cascade = floor(tileIndex.div(resolution));
+    const z = tileIndex.sub(cascade.mul(resolution));
+
+    return {
+      cascade: int(cascade),
+      gridUvw: vec3(fragCoord.sub(tile.mul(resolution)), z.add(0.5)).div(resolution),
+    };
+  };
+
+  return { gridUvw, insideGrid, findCascade, sampleTiles, sampleGrid, sampleEnvironmentGrid, sampleShadows, getGridCell };
+};
+
+export type GridNodes = ReturnType<typeof createGridNodes>;
 
 // NOTE Instanced quad for froxel passes. One instance for each tile (slice), the quad covers the volume rectangle.
 export const createTileUniforms = () => ({

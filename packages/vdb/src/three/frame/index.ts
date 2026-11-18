@@ -5,7 +5,15 @@
 export { VDBFrameVolume } from "./volume.js";
 export type { VDBFrameVolumeProps } from "./volume.js";
 export { VDBFrameRenderer, vdbFrameRenderer, setVolumeUniforms } from "./renderer.js";
-export type { VDBFrameRendererSettings, VDBFramePassHook } from "./renderer.js";
+export type { VDBFrameRendererSettings, VDBFramePassHook, VDBFramePass, VDBFrameRedrawStats } from "./renderer.js";
+// K3.3: 'frame' lighting passes
+export { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
+export { VDBFrameTransmittanceMaterial, frameShadowLightSlots } from "./transmittance-material.js";
+export { VDBFrameDensityMaterial, createDensityShadowUniforms, frameDensityEnvironment } from "./density-material.js";
+export { VDBFrameLightingMaterial } from "./lighting-material.js";
+export { VDBFrameTemporalMaterial } from "./temporal-material.js";
+export { VDBFrameEnvironmentMaterial, VDBFrameEnvironmentMapMaterial } from "./environment-material.js";
+export { VDBFrameEnvironmentGridMaterial } from "./environment-grid-material.js";
 export { VDBFrameInjectMaterial } from "./inject-material.js";
 export type { VDBFrameInjectMaterialOptions } from "./inject-material.js";
 export { VDBFrameIntegrateMaterial } from "./integrate-material.js";

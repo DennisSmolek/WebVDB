@@ -22,7 +22,9 @@ import * as THREE from "three";
 import { VDBError } from "../../core/errors.js";
 import type { VDBThreeVolumeSource, VDBVolumeNodesOptions, VDBVolumeUniforms } from "../volume-source.js";
 import { vdbVolumeUniforms } from "../volume-source.js";
+import type { VDBFrameDensityMaterial } from "./density-material.js";
 import type { VDBFrameInjectMaterial } from "./inject-material.js";
+import type { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
 import { vdbFrameAllLights } from "./lights.js";
 import type { VDBFramePhase } from "./phase.js";
 import { vdbFrameRenderer, type VDBFrameRenderer } from "./renderer.js";
@@ -90,6 +92,9 @@ export class VDBFrameVolume extends THREE.Group {
   readonly volumes: FrameVolumeRecord[];
   /** Built by the renderer on first use (the source is compiled into it). */
   injectMaterial: VDBFrameInjectMaterial | null = null;
+  /** 'frame' lighting: the density and shadow density materials, built by the renderer on first use (K3.3). */
+  densityMaterial: VDBFrameDensityMaterial | null = null;
+  shadowDensityMaterial: VDBFrameShadowDensityMaterial | null = null;
   readonly emissionColor: VDBVolumeNodesOptions["emissionColor"];
 
   baseColor: THREE.Color;
@@ -228,10 +233,14 @@ export class VDBFrameVolume extends THREE.Group {
     this.sourceUniforms.update(this.source, { densityScale: this.densityScale, normalizeDensity: this.normalizeDensity });
   }
 
-  /** Frees the proxy geometry and the inject material. The source belongs to the caller. */
+  /** Frees the proxy geometry and the pass materials. The source belongs to the caller. */
   dispose(): void {
     this.injectMaterial?.dispose();
     this.injectMaterial = null;
+    this.densityMaterial?.dispose();
+    this.densityMaterial = null;
+    this.shadowDensityMaterial?.dispose();
+    this.shadowDensityMaterial = null;
     this.proxy.geometry.dispose();
   }
 }

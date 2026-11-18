@@ -358,3 +358,47 @@ export type { VDBFrameFroxelSample } from "./frame/index.js";
  */
 export { vdbPyramidBaseLevel, vdbBoxMipAtlasF32, vdbBoxPyramid, vdbFrameNodeAverageSample, vdbFrameSkipEmpty } from "./frame/sparse.js";
 export type { VDBFloatMipAtlas, VDBBoxPyramidOptions, VDBBoxPyramid } from "./frame/sparse.js";
+
+/**
+ * K3.3: mjurczyk's 'frame' lighting, engine-free: the world shadow grid (cascades, caster ranges, change
+ * signatures), CPU twins of the grid passes (atlas cell, cascade search, slice-atlas sampling, the
+ * transmittance march, isotropic diffusion, temporal reprojection) and the environment lights
+ * ('directional' / 'spherical-harmonics' from a lat-long readback).
+ */
+export {
+  vdbFrameGridCascades,
+  vdbFrameGridRange,
+  vdbFrameCascadeCasters,
+  vdbFrameGridSignatureState,
+  vdbFrameUpdateGridSignatures,
+  vdbSameValues,
+  vdbSignaturePushVector,
+  vdbSignaturePushElements,
+  vdbFrameGridUvw,
+  vdbFrameInsideGrid,
+  vdbFrameFindCascade,
+  vdbFrameGridCell,
+  vdbFrameAtlasBilinear,
+  vdbFrameSampleTiles,
+  vdbFrameSampleGrid,
+  vdbFrameGridExtinction,
+  vdbFrameGridMarch,
+  vdbFrameIsotropicDiffusion,
+  vdbFrameTransmittanceVoxel,
+  vdbFrameReproject,
+  vdbFrameLightingFroxel,
+  vdbFrameEnvironmentGridVoxel,
+  vdbFrameSampleShadows,
+  vdbFrameDensityFroxel,
+} from "./frame/grid.js";
+export type { VDBVec3Like, VDBBox3Like, VDBFrameGridSignatureState, VDBFrameGridLayout, VDBFrameAtlas, VDBFrameShadowLight, VDBFrameLightingInputs, VDBFrameDensityInputs } from "./frame/grid.js";
+export {
+  VDBFrameEnvironmentLights,
+  vdbFrameEnvironmentMapDirection,
+  vdbFrameEnvironmentMode,
+  frameEnvironmentModes as vdbFrameEnvironmentModes,
+  frameMaxEnvironmentLights as vdbFrameMaxEnvironmentLights,
+  frameEnvironmentMapWidth as vdbFrameEnvironmentMapWidth,
+  frameEnvironmentMapHeight as vdbFrameEnvironmentMapHeight,
+} from "./frame/environment.js";
+export type { VDBFrameEnvironmentMode, VDBFrameEnvironmentSettings, VDBFrameEnvironmentScene, VDBFrameEnvironmentLight, VDBFrameEnvironmentResult } from "./frame/environment.js";

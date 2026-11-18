@@ -77,6 +77,28 @@ const SCENARIOS = [
   // and the background is his init colour 0x598eff (scene.background null + renderer clear colour).
   { name: "step1-volume-dir-ms-off-isolated", step: 1, fields: { demo: "frame", lighting: "volume", lightSetup: "dir", multipleScattering: false }, sanity: null, isolate: true },
   { name: "step1-volume-dir-ms-on-isolated", step: 1, fields: { demo: "frame", lighting: "volume", lightSetup: "dir", multipleScattering: true }, sanity: null, isolate: true },
+  // K3.3 (R1 §6 Step 3): 'frame' lighting, as is (his default 'environment' light setup: three-environment-shadows
+  // scene lights found in the UltraHDR map, the map without them as scene.environment, the grounded skybox; our
+  // harness renders none of that, so these are sanity + INFO only). MS true first (R1: 'neural' is Step 4).
+  { name: "step3-default", step: 3, fields: { demo: "frame", multipleScattering: true }, sanity: null },
+  { name: "step3-shadow-cascades-4", step: 3, fields: { demo: "frame", multipleScattering: true, shadowCascades: 4 }, sanity: null },
+  { name: "step3-shadow-grid-high", step: 3, fields: { demo: "frame", multipleScattering: true, shadowResolution: 160 }, sanity: null },
+  { name: "step3-two-bunnies", step: 3, fields: { demo: "frame", multipleScattering: true, source: "twoBunnies" }, sanity: null },
+  { name: "step3-environment-sky-midday", step: 3, fields: { demo: "frame", multipleScattering: true, environment: "sky-midday" }, sanity: null },
+  // His own JPEGs for the same GUI fields (default MS 'neural'): the sanity check of the capture rig only.
+  { name: "step3-shadow-cascades-4-asis", step: 3, fields: { demo: "frame", shadowCascades: 4 }, sanity: "demo-1-shadow-cascades-4.jpg" },
+  { name: "step3-shadow-grid-high-asis", step: 3, fields: { demo: "frame", shadowResolution: 160 }, sanity: "demo-1-shadow-grid-high.jpg" },
+  { name: "step3-environment-sky-midday-asis", step: 3, fields: { demo: "frame", environment: "sky-midday" }, sanity: "demo-1-environment-sky-midday.jpg" },
+  // K3.3 parity scenes. `isolate: 'frame'`: his sun only ('dir' setup), scene.environment null, every other mesh hidden,
+  // background 0x598eff; FrameVolume `lights` untouched ('frame' lighting does not read it). `isolate: 'environment'`: no
+  // scene light ('none' setup), scene.environment kept (his UltraHDR sky-midday map, intensity 0.4: the harness loads
+  // fixtures/k3/sky-midday-HDR.jpg), the skybox and other meshes hidden. The two-bunnies second bunny turns on a timer:
+  // the manifest's volume matrices place it.
+  { name: "step3-default-dir-isolated", step: 3, fields: { demo: "frame", lightSetup: "dir", multipleScattering: true }, sanity: null, isolate: "frame" },
+  { name: "step3-shadow-cascades-4-dir-isolated", step: 3, fields: { demo: "frame", lightSetup: "dir", multipleScattering: true, shadowCascades: 4 }, sanity: null, isolate: "frame" },
+  { name: "step3-shadow-grid-high-dir-isolated", step: 3, fields: { demo: "frame", lightSetup: "dir", multipleScattering: true, shadowResolution: 160 }, sanity: null, isolate: "frame" },
+  { name: "step3-two-bunnies-dir-isolated", step: 3, fields: { demo: "frame", lightSetup: "dir", multipleScattering: true, source: "twoBunnies" }, sanity: null, isolate: "frame" },
+  { name: "step3-environment-sky-midday-env-isolated", step: 3, fields: { demo: "frame", lightSetup: "none", multipleScattering: true, environment: "sky-midday" }, sanity: null, isolate: "environment" },
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.
@@ -277,6 +299,14 @@ async function readMetadata(page) {
         backend: renderer.backend?.isWebGPUBackend ? "webgpu" : renderer.backend ? "webgl2-fallback" : "webgl",
       };
       out.background = scene.background?.isColor ? scene.background.toArray() : scene.background ? String(scene.background.type ?? "texture") : null;
+      // K3.3: what lights 'frame' lighting besides the scene lights
+      out.environment = scene.environment
+        ? { name: scene.environment.name ?? null, intensity: scene.environmentIntensity, rotation: scene.environmentRotation.toArray(), mapping: scene.environment.mapping }
+        : null;
+      out.lights = [];
+      scene.traverseVisible((o) => {
+        if (o.isLight) out.lights.push({ type: o.type, color: o.color?.toArray(), intensity: o.intensity, matrixWorld: o.matrixWorld.toArray() });
+      });
       out.volumes = [];
       scene.updateMatrixWorld(true);
       scene.traverse((o) => {
@@ -318,9 +348,13 @@ async function readMetadata(page) {
   });
 }
 
-/** K3.1 `isolate`: only the FrameVolumes and the directional light reach the frame (see SCENARIOS). His public API only. */
-async function isolateVolumes(page) {
-  await page.evaluate(async () => {
+/**
+ * `isolate` (see SCENARIOS), his public API only. `true` (K3.1, 'volume' lighting): FrameVolumes light only from
+ * directional lights. `'frame'` (K3.3): no scene.environment. `'environment'` (K3.3): scene.environment kept. In
+ * every mode the meshes outside the volumes (skybox, ground, props, helpers) are hidden and the background is 0x598eff.
+ */
+async function isolateVolumes(page, mode) {
+  await page.evaluate(async (m) => {
     const { scene, renderer } = await import("/src/main.jsx");
     const DIRECTIONAL_ONLY = 0b001000; // three-openvdb frame/core/frameLights.js useDirectionalLights
     const insideVolume = (o) => {
@@ -328,12 +362,14 @@ async function isolateVolumes(page) {
       return false;
     };
     scene.traverse((o) => {
-      if (o.isFrameVolume) o.lights = DIRECTIONAL_ONLY;
-      else if ((o.isMesh || o.isPoints || o.isLine || o.isSprite) && !insideVolume(o)) o.visible = false;
+      if (o.isFrameVolume) {
+        if (m === true) o.lights = DIRECTIONAL_ONLY;
+      } else if ((o.isMesh || o.isPoints || o.isLine || o.isSprite) && !insideVolume(o)) o.visible = false;
     });
+    if (m === "frame") scene.environment = null;
     scene.background = null;
     renderer.setClearColor(0x598eff, 1.0);
-  });
+  }, mode);
 }
 
 async function capture(context, scenario, fields, type) {
@@ -376,7 +412,11 @@ async function capture(context, scenario, fields, type) {
   const { demo, ...rest } = fields;
   await setFields(page, { demo, ...rest });
   await waitForIdle(page, pending, errors);
-  if (scenario.isolate) await isolateVolumes(page);
+  if (scenario.isolate) {
+    await isolateVolumes(page, scenario.isolate);
+    // 'frame' lighting reads the environment lights from an async readback; let a changed environment settle.
+    if (scenario.isolate !== true) await waitForIdle(page, pending, errors);
+  }
   await page.clock.runFor(FRAME_TIME);
   await page.waitForTimeout(10);
   const bytes = await page.screenshot(type === "png" ? { type: "png", style: HIDE_OVERLAYS } : { type: "jpeg", quality: JPEG_QUALITY, style: HIDE_OVERLAYS });
@@ -453,7 +493,7 @@ try {
     const parity = await capture(context, s, fields, "png");
     const file = `${s.name}.png`;
     writeFileSync(path.join(outDir, file), parity.bytes);
-    const entry = { name: s.name, step: s.step, fields, isolate: !!s.isolate, file, sha256: sha256(parity.bytes), metadata: parity.metadata, asis: null, sanity: null };
+    const entry = { name: s.name, step: s.step, fields, isolate: s.isolate ?? false, file, sha256: sha256(parity.bytes), metadata: parity.metadata, asis: null, sanity: null };
     const description = parity.metadata.adapter?.description ?? "";
     if (/swiftshader|llvmpipe|software/i.test(`${description} ${parity.metadata.adapter?.vendor ?? ""}`)) {
       throw new Error(`the browser used a software adapter (${description}); references must come from a hardware GPU (try --executable with an installed Chrome)`);
