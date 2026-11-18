@@ -4,7 +4,8 @@
  * a voxel (`vdbGetDim`), node statistics (the fork's
  * `{root,upper,lower,leaf}_get_{min,max,ave,stddev}_float`, with the K1.4b Fp
  * leaf-stats fix), `vdbNodeMax`, `vdbRayClip`, and `hddaWalk`, the canonical
- * walk the GPU probe kernel runs with the same calls.
+ * walk the GPU probe kernel runs with the same calls. Also the opt-in helpers
+ * (K1.7a): `vdbCellBoundTrilinear`, `vdbHddaCellEnd`, `vdbRayClipSupport`.
  *
  * Float arithmetic: every f32 operation of the WGSL is rounded here with
  * `Math.fround`, in the WGSL's evaluation order. GPUs may fuse a multiply-add
@@ -493,25 +494,90 @@ export function indexBBox(gridWords: Uint32Array): { min: Vec3; max: Vec3 } {
  */
 export function rayClip(gridWords: Uint32Array, origin: Vec3, direction: Vec3, t: [number, number]): { hit: boolean; t0: number; t1: number } {
   const { min, max } = indexBBox(gridWords);
+  return clipBox(
+    [min[0], min[1], min[2]],
+    [max[0] + 1, max[1] + 1, max[2] + 1],
+    origin,
+    direction,
+    t,
+  );
+}
+
+/** Options of {@link rayClipSupport}. */
+export interface RayClipSupportOptions {
+  /** The module's sampler (default `'trilinear'`). */
+  sampler?: "trilinear" | "nearest";
+}
+
+/**
+ * Twin of the opt-in `vdbRayClipSupport(g, o, d, &t)` (helper
+ * `'rayClipSupport'`): clip `[t0, t1]` to the box where `vdbSample` can read
+ * the grid's voxels, `[min - 1, max + 1]` for trilinear and
+ * `[min - 0.5, max + 0.5]` for nearest. Unlike {@link rayClip}'s
+ * `[min, max + 1]` it keeps the min-side half of the trilinear support.
+ */
+export function rayClipSupport(
+  gridWords: Uint32Array,
+  origin: Vec3,
+  direction: Vec3,
+  t: [number, number],
+  options: RayClipSupportOptions = {},
+): { hit: boolean; t0: number; t1: number } {
+  const { min, max } = indexBBox(gridWords);
+  const pad = options.sampler === "nearest" ? 0.5 : 1;
+  return clipBox(
+    [f(min[0] - pad), f(min[1] - pad), f(min[2] - pad)],
+    [f(max[0] + pad), f(max[1] + pad), f(max[2] + pad)],
+    origin,
+    direction,
+    t,
+  );
+}
+
+/** The vendored `hdda_ray_clip` slab test against `[lo, hi]` (f32 box corners). */
+function clipBox(lo: Vec3, hi: Vec3, origin: Vec3, direction: Vec3, t: [number, number]): { hit: boolean; t0: number; t1: number } {
   const o = f3(origin);
   const d = f3(direction);
-  let tnear = -Infinity;
-  let tfar = Infinity;
   const near: number[] = [];
   const far: number[] = [];
   for (let i = 0; i < 3; i++) {
     const inv = f(1 / d[i]!);
-    const a = f(f(min[i]! - o[i]!) * inv);
-    const b = f(f(max[i]! + 1 - o[i]!) * inv);
+    const a = f(f(lo[i]! - o[i]!) * inv);
+    const b = f(f(hi[i]! - o[i]!) * inv);
     near.push(Math.min(a, b));
     far.push(Math.max(a, b));
   }
-  tnear = Math.max(near[0]!, Math.max(near[1]!, near[2]!));
-  tfar = Math.min(far[0]!, Math.min(far[1]!, far[2]!));
+  const tnear = Math.max(near[0]!, Math.max(near[1]!, near[2]!));
+  const tfar = Math.min(far[0]!, Math.min(far[1]!, far[2]!));
   const hit = tnear <= tfar;
   const t0 = Math.max(f(t[0]), tnear);
   const t1 = Math.min(f(t[1]), tfar);
   return { hit: hit && t0 <= t1, t0, t1 };
+}
+
+/**
+ * Twin of the opt-in `vdbHddaCellEnd(&h)` (helper `'hddaCellEnd'`): the ray
+ * `t` where the HDDA's current cell ends, `min(next, tmax)`.
+ */
+export function hddaCellEnd(h: Hdda): number {
+  return Math.min(Math.min(h.next[0], h.next[1]), Math.min(h.next[2], h.tmax));
+}
+
+/**
+ * Twin of the opt-in `vdbCellBoundTrilinear(acc, ijk, dim)` (helper
+ * `'cellBoundTrilinear'`): the max of {@link nodeMax} over the 2x2x2 block of
+ * aligned `dim`-cells whose min corner is the cell holding `ijk`. It bounds
+ * every trilinear sample whose base voxel `floor(p)` lies in that cell,
+ * provided every inactive leaf voxel is <= its leaf's max (stats bound active
+ * values only; true of fog volumes).
+ */
+export function cellBoundTrilinear(gridWords: Uint32Array, ijk: Vec3, dim: number, options: NodeMaxOptions = {}): number {
+  let m = nodeMax(gridWords, ijk, dim, options);
+  for (let k = 1; k < 8; k++) {
+    const c: Vec3 = [ijk[0] + (k & 1) * dim, ijk[1] + ((k >> 1) & 1) * dim, ijk[2] + ((k >> 2) & 1) * dim];
+    m = Math.max(m, nodeMax(gridWords, c, dim, options));
+  }
+  return m;
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +671,7 @@ export function hddaWalk(gridWords: Uint32Array, origin: Vec3, direction: Vec3, 
       dim: h.dim,
       voxel,
       t0: h.tmin,
-      t1: Math.min(Math.min(h.next[0], h.next[1]), Math.min(h.next[2], h.tmax)),
+      t1: hddaCellEnd(h),
       active,
       max,
       skip: !active || max < threshold,

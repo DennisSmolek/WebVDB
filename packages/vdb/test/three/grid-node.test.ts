@@ -230,7 +230,7 @@ describe("VDBGridNode (K2.2)", () => {
     const second = new VDBGridNode(renderer, pool);
     use(second.storage.value as object);
     backend.get(second.storage.value as object).gpuBuffer = makeBuffer("three's own");
-    expect(code(() => second.update())).toBe("VDB_UNSUPPORTED_DEVICE");
+    expect(code(() => second.update())).toBe("VDB_ENGINE_MISMATCH");
 
     // Internals missing at construction.
     expect(() => new VDBGridNode({ backend: { ...backend, destroyAttribute: undefined }, _attributes: renderer._attributes } as never, pool)).toThrow(

@@ -1,8 +1,8 @@
 /**
  * The host half of demo 08's shader: a full-screen triangle and an
  * emission-absorption raymarch over every grid in the pool. It calls only the
- * public `vdb*` API of the generated module (`profile: 'march'`), which main.ts
- * prepends. The module declares `vdbPool` at `@group(0) @binding(0)`; this
+ * public `vdb*` API of the generated module (`profile: 'march'`, helpers
+ * `cellBoundTrilinear` and `hddaCellEnd`), which main.ts prepends. The module declares `vdbPool` at `@group(0) @binding(0)`; this
  * half adds the frame uniforms at binding 1.
  *
  * Per pixel: for each grid, move the world ray into that grid's index space
@@ -43,19 +43,6 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// Upper bound of every trilinear sample whose base voxel lies in the cell at
-// 'cell'. A tap reads one voxel past the base, into the +x/+y/+z neighbour
-// cells, and node stats bound only a node's own active values, so take the max
-// over the 2x2x2 block of cells (CLAUDE.md Traps).
-fn cellBound(acc: ptr<function, VdbAccessor>, cell: vec3i) -> f32 {
-    var m = 0.0;
-    for (var k = 0u; k < 8u; k++) {
-        let o = vec3i(vec3u(k & 1u, (k >> 1u) & 1u, (k >> 2u) & 1u)) * i32(CELL);
-        m = max(m, vdbNodeMax(acc, cell + o, CELL));
-    }
-    return m;
-}
-
 fn tint(g: u32) -> vec3f {
     return select(vec3f(1.0, 0.62, 0.32), vec3f(0.92, 0.95, 1.0), g == 0u);
 }
@@ -69,8 +56,10 @@ fn marchGrid(g: u32, o: vec3f, d: vec3f, t: vec2f, T: ptr<function, f32>, color:
     var h: VdbHdda;
     vdbHddaInit(&h, o, t.x, d, t.y, CELL);
     for (var n = 0u; n < MAX_CELLS; n++) {
-        let cellEnd = min(min(h.next.x, h.next.y), min(h.next.z, h.tmax));
-        if cellBound(&acc, h.voxel) > 0.0 {
+        let cellEnd = vdbHddaCellEnd(&h);
+        // Trilinear-safe skip: a tap reads one voxel past its base, into the
+        // +x/+y/+z neighbour cells, so bound the 2x2x2 block (CLAUDE.md Traps).
+        if vdbCellBoundTrilinear(&acc, h.voxel, CELL) > 0.0 {
             for (; ts < cellEnd; ts += dt) {
                 let v = max(vdbSample(&acc, o + d * ts), 0.0);
                 let alpha = 1.0 - exp(-v * frame.density * dt);

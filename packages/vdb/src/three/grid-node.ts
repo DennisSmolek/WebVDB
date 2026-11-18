@@ -106,7 +106,7 @@ export type VDBTslNode = any;
 
 const unsupported = (what: string): VDBError =>
   new VDBError(
-    "VDB_UNSUPPORTED_DEVICE",
+    "VDB_ENGINE_MISMATCH",
     `three adapter: three r${REVISION} ${what}. VDBGridNode binds the pool's buffer through three's WebGPU backend internals, ` +
       "written against three r187 (peer range >=0.187.0 <0.188.0); this three version is unsupported.",
   );
@@ -333,7 +333,7 @@ export class VDBGridNode {
    * Cheap when nothing changed; call it every frame before three renders or
    * computes with this node.
    *
-   * @throws VDBError `VDB_UNSUPPORTED_DEVICE` when three bound something other
+   * @throws VDBError `VDB_ENGINE_MISMATCH` when three bound something other
    *   than the pool's buffer to a stand-in it used (a three whose internals
    *   differ; see `threeInternals`); `VDB_DISPOSED` after {@link dispose}.
    */
@@ -356,7 +356,7 @@ export class VDBGridNode {
    * @throws VDBError `VDB_TYPE_NOT_COMPILED` (those grids would read 0) or `VDB_LAYOUT_MISMATCH`.
    */
   check(): void {
-    checkModule(this.pool, { ...this.options, buffer: `${this.name}.value` });
+    checkModule(this.pool, { types: this.options.types });
   }
 
   /** Releases the stand-in attribute. The pool's buffer is not destroyed (it is the pool's). */

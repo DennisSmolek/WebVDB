@@ -22,9 +22,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { buildFromDense, quantize } from "../../src/tools/index.js";
 import {
+  cellBoundTrilinear,
   defaultValueMax,
   getDim,
   gridHasStats,
+  hddaCellEnd,
+  hddaInit,
+  hddaStep,
   hddaWalk,
   indexBBox,
   isActive,
@@ -32,6 +36,7 @@ import {
   nodeMax,
   nodeStats,
   rayClip,
+  rayClipSupport,
   readValueF32,
   treeNodes,
   type HddaSegment,
@@ -403,5 +408,121 @@ describe("outside: 'zero' samplers (voxel centres at integers)", () => {
     expect(sampleNearest(img, [7.5, 3, 3], zero)).toBe(0);
     expect(sampleNearest(img, [7.6, 3, 3], zero)).toBe(0);
     expect(sampleNearest(img, [7.6, 3, 3])).toBe(3); // background mode reads voxel 8
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. K1.7a opt-in helper twins
+
+describe("cellBoundTrilinear (vdbCellBoundTrilinear twin)", () => {
+  it.skipIf(!present).each(PRIMITIVES)("%s: the 2x2x2 nodeMax block bounds every trilinear sample whose base lies in the cell", (name) => {
+    const img = load(name);
+    // Precondition (as for the dilated bound above): inactive leaf voxels are <= their leaf max.
+    expect(subtreeExtrema(img).inactiveAboveLeafMax).toBe(0);
+    const { min, max } = indexBBox(img);
+    const r = rng(31 + name.length);
+    let cellOnlyMisses = 0;
+    for (let k = 0; k < 3000; k++) {
+      const p: Vec3 = [0, 1, 2].map((a) => min[a]! - 2 + r() * (max[a]! - min[a]! + 4)) as Vec3;
+      const s = sampleTrilinear(img, p);
+      const b: Vec3 = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])];
+      for (const dim of [8, 1]) {
+        const cell: Vec3 = [b[0] & ~(dim - 1), b[1] & ~(dim - 1), b[2] & ~(dim - 1)];
+        // Any voxel of the cell names it: the corner and the base voxel give the same bound.
+        const bound = cellBoundTrilinear(img, cell, dim);
+        expect(cellBoundTrilinear(img, b, dim)).toBe(bound);
+        expect(s, `${name} at ${p} dim ${dim}`).toBeLessThanOrEqual(bound + 1e-5);
+        // Definition: the max of vdbNodeMax over the cell and its +x/+y/+z neighbours.
+        let want = -Infinity;
+        for (let t = 0; t < 8; t++) {
+          want = Math.max(want, nodeMax(img, [cell[0] + (t & 1) * dim, cell[1] + ((t >> 1) & 1) * dim, cell[2] + ((t >> 2) & 1) * dim], dim));
+        }
+        expect(bound).toBe(want);
+        if (dim === 8 && s > nodeMax(img, cell, 8) + 1e-5) cellOnlyMisses++;
+      }
+    }
+    // The cell's own bound is not enough on the curved fixtures (the reason for the helper).
+    if (!name.startsWith("box")) expect(cellOnlyMisses).toBeGreaterThan(0);
+  });
+
+  it("reaches into the +x neighbour cell: an empty cell before a block of 1", () => {
+    // Voxels [8, 15] x [0, 7] x [0, 7] are 1: cell x=0 holds nothing, but its samples at x in (7, 8) read voxel 8.
+    const dense = new Float32Array(16 * 8 * 8);
+    for (let x = 8; x < 16; x++) for (let y = 0; y < 8; y++) for (let z = 0; z < 8; z++) dense[x * 64 + y * 8 + z] = 1;
+    const img = buildFromDense(dense, [16, 8, 8]);
+    expect(nodeMax(img, [0, 0, 0], 8)).toBeLessThanOrEqual(0);
+    expect(sampleTrilinear(img, [7.5, 3, 3])).toBeCloseTo(0.5, 6);
+    expect(cellBoundTrilinear(img, [0, 0, 0], 8)).toBe(1);
+  });
+});
+
+describe("hddaCellEnd (vdbHddaCellEnd twin)", () => {
+  it.skipIf(!present).each(PRIMITIVES)("%s: is min(next, tmax), and the next cell starts where it says the current one ends", (name) => {
+    const img = load(name);
+    const r = rng(53 + name.length);
+    let steps = 0;
+    for (let k = 0; k < 20; k++) {
+      const { o, d } = randomRay(img, r);
+      const clip = rayClip(img, o, d, [0, 3.4e38]);
+      if (!clip.hit) continue;
+      const h = hddaInit(o, clip.t0, d, clip.t1, 8);
+      for (let i = 0; i < 4096; i++) {
+        const end = hddaCellEnd(h);
+        expect(end).toBe(Math.min(h.next[0], h.next[1], h.next[2], h.tmax));
+        expect(end).toBeGreaterThanOrEqual(h.tmin);
+        if (!hddaStep(h)) break;
+        // Forward stepping may nudge a zero-length cell; otherwise the cells tile exactly.
+        expect(Math.abs(h.tmin - end)).toBeLessThanOrEqual(1e-5 * Math.max(1, Math.abs(end)));
+        steps++;
+      }
+    }
+    expect(steps).toBeGreaterThan(20);
+  });
+});
+
+describe("rayClipSupport (vdbRayClipSupport twin)", () => {
+  // Value 1 on voxels [0, 7]^3.
+  const img = buildFromDense(new Float32Array(512).fill(1), [8, 8, 8]);
+  const o: Vec3 = [-10, 3.5, 3.5];
+  const d: Vec3 = [1, 0, 0];
+
+  it("trilinear: [min - 1, max + 1] keeps the min-side voxel of support that vdbRayClip cuts", () => {
+    expect(rayClip(img, o, d, [0, 100])).toEqual({ hit: true, t0: 10, t1: 18 });
+    expect(rayClipSupport(img, o, d, [0, 100])).toEqual({ hit: true, t0: 9, t1: 18 });
+    // What vdbRayClip cuts: x in (-1, 0) samples non-zero, also with outside: 'zero'.
+    expect(sampleTrilinear(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBeCloseTo(0.5, 6);
+    // At and past the support box the zero-outside field is 0.
+    expect(sampleTrilinear(img, [-1, 3.5, 3.5], { outside: "zero" })).toBe(0);
+    expect(sampleTrilinear(img, [8, 3.5, 3.5], { outside: "zero" })).toBe(0);
+  });
+
+  it("nearest: [min - 0.5, max + 0.5]", () => {
+    expect(rayClipSupport(img, o, d, [0, 100], { sampler: "nearest" })).toEqual({ hit: true, t0: 9.5, t1: 17.5 });
+    expect(sampleNearest(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBe(1);
+    expect(sampleNearest(img, [-0.6, 3.5, 3.5], { outside: "zero" })).toBe(0);
+  });
+
+  it("hits a ray that passes only through the min-side support, which vdbRayClip misses", () => {
+    const graze: Vec3 = [-0.5, -10, 3.5];
+    expect(rayClip(img, graze, [0, 1, 0], [0, 100]).hit).toBe(false);
+    expect(rayClipSupport(img, graze, [0, 1, 0], [0, 100])).toEqual({ hit: true, t0: 9, t1: 18 });
+    expect(sampleTrilinear(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBeGreaterThan(0);
+  });
+
+  it.skipIf(!present).each(PRIMITIVES)("%s: the support interval contains the voxel-cell interval", (name) => {
+    const fixture = load(name);
+    const r = rng(71 + name.length);
+    let hits = 0;
+    for (let k = 0; k < 200; k++) {
+      const ray = randomRay(fixture, r);
+      const a = rayClip(fixture, ray.o, ray.d, [0, 3.4e38]);
+      const b = rayClipSupport(fixture, ray.o, ray.d, [0, 3.4e38]);
+      if (!a.hit) continue;
+      hits++;
+      expect(b.hit).toBe(true);
+      expect(b.t0).toBeLessThanOrEqual(a.t0);
+      expect(b.t1).toBeGreaterThanOrEqual(a.t1);
+    }
+    expect(hits).toBeGreaterThan(50);
   });
 });

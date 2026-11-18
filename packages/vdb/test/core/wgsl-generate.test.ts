@@ -6,10 +6,13 @@ import {
   VDB_GPU_LAYOUT_VERSION,
   VDB_MODULE_BANNER,
   VDBError,
+  VDB_ALL_SCALAR_TYPES,
+  VDB_GRID_TYPE_NAMES,
   vdbModuleEntries,
   vdbModuleWgsl,
   vdbPoolLayoutWgsl,
   type VDBModuleOptions,
+  type VDBSlotModuleOptions,
 } from "../../src/core/index.js";
 import { vdbModuleDeclarations } from "../../src/core/wgsl/generate.js";
 // @ts-expect-error: repo-level ESM helper without type declarations
@@ -44,8 +47,9 @@ describe("wgslNameProblems (helper)", () => {
 });
 
 describe("vdbModuleWgsl: every variant", () => {
-  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero)", () => {
-    expect(VARIANTS).toHaveLength(132);
+  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers", () => {
+    expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(132);
+    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(24);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {
@@ -306,6 +310,12 @@ describe("vdbModuleWgsl: options", () => {
       { ...base, profile: "sample", sampler: "cubic" },
       { ...base, profile: "sample", outside: "clamp" },
       { ...base, isActive: "yes" },
+      { ...base, profile: "march", helpers: "hddaCellEnd" },
+      { ...base, profile: "march", helpers: ["cellBound"] },
+      { ...base, profile: "march", helpers: [null] },
+      { ...base, profile: "sample", helpers: ["cellBoundTrilinear"] },
+      { ...base, profile: "sample", helpers: ["hddaCellEnd"] },
+      { ...base, profile: "read", helpers: ["rayClipSupport"] },
       null,
     ];
     for (const options of cases) expectCode(() => vdbModuleWgsl(options as VDBModuleOptions), "VDB_BAD_OPTION");
@@ -327,15 +337,95 @@ describe("vdbModuleWgsl: options", () => {
 });
 
 describe("vdbModuleEntries", () => {
-  it("is one read-only storage entry at firstBinding", () => {
-    expect(vdbModuleEntries({ slot: { group: 2, firstBinding: 20 } })).toEqual([
-      { binding: 20, visibility: 0x4, buffer: { type: "read-only-storage" } },
-    ]);
-    expect(vdbModuleEntries({ slot: { group: 0, firstBinding: 1 }, visibility: 0x2 })[0]?.visibility).toBe(0x2);
+  it("is one read-only storage entry at firstBinding, visible to compute and fragment by default", () => {
+    const want = [{ binding: 20, visibility: 0x4 | 0x2, buffer: { type: "read-only-storage" } }];
+    expect(vdbModuleEntries({ slot: { group: 2, firstBinding: 20 } })).toEqual(want);
+    // The bare VDBSlot, the same value vdbModuleWgsl({ slot }) and pool.bindGroupEntry(slot) take.
+    expect(vdbModuleEntries({ group: 2, firstBinding: 20 })).toEqual(want);
   });
 
-  it("rejects a positional slot", () => {
-    expectCode(() => vdbModuleEntries({ group: 0, firstBinding: 1 } as never), "VDB_BAD_OPTION");
+  it("an explicit visibility overrides the default", () => {
+    expect(vdbModuleEntries({ slot: { group: 0, firstBinding: 1 }, visibility: 0x2 })[0]?.visibility).toBe(0x2);
+    expect(vdbModuleEntries({ slot: { group: 0, firstBinding: 1 }, visibility: 0x4 })[0]?.visibility).toBe(0x4);
+  });
+
+  it("takes a module's slot without a non-null assertion", () => {
+    const options: VDBSlotModuleOptions = { slot: { group: 1, firstBinding: 7 }, types: ["float"], profile: "read" };
+    expect(vdbModuleEntries(options.slot)[0]?.binding).toBe(7);
+    expect(vdbModuleEntries({ slot: options.slot, visibility: 0x4 })[0]?.binding).toBe(7);
+  });
+
+  it("rejects malformed slots and mixed shapes", () => {
+    expectCode(() => vdbModuleEntries({ group: 0 } as never), "VDB_BAD_OPTION");
+    expectCode(() => vdbModuleEntries({ group: 0, firstBinding: -1 }), "VDB_BAD_OPTION");
+    expectCode(() => vdbModuleEntries({ group: 0, firstBinding: 1, visibility: 0x2 } as never), "VDB_BAD_OPTION");
+    expectCode(() => vdbModuleEntries({ slot: { group: 0, firstBinding: 1 }, group: 0 } as never), "VDB_BAD_OPTION");
+    expectCode(() => vdbModuleEntries({ slot: { group: 0, firstBinding: 1 }, visibility: 0 }), "VDB_BAD_OPTION");
+    expectCode(() => vdbModuleEntries(null as never), "VDB_BAD_OPTION");
+  });
+});
+
+describe("opt-in helpers (K1.7a)", () => {
+  const march = { slot: CHECK_SLOT, types: ["float", "fp8"], profile: "march" } as const;
+  const HELPER_FNS = ["vdbCellBoundTrilinear", "vdbHddaCellEnd", "vdbRayClipSupport"];
+
+  it("emit nothing unless requested: no helpers and helpers: [] give the same bytes", () => {
+    const plain = vdbModuleWgsl(march);
+    expect(vdbModuleWgsl({ ...march, helpers: [] })).toBe(plain);
+    for (const fn of HELPER_FNS) expect(plain).not.toContain(fn);
+    for (const v of VARIANTS.filter((x) => x.options.helpers === undefined)) {
+      const code = vdbModuleWgsl(v.options);
+      for (const fn of HELPER_FNS) expect(code, v.id).not.toContain(fn);
+    }
+  });
+
+  it("each helper appends exactly its own function to the plain module", () => {
+    const plain = vdbModuleWgsl(march);
+    for (const [helper, fn] of [
+      ["cellBoundTrilinear", "vdbCellBoundTrilinear"],
+      ["hddaCellEnd", "vdbHddaCellEnd"],
+      ["rayClipSupport", "vdbRayClipSupport"],
+    ] as const) {
+      const code = vdbModuleWgsl({ ...march, helpers: [helper] });
+      expect(code.startsWith(plain.slice(0, -1)), helper).toBe(true);
+      expect(declaredNames(code.slice(plain.length - 1))).toEqual([fn]);
+    }
+  });
+
+  it("are a set: order and duplicates don't change the bytes", () => {
+    expect(vdbModuleWgsl({ ...march, helpers: ["hddaCellEnd", "cellBoundTrilinear", "hddaCellEnd"] })).toBe(
+      vdbModuleWgsl({ ...march, helpers: new Set(["cellBoundTrilinear", "hddaCellEnd"] as const) }),
+    );
+  });
+
+  it("cellBoundTrilinear is the 2x2x2 vdbNodeMax block; hddaCellEnd is min(next, tmax)", () => {
+    const code = vdbModuleWgsl({ ...march, helpers: ["cellBoundTrilinear", "hddaCellEnd"] });
+    expect(code).toContain("fn vdbCellBoundTrilinear(acc: ptr<function, VdbAccessor>, ijk: vec3i, dim: u32) -> f32 {");
+    expect(count(code, "vdbNodeMax(acc, ijk")).toBe(2); // the cell, then the 7 neighbours in a loop
+    expect(code).toContain("fn vdbHddaCellEnd(h: ptr<function, VdbHdda>) -> f32 {\n    return min(min((*h).next.x, (*h).next.y), min((*h).next.z, (*h).tmax));");
+  });
+
+  it("rayClipSupport pads the index box by the sampler's support (1 voxel trilinear, 0.5 nearest)", () => {
+    const sample = { slot: CHECK_SLOT, types: ["float"], profile: "sample", helpers: ["rayClipSupport"] } as const;
+    expect(vdbModuleWgsl(sample)).toContain("vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)) - vec3f(1.0), vec3f(vdbIndexMax(g)) + vec3f(1.0),");
+    expect(vdbModuleWgsl({ ...sample, sampler: "nearest" })).toContain("vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)) - vec3f(0.5), vec3f(vdbIndexMax(g)) + vec3f(0.5),");
+    // The plain vdbRayClip keeps its voxel-cell box.
+    expect(vdbModuleWgsl(sample)).toContain("vdb_hdda_ray_clip(vec3f(vdbIndexMin(g)), vec3f(vdbIndexMax(g) + vec3i(1)),");
+  });
+
+  it("say which profile a helper needs", () => {
+    expect(() => vdbModuleWgsl({ ...march, profile: "sample", helpers: ["hddaCellEnd"] })).toThrow(/helper 'hddaCellEnd' needs profile 'march'/);
+    expect(() => vdbModuleWgsl({ ...march, profile: "read", helpers: ["rayClipSupport"] })).toThrow(/helper 'rayClipSupport' needs profile 'sample'/);
+  });
+});
+
+describe("VDB_ALL_SCALAR_TYPES", () => {
+  it("is every grid type the pool can hold, and generates a module checkModule accepts for any pool", () => {
+    expect([...VDB_ALL_SCALAR_TYPES]).toEqual([...VDB_GRID_TYPE_NAMES]);
+    expect(Object.isFrozen(VDB_ALL_SCALAR_TYPES)).toBe(true);
+    const options = { slot: CHECK_SLOT, types: VDB_ALL_SCALAR_TYPES, profile: "march" } as const;
+    expect(vdbModuleWgsl(options)).toContain("fn vdbNodeMax(");
+    expect(() => checkModule({ types: VDB_GRID_TYPE_NAMES, layoutVersion: VDB_GPU_LAYOUT_VERSION }, options)).not.toThrow();
   });
 });
 
@@ -350,6 +440,29 @@ describe("checkModule", () => {
   it("throws VDB_TYPE_NOT_COMPILED naming the missing types", () => {
     expectCode(() => checkModule({ types: ["float", "fpn"], layoutVersion: 1 }, options), "VDB_TYPE_NOT_COMPILED");
     expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/fpn/);
+  });
+
+  it("takes just { types, layoutVersion? } for a type/layout-only check (engine adapters)", () => {
+    const pool = { types: ["float", "fp8"] as const, layoutVersion: VDB_GPU_LAYOUT_VERSION };
+    expect(() => checkModule(pool, { types: ["float", "fp8", "fpn"] })).not.toThrow();
+    expect(() => checkModule(pool, { types: new Set(["fp8", "float"] as const), layoutVersion: VDB_GPU_LAYOUT_VERSION })).not.toThrow();
+    expectCode(() => checkModule(pool, { types: ["float"] }), "VDB_TYPE_NOT_COMPILED");
+    expectCode(() => checkModule(pool, { types: ["float", "fp8"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }), "VDB_LAYOUT_MISMATCH");
+    expectCode(() => checkModule(pool, { types: [] }), "VDB_BAD_OPTION");
+    expectCode(() => checkModule(pool, { types: ["half"] } as never), "VDB_BAD_OPTION");
+    expectCode(() => checkModule(pool, { types: ["float"], layoutVersion: -1 }), "VDB_BAD_OPTION");
+    // The full form is still validated as module options.
+    expectCode(() => checkModule(pool, { types: ["float", "fp8"], profile: "read" } as never), "VDB_BAD_OPTION");
+  });
+
+  it("VDB_ENGINE_MISMATCH is a VDBError code", () => {
+    expect(new VDBError("VDB_ENGINE_MISMATCH", "x").code).toBe("VDB_ENGINE_MISMATCH");
+  });
+
+  it("says to generate for every type the host may add, or regenerate and rebuild the pipeline", () => {
+    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/every type the host may add/);
+    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/VDB_ALL_SCALAR_TYPES/);
+    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/rebuild the pipeline/);
   });
 
   it("throws VDB_LAYOUT_MISMATCH on another layout version", () => {

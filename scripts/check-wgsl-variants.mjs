@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { checkModule, vdbModuleEntries, vdbModuleWgsl } from "../packages/vdb/dist/core/index.js";
 import { buildMarchProbe, compareMarchProbe, marchProbeAvailable, runMarchProbeInPage } from "./lib/march-probe.mjs";
-import { CHECK_SLOT, TYPE_SETS, checkKernel, variantMatrix, wgslSizes } from "./lib/wgsl-variants.mjs";
+import { CHECK_SLOT, MARCH_HELPERS, SAMPLE_HELPERS, TYPE_SETS, checkKernel, variantMatrix, wgslSizes } from "./lib/wgsl-variants.mjs";
 
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../packages/vdb/dist");
 
@@ -39,6 +39,8 @@ function printSizes() {
     ["march", { isActive: true }],
     ["march", { isActive: false }],
     ["march", { outside: "zero" }],
+    ["sample", { helpers: SAMPLE_HELPERS }],
+    ["march", { helpers: MARCH_HELPERS }],
   ];
   console.log("\nSizes (slot mode; KiB = 1024 B; min / gz per §3.5, gz = gzip -9 of min):\n");
   console.log(`| Variant | ${TYPE_SETS.map((t) => t.join("+")).join(" | ")} |`);

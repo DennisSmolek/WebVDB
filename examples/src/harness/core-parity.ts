@@ -16,9 +16,10 @@
  * tools/cpu/march.ts) per ray. Integers travel as f32 (exact below 2^24).
  */
 import { VDBGridPool, VDBError, checkModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
-import type { VDBGridInfo, VDBGridTypeName, VDBModuleOptions } from "@pmndrs/vdb";
+import type { VDBGridInfo, VDBGridTypeName, VDBModuleHelper, VDBModuleOptions } from "@pmndrs/vdb";
 import {
   NanoVDBFile,
+  cellBoundTrilinear,
   getDim,
   hddaWalk,
   indexBBox,
@@ -28,6 +29,7 @@ import {
   nodeStats,
   probeCoords,
   rayClip,
+  rayClipSupport,
   readValueF32,
   sampleNearest,
   sampleTrilinear,
@@ -296,7 +298,7 @@ function nodeProbes(image: Uint32Array): NodeProbe[] {
 // ---------------------------------------------------------------------------
 // The variant matrix.
 
-type Test = "read" | "meta" | "dead" | "sample" | "xform" | "world" | "clip" | "nodemax" | "walk";
+type Test = "read" | "meta" | "dead" | "sample" | "xform" | "world" | "clip" | "nodemax" | "walk" | "helpers";
 
 interface Spec {
   id: string;
@@ -306,6 +308,7 @@ interface Spec {
   isActive?: boolean;
   sampler?: "trilinear" | "nearest";
   outside?: "background" | "zero";
+  helpers?: VDBModuleHelper[];
   tests: Test[];
 }
 
@@ -336,6 +339,9 @@ const SPECS: Spec[] = [
   { id: "march/all", profile: "march", types: ALL, mode: "slot", tests: MARCH_X },
   { id: "march/all/buffer", profile: "march", types: ALL, mode: "buffer", tests: MARCH_X },
   { id: "march/all/outside=zero", profile: "march", types: ALL, mode: "slot", outside: "zero", tests: MARCH },
+  // K1.7a opt-in helpers: vdbCellBoundTrilinear / vdbRayClipSupport as query ops, vdbHddaCellEnd as the walk's cell end.
+  { id: "march/all/helpers", profile: "march", types: ALL, mode: "slot", helpers: ["cellBoundTrilinear", "hddaCellEnd", "rayClipSupport"], tests: [...MARCH, "clip", "helpers"] },
+  { id: "sample/all/nearest,helpers", profile: "sample", types: ALL, mode: "slot", sampler: "nearest", helpers: ["rayClipSupport"], tests: [...SAMPLE, "helpers"] },
 ];
 
 function moduleOptions(s: Spec): VDBModuleOptions {
@@ -346,6 +352,7 @@ function moduleOptions(s: Spec): VDBModuleOptions {
     ...(s.isActive === undefined ? {} : { isActive: s.isActive }),
     ...(s.sampler === undefined ? {} : { sampler: s.sampler }),
     ...(s.outside === undefined ? {} : { outside: s.outside }),
+    ...(s.helpers === undefined ? {} : { helpers: s.helpers }),
   };
 }
 
@@ -416,6 +423,22 @@ function kernel(s: Spec, module: string): string {
             qOut[o + 1u] = f32(vdbGetDim(&a, ijk));
         }`);
   }
+  const helpers = new Set(s.helpers ?? []);
+  if (helpers.has("cellBoundTrilinear")) {
+    cases.push(`        case 7u: {
+            qOut[o] = vdbCellBoundTrilinear(&a, ijk, u32(qv(i, 5u)));
+        }`);
+  }
+  if (helpers.has("rayClipSupport")) {
+    cases.push(`        case 8u: {
+            var t = vec2f(qv(i, 8u), qv(i, 9u));
+            let hit = vdbRayClipSupport(g, p, d, &t);
+            qOut[o] = select(0.0, 1.0, hit);
+            qOut[o + 1u] = t.x;
+            qOut[o + 2u] = t.y;
+        }`);
+  }
+  const cellEnd = helpers.has("hddaCellEnd") ? "vdbHddaCellEnd(&h)" : "min(min(h.next.x, h.next.y), min(h.next.z, h.tmax))";
   const walk =
     rank >= 2
       ? `
@@ -456,7 +479,7 @@ fn walkMain(@builtin(global_invocation_id) gid: vec3u) {
                 qOut[s] = f32(h.dim);
                 qOut[s + 1u] = f32(dimA);
                 qOut[s + 2u] = h.tmin;
-                qOut[s + 3u] = min(min(h.next.x, h.next.y), min(h.next.z, h.tmax));
+                qOut[s + 3u] = ${cellEnd};
                 qOut[s + 4u] = select(0.0, 1.0, act);
                 qOut[s + 5u] = m;
                 qOut[s + 6u] = f32(h.voxel.x);
@@ -711,6 +734,39 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
       }
     }
 
+    if (has("helpers") && spec.helpers?.includes("cellBoundTrilinear")) {
+      // Every node probe's voxel, as a leaf cell (8) and a voxel (1): the 2x2x2 block reaches into neighbour cells.
+      for (const probe of g.nodeProbes ?? []) {
+        if (probe.kind === "far") continue;
+        for (const dim of [8, 1]) {
+          b.add(7, g.id, [...probe.ijk, dim], (out, o) => {
+            if (!ok) {
+              c.eq("negative", out[o]! === 0 ? 1 : 0, 1, tag(`type ${g.info.type} not compiled: cellBound -> ${out[o]}`));
+              return;
+            }
+            c.val("cellbound", out[o]!, cellBoundTrilinear(g.image, probe.ijk, dim), tag(`cellBoundTrilinear ${probe.ijk} dim ${dim}`));
+          });
+        }
+      }
+    }
+
+    if (has("helpers") && spec.helpers?.includes("rayClipSupport")) {
+      const sampler = tri ? ("trilinear" as const) : ("nearest" as const);
+      for (const ray of g.rays) {
+        b.add(8, g.id, [...ray.o, ...ray.d, 0, 3.4e38], (out, o) => {
+          const want = rayClipSupport(g.image, ray.o, ray.d, [0, 3.4e38], { sampler });
+          const hit = out[o]! === 1;
+          c.eq("clip-support-hit", hit ? 1 : 0, want.hit ? 1 : 0, tag(`support ray ${ray.o} + t*${ray.d} hit`));
+          if (hit && want.hit) {
+            for (const [name, got, w] of [["t0", out[o + 1]!, want.t0], ["t1", out[o + 2]!, want.t1]] as const) {
+              const rel = Math.abs(got - w) / Math.max(1, Math.abs(w));
+              c.rec("clip-support-t", rel <= T_REL, () => `${tag(`support ray ${ray.o} ${name}`)()}: gpu ${got} want ${w}`, rel);
+            }
+          }
+        });
+      }
+    }
+
     if (has("nodemax")) {
       for (const probe of g.nodeProbes ?? []) {
         b.add(5, g.id, [...probe.ijk, probe.dim], (out, o) => {
@@ -754,6 +810,8 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
           c.eq("dead", out[o + 1]!, 4096, tag("getDim"));
         });
       }
+      if (spec.helpers?.includes("cellBoundTrilinear")) b.add(7, id, [0, 0, 0, 8], (out, o) => c.eq("dead", out[o]!, 0, tag("cellBoundTrilinear")));
+      if (spec.helpers?.includes("rayClipSupport")) b.add(8, id, [0.5, 0.5, -10, 0, 0, 1, 0, 1e30], (out, o) => c.eq("dead", out[o]!, 0, tag("rayClipSupport hit")));
     }
   }
   return b;
