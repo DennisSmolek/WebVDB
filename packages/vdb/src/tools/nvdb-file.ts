@@ -116,7 +116,7 @@ export const Codec = {
 export type Codec = (typeof Codec)[keyof typeof Codec];
 
 /** Grid types targeted for v1 (FogVolume rendering). */
-export const SUPPORTED_GRID_TYPES = ["Float", "Fp8", "FpN"] as const;
+export const SUPPORTED_GRID_TYPES = ["Float", "Fp4", "Fp8", "Fp16", "FpN"] as const;
 
 export interface GridMetadata {
   name: string;
@@ -343,7 +343,7 @@ export function validateGridType(gridType: string, gridName: string): void {
     throw new VdbUnsupportedError(
       `NanoVDBFile: grid "${gridName}" is a ${gridType} grid, which this loader does not ` +
         `support — v1 only handles FogVolume grids of type ${SUPPORTED_GRID_TYPES.join("/")}. ` +
-        `Re-export as float/fp8 (or fpn), e.g. \`nanovdb_convert --fp8 in.vdb out.nvdb\`.`,
+        `Re-export as float/fp4/fp8/fp16 (or fpn), e.g. \`nanovdb_convert --fp8 in.vdb out.nvdb\`.`,
     );
   }
 }

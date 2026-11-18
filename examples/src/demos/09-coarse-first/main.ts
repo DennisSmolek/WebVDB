@@ -11,7 +11,8 @@
  * - `vdbStreamCoarseFirst` adds the preview to the pool as soon as its bytes are in and replaces it in place with the
  *   full grid. The stream is held after each grid until that grid has been drawn, so the transition is always shown.
  * - The material integrates per index voxel, so while a preview shows, `densityScale` is multiplied by the event's
- *   `voxelRatio`; the proxy geometry is re-made from `pool.info(id)` at each swap.
+ *   `voxelRatio`; the proxy geometry is re-made from `pool.info(id)` at each swap. Both are done by
+ *   `vdbCoarseFirstApply` (the `bind` option's work, called here because the swap handler is async).
  *
  * ## Deterministic test mode (`?test=1`)
  *
@@ -25,7 +26,7 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { bakeCoarseFirst, parseVdb } from "@pmndrs/vdb/tools";
-import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry, vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbCoarseFirstApply, vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import type { WebGPURenderer } from "three/webgpu";
 
@@ -285,14 +286,14 @@ async function run(): Promise<void> {
     await pool.settled();
     if (!e.final) versionAfterPreview = pool.version;
     id = e.id;
-    const info = pool.info(id);
     const first = fresh;
     if (first) {
       fresh = false;
       grids = new VDBGridNode(renderer, pool, { helpers: ["rayClipSupport"] });
       material = new VDBVolumeMaterial(renderer, grids, id, { jitter: !TEST_MODE, densityScale: DENSITY });
-      mesh = new THREE.Mesh(vdbProxyGeometry(info), material);
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), material); // the proxy geometry is made below, per swap
       scene.add(mesh);
+      const info = pool.info(id);
       const box = new THREE.Box3(new THREE.Vector3(...info.worldBBox.min), new THREE.Vector3(...info.worldBBox.max));
       const center = box.getCenter(new THREE.Vector3());
       const diag = box.getSize(new THREE.Vector3()).length();
@@ -307,14 +308,11 @@ async function run(): Promise<void> {
         material.sunDirection.value.set(0.7, 0.5, 0.45).normalize();
         material.stepSize.value = 0.45;
       }
-    } else {
-      grids!.update();
-      mesh!.geometry.dispose();
-      mesh!.geometry = vdbProxyGeometry(info);
     }
-    // The march steps in index voxels: a preview with k-times larger voxels has 1/k the optical depth.
-    const densityScale = DENSITY * e.voxelRatio;
-    material!.densityScale.value = densityScale;
+    // Per swap: the proxy box from pool.info(id), the grid node, and densityScale x voxelRatio (the march steps in
+    // index voxels, so a preview with k-times larger voxels has 1/k the optical depth).
+    vdbCoarseFirstApply(pool, e, { grids: grids!, mesh: mesh!, material: material!, densityScale: DENSITY });
+    const densityScale = material!.densityScale.value;
     const phase = e.final ? "full" : "preview";
     phaseEl.dataset.phase = phase;
     phaseEl.textContent = e.final ? "FULL" : `PREVIEW · ${e.grid.metadata.name} · ${e.voxelRatio.toFixed(1)}× coarser`;

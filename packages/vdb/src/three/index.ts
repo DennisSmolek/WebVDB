@@ -73,8 +73,10 @@ export type {
 // K4.16: coarse-first `.nvdb` streaming into one pool id (add the preview with
 // the full size reserved, then replace). Engine-free glue; here because tools
 // may not import the core.
-export { vdbStreamCoarseFirst } from "./coarse-first.js";
+export { vdbCoarseFirstApply, vdbStreamCoarseFirst } from "./coarse-first.js";
 export type {
+  VDBCoarseFirstBind,
+  VDBCoarseFirstBindPoolLike,
   VDBCoarseFirstEvent,
   VDBCoarseFirstOptions,
   VDBCoarseFirstPoolLike,

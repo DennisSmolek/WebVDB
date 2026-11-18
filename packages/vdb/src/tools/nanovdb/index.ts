@@ -24,7 +24,9 @@ export type { WriteNvdbOptions } from "./write-nvdb.js";
 export type { LeafCodec } from "./leaf-codec.js";
 export {
   FLOAT_LEAF_CODEC,
+  FP4_LEAF_CODEC,
   FP8_LEAF_CODEC,
+  FP16_LEAF_CODEC,
   makeFpNLeafCodec,
   FPN_DEFAULT_TOLERANCE,
   VEC3F_LEAF_CODEC,

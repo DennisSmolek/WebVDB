@@ -30,7 +30,7 @@ dependency.
 | | Supported |
 | --- | --- |
 | Pool and WGSL | Scalar grids: Float, Fp4, Fp8, Fp16, FpN. Generate the module for every type you add, or use `VDB_ALL_SCALAR_TYPES`. |
-| `NanoVDBFile`, `readValue`, `sampleTrilinear` | Float, Fp8, FpN. |
+| `NanoVDBFile`, `readValue`, `sampleTrilinear` | Float, Fp4, Fp8, Fp16, FpN. Fp4 and Fp16 are decoded per `PNanoVDB.h`; there are no native Fp4/Fp16 fixtures, so they are tested against `quantize` output (CPU round-trip, bit-exact GPU parity on SwiftShader). |
 | Vec3f | Built by `buildFromVdb`, read on the CPU by `readValueVec3` and `sampleTrilinearVec3`. Not in the pool. |
 | `.vdb` | 5-4-3 float, vec3 and point-data grids; Blosc (LZ4, zlib) and zlib. |
 | Size | Child offsets are read as 32-bit words, so a grid over 4 GiB is not supported. |
@@ -50,6 +50,5 @@ another implementation.
 ## Not in 0.1
 
 - The `majorant` WGSL profile (`VDB_BAD_OPTION`), and brick-majorant skipping built on it.
-- A `readNvdb` function: use `NanoVDBFile` for files in memory and `readNvdbStream` for streams.
 - Spectral colour in the froxel renderer (grey only).
 - A Babylon.js adapter.

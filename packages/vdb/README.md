@@ -29,7 +29,7 @@ and how to walk them, in WGSL or in plain TS.
 
 - **`vendor/pnanovdb.wgsl`** — a WGSL module with the NanoVDB root ->
   upper -> lower -> leaf tree traversal, HDDA ray marching, and
-  Float/Fp8/FpN value decoders. Import it as raw text (`?raw` in Vite,
+  Float/Fp4/Fp8/Fp16/FpN value decoders. Import it as raw text (`?raw` in Vite,
   or read the file yourself) and splice it into your own shader.
 - **`NanoVDBFile`** (`@pmndrs/vdb/tools`) — parses a `.nvdb` file (header + per-grid metadata +
   grid images), handling the NONE/ZIP codecs.
@@ -112,7 +112,7 @@ fixes if the author engages. Full pin/hash/diff-log details:
 
 The CPU half of [WebVDB](../../README.md): parse `.vdb` containers, build
 NanoVDB grid images (from a dense array or straight from a parsed `.vdb`),
-quantize to Fp8/FpN, apply affine transforms, inspect memory layout, and
+quantize to Fp4/Fp8/Fp16/FpN, apply affine transforms, inspect memory layout, and
 write `.nvdb` files — all **pure TypeScript, zero runtime dependencies,
 zero WASM** ([decision D3](../../docs/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)).
 WASM stays an optional escalation rung, adopted only on demonstrated need
@@ -174,13 +174,13 @@ the NanoVDB `Map`.
 | `buildFromDense` / `buildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
 | `buildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `quantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
-| `quantize` / `quantizeDetailed` | FLOAT grid image -> Fp8/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
+| `quantize` / `quantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
 | `transform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](../../docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
 | `inspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
 | `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2, `io::Segment` layout; `{ codec: 'zip' }` for NanoVDB's ZIP codec) |
 | `bakeCoarseFirst` | Coarse-first `.nvdb`: a small preview grid (`<name>.lod48`, box, FpN) then the full grid, ZIP by default |
 | `NvdbStreamReader` / `readNvdbStream` | Reads a `.nvdb` from pushed bytes or a stream, emitting each grid as soon as its data is complete; hostile-input checks before allocation |
-| `readNvdb` | Stub — reading `.nvdb` is `NanoVDBFile`, exported from this same subpath (`@pmndrs/vdb/tools`) |
+| `NanoVDBFile` | Reads a `.nvdb` held in memory or fetched (`fromArrayBuffer` / `fromURL`); there is no separate `readNvdb` |
 
 ### Supported `.vdb` subset
 
@@ -348,16 +348,15 @@ preview to the pool with the full grid's size reserved, and replaces it in place
 import { vdbStreamCoarseFirst } from "@pmndrs/vdb/three";
 
 const { id } = await vdbStreamCoarseFirst(pool, await fetch("/smoke.coarse.nvdb"), {
-  onGrid: (e) => {
-    // The material marches in index voxels: scale density while a coarser grid shows.
-    material.densityScale.value = baseDensity * e.voxelRatio;
-    mesh.geometry = vdbProxyGeometry(pool.info(e.id));
-  },
+  // After each swap: densityScale = base x voxelRatio (the material marches in index voxels), the proxy box
+  // from pool.info(id), pool.flush() + grids.update(), and `majorant(event)` re-applied (replace drops it).
+  bind: { material, mesh, grids },
+  onGrid: (e) => console.log(e.final ? "full" : "preview"),
 });
 ```
 
-Call `pool.update(encoder)` / `pool.flush()` and `grids.update()` in your frame loop as usual. `replace` drops
-a brick majorant: set it again in `onGrid` if you use one.
+Every `bind` member is optional. `vdbCoarseFirstApply(pool, event, bind)` is the same work for an async `onGrid`.
+Call `pool.update(encoder)` / `pool.flush()` and `grids.update()` in your frame loop as usual.
 
 ### Sequences: `VDBSequence`
 

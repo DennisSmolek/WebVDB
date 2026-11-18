@@ -3,7 +3,7 @@
  *
  * This is a faithful, line-by-line transliteration of the root -> upper ->
  * lower -> leaf descent in `vendor/upstream/PNanoVDB.h` (the "PNanoVDB"
- * portable-C reference), restricted to grid types FLOAT (1), FP8 (14) and
+ * portable-C reference), restricted to grid types FLOAT (1), FP4 (13), FP8 (14), FP16 (15) and
  * FPN (16) — the three types the Phase 1 fixture bake produces. It exists to
  * de-risk the WGSL traversal math ahead of the Phase 2 GPU test suite: this
  * module and `pnanovdb.wgsl` should always agree, voxel for voxel.
@@ -46,7 +46,7 @@ export interface ReadResult {
 
 type Coord = readonly [number, number, number];
 
-const supportedGridTypeNames = ["FLOAT", "FP8", "FPN"] as const;
+const supportedGridTypeNames = ["FLOAT", "FP4", "FP8", "FP16", "FPN"] as const;
 type SupportedGridTypeName = (typeof supportedGridTypeNames)[number];
 
 // ----------------------------- structural (non-per-grid-type) constants ---
@@ -185,6 +185,16 @@ function leafFpReadFloat(
   return valueCompressed * quantum + minimum;
 }
 
+/** pnanovdb_leaf_fp4_read_float: fixed 4-bit-per-value quantization. */
+function leafFp4ReadFloat(words: Uint32Array, tableAddress: number, n: number): number {
+  return leafFpReadFloat(words, tableAddress, n, 2);
+}
+
+/** pnanovdb_leaf_fp16_read_float: fixed 16-bit-per-value quantization. */
+function leafFp16ReadFloat(words: Uint32Array, tableAddress: number, n: number): number {
+  return leafFpReadFloat(words, tableAddress, n, 4);
+}
+
 /** pnanovdb_leaf_fp8_read_float: fixed 8-bit-per-value quantization. */
 function leafFp8ReadFloat(words: Uint32Array, tableAddress: number, n: number): number {
   return leafFpReadFloat(words, tableAddress, n, 3);
@@ -216,7 +226,7 @@ function gridTypeNameFor(id: number): SupportedGridTypeName {
   const knownName = Object.entries(gridTypeIds).find(([, v]) => v === id)?.[0];
   throw new Error(
     `readValue: unsupported grid type ${id}${knownName ? ` (${knownName})` : ""}; ` +
-      `only FLOAT (${gridTypeIds.FLOAT}), FP8 (${gridTypeIds.FP8}) and FPN (${gridTypeIds.FPN}) are implemented` +
+      `only FLOAT (${gridTypeIds.FLOAT}), FP4 (${gridTypeIds.FP4}), FP8 (${gridTypeIds.FP8}), FP16 (${gridTypeIds.FP16}) and FPN (${gridTypeIds.FPN}) are implemented` +
       (knownName === "VEC3F" ? "; use readValueVec3 for VEC3F grids" : ""),
   );
 }
@@ -343,8 +353,8 @@ function checkMagic(gridWords: Uint32Array, fn: string): void {
 
 /**
  * Looks up voxel `ijk` in a NanoVDB grid image (little-endian u32 words,
- * `GridData` at word 0). Supports grid types FLOAT (1), FP8 (14) and FPN
- * (16); throws for anything else.
+ * `GridData` at word 0). Supports grid types FLOAT (1), FP4 (13), FP8 (14), FP16 (15)
+ * and FPN (16); throws for anything else.
  *
  * The value is the exact f64 decode (ground truth). It is NOT the GPU's
  * evaluation order: `readValueF32` (CPU twin of `vdbReadValue`) matches the
@@ -368,10 +378,16 @@ export function readValue(gridWords: Uint32Array, ijk: [number, number, number])
     value = readF32(gridWords, resolved.valueAddress);
   } else if (resolved.level === 0) {
     // Leaf level: quantized decode (pnanovdb_root_fp8/fpn_read_float, level==0 branch).
+    const a = resolved.valueAddress;
+    const n = resolved.leafN;
     value =
-      gridTypeName === "FP8"
-        ? leafFp8ReadFloat(gridWords, resolved.valueAddress, resolved.leafN)
-        : leafFpnReadFloat(gridWords, resolved.valueAddress, resolved.leafN);
+      gridTypeName === "FP4"
+        ? leafFp4ReadFloat(gridWords, a, n)
+        : gridTypeName === "FP8"
+          ? leafFp8ReadFloat(gridWords, a, n)
+          : gridTypeName === "FP16"
+            ? leafFp16ReadFloat(gridWords, a, n)
+            : leafFpnReadFloat(gridWords, a, n);
   } else {
     // Tile/background level: FP8/FPN store the constant value as a plain
     // float32 (pnanovdb_root_fp8/fpn_read_float, else branch).

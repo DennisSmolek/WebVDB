@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 // K1.6: the K1 regression gate (docs/design/K1-core.md §7, docs/handoffs/K1-6.md).
-// One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures plus
+// One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures, two synthetic quantized grids (sphere_fog_fp4 / sphere_fog_fp16, K5.4b) plus
 // torus_fog_fp8 again with an instance transform; every generated-module variant of
 // the matrix is dispatched and compared with the CPU twins. The page does the
 // comparing and publishes counts, max deltas and failure lines.
@@ -82,12 +82,14 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
     r.variants.map((v) => v.id),
     detail,
   ).toEqual(r.expected!.variants);
-  expect(r.variants.length).toBe(21);
+  expect(r.variants.length).toBe(27);
 
   for (const v of r.variants) {
     expect(v.compileErrors, `${v.id} compile`).toEqual([]);
     const profile = v.id.split("/")[0];
-    const required = [...READ_CATS, ...(profile !== "read" ? SAMPLE_CATS : []), ...(profile === "march" ? MARCH_CATS : [])];
+    // fp4 / fp16 exist only as synthetic quantize() grids (no native sidecar), so their single-type modules have no sidecar-value rows.
+    const readCats = /\/fp(4|16)$/.test(v.id) ? READ_CATS.filter((c) => c !== "sidecar-value") : READ_CATS;
+    const required = [...readCats, ...(profile !== "read" ? SAMPLE_CATS : []), ...(profile === "march" ? MARCH_CATS : [])];
     if (["sample/all", "march/all", "march/all/buffer"].includes(v.id)) required.push(...XFORM_CATS);
     // K1.7a opt-in helpers (vdbHddaCellEnd feeds the walk categories above).
     if (v.id === "march/all/helpers") required.push("cellbound", "clip-support-hit", "clip-support-t", "clip-hit");

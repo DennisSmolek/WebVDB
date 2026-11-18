@@ -14,7 +14,7 @@ describe("@pmndrs/vdb/tools .nvdb constants", () => {
     expect(FILE_HEADER_SIZE).toBe(16);
     expect(FILE_METADATA_SIZE).toBe(176);
     expect(GRID_DATA_SIZE).toBe(672);
-    expect(SUPPORTED_GRID_TYPES).toEqual(["Float", "Fp8", "FpN"]);
+    expect(SUPPORTED_GRID_TYPES).toEqual(["Float", "Fp4", "Fp8", "Fp16", "FpN"]);
     expect(MAGIC_ASCII).toEqual(["NanoVDB0", "NanoVDB1", "NanoVDB2"]);
     expect(Codec).toEqual({ NONE: 0, ZIP: 1, BLOSC: 2 });
   });

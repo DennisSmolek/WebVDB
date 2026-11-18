@@ -17,7 +17,8 @@
  * The id, its bind-group slot and any instance transform stay. Each image's
  * own Map places it, and a preview covers the full grid's world box, so the
  * world placement is unchanged. Things the caller re-derives after a swap
- * (the `onGrid` callback is the place):
+ * (the `onGrid` callback is the place, or the opt-in `bind` option, which does these
+ * three steps for you after every swap):
  * - `replace` drops a brick majorant: call `pool.setMajorant` again;
  * - `VDBVolumeMaterial` marches in index voxels, so a preview with k-times
  *   larger voxels has 1/k the optical depth at the same `densityScale`;
@@ -25,12 +26,16 @@
  * - the proxy mesh: a new `vdbProxyGeometry(pool.info(id))` (the preview's
  *   box is the full box grown to whole preview voxels).
  *
- * Engine-free: it touches only `pool.add` / `pool.replace`, so it works with
+ * Without `bind` it touches only `pool.add` / `pool.replace`, so it works with
  * any `VDBGridPool` host. It lives in `./three` because `tools` may not import
  * the core (D20).
  */
 
+import type * as THREE from "three";
+
 import { VDBError } from "../core/errors.js";
+import type { VDBBrickMajorant } from "../core/index.js";
+import { vdbProxyGeometry, type VDBProxyGridInfo } from "./material.js";
 import {
   NvdbStreamReader,
   nvdbResponseLength,
@@ -45,6 +50,39 @@ import {
 export interface VDBCoarseFirstPoolLike {
   add(image: Uint32Array, options?: { capacity?: number; label?: string }): number;
   replace(id: number, image: Uint32Array): void;
+}
+
+/** The extra pool calls `bind` makes (a `VDBGridPool` has them all). */
+export interface VDBCoarseFirstBindPoolLike {
+  flush(): void;
+  info(id: number): VDBProxyGridInfo;
+  setMajorant(id: number, majorant: VDBBrickMajorant | null): void;
+}
+
+/**
+ * What to keep in step with the pool id after each swap (K5.4c). Every member is optional; the fields are read at
+ * each swap, so they may be assigned later (for example in `onGrid`, once the first grid exists).
+ */
+export interface VDBCoarseFirstBind {
+  /**
+   * A material to scale: `material.densityScale.value = base * event.voxelRatio`, so a preview with k-times larger
+   * voxels keeps the full grid's optical depth and the full grid gets `base` back. `base` is `densityScale` below,
+   * else the material's value the first time `bind` is applied to it.
+   */
+  material?: { densityScale: { value: number } };
+  /** The base density scale for `material`. Default: the material's current value at the first swap. */
+  densityScale?: number;
+  /** A proxy mesh: its geometry is replaced (and the old one disposed) with `vdbProxyGeometry(pool.info(id))`. */
+  mesh?: { geometry: THREE.BufferGeometry };
+  /** `vdbProxyGeometry` padding for `mesh` (default 0). */
+  proxyPad?: number;
+  /** A `VDBGridNode`: `pool.flush()` then `grids.update()`, so its shaders see the swapped grid. */
+  grids?: { update(): void };
+  /**
+   * Brick majorant for the grid just shown (`replace` drops the old one). Return `null` / `undefined` to leave the grid
+   * without one, e.g. for a preview.
+   */
+  majorant?: (event: VDBCoarseFirstEvent) => VDBBrickMajorant | null | undefined;
 }
 
 /** What a coarse-first stream delivers. */
@@ -75,7 +113,13 @@ export interface VDBCoarseFirstOptions {
   label?: string;
   /** Limits for the stream reader. */
   reader?: NvdbStreamReaderOptions;
-  /** Called after each `pool.add` / `pool.replace` (preview, then finer grids, then the full grid). */
+  /**
+   * Keeps a material, proxy mesh, grid node and majorant in step with each swap, before `onGrid` runs (see
+   * {@link VDBCoarseFirstBind} and {@link vdbCoarseFirstApply}). Needs a pool with `flush` / `info` / `setMajorant`
+   * (a `VDBGridPool`).
+   */
+  bind?: VDBCoarseFirstBind;
+  /** Called after each `pool.add` / `pool.replace` (preview, then finer grids, then the full grid), after `bind`. */
   onGrid?: (event: VDBCoarseFirstEvent) => void;
   /** Called after every received chunk with the byte progress (K4.20). `bytesTotal` is the Response's Content-Length, else derived from the file's metadata. */
   onProgress?: (progress: NvdbProgress) => void;
@@ -93,6 +137,47 @@ export interface VDBCoarseFirstResult {
   fullBytes: number;
   /** Expected file size when the full grid arrived, or null if unknown. */
   bytesTotal: number | null;
+}
+
+/** The base density scale of each bound material (the value seen at its first swap, unless `bind.densityScale` says). */
+const baseScale = new WeakMap<object, number>();
+
+/**
+ * The work `bind` does after a swap, callable on its own from an async `onGrid` (or any code that shows a
+ * {@link VDBCoarseFirstEvent}): majorant, proxy geometry, `pool.flush()` + `grids.update()`, density scale. It never
+ * touches what `bind` leaves out.
+ */
+export function vdbCoarseFirstApply(
+  pool: VDBCoarseFirstPoolLike & Partial<VDBCoarseFirstBindPoolLike>,
+  event: VDBCoarseFirstEvent,
+  bind: VDBCoarseFirstBind,
+): void {
+  const need = <K extends keyof VDBCoarseFirstBindPoolLike>(name: K): NonNullable<VDBCoarseFirstBindPoolLike[K]> => {
+    const fn = pool[name];
+    if (typeof fn !== "function") {
+      throw new VDBError("VDB_BAD_OPTION", `vdbStreamCoarseFirst: \`bind\` needs a pool with ${name}() (a VDBGridPool).`);
+    }
+    return fn.bind(pool) as NonNullable<VDBCoarseFirstBindPoolLike[K]>;
+  };
+  if (bind.majorant) {
+    const majorant = bind.majorant(event);
+    if (majorant) need("setMajorant")(event.id, majorant);
+  }
+  if (bind.mesh) {
+    const next = vdbProxyGeometry(need("info")(event.id), bind.proxyPad === undefined ? {} : { pad: bind.proxyPad });
+    bind.mesh.geometry.dispose();
+    bind.mesh.geometry = next;
+  }
+  if (bind.grids) {
+    need("flush")();
+    bind.grids.update();
+  }
+  const material = bind.material;
+  if (material) {
+    const base = bind.densityScale ?? baseScale.get(material) ?? material.densityScale.value;
+    baseScale.set(material, base);
+    material.densityScale.value = base * event.voxelRatio;
+  }
 }
 
 const familyOf = (name: string): string => parseNvdbLodName(name).baseName;
@@ -138,7 +223,7 @@ function chunks(source: VDBCoarseFirstSource): { iterate: AsyncIterable<Uint8Arr
  * or truncated data.
  */
 export async function vdbStreamCoarseFirst(
-  pool: VDBCoarseFirstPoolLike,
+  pool: VDBCoarseFirstPoolLike & Partial<VDBCoarseFirstBindPoolLike>,
   source: VDBCoarseFirstSource,
   options: VDBCoarseFirstOptions = {},
 ): Promise<VDBCoarseFirstResult> {
@@ -182,6 +267,7 @@ export async function vdbStreamCoarseFirst(
         current = grid;
         const event: VDBCoarseFirstEvent = { id, grid, final, action, bytesReceived: grid.bytesReceived, bytesTotal: grid.bytesTotal, voxelRatio: fullVoxel(grid) };
         shown.push(event);
+        if (options.bind) vdbCoarseFirstApply(pool, event, options.bind);
         options.onGrid?.(event);
         if (final) {
           await cancel();

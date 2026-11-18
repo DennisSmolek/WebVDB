@@ -2,7 +2,8 @@
  * K1.6 core parity harness (docs/design/K1-core.md §7): the K1 regression gate.
  *
  * One `VDBGridPool` (started at 4 KiB with `maxGrids: 2`, so the buffer and the
- * table both grow) holds the nine primitive fixtures, a throwaway grid that is
+ * table both grow) holds the nine primitive fixtures, two synthetic grids (`sphere_fog_fp4` / `sphere_fog_fp16`, the sphere
+ * float fixture run through `quantize`; no native Fp4/Fp16 fixtures exist, K5.4b), a throwaway grid that is
  * removed (a dead id in the middle of the table) and `torus_fog_fp8` a second
  * time with an instance transform. For every generated-module variant of the
  * matrix below the page dispatches compute kernels that call only the public
@@ -28,6 +29,7 @@ import {
   nodeMax,
   nodeStats,
   probeCoords,
+  quantize,
   rayClip,
   rayClipSupport,
   readValueF32,
@@ -55,7 +57,13 @@ const AFFINE_REL = 2e-6;
 /** Ray parameter agreement (clip and walk intervals), relative to max(1, |t|). */
 const T_REL = 1e-4;
 
-const NAMES = ["box_fog", "sphere_fog", "torus_fog"].flatMap((p) => ["float", "fp8", "fpn"].map((t) => `${p}_${t}`));
+const FILE_NAMES = ["box_fog", "sphere_fog", "torus_fog"].flatMap((p) => ["float", "fp8", "fpn"].map((t) => `${p}_${t}`));
+/** Synthetic Fp4 / Fp16 grids: `quantize(sphere_fog_float, mode)`; no sidecar (no native reference). */
+const SYNTH = [
+  { name: "sphere_fog_fp4", mode: "fp4" },
+  { name: "sphere_fog_fp16", mode: "fp16" },
+] as const;
+const NAMES = [...FILE_NAMES, ...SYNTH.map((s) => s.name)];
 const INSTANCE_SOURCE = NAMES.indexOf("torus_fog_fp8"); // the fixture added a second time
 const SLOT = { group: 1, firstBinding: 3 } as const;
 const BUFFER_EXPR = "vdbPool.value";
@@ -312,7 +320,7 @@ interface Spec {
   tests: Test[];
 }
 
-const ALL: VDBGridTypeName[] = ["float", "fp8", "fpn"];
+const ALL: VDBGridTypeName[] = ["float", "fp4", "fp8", "fp16", "fpn"];
 const BASE: Test[] = ["read", "meta", "dead"];
 const SAMPLE: Test[] = [...BASE, "sample"];
 const SAMPLE_X: Test[] = [...SAMPLE, "xform", "world", "clip"];
@@ -322,12 +330,16 @@ const MARCH_X: Test[] = [...MARCH, "xform", "world", "clip"];
 const SPECS: Spec[] = [
   { id: "read/float", profile: "read", types: ["float"], mode: "slot", tests: BASE },
   { id: "read/fp8", profile: "read", types: ["fp8"], mode: "slot", tests: BASE },
+  { id: "read/fp4", profile: "read", types: ["fp4"], mode: "slot", tests: BASE },
+  { id: "read/fp16", profile: "read", types: ["fp16"], mode: "slot", tests: BASE },
   { id: "read/fpn", profile: "read", types: ["fpn"], mode: "slot", tests: BASE },
   { id: "read/all", profile: "read", types: ALL, mode: "slot", tests: BASE },
   { id: "read/all/isActive=false", profile: "read", types: ALL, mode: "slot", isActive: false, tests: BASE },
   { id: "read/all/buffer", profile: "read", types: ALL, mode: "buffer", tests: BASE },
   { id: "sample/float", profile: "sample", types: ["float"], mode: "slot", tests: SAMPLE },
   { id: "sample/fp8", profile: "sample", types: ["fp8"], mode: "slot", tests: SAMPLE },
+  { id: "sample/fp4", profile: "sample", types: ["fp4"], mode: "slot", tests: SAMPLE },
+  { id: "sample/fp16", profile: "sample", types: ["fp16"], mode: "slot", tests: SAMPLE },
   { id: "sample/fpn", profile: "sample", types: ["fpn"], mode: "slot", tests: SAMPLE },
   { id: "sample/all", profile: "sample", types: ALL, mode: "slot", tests: SAMPLE_X },
   { id: "sample/all/nearest", profile: "sample", types: ALL, mode: "slot", sampler: "nearest", tests: SAMPLE },
@@ -335,6 +347,8 @@ const SPECS: Spec[] = [
   { id: "sample/all/outside=zero,nearest", profile: "sample", types: ALL, mode: "slot", outside: "zero", sampler: "nearest", tests: SAMPLE },
   { id: "march/float", profile: "march", types: ["float"], mode: "slot", tests: MARCH },
   { id: "march/fp8", profile: "march", types: ["fp8"], mode: "slot", tests: MARCH },
+  { id: "march/fp4", profile: "march", types: ["fp4"], mode: "slot", tests: MARCH },
+  { id: "march/fp16", profile: "march", types: ["fp16"], mode: "slot", tests: MARCH },
   { id: "march/fpn", profile: "march", types: ["fpn"], mode: "slot", tests: MARCH },
   { id: "march/all", profile: "march", types: ALL, mode: "slot", tests: MARCH_X },
   { id: "march/all/buffer", profile: "march", types: ALL, mode: "buffer", tests: MARCH_X },
@@ -996,7 +1010,7 @@ async function run(): Promise<CoreParity> {
   device.addEventListener("uncapturederror", (e) => uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
 
   const loaded = await Promise.all(
-    NAMES.map(async (name) => {
+    FILE_NAMES.map(async (name) => {
       const [nv, sc] = await Promise.all([fetch(`/fixtures/primitives/${name}.nvdb`), fetch(`/fixtures/primitives/${name}.sidecar.json`)]);
       return {
         image: nv.ok ? NanoVDBFile.fromArrayBuffer(await nv.arrayBuffer()).gridImage(0) : null,
@@ -1004,8 +1018,10 @@ async function run(): Promise<CoreParity> {
       };
     }),
   );
-  const missing = NAMES.filter((_, k) => loaded[k]!.image === null || loaded[k]!.sidecar === null);
+  const missing = FILE_NAMES.filter((_, k) => loaded[k]!.image === null || loaded[k]!.sidecar === null);
   if (missing.length > 0) return { ...result, done: true, missing };
+  const sphereFloat = loaded[FILE_NAMES.indexOf("sphere_fog_float")]!.image!;
+  for (const s of SYNTH) loaded.push({ image: quantize(sphereFloat, s.mode), sidecar: null });
 
   device.pushErrorScope("validation");
   const pool = await VDBGridPool.create(device, { initialBytes: 4096, maxGrids: 2, label: "core parity" });

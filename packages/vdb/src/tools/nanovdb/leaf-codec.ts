@@ -13,7 +13,8 @@
  *
  * Three codecs ship:
  *   - {@link FLOAT_LEAF_CODEC} — 512 raw f32 values + f32 stats.
- *   - {@link FP8_LEAF_CODEC} — fixed 8-bit quantization (`LeafData<Fp8>`).
+ *   - {@link FP4_LEAF_CODEC} / {@link FP8_LEAF_CODEC} / {@link FP16_LEAF_CODEC} — fixed 4/8/16-bit
+ *     quantization (`LeafData<Fp4|Fp8|Fp16>`).
  *   - {@link makeFpNLeafCodec} — variable bit-width (`LeafData<FpN>`); a
  *     per-leaf oracle picks the smallest of 1/2/4/8/16 bits meeting a tolerance.
  *
@@ -32,7 +33,9 @@
 import {
   FLOAT_LAYOUT,
   VEC3F_LAYOUT,
+  FP4_LAYOUT,
   FP8_LAYOUT,
+  FP16_LAYOUT,
   FP_LEAF_HEADER_SIZE,
   FPN_LAYOUT,
   type GridTypeLayout,
@@ -304,29 +307,45 @@ function packCodes(
 }
 
 // ---------------------------------------------------------------------------
-// Fp8 — fixed 8-bit
+// Fp4 / Fp8 / Fp16 — fixed bit width
 // ---------------------------------------------------------------------------
 
-export const FP8_LEAF_CODEC: LeafCodec = {
-  layout: FP8_LAYOUT,
-  planLeaf() {
-    return { byteSize: FP8_LAYOUT.leafSize };
-  },
-  encodeLeaf(w, leafOff, leaf) {
-    writeLeafHeader(w, leafOff, leaf, LEAF_FLAG_HAS_BBOX);
-    const { min, max } = leafMinMax(leaf.values);
-    const range = fround(max - min);
-    const mask = 255;
-    const quantum = range > 0 ? fround(range / mask) : 0;
-    writeFpHeaderStats(w, leafOff, min, quantum, leaf.stats);
-    const encode = range > 0 ? fround(mask / range) : 0;
-    const values = leaf.values;
-    packCodes(w, leafOff, 8, (n) => quantizeF32(values[n]!, min, encode, mask));
-  },
-  writeConstant(w, off, value) {
-    w.setF32(off, scalar(value));
-  },
-};
+function makeFixedLeafCodec(layout: GridTypeLayout, bits: 4 | 8 | 16): LeafCodec {
+  const mask = (1 << bits) - 1;
+  return {
+    layout,
+    planLeaf() {
+      return { byteSize: layout.leafSize };
+    },
+    encodeLeaf(w, leafOff, leaf) {
+      writeLeafHeader(w, leafOff, leaf, LEAF_FLAG_HAS_BBOX);
+      const { min, max } = leafMinMax(leaf.values);
+      const values = leaf.values;
+      if (bits === 16) {
+        // Same arithmetic as FpN's 16-bit path: double encode, f32-stored quantum.
+        const range = max - min;
+        writeFpHeaderStats(w, leafOff, min, range > 0 ? range / mask : 0, leaf.stats);
+        const encode = range > 0 ? mask / range : 0;
+        packCodes(w, leafOff, 16, (n) => quantizeF64(values[n]!, min, encode, mask));
+        return;
+      }
+      const range = fround(max - min);
+      const quantum = range > 0 ? fround(range / mask) : 0;
+      writeFpHeaderStats(w, leafOff, min, quantum, leaf.stats);
+      const encode = range > 0 ? fround(mask / range) : 0;
+      packCodes(w, leafOff, bits, (n) => quantizeF32(values[n]!, min, encode, mask));
+    },
+    writeConstant(w, off, value) {
+      w.setF32(off, scalar(value));
+    },
+  };
+}
+
+/** Fp4: fixed 4-bit codes (`LeafData<Fp4>`, 16 levels per leaf). */
+export const FP4_LEAF_CODEC: LeafCodec = makeFixedLeafCodec(FP4_LAYOUT, 4);
+export const FP8_LEAF_CODEC: LeafCodec = makeFixedLeafCodec(FP8_LAYOUT, 8);
+/** Fp16: fixed 16-bit codes (`LeafData<Fp16>`). */
+export const FP16_LEAF_CODEC: LeafCodec = makeFixedLeafCodec(FP16_LAYOUT, 16);
 
 // ---------------------------------------------------------------------------
 // FpN — variable bit-width chosen per leaf by an absolute-difference oracle
