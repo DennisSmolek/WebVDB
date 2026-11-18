@@ -11,7 +11,7 @@
  * layers here; each layer is a function of the normalized options.
  */
 
-import type { VDBGridTypeName } from "./types.js";
+import type { VDBGridTypeName } from "../types.js";
 
 /** Options the API layer depends on (normalized by the generator). */
 export interface ApiOptions {
@@ -52,7 +52,7 @@ function readLayer(o: ApiOptions, profileRank: number): string {
     return ${typeOk};
 }`,
     `fn vdbGridCount() -> u32 {
-    return vdb_load(VDB_POOL_HEADER_GRID_COUNT);
+    return vdb_load(VDB_HEADER_GRID_COUNT);
 }`,
     `fn vdbGridType(g: u32) -> u32 {
     if g >= vdbGridCount() || (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_LIVE) == 0u {

@@ -11,7 +11,8 @@
 import { VDBError } from "../errors.js";
 import { applyAffine, composeGridAffines, type GridAffines } from "./affine.js";
 import { RangeAllocator, type AllocatedRange } from "./allocator.js";
-import { gridClassName, readImageHeader, type VDBGridTypeName, type VDBImageHeader } from "./image-header.js";
+import type { VDBGridTypeName, VDBSlot } from "../types.js";
+import { gridClassName, readImageHeader, type VDBImageHeader } from "./image-header.js";
 import {
   VDB_GPU_LAYOUT_VERSION,
   VDB_POOL_HEADER_WORDS,
@@ -33,12 +34,6 @@ import {
   unsupportedReason,
   watchDevice,
 } from "./limits.js";
-
-/** Where a kernel binds the pool: `@group(group) @binding(firstBinding)`. Layout 1 uses one binding (D10). */
-export interface VDBSlot {
-  group: number;
-  firstBinding: number;
-}
 
 /**
  * A dense grid of upper bounds over a grid's index space, one f32 per brick of

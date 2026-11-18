@@ -2,15 +2,20 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   checkModule,
+  VDBGridPool,
+  VDB_GPU_LAYOUT_VERSION,
   VDB_MODULE_BANNER,
   VDBError,
   vdbModuleEntries,
   vdbModuleWgsl,
+  vdbPoolLayoutWgsl,
   type VDBModuleOptions,
 } from "../../src/core/index.js";
 import { vdbModuleDeclarations } from "../../src/core/wgsl/generate.js";
 // @ts-expect-error: repo-level ESM helper without type declarations
 import { CHECK_BUFFER_EXPRESSION, CHECK_SLOT, checkKernel, variantMatrix } from "../../../../scripts/lib/wgsl-variants.mjs";
+import { FakeDevice } from "./fake-gpu.js";
+import { makeImage } from "./synthetic-image.js";
 import { wgslNameProblems } from "./wgsl-names.js";
 
 const VARIANTS: { id: string; options: VDBModuleOptions }[] = variantMatrix();
@@ -277,6 +282,46 @@ describe("checkModule", () => {
 
   it("validates the options too", () => {
     expectCode(() => checkModule({ types: ["float"], layoutVersion: 1 }, { ...options, types: [] }), "VDB_BAD_OPTION");
+  });
+
+  it("compares against the layout.ts version, not a copy", () => {
+    expectCode(() => checkModule({ types: ["float"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }, options), "VDB_LAYOUT_MISMATCH");
+    expect(() => checkModule({ types: ["float"], layoutVersion: VDB_GPU_LAYOUT_VERSION }, options)).not.toThrow();
+  });
+
+  it("accepts a real VDBGridPool structurally", async () => {
+    const pool = await VDBGridPool.create(new FakeDevice().asGPU(), { initialBytes: 16384 });
+    pool.add(makeImage({ bytes: 1024, gridType: 1 }));
+    pool.add(makeImage({ bytes: 1024, gridType: 14 }));
+    expect([...pool.types].sort()).toEqual(["float", "fp8"]);
+    // The right set passes, both for the exact set and a superset.
+    expect(() => checkModule(pool, { slot: CHECK_SLOT, types: [...pool.types], profile: "read" })).not.toThrow();
+    expect(() => checkModule(pool, { slot: CHECK_SLOT, types: ["float", "fp8", "fpn"], profile: "sample" })).not.toThrow();
+    // A narrower set names what is missing.
+    expectCode(() => checkModule(pool, { slot: CHECK_SLOT, types: ["float"], profile: "read" }), "VDB_TYPE_NOT_COMPILED");
+    expect(() => checkModule(pool, { slot: CHECK_SLOT, types: ["float"], profile: "read" })).toThrow(/fp8/);
+    pool.dispose();
+  });
+});
+
+describe("layout constants come from core/pool/layout.ts", () => {
+  it("every emitted VDB_ const line is a line of vdbPoolLayoutWgsl()", () => {
+    const layoutLines = new Set(vdbPoolLayoutWgsl().split("\n"));
+    const names = Object.keys(Object.fromEntries([...vdbPoolLayoutWgsl().matchAll(/^const (\w+)/gm)].map((m) => [m[1], 1])));
+    for (const v of VARIANTS) {
+      const code = vdbModuleWgsl(v.options);
+      for (const m of code.matchAll(/^const ((?:VDB_REC_|VDB_HEADER_|VDB_POOL_|VDB_GPU_)\w*): .*$/gm)) {
+        expect(layoutLines.has(m[0]), `${v.id}: ${m[1]}`).toBe(true);
+        expect(names).toContain(m[1]);
+      }
+    }
+  });
+
+  it("the WGSL names the API layers use exist in layout.ts and are emitted", () => {
+    const code = vdbModuleWgsl({ slot: CHECK_SLOT, types: ["float"], profile: "sample" });
+    for (const n of ["VDB_POOL_TABLE_WORD", "VDB_POOL_RECORD_WORDS", "VDB_HEADER_GRID_COUNT", "VDB_REC_FLAGS", "VDB_REC_FLAG_LIVE", "VDB_REC_GRID_TYPE", "VDB_REC_IMAGE_OFFSET", "VDB_REC_WORLD_TO_INDEX"]) {
+      expect(code, n).toContain(`const ${n}: u32 =`);
+    }
   });
 });
 

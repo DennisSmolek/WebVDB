@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   NANOVDB_FLAG_HAS_MIN_MAX,
   NANOVDB_OFFSETS as O,
-  VDB_GRID_TYPE_IDS,
   readImageHeader,
 } from "../../src/core/pool/image-header.js";
+import { VDB_GRID_TYPE_IDS, type VDBGridTypeName } from "../../src/core/types.js";
 // Tests may import tools (the core may not, D20): this is the cross-check.
 import * as bytes from "../../src/tools/nanovdb/bytes.js";
 import { NanoVDBFile } from "../../src/tools/index.js";
@@ -53,7 +53,7 @@ describe("image-header offsets match tools and PNanoVDB.h", () => {
       expect(c.root_off_min, name).toBe(O.rootMin);
       expect(c.root_off_max, name).toBe(O.rootMax);
       expect(c.root_size, name).toBe(O.rootSize);
-      expect(strideTables.gridTypes[name.toUpperCase()], name).toBe(VDB_GRID_TYPE_IDS[name as keyof typeof VDB_GRID_TYPE_IDS]);
+      expect(strideTables.gridTypes[name.toUpperCase()], name).toBe(VDB_GRID_TYPE_IDS[name as VDBGridTypeName]);
     }
   });
 });

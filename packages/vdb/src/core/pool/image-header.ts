@@ -7,6 +7,7 @@
  */
 
 import { VDBError } from "../errors.js";
+import { VDB_GRID_TYPE_IDS, type VDBGridTypeName } from "../types.js";
 import type { VDBVec3 } from "./layout.js";
 
 /** Byte offsets inside a NanoVDB grid image used by the pool. */
@@ -53,12 +54,6 @@ export const NANOVDB_ABI_MAJOR = 32;
 const MAGIC_GRID_LO = 0x6f6e614e; // "Nano"
 const MAGIC_GRID_HI_CURRENT = 0x31424456; // "VDB1"
 const MAGIC_GRID_HI_LEGACY = 0x30424456; // "VDB0"
-
-/** Grid types the pool accepts, by NanoVDB `GridType` id. */
-export const VDB_GRID_TYPE_IDS = { float: 1, fp4: 13, fp8: 14, fp16: 15, fpn: 16 } as const;
-
-/** A grid type the core can compile and the pool can hold. */
-export type VDBGridTypeName = keyof typeof VDB_GRID_TYPE_IDS;
 
 const TYPE_BY_ID = new Map<number, VDBGridTypeName>(
   (Object.entries(VDB_GRID_TYPE_IDS) as [VDBGridTypeName, number][]).map(([name, id]) => [id, name]),

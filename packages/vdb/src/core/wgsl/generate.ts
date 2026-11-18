@@ -25,18 +25,11 @@
  */
 
 import { VDBError } from "../errors.js";
+import { VDB_GPU_LAYOUT_VERSION, vdbPoolLayoutWgsl } from "../pool/layout.js";
+import { VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES, type VDBGridTypeName, type VDBSlot } from "../types.js";
 import { apiWgsl, type ApiOptions } from "./api.js";
 import { PNANOVDB_CHUNKS, type PnanovdbChunk } from "./pnanovdb.chunks.generated.js";
-import { recordConstantsWgsl, VDB_GPU_LAYOUT_VERSION } from "./record-constants.js";
-import {
-  VDB_GRID_TYPE_IDS,
-  VDB_GRID_TYPE_NAMES,
-  type VDBGridTypeName,
-  type VDBModuleOptions,
-  type VDBModulePoolLike,
-  type VDBModuleProfile,
-  type VDBSlot,
-} from "./types.js";
+import type { VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile } from "./types.js";
 
 /** First line of every generated module (§3.3). */
 export const VDB_MODULE_BANNER =
@@ -354,10 +347,14 @@ function build(o: NormalizedOptions): string {
   const { names, ctx } = closure(api, o);
   const vendored = names.map((name) => rename(effectiveText(chunk(name), ctx))).join("\n");
   const body = [vendored, load, api].join("\n");
-  const constants = recordConstantsWgsl().filter((line) => {
-    const name = /^const\s+(\w+)/.exec(line)?.[1] as string;
-    return new RegExp(`\\b${name}\\b`).test(body);
-  });
+  // Layout constants come from core/pool/layout.ts (one source of truth); keep
+  // only the `const` lines the body references.
+  const constants = vdbPoolLayoutWgsl()
+    .split("\n")
+    .filter((line) => {
+      const name = /^const\s+(\w+)/.exec(line)?.[1];
+      return name !== undefined && new RegExp(`\\b${name}\\b`).test(body);
+    });
   const head = [VDB_MODULE_BANNER];
   if (o.binding.kind === "slot") {
     head.push(`@group(${o.binding.slot.group}) @binding(${o.binding.slot.firstBinding}) var<storage, read> ${VDB_POOL_BINDING_NAME}: array<u32>;`);
