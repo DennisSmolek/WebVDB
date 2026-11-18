@@ -1,0 +1,534 @@
+{
+  "method": "design note §3.5: min = comments stripped, whitespace collapsed, no mangling (wgsl-variants minifyWgsl); gz = gzip level 9 of min",
+  "unit": "bytes",
+  "variants": {
+    "march/float+fp8+fpn/buffer/isActive=false": {
+      "gz": 5294,
+      "min": 27931
+    },
+    "march/float+fp8+fpn/buffer/isActive=true": {
+      "gz": 5604,
+      "min": 31517
+    },
+    "march/float+fp8+fpn/buffer/outside=zero": {
+      "gz": 5594,
+      "min": 31142
+    },
+    "march/float+fp8+fpn/buffer/outside=zero,sampler=nearest": {
+      "gz": 5479,
+      "min": 30681
+    },
+    "march/float+fp8+fpn/slot/isActive=false": {
+      "gz": 5335,
+      "min": 27981
+    },
+    "march/float+fp8+fpn/slot/isActive=true": {
+      "gz": 5646,
+      "min": 31567
+    },
+    "march/float+fp8+fpn/slot/outside=zero": {
+      "gz": 5635,
+      "min": 31192
+    },
+    "march/float+fp8+fpn/slot/outside=zero,sampler=nearest": {
+      "gz": 5520,
+      "min": 30731
+    },
+    "march/float/buffer/isActive=false": {
+      "gz": 4771,
+      "min": 24865
+    },
+    "march/float/buffer/isActive=true": {
+      "gz": 5095,
+      "min": 28451
+    },
+    "march/float/buffer/outside=zero": {
+      "gz": 5080,
+      "min": 28076
+    },
+    "march/float/buffer/outside=zero,sampler=nearest": {
+      "gz": 4965,
+      "min": 27615
+    },
+    "march/float/slot/isActive=false": {
+      "gz": 4813,
+      "min": 24915
+    },
+    "march/float/slot/isActive=true": {
+      "gz": 5136,
+      "min": 28501
+    },
+    "march/float/slot/outside=zero": {
+      "gz": 5121,
+      "min": 28126
+    },
+    "march/float/slot/outside=zero,sampler=nearest": {
+      "gz": 5006,
+      "min": 27665
+    },
+    "march/fp16/buffer/isActive=false": {
+      "gz": 5137,
+      "min": 26834
+    },
+    "march/fp16/buffer/isActive=true": {
+      "gz": 5453,
+      "min": 30420
+    },
+    "march/fp16/buffer/outside=zero": {
+      "gz": 5442,
+      "min": 30045
+    },
+    "march/fp16/buffer/outside=zero,sampler=nearest": {
+      "gz": 5324,
+      "min": 29584
+    },
+    "march/fp16/slot/isActive=false": {
+      "gz": 5179,
+      "min": 26884
+    },
+    "march/fp16/slot/isActive=true": {
+      "gz": 5495,
+      "min": 30470
+    },
+    "march/fp16/slot/outside=zero": {
+      "gz": 5483,
+      "min": 30095
+    },
+    "march/fp16/slot/outside=zero,sampler=nearest": {
+      "gz": 5368,
+      "min": 29634
+    },
+    "march/fp4/buffer/isActive=false": {
+      "gz": 5135,
+      "min": 26828
+    },
+    "march/fp4/buffer/isActive=true": {
+      "gz": 5450,
+      "min": 30414
+    },
+    "march/fp4/buffer/outside=zero": {
+      "gz": 5439,
+      "min": 30039
+    },
+    "march/fp4/buffer/outside=zero,sampler=nearest": {
+      "gz": 5322,
+      "min": 29578
+    },
+    "march/fp4/slot/isActive=false": {
+      "gz": 5176,
+      "min": 26878
+    },
+    "march/fp4/slot/isActive=true": {
+      "gz": 5493,
+      "min": 30464
+    },
+    "march/fp4/slot/outside=zero": {
+      "gz": 5481,
+      "min": 30089
+    },
+    "march/fp4/slot/outside=zero,sampler=nearest": {
+      "gz": 5365,
+      "min": 29628
+    },
+    "march/fp8/buffer/isActive=false": {
+      "gz": 5136,
+      "min": 26828
+    },
+    "march/fp8/buffer/isActive=true": {
+      "gz": 5451,
+      "min": 30414
+    },
+    "march/fp8/buffer/outside=zero": {
+      "gz": 5440,
+      "min": 30039
+    },
+    "march/fp8/buffer/outside=zero,sampler=nearest": {
+      "gz": 5323,
+      "min": 29578
+    },
+    "march/fp8/slot/isActive=false": {
+      "gz": 5177,
+      "min": 26878
+    },
+    "march/fp8/slot/isActive=true": {
+      "gz": 5494,
+      "min": 30464
+    },
+    "march/fp8/slot/outside=zero": {
+      "gz": 5482,
+      "min": 30089
+    },
+    "march/fp8/slot/outside=zero,sampler=nearest": {
+      "gz": 5366,
+      "min": 29628
+    },
+    "march/fpn/buffer/isActive=false": {
+      "gz": 5196,
+      "min": 27077
+    },
+    "march/fpn/buffer/isActive=true": {
+      "gz": 5511,
+      "min": 30663
+    },
+    "march/fpn/buffer/outside=zero": {
+      "gz": 5498,
+      "min": 30288
+    },
+    "march/fpn/buffer/outside=zero,sampler=nearest": {
+      "gz": 5383,
+      "min": 29827
+    },
+    "march/fpn/slot/isActive=false": {
+      "gz": 5238,
+      "min": 27127
+    },
+    "march/fpn/slot/isActive=true": {
+      "gz": 5552,
+      "min": 30713
+    },
+    "march/fpn/slot/outside=zero": {
+      "gz": 5540,
+      "min": 30338
+    },
+    "march/fpn/slot/outside=zero,sampler=nearest": {
+      "gz": 5425,
+      "min": 29877
+    },
+    "read/float+fp8+fpn/buffer/isActive=false": {
+      "gz": 3214,
+      "min": 16165
+    },
+    "read/float+fp8+fpn/buffer/isActive=true": {
+      "gz": 3541,
+      "min": 19751
+    },
+    "read/float+fp8+fpn/slot/isActive=false": {
+      "gz": 3253,
+      "min": 16215
+    },
+    "read/float+fp8+fpn/slot/isActive=true": {
+      "gz": 3581,
+      "min": 19801
+    },
+    "read/float/buffer/isActive=false": {
+      "gz": 2817,
+      "min": 13883
+    },
+    "read/float/buffer/isActive=true": {
+      "gz": 3153,
+      "min": 17469
+    },
+    "read/float/slot/isActive=false": {
+      "gz": 2857,
+      "min": 13933
+    },
+    "read/float/slot/isActive=true": {
+      "gz": 3192,
+      "min": 17519
+    },
+    "read/fp16/buffer/isActive=false": {
+      "gz": 3076,
+      "min": 15174
+    },
+    "read/fp16/buffer/isActive=true": {
+      "gz": 3407,
+      "min": 18760
+    },
+    "read/fp16/slot/isActive=false": {
+      "gz": 3113,
+      "min": 15224
+    },
+    "read/fp16/slot/isActive=true": {
+      "gz": 3448,
+      "min": 18810
+    },
+    "read/fp4/buffer/isActive=false": {
+      "gz": 3073,
+      "min": 15168
+    },
+    "read/fp4/buffer/isActive=true": {
+      "gz": 3404,
+      "min": 18754
+    },
+    "read/fp4/slot/isActive=false": {
+      "gz": 3113,
+      "min": 15218
+    },
+    "read/fp4/slot/isActive=true": {
+      "gz": 3444,
+      "min": 18804
+    },
+    "read/fp8/buffer/isActive=false": {
+      "gz": 3074,
+      "min": 15168
+    },
+    "read/fp8/buffer/isActive=true": {
+      "gz": 3405,
+      "min": 18754
+    },
+    "read/fp8/slot/isActive=false": {
+      "gz": 3114,
+      "min": 15218
+    },
+    "read/fp8/slot/isActive=true": {
+      "gz": 3445,
+      "min": 18804
+    },
+    "read/fpn/buffer/isActive=false": {
+      "gz": 3132,
+      "min": 15417
+    },
+    "read/fpn/buffer/isActive=true": {
+      "gz": 3464,
+      "min": 19003
+    },
+    "read/fpn/slot/isActive=false": {
+      "gz": 3172,
+      "min": 15467
+    },
+    "read/fpn/slot/isActive=true": {
+      "gz": 3504,
+      "min": 19053
+    },
+    "sample/float+fp8+fpn/buffer/isActive=false": {
+      "gz": 3857,
+      "min": 18822
+    },
+    "sample/float+fp8+fpn/buffer/isActive=true": {
+      "gz": 4184,
+      "min": 22408
+    },
+    "sample/float+fp8+fpn/buffer/outside=zero": {
+      "gz": 4171,
+      "min": 22033
+    },
+    "sample/float+fp8+fpn/buffer/outside=zero,sampler=nearest": {
+      "gz": 4053,
+      "min": 21572
+    },
+    "sample/float+fp8+fpn/buffer/sampler=nearest": {
+      "gz": 4012,
+      "min": 21462
+    },
+    "sample/float+fp8+fpn/slot/isActive=false": {
+      "gz": 3898,
+      "min": 18872
+    },
+    "sample/float+fp8+fpn/slot/isActive=true": {
+      "gz": 4225,
+      "min": 22458
+    },
+    "sample/float+fp8+fpn/slot/outside=zero": {
+      "gz": 4211,
+      "min": 22083
+    },
+    "sample/float+fp8+fpn/slot/outside=zero,sampler=nearest": {
+      "gz": 4095,
+      "min": 21622
+    },
+    "sample/float+fp8+fpn/slot/sampler=nearest": {
+      "gz": 4053,
+      "min": 21512
+    },
+    "sample/float/buffer/isActive=false": {
+      "gz": 3458,
+      "min": 16540
+    },
+    "sample/float/buffer/isActive=true": {
+      "gz": 3796,
+      "min": 20126
+    },
+    "sample/float/buffer/outside=zero": {
+      "gz": 3780,
+      "min": 19751
+    },
+    "sample/float/buffer/outside=zero,sampler=nearest": {
+      "gz": 3667,
+      "min": 19290
+    },
+    "sample/float/buffer/sampler=nearest": {
+      "gz": 3625,
+      "min": 19180
+    },
+    "sample/float/slot/isActive=false": {
+      "gz": 3497,
+      "min": 16590
+    },
+    "sample/float/slot/isActive=true": {
+      "gz": 3836,
+      "min": 20176
+    },
+    "sample/float/slot/outside=zero": {
+      "gz": 3820,
+      "min": 19801
+    },
+    "sample/float/slot/outside=zero,sampler=nearest": {
+      "gz": 3706,
+      "min": 19340
+    },
+    "sample/float/slot/sampler=nearest": {
+      "gz": 3664,
+      "min": 19230
+    },
+    "sample/fp16/buffer/isActive=false": {
+      "gz": 3716,
+      "min": 17831
+    },
+    "sample/fp16/buffer/isActive=true": {
+      "gz": 4048,
+      "min": 21417
+    },
+    "sample/fp16/buffer/outside=zero": {
+      "gz": 4034,
+      "min": 21042
+    },
+    "sample/fp16/buffer/outside=zero,sampler=nearest": {
+      "gz": 3919,
+      "min": 20581
+    },
+    "sample/fp16/buffer/sampler=nearest": {
+      "gz": 3878,
+      "min": 20471
+    },
+    "sample/fp16/slot/isActive=false": {
+      "gz": 3757,
+      "min": 17881
+    },
+    "sample/fp16/slot/isActive=true": {
+      "gz": 4089,
+      "min": 21467
+    },
+    "sample/fp16/slot/outside=zero": {
+      "gz": 4075,
+      "min": 21092
+    },
+    "sample/fp16/slot/outside=zero,sampler=nearest": {
+      "gz": 3960,
+      "min": 20631
+    },
+    "sample/fp16/slot/sampler=nearest": {
+      "gz": 3918,
+      "min": 20521
+    },
+    "sample/fp4/buffer/isActive=false": {
+      "gz": 3713,
+      "min": 17825
+    },
+    "sample/fp4/buffer/isActive=true": {
+      "gz": 4045,
+      "min": 21411
+    },
+    "sample/fp4/buffer/outside=zero": {
+      "gz": 4032,
+      "min": 21036
+    },
+    "sample/fp4/buffer/outside=zero,sampler=nearest": {
+      "gz": 3917,
+      "min": 20575
+    },
+    "sample/fp4/buffer/sampler=nearest": {
+      "gz": 3875,
+      "min": 20465
+    },
+    "sample/fp4/slot/isActive=false": {
+      "gz": 3753,
+      "min": 17875
+    },
+    "sample/fp4/slot/isActive=true": {
+      "gz": 4086,
+      "min": 21461
+    },
+    "sample/fp4/slot/outside=zero": {
+      "gz": 4072,
+      "min": 21086
+    },
+    "sample/fp4/slot/outside=zero,sampler=nearest": {
+      "gz": 3957,
+      "min": 20625
+    },
+    "sample/fp4/slot/sampler=nearest": {
+      "gz": 3915,
+      "min": 20515
+    },
+    "sample/fp8/buffer/isActive=false": {
+      "gz": 3714,
+      "min": 17825
+    },
+    "sample/fp8/buffer/isActive=true": {
+      "gz": 4046,
+      "min": 21411
+    },
+    "sample/fp8/buffer/outside=zero": {
+      "gz": 4033,
+      "min": 21036
+    },
+    "sample/fp8/buffer/outside=zero,sampler=nearest": {
+      "gz": 3917,
+      "min": 20575
+    },
+    "sample/fp8/buffer/sampler=nearest": {
+      "gz": 3876,
+      "min": 20465
+    },
+    "sample/fp8/slot/isActive=false": {
+      "gz": 3754,
+      "min": 17875
+    },
+    "sample/fp8/slot/isActive=true": {
+      "gz": 4087,
+      "min": 21461
+    },
+    "sample/fp8/slot/outside=zero": {
+      "gz": 4073,
+      "min": 21086
+    },
+    "sample/fp8/slot/outside=zero,sampler=nearest": {
+      "gz": 3958,
+      "min": 20625
+    },
+    "sample/fp8/slot/sampler=nearest": {
+      "gz": 3916,
+      "min": 20515
+    },
+    "sample/fpn/buffer/isActive=false": {
+      "gz": 3774,
+      "min": 18074
+    },
+    "sample/fpn/buffer/isActive=true": {
+      "gz": 4104,
+      "min": 21660
+    },
+    "sample/fpn/buffer/outside=zero": {
+      "gz": 4090,
+      "min": 21285
+    },
+    "sample/fpn/buffer/outside=zero,sampler=nearest": {
+      "gz": 3975,
+      "min": 20824
+    },
+    "sample/fpn/buffer/sampler=nearest": {
+      "gz": 3934,
+      "min": 20714
+    },
+    "sample/fpn/slot/isActive=false": {
+      "gz": 3815,
+      "min": 18124
+    },
+    "sample/fpn/slot/isActive=true": {
+      "gz": 4145,
+      "min": 21710
+    },
+    "sample/fpn/slot/outside=zero": {
+      "gz": 4130,
+      "min": 21335
+    },
+    "sample/fpn/slot/outside=zero,sampler=nearest": {
+      "gz": 4016,
+      "min": 20874
+    },
+    "sample/fpn/slot/sampler=nearest": {
+      "gz": 3974,
+      "min": 20764
+    }
+  }
+}

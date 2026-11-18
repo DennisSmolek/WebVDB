@@ -25,6 +25,7 @@
     "fixtures:bake-sequence": "node scripts/bake-vdb-sequence.mjs",
     "wgsl:chunks": "node scripts/extract-wgsl-chunks.mjs",
     "wgsl:variants": "pnpm build && node scripts/check-wgsl-variants.mjs",
+    "wgsl:size": "node scripts/wgsl-size.mjs",
     "parity:native": "node scripts/run-native-parity.mjs",
     "hardware:smoke": "node scripts/run-hardware-checks.mjs",
     "hardware:perf": "WEBVDB_PERF=1 node scripts/run-hardware-checks.mjs"

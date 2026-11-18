@@ -1,0 +1,33 @@
+{
+  "source": "docs/design/K1-core.md \u00a73.6 (proposed K1.1 budgets, min bytes). Decided unit: KiB = 1024 bytes (D21). Re-baselined 2026-11-18 after K1.4b's grid-liveness gate (+~110 B on read): oneFp columns raised 0.5 KiB (D21 amendment).",
+  "unit": "KiB",
+  "bytesPerUnit": 1024,
+  "rule": "Column by the Fp types in the variant's types: none -> float; one -> oneFp; two or more (Float+Fp8+FpN) -> floatFp8Fpn. Variants with slot or buffer share a budget. Options (sampler, outside) use their profile's budget. read with isActive: false uses read.isActive=false; sample and march with isActive: false use their profile budget.",
+  "columns": {
+    "float": "Float",
+    "oneFp": "+ one Fp type (Fp4, Fp8, Fp16 or FpN, with or without Float)",
+    "floatFp8Fpn": "Float + Fp8 + FpN"
+  },
+  "profiles": {
+    "read": {
+      "float": 17.5,
+      "oneFp": 19,
+      "floatFp8Fpn": 19.5
+    },
+    "read.isActive=false": {
+      "float": 14,
+      "oneFp": 15.5,
+      "floatFp8Fpn": 16
+    },
+    "sample": {
+      "float": 21.5,
+      "oneFp": 23,
+      "floatFp8Fpn": 24
+    },
+    "march": {
+      "float": 29,
+      "oneFp": 30.5,
+      "floatFp8Fpn": 31
+    }
+  }
+}
