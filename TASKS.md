@@ -85,13 +85,13 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 | K4.5 | Coarse-first `.nvdb` delivery | T3 | 🟨 | Design done: [docs/design/K4-5-coarse-first.md](docs/design/K4-5-coarse-first.md). Recommends a preview grid first in the same `.nvdb` (smoke first paint 11.9 KiB vs his 14.8 KiB at equal error). Implementation is K4.14; native check K4.15. |
 | K4.6 | Quantize keeps uniform regions as tiles (the ~12% Fp8 gap) | T2 | ⬜ | K4.1 made quantize keep source tiles: Fp8 sizes now equal native on the primitives. What remains: collapse uniform leaves in our own builds. |
 | K4.7 | Parse OpenVDB 12.1 half-float grids that omit empty value arrays (`bunny.vdb`, `icosahedron.vdb`, `fire.vdb` fail) | T2 | ✅ | Found in K4.1. |
-| K4.8 | Level sets: inactive leaf values are ±background, not 0 (`compression.ts`) | T2 | ⬜ | Changes leaf bytes; check demo goldens. |
-| K4.9 | Keep inactive internal tiles (level-set interior −background) | T2 | ⬜ | |
+| K4.8 | Level sets: inactive leaf values are ±background, not 0 (`compression.ts`) | T2 | ✅ | Changes leaf bytes; check demo goldens. |
+| K4.9 | Keep inactive internal tiles (level-set interior −background) | T2 | ✅ | |
 | K4.10 | Native reference values for `bunny_cloud` (pyopenvdb or `nanovdb_convert` via `run-native-parity`) | owner | ⬜ | Needs Docker. Bunny derivatives are outside the pinned-SHA manifest (`fixtures/ATTRIBUTION.md`). |
 | K4.11 | Document FpN size vs native (ours ~1.85× smaller: different tolerance) and decide | T2 | ⬜ | |
-| K4.12 | Root-tile key order: sort unsigned like NanoVDB keys | T1 | ⬜ | |
+| K4.12 | Root-tile key order: sort unsigned like NanoVDB keys | T1 | ✅ | |
 | K4.13 | `.wvdb` follow-ups: prefiltered resample option (box/area; his bake is point-sampled, A/B per CLAUDE.md), port `sampleLevelSet`, page-by-page decode within a LOD (show a LOD before all its pages arrive, §12.2) | T2 | ⬜ | Wording from [docs/handoffs/K4-3.md](docs/handoffs/K4-3.md) (Follow-ups). |
-| K4.14 | Parser hardening leftovers: reject file versions > 225 (as OpenVDB does); `readMetadataMap` must not write `__proto__` into a plain object (use a null-prototype object or Map) | T2 | ⬜ | From the K4.2 review. |
+| K4.14 | Parser hardening leftovers: reject file versions > 225 (as OpenVDB does); `readMetadataMap` must not write `__proto__` into a plain object (use a null-prototype object or Map) | T2 | ✅ | From the K4.2 review. |
 | K4.15 | Independent oracle for point attributes (Cd, v, id per point via OpenVDB Python bindings on waterfall_points) and native Vec3f parity | owner | ⬜ | Needs pyopenvdb / Docker. |
 | K4.16 | Implement coarse-first (K4.5 option a): `NvdbStreamReader` (push bytes, emit each grid when complete), a bake helper writing `[<name>.lod48, <name>]`, an example on `pool.add(preview, { capacity })` → `pool.replace`, and an e2e that counts compressed bytes at preview emission (gate: ≤ 14.8 KiB on smoke) | T2 | ⬜ | Design: [docs/design/K4-5-coarse-first.md](docs/design/K4-5-coarse-first.md). |
 | K4.17 | Native check of a multi-grid preview `.nvdb`: `nanovdb_print`, `nanovdb_convert`, a name-based `io::readGrid`, and EmberGen; record which grid grid-0 readers show | owner | ⬜ | Needs Docker (parity image). Fallback if a grid-0 reader matters: K4.5 option (b), separate preview file. |
