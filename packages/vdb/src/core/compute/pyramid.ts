@@ -3,17 +3,17 @@
 //   taps, the mip atlas layout), as an f32 compute pass.
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: GPU compute over a pool grid; the base level is the area-weighted box filter of
-// `resampleGrid`; f16 packing is three's `DataUtils.toHalfFloat`. Divergences: DIVERGES.md (K3.2a row).
+// `vdbResampleGrid`; f16 packing is three's `DataUtils.toHalfFloat`. Divergences: DIVERGES.md (K3.2a row).
 
 /**
- * `createBoxPyramid` (K3.2a): the sparse source's coarse pyramid (K3.2 `'coarse-pyramid'`) built on
+ * `vdbCreateBoxPyramid` (K3.2a): the sparse source's coarse pyramid (K3.2 `'coarse-pyramid'`) built on
  * the GPU from a pool grid, recorded into the host's encoder. CPU twin: `@pmndrs/vdb/tools`
  * `vdbBoxPyramid` + three's `DataUtils.toHalfFloat` (the K3.2 CPU path); parity ≤ 1 f16 ulp
  * (e2e/k3-pyramid.spec.ts).
  *
  * Passes, one compute pass (dispatches see each other's writes):
  * 1. **base** (one thread per base texel): the area-weighted box mean of the grid's voxels over the
- *    texel's cell, `resampleGrid`'s `'box'` filter on the index cell box `[min − ½, max + ½]` with
+ *    texel's cell, `vdbResampleGrid`'s `'box'` filter on the index cell box `[min − ½, max + ½]` with
  *    `⌈texels / 2^L₀⌉` texels. Overlaps are exact integers in units of 1/dims voxel (no f32 rounding
  *    of the footprint), summed separably x → y → z in the CPU's order. A texel whose taps touch an
  *    active voxel flags its 8³ texel block (atomicOr). A texel whose footprint lies in inactive
@@ -75,7 +75,7 @@ fn pyrBlock(j: vec3u) -> u32 {
     return b.x + (b.y + b.z * pyr.blocksY) * pyr.blocksX;
 }
 
-// Box filter of the voxels under texel j (resampleGrid 'box'): texel j covers [j·T, (j+1)·T] and voxel
+// Box filter of the voxels under texel j (vdbResampleGrid 'box'): texel j covers [j·T, (j+1)·T] and voxel
 // r covers [r·D, (r+1)·D] in units of 1/D voxel (T texels of the box, D base texels), so overlaps are
 // exact integers and the weights ov / T. Summed x, then y, then z, in the CPU's order.
 @compute @workgroup_size(${W}, ${W}, ${W})
@@ -275,7 +275,7 @@ function pyramidPipelines(device: GPUDevice, type: VDBGridTypeName): PyramidPipe
   return p;
 }
 
-/** Options of {@link createBoxPyramid}. */
+/** Options of {@link vdbCreateBoxPyramid}. */
 export interface VDBBoxPyramidGpuOptions {
   /** Inclusive voxel index box the pyramid covers. Default: the grid's index bbox now (fixed afterwards). */
   indexBox?: { min: VDBVec3; max: VDBVec3 };
@@ -327,7 +327,7 @@ export interface VDBBoxPyramidGpu {
 
 const align = (n: number, a: number) => Math.ceil(n / a) * a;
 const bad = (message: string): never => {
-  throw new VDBError("VDB_BAD_OPTION", `createBoxPyramid: ${message}`);
+  throw new VDBError("VDB_BAD_OPTION", `vdbCreateBoxPyramid: ${message}`);
 };
 
 class BoxPyramidGpu implements VDBBoxPyramidGpu {
@@ -467,8 +467,8 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
   }
 
   record(encoder: GPUCommandEncoder, options: VDBBoxPyramidRecordOptions = {}): void {
-    if (this.#destroyed) throw new VDBError("VDB_DISPOSED", "createBoxPyramid: record() after destroy().");
-    const info = checkTarget("createBoxPyramid", this.#device, this.#pool, this.gridId);
+    if (this.#destroyed) throw new VDBError("VDB_DISPOSED", "vdbCreateBoxPyramid: record() after destroy().");
+    const info = checkTarget("vdbCreateBoxPyramid", this.#device, this.#pool, this.gridId);
     const p = pyramidPipelines(this.#device, info.type);
     // Group 0 names the pool's current buffer: rebuilt every record (a growth replaces it).
     const group0 = this.#device.createBindGroup({
@@ -525,11 +525,11 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
  * rebuild with `pyramid.update(encoder)` after the grid's image changes (`imageRevision`). The pool
  * must live on `device`. Frees only what it allocated (`destroy()`).
  *
- *     const pyramid = createBoxPyramid(device, pool, id);
+ *     const pyramid = vdbCreateBoxPyramid(device, pool, id);
  *     pool.update(encoder);
  *     pyramid.update(encoder);           // first build, then only on a replace
  *     device.queue.submit([encoder.finish()]);
  */
-export function createBoxPyramid(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBBoxPyramidGpuOptions = {}): VDBBoxPyramidGpu {
+export function vdbCreateBoxPyramid(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBBoxPyramidGpuOptions = {}): VDBBoxPyramidGpu {
   return new BoxPyramidGpu(device, pool, gridId, options);
 }

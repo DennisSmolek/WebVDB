@@ -15,7 +15,7 @@ sourcecode: packages/vdb/src/three/compute.ts
 ```ts
 import { vdbDecodeToAtlas, vdbGridStats } from '@pmndrs/vdb/three';
 
-// The core's gridStats and decodeToAtlas through the renderer's device; the grid must be resident.
+// The core's vdbGridStatsGpu and vdbDecodeToAtlasGpu through the renderer's device; the grid must be resident.
 const stats = await vdbGridStats(renderer, pool, id, { histogramBins: 128 });
 console.log(stats.min, stats.max, stats.mean, stats.activeVoxelCount);
 
@@ -25,12 +25,12 @@ console.log(atlas.dims, atlas.texture);
 ```
 
 `vdbDecodeToAtlas` returns the core's atlas plus a `Data3DTexture`. The value transform is the core's
-`applyValueTransform` (a CPU edit that stages `pool.replace`).
+`vdbApplyValueTransform` (a CPU edit that stages `pool.replace`).
 
 ## Coarse-first streaming
 
 `vdbStreamCoarseFirst(pool, response, options?)` streams a file baked with
-[`bakeCoarseFirst`](/tools/nvdb) into one pool id. It adds the preview as soon as its bytes are in, with the full grid's
+[`vdbBakeCoarseFirst`](/tools/nvdb) into one pool id. It adds the preview as soon as its bytes are in, with the full grid's
 size reserved, then replaces it in place with each finer grid. The id, its bind-group slot and any instance transform
 stay.
 
@@ -38,7 +38,7 @@ stay.
 ```ts
 import { vdbStreamCoarseFirst } from '@pmndrs/vdb/three';
 
-// A file baked with bakeCoarseFirst() holds the preview grid first. The preview is added with the
+// A file baked with vdbBakeCoarseFirst() holds the preview grid first. The preview is added with the
 // full size reserved, then replaced in place when the full grid arrives: the same pool id throughout.
 const { id } = await vdbStreamCoarseFirst(pool, await fetch(url), {
     // After each swap: pool.flush() + grids.update(), the proxy box from pool.info(id), and densityScale

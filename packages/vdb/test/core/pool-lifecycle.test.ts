@@ -4,7 +4,7 @@
  * Uses the recording fake device (fake-gpu.ts).
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { VDBGridPool, VDB_POOL_RECORD_WORDS, decodeHeader, decodeRecord } from "../../src/core/index.js";
+import { VDBGridPool, VDB_POOL_RECORD_WORDS, decodeHeader, decodeRecord } from "../../src/core/internal.js";
 import { FakeBuffer, FakeDevice, settle, type FakeOp } from "./fake-gpu.js";
 import { makeImage } from "./synthetic-image.js";
 

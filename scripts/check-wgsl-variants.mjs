@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
-import { checkModule, vdbModuleEntries, vdbModuleWgsl } from "../packages/vdb/dist/core/index.js";
+import { vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from "../packages/vdb/dist/core/index.js";
 import { buildMarchProbe, compareMarchProbe, marchProbeAvailable, runMarchProbeInPage } from "./lib/march-probe.mjs";
 import { CHECK_SLOT, MARCH_HELPERS, MARCH_LEVEL_SET_HELPERS, SAMPLE_HELPERS, TYPE_SETS, checkKernel, variantMatrix, wgslSizes } from "./lib/wgsl-variants.mjs";
 
@@ -68,7 +68,7 @@ function printSizes() {
 async function main() {
   const variants = variantMatrix().filter(({ id }) => ONLY === null || id.includes(ONLY)).map(({ id, options }) => {
     // Sanity: the JS-side check agrees the module covers its own types.
-    checkModule({ types: options.types, layoutVersion: 1 }, options);
+    vdbCheckModule({ types: options.types, layoutVersion: 1 }, options);
     const module = vdbModuleWgsl(options);
     return {
       id,

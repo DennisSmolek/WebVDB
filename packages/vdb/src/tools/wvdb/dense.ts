@@ -26,6 +26,7 @@
  * density above `scale` saturates, as in his renderer.
  */
 
+import { VDBToolsError } from "../errors.js";
 import type { WvdbBox, WvdbVec3 } from "./format.js";
 import type { WvdbFile, WvdbVolumeGrid, WvdbVolumeLevel } from "./read.js";
 
@@ -235,15 +236,15 @@ function denseTexture(data: Uint8Array<ArrayBuffer>, dimensions: WvdbVec3, texel
 
 function volumeGrid(file: WvdbFile, name: string, role: string): WvdbVolumeGrid {
   const grid = file.grids.find((g) => g.name === name);
-  if (!grid) throw new Error(`wvdbDenseVolume: no grid named "${name}" for ${role} (grids: ${file.grids.map((g) => g.name).join(", ")})`);
-  if (grid.kind !== "volume") throw new Error(`wvdbDenseVolume: grid "${name}" (${role}) is a points grid; dense sources take volume grids`);
+  if (!grid) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: no grid named "${name}" for ${role} (grids: ${file.grids.map((g) => g.name).join(", ")})`);
+  if (grid.kind !== "volume") throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: grid "${name}" (${role}) is a points grid; dense sources take volume grids`);
   return grid;
 }
 
 function levelOf(grid: WvdbVolumeGrid, lod: number): WvdbVolumeLevel {
   const level = grid.levels[lod];
   if (!level) {
-    throw new Error(`wvdbDenseVolume: LOD ${lod} of "${grid.name}" is not decoded (${grid.levels.length} decoded); read the file with a larger maxLod`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: LOD ${lod} of "${grid.name}" is not decoded (${grid.levels.length} decoded); read the file with a larger maxLod`);
   }
   return level;
 }
@@ -257,11 +258,11 @@ function levelOf(grid: WvdbVolumeGrid, lod: number): WvdbVolumeLevel {
 export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbDenseVolume {
   const volumeGrids = file.grids.filter((g): g is WvdbVolumeGrid => g.kind === "volume");
   const densityName = o.density ?? (file.grids.find((g) => g.name === "density" && g.kind === "volume") ?? volumeGrids[0])?.name;
-  if (densityName === undefined) throw new Error("wvdbDenseVolume: the file has no volume grid");
+  if (densityName === undefined) throw new VDBToolsError("VDB_BAD_OPTION", "wvdbDenseVolume: the file has no volume grid");
   const density = volumeGrid(file, densityName, "density");
-  if (density.channels !== 1) throw new Error(`wvdbDenseVolume: density grid "${densityName}" has 3 channels; pass a scalar grid`);
+  if (density.channels !== 1) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: density grid "${densityName}" has 3 channels; pass a scalar grid`);
   const lod = o.lod ?? density.levels.length - 1;
-  if (!Number.isInteger(lod) || lod < 0) throw new Error(`wvdbDenseVolume: lod must be a non-negative integer, got ${o.lod}`);
+  if (!Number.isInteger(lod) || lod < 0) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: lod must be a non-negative integer, got ${o.lod}`);
   const mipmaps = o.mipmaps ?? true;
   // WVDBReader.js L494: scales[name] || 1.0
   const scaleOf = (name: string) => o.scales?.[name] || 1.0;
@@ -273,11 +274,11 @@ export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbD
     if (name === undefined) return null;
     const grid = volumeGrid(file, name, role);
     const want = role === "albedo" ? 3 : 1;
-    if (grid.channels !== want) throw new Error(`wvdbDenseVolume: ${role} grid "${name}" has ${grid.channels} channel(s), expected ${want}`);
+    if (grid.channels !== want) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: ${role} grid "${name}" has ${grid.channels} channel(s), expected ${want}`);
     const auxLevel = levelOf(grid, lod);
     if (auxLevel.dimensions.some((v, a) => v !== dimensions[a])) {
       // FrameVolume.js L357–405: raw aux grids are uploaded at the density grid's dimensions.
-      throw new Error(
+      throw new VDBToolsError("VDB_BAD_OPTION", 
         `wvdbDenseVolume: ${role} grid "${name}" LOD ${lod} is ${auxLevel.dimensions.join("x")}, density is ${dimensions.join("x")}; ` +
           "his renderer uploads aux grids at the density size, so they must match",
       );

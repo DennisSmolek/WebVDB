@@ -18,6 +18,7 @@
  * his `decodeWVDBPage` computes them.
  */
 
+import { VDBToolsError } from "../errors.js";
 import { unzlibSync } from "fflate";
 import {
   WVDB_BRICK_DIM,
@@ -321,7 +322,7 @@ export function wvdbPrefixLength(info: WvdbHeaderInfo, lod: number): number {
 
 function checkLodIndex(header: WvdbHeader, lod: number): void {
   if (!Number.isInteger(lod) || lod < 0 || lod >= header.bake.lods) {
-    throw new RangeError(`wvdb: LOD ${lod} is out of range (0..${header.bake.lods - 1})`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `wvdb: LOD ${lod} is out of range (0..${header.bake.lods - 1})`);
   }
 }
 

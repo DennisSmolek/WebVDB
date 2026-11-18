@@ -12,7 +12,7 @@ import {
   type WvdbVec3,
   type WvdbVolumeGrid,
   type WriteWvdbOptions,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { bytesEqual, fixture, headerWithoutOffsets, hisAsset, readBytes } from "./wvdb-helpers.js";
 
 const nodeZlib9 = (b: Uint8Array): Uint8Array => new Uint8Array(deflateSync(b, { level: constants.Z_BEST_COMPRESSION }));

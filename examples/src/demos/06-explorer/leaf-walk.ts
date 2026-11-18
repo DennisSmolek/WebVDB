@@ -7,11 +7,11 @@
  * field position, table strides, child-mask bit offsets) is shared across
  * FLOAT/Fp8/FpN — `packages/vdb/src/tools/nanovdb/inspect.ts` relies on
  * the same fact ("root/tile/upper/lower strides are shared across grid
- * types") — so this walk only needs `@pmndrs/vdb/tools`'s package-exported
- * `defineNumber`/`gridTypeConstantsForId` (the same layout-constant
- * accessors `readValue` is built on — `gridTypeConstantsForId` is the
- * "any grid type, not just FLOAT/FP8/FPN" variant this generic walk needs,
- * see its doc comment in `packages/vdb/src/tools/cpu/stride-tables.ts`).
+ * types") — so this walk only needs the tools' layout-constant accessors
+ * `defineNumber`/`gridTypeConstantsForId` (internal since D32, imported
+ * by path; the accessors `vdbReadValueCpu` is built on). `gridTypeConstantsForId`
+ * is the "any grid type, not just FLOAT/FP8/FPN" variant this generic walk needs;
+ * see its doc comment in `packages/vdb/src/tools/cpu/stride-tables.ts`.
  *
  * Three numbers below are structural (identical for every grid type, not
  * looked up from the layout tables) — the same convention `read-value.ts`
@@ -21,7 +21,7 @@
  *     fixed by NanoVDB's 5-4-3 tree configuration.
  *
  * Verified (scratch, not checked in) against both a `buildFromVdb`-built
- * FLOAT image (smoke.vdb: 3117/3117 leaves, matching `inspect()`'s node
+ * FLOAT image (smoke.vdb: 3117/3117 leaves, matching `vdbInspect()`'s node
  * count) and the native `sphere_fog_fp8.nvdb` fixture (788/788 leaves,
  * matching its sidecar) before being written here.
  *
@@ -35,7 +35,7 @@
  * docs/handoffs/PHASE-4.md's demo 04 notes on `box_fog_float`) — those
  * regions are simply absent from the wireframe, a documented, minor gap.
  */
-import { defineNumber, gridTypeConstantsForId } from "@pmndrs/vdb/tools";
+import { defineNumber, gridTypeConstantsForId } from "../../../../packages/vdb/src/tools/internal.js";
 
 export type IndexCoord = readonly [number, number, number];
 

@@ -35,6 +35,6 @@ console.error(
 
 // Browser-safe TS mirror of the same data (see gen-stride-tables-ts.mjs) —
 // this is what `packages/vdb/src/tools/cpu/stride-tables.ts` actually imports, so
-// `src/cpu/*` (readValue/sampleTrilinear/probeCoords) never touches `node:fs`.
+// `src/cpu/*` (readValue/vdbSampleTrilinear/probeCoords) never touches `node:fs`.
 await writeFile(OUT_TS, generateStrideTablesTs(tables));
 console.error(`✓ wrote ${path.relative(ROOT, OUT_TS)}`);

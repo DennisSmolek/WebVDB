@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * bake-coarse-first.mjs — K4.16/K4.18: bake a coarse-first `.nvdb`
- * (`bakeCoarseFirst`: `[<name>.lod48, <name>]`) and measure what a stream
+ * (`vdbBakeCoarseFirst`: `[<name>.lod48, <name>]`) and measure what a stream
  * reader needs before the preview can be drawn, with codec NONE and ZIP, with
  * and without HTTP-style gzip on top.
  *
@@ -68,7 +68,7 @@ console.log(`${path.basename(input)}: grid "${grid.name}"`);
 const results = {};
 for (const codec of ["none", "zip"]) {
   const t = performance.now();
-  const bytes = T.bakeCoarseFirst(grid, { previewResolution: resolution, codec });
+  const bytes = T.vdbBakeCoarseFirst(grid, { previewResolution: resolution, codec });
   const bakeS = (performance.now() - t) / 1000;
   const reader = new T.NvdbStreamReader();
   const events = [];

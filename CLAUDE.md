@@ -71,7 +71,7 @@ From v1; details in docs/handoffs/.
   sidecars are committed.
 - Fp leaf stats are u16 codes; never read them as f32. Fp4/Fp8/Fp16/FpN leaves keep min/max/ave/dev as uint16
   at bytes 88/90/92/94 (`code * quantum + minimum`; dev is `code * quantum`); 90 isn't word-aligned. Root, upper
-  and lower stats stay f32. Use the fork's `*_get_*_float` readers or `tools` `nodeStats`.
+  and lower stats stay f32. Use the fork's `*_get_*_float` readers or `nodeStats` (tools internals, `src/tools/internal.ts`).
 - One VDB module per shader: generated symbols are declared once, so two modules (two profiles or two pools) in
   one shader redeclare everything. Generate the largest profile you need; several grids share one module by id.
   `VDBGridNode` throws `VDB_BAD_OPTION` at shader build for a second module (raw WGSL hosts still get the WGSL
@@ -120,13 +120,13 @@ From v1; details in docs/handoffs/.
   2026-11-19 (D29 era; his clone at the pinned commit, installed with `--ignore-scripts`, outside this repo). Never
   run it for anything else, and never in the cloud sandbox.
 - A NanoVDB upper node is 270,400 bytes even for a tiny grid, so a raw `.nvdb` is never small: a 24×48×25 preview
-  is ~320 KiB uncompressed and ~12 KiB gzipped. Size claims for delivery assume HTTP compression (or `Codec.ZIP`).
-- Grid images can be anisotropic since K4.4 (`resampleGrid({ dimensions })`): `BuiltGrid.voxelSize` is the x
+  is ~320 KiB uncompressed and ~12 KiB gzipped. Size claims for delivery assume HTTP compression (or `NvdbCodec.ZIP`).
+- Grid images can be anisotropic since K4.4 (`vdbResampleGrid({ dimensions })`): `VDBBuiltGrid.voxelSize` is the x
   component; read `voxelSizeXYZ` (or the three GridData doubles) for all three.
 - Check scripts that import `packages/vdb/dist` ran after `pnpm build`: a stale dist silently measures old code.
 - A multi-grid `.nvdb` segment is FileHeader, then **every** grid's FileMetaData + name, then every grid's data
   (`io::Segment::write`); a file can hold several segments (`writeGrids`). Before K4.16 our `writeNvdb` and
-  `NanoVDBFile` interleaved metadata and data per grid, which native tools can't read for N > 1.
+  `NvdbFile` interleaved metadata and data per grid, which native tools can't read for N > 1.
 - NanoVDB's `worldBBox` runs from the min voxel's *centre* to one voxel past the max voxel's centre; resample
   boxes are cell boxes (`[i − ½, i + ½]`). Compare a preview's box with the full grid's after shifting each by
   −voxelSize/2.
@@ -143,8 +143,8 @@ From v1; details in docs/handoffs/.
   (`viewportDepthTexture`); its `viewportTexture` read (sRGB blending) needs the colour target too.
 - Collapse (K4.6) changes upper/root ave/stddev (GridStats weights tiles by slot count); compare only min, max, bbox and counts between collapsed and uncollapsed images.
 - `WvdbStreamReader` partial-LOD events share live level objects: copy what you keep.
-- `buildFromDense` reads its array **x-major** (`(x·ny + y)·nz + z`, z fastest); textures and `.wvdb` levels are
-  x fastest (`x + (y + z·h)·w`). Transpose when moving data between them (`wvdbDenseToNanoVdb` does).
+- `vdbBuildFromDense` reads its array **x-major** (`(x·ny + y)·nz + z`, z fastest); textures and `.wvdb` levels are
+  x fastest (`x + (y + z·h)·w`). Transpose when moving data between them (`wvdbDenseToNvdb` does).
 - TSL: an arrow callback that returns a node (`If(c, () => v.assign(x))`) is read as a `return` statement
   ("Return statement used in an inline 'Fn()'" warning) and can end the shader early. Use a block body.
 - TSL `vec2.toUint()` gives a scalar `uint`, not a `uvec2`; build `uvec2(a, b)` explicitly.
@@ -195,3 +195,9 @@ From v1; details in docs/handoffs/.
 - SwiftShader rasterizes varyings (e.g. `positionWorld`) over a large triangle with ~1e-4 relative error: subdivide receiver meshes in GPU twins and allow a position tolerance at sharp edges.
 - SwiftShader's division is ~12 bits: a march anchored at box-segment ends aliases sharp features by several % per ray; twin such passes on smooth data and gate sharp data on aggregates.
 - Volume mesh shadows appear from the second render after `castShadows` turns on (his filter goes on in the proxy's `onBeforeRender`, after lit meshes drew): render a few frames before measuring.
+- D32: each subpath's `index.ts` is the public API, frozen by `packages/vdb/test/api-surface.test.ts` (export-list
+  snapshots in `test/api-surface/*.txt` plus the naming rule). A new public export needs `-u` on purpose; CPU twins,
+  oracles and layout helpers go in `src/{core,tools,three}/internal.ts` (re-exports the public API). Tests import it
+  by path, examples as `../../../packages/vdb/src/tools/internal.js`, scripts as `dist/tools/internal.js`.
+- Every tools error on bad input is a `VDBToolsError` with a `code` (D32). `NvdbFormatError` is no longer a
+  `VdbFormatError`: catch `VDBToolsError` (or check `code`) to cover every format.

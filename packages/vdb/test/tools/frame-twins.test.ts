@@ -22,7 +22,7 @@ import {
   vdbFrameViewPosition,
   vdbSrgbEotf,
   vdbSrgbOetf,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 // K3.1: the CPU twins of the froxel pipeline maths (tools/frame). These are the oracles of the TSL chunks
 // (the e2e k3-frame chunk probe and integrate twin compare the GPU passes with them), so each test pins a

@@ -4,7 +4,7 @@
  * `blosc-hostile` bar).
  *
  * Every crafted file must fail with a clean `VdbFormatError` (or
- * `VdbUnsupportedError` for a real construct out of scope), in well under
+ * `VDBUnsupportedError` for a real construct out of scope), in well under
  * 200 ms, without a huge allocation. A `RangeError` would mean an allocation
  * was attempted with a hostile length; the typed-array spy also records the
  * largest `Uint8Array` / `Float32Array` length constructed during the call.
@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import { parseVdb, type VdbPointDataGrid } from "../../src/tools/index.js";
 import { ByteReader } from "../../src/tools/vdb/byte-reader.js";
 import { readCompressedValues, VEC3D_FORMAT, VEC3S_FORMAT } from "../../src/tools/vdb/compression.js";
-import { VdbFormatError, VdbUnsupportedError } from "../../src/tools/vdb/errors.js";
+import { VdbFormatError, VDBUnsupportedError } from "../../src/tools/vdb/errors.js";
 import { MAX_POINT_EXPANSION, unitVecWeightTable } from "../../src/tools/vdb/points.js";
 import {
   writeDescriptor,
@@ -33,7 +33,7 @@ const TIME_BUDGET_MS = 200;
 /** No hostile case may construct a typed array longer than this. */
 const ALLOC_CAP = 1 << 20;
 
-type ErrorClass = typeof VdbFormatError | typeof VdbUnsupportedError;
+type ErrorClass = typeof VdbFormatError | typeof VDBUnsupportedError;
 
 /** Runs `fn`, recording the largest numeric-length Uint8Array / Float32Array constructed inside it. */
 function withAllocSpy(fn: () => unknown): { error: unknown; maxAlloc: number; ms: number } {
@@ -237,7 +237,7 @@ describe("descriptor", () => {
 
   it("unknown header flags", () => {
     const descriptor = descriptorOf((w) => writeDescriptor(w, ATTRS, GROUPS), 5);
-    expectRejected(() => parse(base({ tamper: { descriptor } })), /header flags 0x5/, VdbUnsupportedError);
+    expectRejected(() => parse(base({ tamper: { descriptor } })), /header flags 0x5/, VDBUnsupportedError);
   });
 
   it("a 4 MiB string in the descriptor metadata is read quickly", () => {
@@ -304,7 +304,7 @@ describe("attribute array metadata", () => {
     expectRejected(
       () => parse(meta((l, a, m) => (a === 1 ? { ...m, serialization: 0x18 } : m))),
       /serialization flags 0x18/,
-      VdbUnsupportedError,
+      VDBUnsupportedError,
     );
   });
 

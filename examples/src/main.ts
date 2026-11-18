@@ -1,4 +1,4 @@
-import { FILE_HEADER_SIZE, SUPPORTED_GRID_TYPES } from "@pmndrs/vdb/tools";
+import { NVDB_SUPPORTED_GRID_TYPES, WVDB_SUPPORTED_VERSIONS } from "@pmndrs/vdb/tools";
 
 // Phase 0 smoke: prove the workspace wiring (TS imports across packages,
 // Vite dev server) and report WebGPU capability without requiring it —
@@ -14,8 +14,8 @@ function line(text: string): void {
 
 report.textContent = "";
 line(
-  `workspace ok — @pmndrs/vdb/tools header size ${FILE_HEADER_SIZE} B, ` +
-    `v1 grid types: ${SUPPORTED_GRID_TYPES.join(", ")}`,
+  `workspace ok — @pmndrs/vdb/tools .nvdb grid types: ${NVDB_SUPPORTED_GRID_TYPES.join(", ")}, ` +
+    `.wvdb versions: ${WVDB_SUPPORTED_VERSIONS.join(", ")}`,
 );
 
 if (!navigator.gpu) {

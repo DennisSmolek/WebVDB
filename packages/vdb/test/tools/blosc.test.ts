@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { decompressBlosc, decompressLz4Block, unshuffle } from "../../src/tools/vdb/blosc.js";
 import { ByteReader } from "../../src/tools/vdb/byte-reader.js";
 import { readCompressedValues } from "../../src/tools/vdb/compression.js";
-import { VdbFormatError, VdbUnsupportedError } from "../../src/tools/vdb/errors.js";
+import { VdbFormatError, VDBUnsupportedError } from "../../src/tools/vdb/errors.js";
 
 const LZ4_VECTOR_HEX =
   "1f000100ffeef01940c01040a0008080e020e0808000704010c040a088603000c8b0988050f0d8c0a8900c0000306040290010002900105029001090290010b8290010e02900b004f0d8c0808000a00030c029001530290010a8290010d0290010f82900511080e02050290010102900106029001098290010c0290010e829005508f8e04070900010a090001000900010a090001020900020700029000fb90034fa0600bfbfc0c03f3fbebfbf403f3f3ebf4040403f3f400100604141c0c0c03f290010402900002200103e18000728006241404040c03e4b002100bf23001fbe4b0002012300123e4b0016006e000a4b0020c0c0900010c09000014b001f006e00001f40b9002f504040404041";
@@ -109,7 +109,7 @@ describe("Blosc1 decoder", () => {
 
   it("rejects other codecs, bit-shuffle and corrupt input clearly", () => {
     const zstd = bloscFrame(FLAG_SHUFFLE | (4 << 5), 4, 16, [new Uint8Array(3)]);
-    expect(() => decompressBlosc(zstd)).toThrow(VdbUnsupportedError);
+    expect(() => decompressBlosc(zstd)).toThrow(VDBUnsupportedError);
     expect(() => decompressBlosc(zstd)).toThrow(/Zstd/);
     const bitshuffle = bloscFrame(0x04 | LZ4, 4, 16, [new Uint8Array(3)]);
     expect(() => decompressBlosc(bitshuffle)).toThrow(/bit-shuffle/);

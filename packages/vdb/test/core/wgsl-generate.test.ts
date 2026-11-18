@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
-  checkModule,
+  vdbCheckModule,
   VDBGridPool,
   VDB_GPU_LAYOUT_VERSION,
   VDB_MODULE_BANNER,
@@ -13,7 +13,7 @@ import {
   vdbPoolLayoutWgsl,
   type VDBModuleOptions,
   type VDBSlotModuleOptions,
-} from "../../src/core/index.js";
+} from "../../src/core/internal.js";
 import { vdbModuleDeclarations } from "../../src/core/wgsl/generate.js";
 // @ts-expect-error: repo-level ESM helper without type declarations
 import { CHECK_BUFFER_EXPRESSION, CHECK_SLOT, checkKernel, variantMatrix } from "../../../../scripts/lib/wgsl-variants.mjs";
@@ -449,39 +449,39 @@ describe("opt-in helpers (K1.7a)", () => {
 });
 
 describe("VDB_ALL_SCALAR_TYPES", () => {
-  it("is every grid type the pool can hold, and generates a module checkModule accepts for any pool", () => {
+  it("is every grid type the pool can hold, and generates a module vdbCheckModule accepts for any pool", () => {
     expect([...VDB_ALL_SCALAR_TYPES]).toEqual([...VDB_GRID_TYPE_NAMES]);
     expect(Object.isFrozen(VDB_ALL_SCALAR_TYPES)).toBe(true);
     const options = { slot: CHECK_SLOT, types: VDB_ALL_SCALAR_TYPES, profile: "march" } as const;
     expect(vdbModuleWgsl(options)).toContain("fn vdbNodeMax(");
-    expect(() => checkModule({ types: VDB_GRID_TYPE_NAMES, layoutVersion: VDB_GPU_LAYOUT_VERSION }, options)).not.toThrow();
+    expect(() => vdbCheckModule({ types: VDB_GRID_TYPE_NAMES, layoutVersion: VDB_GPU_LAYOUT_VERSION }, options)).not.toThrow();
   });
 });
 
-describe("checkModule", () => {
+describe("vdbCheckModule", () => {
   const options = { slot: CHECK_SLOT, types: ["float", "fp8"], profile: "sample" } as const;
 
   it("accepts a pool whose types the module compiles", () => {
-    expect(() => checkModule({ types: new Set(["fp8"] as const), layoutVersion: 1 }, options)).not.toThrow();
-    expect(() => checkModule({ types: [], layoutVersion: 1 }, options)).not.toThrow();
+    expect(() => vdbCheckModule({ types: new Set(["fp8"] as const), layoutVersion: 1 }, options)).not.toThrow();
+    expect(() => vdbCheckModule({ types: [], layoutVersion: 1 }, options)).not.toThrow();
   });
 
   it("throws VDB_TYPE_NOT_COMPILED naming the missing types", () => {
-    expectCode(() => checkModule({ types: ["float", "fpn"], layoutVersion: 1 }, options), "VDB_TYPE_NOT_COMPILED");
-    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/fpn/);
+    expectCode(() => vdbCheckModule({ types: ["float", "fpn"], layoutVersion: 1 }, options), "VDB_TYPE_NOT_COMPILED");
+    expect(() => vdbCheckModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/fpn/);
   });
 
   it("takes just { types, layoutVersion? } for a type/layout-only check (engine adapters)", () => {
     const pool = { types: ["float", "fp8"] as const, layoutVersion: VDB_GPU_LAYOUT_VERSION };
-    expect(() => checkModule(pool, { types: ["float", "fp8", "fpn"] })).not.toThrow();
-    expect(() => checkModule(pool, { types: new Set(["fp8", "float"] as const), layoutVersion: VDB_GPU_LAYOUT_VERSION })).not.toThrow();
-    expectCode(() => checkModule(pool, { types: ["float"] }), "VDB_TYPE_NOT_COMPILED");
-    expectCode(() => checkModule(pool, { types: ["float", "fp8"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }), "VDB_LAYOUT_MISMATCH");
-    expectCode(() => checkModule(pool, { types: [] }), "VDB_BAD_OPTION");
-    expectCode(() => checkModule(pool, { types: ["half"] } as never), "VDB_BAD_OPTION");
-    expectCode(() => checkModule(pool, { types: ["float"], layoutVersion: -1 }), "VDB_BAD_OPTION");
+    expect(() => vdbCheckModule(pool, { types: ["float", "fp8", "fpn"] })).not.toThrow();
+    expect(() => vdbCheckModule(pool, { types: new Set(["fp8", "float"] as const), layoutVersion: VDB_GPU_LAYOUT_VERSION })).not.toThrow();
+    expectCode(() => vdbCheckModule(pool, { types: ["float"] }), "VDB_TYPE_NOT_COMPILED");
+    expectCode(() => vdbCheckModule(pool, { types: ["float", "fp8"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }), "VDB_LAYOUT_MISMATCH");
+    expectCode(() => vdbCheckModule(pool, { types: [] }), "VDB_BAD_OPTION");
+    expectCode(() => vdbCheckModule(pool, { types: ["half"] } as never), "VDB_BAD_OPTION");
+    expectCode(() => vdbCheckModule(pool, { types: ["float"], layoutVersion: -1 }), "VDB_BAD_OPTION");
     // The full form is still validated as module options.
-    expectCode(() => checkModule(pool, { types: ["float", "fp8"], profile: "read" } as never), "VDB_BAD_OPTION");
+    expectCode(() => vdbCheckModule(pool, { types: ["float", "fp8"], profile: "read" } as never), "VDB_BAD_OPTION");
   });
 
   it("VDB_ENGINE_MISMATCH is a VDBError code", () => {
@@ -489,22 +489,22 @@ describe("checkModule", () => {
   });
 
   it("says to generate for every type the host may add, or regenerate and rebuild the pipeline", () => {
-    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/every type the host may add/);
-    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/VDB_ALL_SCALAR_TYPES/);
-    expect(() => checkModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/rebuild the pipeline/);
+    expect(() => vdbCheckModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/every type the host may add/);
+    expect(() => vdbCheckModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/VDB_ALL_SCALAR_TYPES/);
+    expect(() => vdbCheckModule({ types: ["fpn"], layoutVersion: 1 }, options)).toThrow(/rebuild the pipeline/);
   });
 
   it("throws VDB_LAYOUT_MISMATCH on another layout version", () => {
-    expectCode(() => checkModule({ types: ["float"], layoutVersion: 2 }, options), "VDB_LAYOUT_MISMATCH");
+    expectCode(() => vdbCheckModule({ types: ["float"], layoutVersion: 2 }, options), "VDB_LAYOUT_MISMATCH");
   });
 
   it("validates the options too", () => {
-    expectCode(() => checkModule({ types: ["float"], layoutVersion: 1 }, { ...options, types: [] }), "VDB_BAD_OPTION");
+    expectCode(() => vdbCheckModule({ types: ["float"], layoutVersion: 1 }, { ...options, types: [] }), "VDB_BAD_OPTION");
   });
 
   it("compares against the layout.ts version, not a copy", () => {
-    expectCode(() => checkModule({ types: ["float"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }, options), "VDB_LAYOUT_MISMATCH");
-    expect(() => checkModule({ types: ["float"], layoutVersion: VDB_GPU_LAYOUT_VERSION }, options)).not.toThrow();
+    expectCode(() => vdbCheckModule({ types: ["float"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }, options), "VDB_LAYOUT_MISMATCH");
+    expect(() => vdbCheckModule({ types: ["float"], layoutVersion: VDB_GPU_LAYOUT_VERSION }, options)).not.toThrow();
   });
 
   it("accepts a real VDBGridPool structurally", async () => {
@@ -513,11 +513,11 @@ describe("checkModule", () => {
     pool.add(makeImage({ bytes: 1024, gridType: 14 }));
     expect([...pool.types].sort()).toEqual(["float", "fp8"]);
     // The right set passes, both for the exact set and a superset.
-    expect(() => checkModule(pool, { slot: CHECK_SLOT, types: [...pool.types], profile: "read" })).not.toThrow();
-    expect(() => checkModule(pool, { slot: CHECK_SLOT, types: ["float", "fp8", "fpn"], profile: "sample" })).not.toThrow();
+    expect(() => vdbCheckModule(pool, { slot: CHECK_SLOT, types: [...pool.types], profile: "read" })).not.toThrow();
+    expect(() => vdbCheckModule(pool, { slot: CHECK_SLOT, types: ["float", "fp8", "fpn"], profile: "sample" })).not.toThrow();
     // A narrower set names what is missing.
-    expectCode(() => checkModule(pool, { slot: CHECK_SLOT, types: ["float"], profile: "read" }), "VDB_TYPE_NOT_COMPILED");
-    expect(() => checkModule(pool, { slot: CHECK_SLOT, types: ["float"], profile: "read" })).toThrow(/fp8/);
+    expectCode(() => vdbCheckModule(pool, { slot: CHECK_SLOT, types: ["float"], profile: "read" }), "VDB_TYPE_NOT_COMPILED");
+    expect(() => vdbCheckModule(pool, { slot: CHECK_SLOT, types: ["float"], profile: "read" })).toThrow(/fp8/);
     pool.dispose();
   });
 });

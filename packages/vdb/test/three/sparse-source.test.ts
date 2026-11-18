@@ -6,11 +6,11 @@
 
 import { describe, expect, it } from "vitest";
 import { VDBFrameRenderer, VDBFrameVolume, vdbSparseSource, vdbVolumeUniforms, type VDBGridNode } from "../../src/three/index.js";
-import { readWvdb, wvdbDenseToNanoVdb, wvdbDenseVolume } from "../../src/tools/index.js";
+import { readWvdb, wvdbDenseToNvdb, wvdbDenseVolume } from "../../src/tools/index.js";
 import { fixture } from "../tools/wvdb-helpers.js";
 
 const dense = wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")), { mipmaps: false });
-const grid = wvdbDenseToNanoVdb(dense);
+const grid = wvdbDenseToNvdb(dense);
 
 /** A VDBGridNode stand-in: the source reads only `module`, `options` and `pool.info`. */
 function fakeGrids(helpers: string[] = ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage"], profile = "march", hasStats = true): VDBGridNode {

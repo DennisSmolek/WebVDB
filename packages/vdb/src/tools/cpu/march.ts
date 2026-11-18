@@ -27,6 +27,7 @@
  * leaf bytes 88/90/92/94; min/max/ave = code * quantum + minimum, stddev =
  * code * quantum, with the leaf's own mMinimum (byte 80) and mQuantum (84).
  */
+import { VDBToolsError } from "../errors.js";
 import { defineBigInt, defineNumber, gridTypeConstantsForId, gridTypeIds, type GridTypeConstants } from "./stride-tables.js";
 
 export type Vec3 = [number, number, number];
@@ -87,9 +88,9 @@ function grid(words: Uint32Array): Grid {
   let g = grids.get(words);
   if (g) return g;
   const magic = (BigInt(u32(words, GRID_OFF_MAGIC + 4)) << 32n) | BigInt(u32(words, GRID_OFF_MAGIC));
-  if (magic !== MAGIC_GRID) throw new Error("march: gridWords does not start with a NanoVDB GridData block");
+  if (magic !== MAGIC_GRID) throw new VDBToolsError("VDB_BAD_IMAGE", "march: gridWords does not start with a NanoVDB GridData block");
   const gridType = u32(words, GRID_OFF_GRID_TYPE);
-  if (!SUPPORTED_TYPES.has(gridType)) throw new Error(`march: grid type ${gridType} is not Float/Fp4/Fp8/Fp16/FpN`);
+  if (!SUPPORTED_TYPES.has(gridType)) throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", `march: grid type ${gridType} is not Float/Fp4/Fp8/Fp16/FpN`);
   const root = GRID_SIZE + u32(words, GRID_SIZE + TREE_OFF_NODE_OFFSET_ROOT);
   g = {
     words,
@@ -301,7 +302,7 @@ export function isActive(gridWords: Uint32Array, ijk: Vec3): boolean {
  * oracle for GPU parity checks. `readValue` instead returns the exact f64
  * decode; on Fp grids the two can differ by 1 ulp (f32).
  */
-export function readValueF32(gridWords: Uint32Array, ijk: Vec3): number {
+export function vdbReadValueF32(gridWords: Uint32Array, ijk: Vec3): number {
   const g = grid(gridWords);
   const path = locate(g, ijk);
   if (path.level !== 0) return readF32(g, path.valueAddress);
@@ -599,7 +600,7 @@ export function nodeAverage(gridWords: Uint32Array, ijk: Vec3, dim: number): num
   const g = grid(gridWords);
   const path = locate(g, ijk);
   const a = DIM_OF_LEVEL[path.level]!;
-  if ((a > 1 && dim <= a) || !g.hasStats || dim <= 1) return readValueF32(gridWords, ijk);
+  if ((a > 1 && dim <= a) || !g.hasStats || dim <= 1) return vdbReadValueF32(gridWords, ijk);
   if (dim <= 8) {
     let n = 0;
     for (let w = 0; w < 16; w++) {

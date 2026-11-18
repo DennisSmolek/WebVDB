@@ -2,7 +2,7 @@
  * Phase 5 serializer test suite (T3). The correctness oracle is the repo's own
  * proven readers — nothing native runs here:
  *   - `read-value.ts` (657/657-validated CPU reference) reads our images;
- *   - `NanoVDBFile` parses our `writeNvdb` files (incl. its mGridSize check);
+ *   - `NvdbFile` parses our `writeNvdb` files (incl. its mGridSize check);
  *   - `sphere_fog_float.nvdb` (native `nanovdb_convert` output) is the
  *     structural-conformance reference.
  *
@@ -19,12 +19,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  buildFromDense,
-  buildFromDenseDetailed,
+  vdbBuildFromDense,
+  vdbBuildFromDenseDetailed,
   writeNvdb,
 } from "../../src/tools/nanovdb/index.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { NanoVDBFile } from "../../src/tools/nvdb-file.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { NvdbFile } from "../../src/tools/nvdb-file.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,7 +167,7 @@ describe("A. round-trip value fidelity via read-value.ts", () => {
     it(`${c.name}: every voxel + background outside`, () => {
       const origin = c.origin ?? [0, 0, 0];
       const background = c.background ?? 0;
-      const image = buildFromDense(c.values, c.dims, {
+      const image = vdbBuildFromDense(c.values, c.dims, {
         origin,
         background,
         ...(c.activeThreshold !== undefined ? { activeThreshold: c.activeThreshold } : {}),
@@ -179,7 +179,7 @@ describe("A. round-trip value fidelity via read-value.ts", () => {
           for (let z = 0; z < c.dims[2] && mismatches < 5; z++) {
             const src = c.values[denseIndex(c.dims, x, y, z)]!;
             const ijk: [number, number, number] = [origin[0] + x, origin[1] + y, origin[2] + z];
-            const got = readValue(image, ijk);
+            const got = vdbReadValueCpu(image, ijk);
             if (got.value !== src || got.active !== isActive(src, background)) {
               mismatches++;
               expect
@@ -195,7 +195,7 @@ describe("A. round-trip value fidelity via read-value.ts", () => {
         [origin[0], origin[1] + 9999, origin[2]],
         [origin[0] + c.dims[0] + 5000, origin[1], origin[2] + 5000],
       ] as [number, number, number][]) {
-        const got = readValue(image, far);
+        const got = vdbReadValueCpu(image, far);
         expect(got.active).toBe(false);
         expect(got.value).toBe(background);
       }
@@ -208,11 +208,11 @@ describe("A. round-trip value fidelity via read-value.ts", () => {
     // Central voxel strongly active, a ring of small values.
     values[denseIndex(dims, 4, 4, 4)] = 1;
     values[denseIndex(dims, 4, 4, 5)] = 0.05;
-    const image = buildFromDense(values, dims, { background: 0, activeThreshold: 0.1 });
-    expect(readValue(image, [4, 4, 4])).toEqual({ value: 1, active: true });
+    const image = vdbBuildFromDense(values, dims, { background: 0, activeThreshold: 0.1 });
+    expect(vdbReadValueCpu(image, [4, 4, 4])).toEqual({ value: 1, active: true });
     // 0.05 is below threshold -> inactive, but it shares a leaf with the active
     // voxel so its exact (f32-rounded) value is preserved.
-    expect(readValue(image, [4, 4, 5])).toEqual({ value: Math.fround(0.05), active: false });
+    expect(vdbReadValueCpu(image, [4, 4, 5])).toEqual({ value: Math.fround(0.05), active: false });
   });
 });
 
@@ -220,16 +220,16 @@ describe("A. round-trip value fidelity via read-value.ts", () => {
 // B. Loader acceptance + gridImage byte-equality + mGridSize cross-check
 // ---------------------------------------------------------------------------
 
-describe("B. writeNvdb parses via NanoVDBFile", () => {
+describe("B. writeNvdb parses via NvdbFile", () => {
   it("single-grid file: metadata + byte-equal image + mGridSize passes", () => {
     const c = crossBoundaryCase();
-    const built = buildFromDenseDetailed(c.values, c.dims, {
+    const built = vdbBuildFromDenseDetailed(c.values, c.dims, {
       origin: c.origin!,
       gridName: "blob",
       gridClass: "FogVolume",
     });
     const file = writeNvdb([built.image]);
-    const parsed = NanoVDBFile.fromArrayBuffer(file); // throws if mGridSize mismatches
+    const parsed = NvdbFile.fromArrayBuffer(file); // throws if mGridSize mismatches
     expect(parsed.grids).toHaveLength(1);
     const md = parsed.grids[0]!;
     expect(md.name).toBe("blob");
@@ -247,17 +247,17 @@ describe("B. writeNvdb parses via NanoVDBFile", () => {
     expect(got.length).toBe(built.image.length);
     expect(bytesEqual(got, built.image)).toBe(true);
     // And it round-trips through readValue after the loader hands it back.
-    expect(readValue(got, [built.indexBBox.min[0], built.indexBBox.min[1], built.indexBBox.min[2]]).value).toBe(
-      readValue(built.image, [built.indexBBox.min[0], built.indexBBox.min[1], built.indexBBox.min[2]]).value,
+    expect(vdbReadValueCpu(got, [built.indexBBox.min[0], built.indexBBox.min[1], built.indexBBox.min[2]]).value).toBe(
+      vdbReadValueCpu(built.image, [built.indexBBox.min[0], built.indexBBox.min[1], built.indexBBox.min[2]]).value,
     );
   });
 
   it("multi-grid file: two grids parse independently", () => {
-    const a = buildFromDense(singleLeafCase().values, [8, 8, 8], { gridName: "a", voxelSize: 2 });
+    const a = vdbBuildFromDense(singleLeafCase().values, [8, 8, 8], { gridName: "a", voxelSize: 2 });
     const bCase = randomCase();
-    const b = buildFromDense(bCase.values, bCase.dims, { gridName: "b" });
+    const b = vdbBuildFromDense(bCase.values, bCase.dims, { gridName: "b" });
     const file = writeNvdb([a, b]);
-    const parsed = NanoVDBFile.fromArrayBuffer(file);
+    const parsed = NvdbFile.fromArrayBuffer(file);
     expect(parsed.grids.map((g) => g.name)).toEqual(["a", "b"]);
     expect(parsed.grids[0]!.voxelSize).toEqual([2, 2, 2]);
     expect(bytesEqual(parsed.gridImage(1), b)).toBe(true);
@@ -265,7 +265,7 @@ describe("B. writeNvdb parses via NanoVDBFile", () => {
 
   it("voxelSize + worldOrigin land in worldBBox correctly", () => {
     const c = singleLeafCase();
-    const built = buildFromDenseDetailed(c.values, c.dims, {
+    const built = vdbBuildFromDenseDetailed(c.values, c.dims, {
       voxelSize: 0.5,
       worldOrigin: [10, 20, 30],
       origin: [0, 0, 0],
@@ -274,7 +274,7 @@ describe("B. writeNvdb parses via NanoVDBFile", () => {
     expect(built.worldBBox.min[0]).toBeCloseTo(built.indexBBox.min[0] * 0.5 + 10, 5);
     expect(built.worldBBox.max[0]).toBeCloseTo((built.indexBBox.max[0] + 1) * 0.5 + 10, 5);
     const file = writeNvdb([built.image]);
-    const parsed = NanoVDBFile.fromArrayBuffer(file);
+    const parsed = NvdbFile.fromArrayBuffer(file);
     expect(parsed.grids[0]!.worldBBox.min[2]).toBeCloseTo(built.indexBBox.min[2] * 0.5 + 30, 5);
   });
 });
@@ -409,7 +409,7 @@ function walkAndCheck(image: Uint32Array): WalkResult {
 describe("C. structural conformance", () => {
   it.skipIf(!fixturePresent)("the native sphere_fog_float fixture passes the structural checker", () => {
     const file = readFileSync(FIXTURE);
-    const parsed = NanoVDBFile.fromArrayBuffer(
+    const parsed = NvdbFile.fromArrayBuffer(
       file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength) as ArrayBuffer,
     );
     const image = parsed.gridImage(0);
@@ -425,7 +425,7 @@ describe("C. structural conformance", () => {
     // sphere) and run the very same structural assertions.
     const dims: [number, number, number] = [6, 6, 6];
     const values = new Float32Array(6 * 6 * 6).fill(1);
-    const image = buildFromDense(values, dims, { origin: [-3, -3, -3] });
+    const image = vdbBuildFromDense(values, dims, { origin: [-3, -3, -3] });
     const r = walkAndCheck(image);
     expect(r.gridType).toBe(1);
     expect(r.nRootTiles).toBe(8); // one upper per octant around origin
@@ -434,7 +434,7 @@ describe("C. structural conformance", () => {
 
   it("a single-leaf grid passes structurally", () => {
     const c = singleLeafCase();
-    const image = buildFromDense(c.values, c.dims);
+    const image = vdbBuildFromDense(c.values, c.dims);
     const r = walkAndCheck(image);
     expect(r.nLeaf).toBe(1);
     expect(r.nLower).toBe(1);
@@ -450,7 +450,7 @@ describe("C. structural conformance", () => {
 describe("D. generated fixture + stats", () => {
   it("writes fixtures/generated/dense_test.nvdb", () => {
     const c = crossBoundaryCase();
-    const built = buildFromDenseDetailed(c.values, c.dims, {
+    const built = vdbBuildFromDenseDetailed(c.values, c.dims, {
       origin: c.origin!,
       gridName: "dense_test",
       gridClass: "FogVolume",
@@ -460,14 +460,14 @@ describe("D. generated fixture + stats", () => {
     mkdirSync(outDir, { recursive: true });
     writeFileSync(outDir + "dense_test.nvdb", Buffer.from(file));
     // Sanity: it re-parses.
-    const parsed = NanoVDBFile.fromArrayBuffer(file);
+    const parsed = NvdbFile.fromArrayBuffer(file);
     expect(parsed.grids[0]!.name).toBe("dense_test");
   });
 
   it("node stats match a direct recompute over active voxels (root level)", () => {
     const c = sparseBlobCase();
     const origin = c.origin!;
-    const built = buildFromDenseDetailed(c.values, c.dims, { origin });
+    const built = vdbBuildFromDenseDetailed(c.values, c.dims, { origin });
     const image = built.image;
     const dv = new DataView(image.buffer, image.byteOffset, image.byteLength);
 

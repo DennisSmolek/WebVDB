@@ -262,7 +262,7 @@ function markdown(report) {
   }
   const pyr = by("pyramid")[0]?.result;
   if (pyr?.assets) {
-    lines.push(`## (3) Coarse-pyramid build: GPU (createBoxPyramid) vs CPU (vdbBoxPyramid + f16 conversion)`, "");
+    lines.push(`## (3) Coarse-pyramid build: GPU (vdbCreateBoxPyramid) vs CPU (vdbBoxPyramid + f16 conversion)`, "");
     lines.push(`| asset | type | L₀ | base | atlas | GPU (timestamps) | GPU (queue wall) | CPU | CPU/GPU | textures | GPU scratch | parity (max ulp, texels at 1 ulp) |`, `|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---|`);
     for (const a of pyr.assets) {
       const gpu = a.gpuMs ?? a.gpuWallMs;

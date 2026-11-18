@@ -29,7 +29,7 @@ import {
   vdbFrameShadowedLightColor,
   vdbFrameTwoSidedDiffusion,
   type VDBFrameAtlas,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { frameMieRgbTable, frameMieTable } from "../../src/tools/frame/mie-table.js";
 
 // K3.4 (R1 §6 Step 4): the CPU twins of his phase functions and multiple-scattering modes. Each test pins

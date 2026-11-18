@@ -5,12 +5,12 @@
  * Pipeline (SPEC §4/§3.3):
  *   - `.vdb` -> `parseVdb` (pure-TS OpenVDB container reader) -> `buildFromVdb`
  *     (streams parser leaves straight into the NanoVDB serializer, FLOAT).
- *   - `.nvdb` -> `NanoVDBFile` (the proven Phase 1 loader).
+ *   - `.nvdb` -> `NvdbFile` (the proven Phase 1 loader).
  *
  * Either way the result is one NanoVDB image plus its metadata (FLOAT/Fp8/FpN,
  * SPEC §2.1), which feeds every panel below:
  *   - metadata table (name/type/class/voxel count/bboxes/voxel size/sizes)
- *   - `inspect()`'s node-count + memory-by-section bars
+ *   - `vdbInspect()`'s node-count + memory-by-section bars
  *   - a 256-bin histogram (`gridStats`, the core compute pass over the grid's
  *     `VDBGridPool` copy through the three wrapper; a ~100k-sample CPU scan if
  *     it fails)
@@ -44,21 +44,21 @@
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
-import type { GridMetadata } from "@pmndrs/vdb/tools";
+import { NvdbFile, vdbReadValueCpu } from "@pmndrs/vdb/tools";
+import type { NvdbGridMetadata } from "@pmndrs/vdb/tools";
 import { VDBGridPool } from "@pmndrs/vdb";
 import type { VDBGridInfo } from "@pmndrs/vdb";
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbGridStats, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import { WebGPURenderer } from "three/webgpu";
-import { buildFromVdbDetailed, inspect, parseVdb } from "@pmndrs/vdb/tools";
-import type { InspectReport } from "@pmndrs/vdb/tools";
+import { buildFromVdbDetailed, vdbInspect, parseVdb } from "@pmndrs/vdb/tools";
+import type { VDBInspectReport } from "@pmndrs/vdb/tools";
 
 import { walkLeafOrigins } from "./leaf-walk";
 
 /** One loaded grid: its NanoVDB image and the file/builder metadata the panels show. */
 interface ExplorerGrid {
   image: Uint32Array;
-  metadata: GridMetadata;
+  metadata: NvdbGridMetadata;
 }
 
 interface Demo06State {
@@ -175,14 +175,14 @@ interface LoadedSource {
   source: "vdb" | "nvdb";
 }
 
-/** `.vdb` -> parseVdb -> buildFromVdb (FLOAT); `.nvdb` -> NanoVDBFile — either way, one `ExplorerGrid`. */
+/** `.vdb` -> parseVdb -> buildFromVdb (FLOAT); `.nvdb` -> NvdbFile — either way, one `ExplorerGrid`. */
 function loadFromArrayBuffer(buffer: ArrayBuffer, format: "vdb" | "nvdb"): LoadedSource {
   if (format === "vdb") {
     const vdbFile = parseVdb(buffer);
     const vdbGrid = vdbFile.grids[0];
     if (!vdbGrid) throw new Error("this .vdb file contains no grids");
     const built = buildFromVdbDetailed(vdbGrid);
-    const metadata: GridMetadata = {
+    const metadata: NvdbGridMetadata = {
       name: built.gridName,
       gridType: "Float",
       gridClass: "FogVolume",
@@ -194,7 +194,7 @@ function loadFromArrayBuffer(buffer: ArrayBuffer, format: "vdb" | "nvdb"): Loade
     };
     return { grid: { image: built.image, metadata }, source: "vdb" };
   }
-  const file = NanoVDBFile.fromArrayBuffer(buffer);
+  const file = NvdbFile.fromArrayBuffer(buffer);
   const metadata = file.grids[0];
   if (!metadata) throw new Error("this .nvdb file contains no grids");
   return { grid: { image: file.gridImage(0), metadata }, source: "nvdb" };
@@ -251,7 +251,7 @@ function barRow(label: string, value: number, total: number): HTMLDivElement {
   return row;
 }
 
-function renderInspect(report: InspectReport): void {
+function renderInspect(report: VDBInspectReport): void {
   inspectEl.innerHTML = "";
 
   const nodeTitle = document.createElement("div");
@@ -308,7 +308,7 @@ function cpuHistogramFallback(grid: ExplorerGrid): Uint32Array {
     const x = minX + Math.floor(Math.random() * sizeX);
     const y = minY + Math.floor(Math.random() * sizeY);
     const z = minZ + Math.floor(Math.random() * sizeZ);
-    const r = readValue(grid.image, [x, y, z]);
+    const r = vdbReadValueCpu(grid.image, [x, y, z]);
     if (!r.active) continue;
     values.push(r.value);
     if (r.value < vmin) vmin = r.value;
@@ -369,7 +369,7 @@ function renderSlice(grid: ExplorerGrid, z: number): boolean {
     const y = minY + oy * strideY;
     for (let ox = 0; ox < outW; ox++) {
       const x = minX + ox * strideX;
-      const r = readValue(grid.image, [x, y, z]);
+      const r = vdbReadValueCpu(grid.image, [x, y, z]);
       const idx = oy * outW + ox;
       values[idx] = r.value;
       if (r.active) {
@@ -591,7 +591,7 @@ async function loadAndDisplay(buffer: ArrayBuffer, filename: string): Promise<vo
 
   const format = detectFormat(buffer, filename);
   const { grid, source } = loadFromArrayBuffer(buffer, format);
-  const report = inspect(grid.image);
+  const report = vdbInspect(grid.image);
 
   renderMeta(grid, buffer.byteLength);
   renderInspect(report);

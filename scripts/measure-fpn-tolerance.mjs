@@ -4,7 +4,7 @@
  *
  *   pnpm build && node scripts/measure-fpn-tolerance.mjs [--tol 0.01,0.001,...]
  *
- * For each primitive: loads the native float grid, the native FpN grid, and our `quantize(float, 'fpn', tol)`;
+ * For each primitive: loads the native float grid, the native FpN grid, and our `vdbQuantize(float, 'fpn', tol)`;
  * reports bytes, the per-leaf bit-width histogram, and max / mean abs error against the float source
  * (every voxel of the index bbox, active or not). Needs fixtures/primitives/*.nvdb (`pnpm fixtures:bake`).
  */
@@ -21,7 +21,7 @@ const tols = ti >= 0 ? args[ti + 1].split(",").map(Number) : [0.01, 0.005, 0.002
 
 function load(file) {
   const buf = readFileSync(file);
-  const f = T.NanoVDBFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const f = T.NvdbFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
   return f.gridImage(0);
 }
 
@@ -44,8 +44,8 @@ function errors(src, enc, bbox) {
   let max = 0, sum = 0, n = 0, maxActive = 0, sumActive = 0, nActive = 0;
   const [[x0, y0, z0], [x1, y1, z1]] = bbox;
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
-    const a = T.readValue(src, [x, y, z]);
-    const b = T.readValue(enc, [x, y, z]);
+    const a = T.vdbReadValueCpu(src, [x, y, z]);
+    const b = T.vdbReadValueCpu(enc, [x, y, z]);
     const d = Math.abs(a.value - b.value);
     sum += d; n++; if (d > max) max = d;
     if (a.active) { sumActive += d; nActive++; if (d > maxActive) maxActive = d; }
@@ -60,7 +60,7 @@ for (const prim of ["sphere", "torus", "box"]) {
   const src = load(fl), native = load(fp);
   const side = JSON.parse(readFileSync(path.join(dir, `${prim}_fog_fpn.sidecar.json`), "utf8"));
   const bbox = side.grid.indexBBox;
-  const entries = [["native fpn", native], ...tols.map((t) => [`ours tol=${t}`, T.quantize(src, "fpn", t)])];
+  const entries = [["native fpn", native], ...tols.map((t) => [`ours tol=${t}`, T.vdbQuantize(src, "fpn", t)])];
   for (const [label, img] of entries) {
     const e = errors(src, img, bbox);
     const bits = leafBits(img).join("/");

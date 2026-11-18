@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { buildFromDense, quantize } from "../../src/tools/index.js";
+import { vdbBuildFromDense, vdbQuantize } from "../../src/tools/index.js";
 import {
   cellBoundTrilinear,
   defaultValueMax,
@@ -37,15 +37,15 @@ import {
   nodeStats,
   rayClip,
   rayClipSupport,
-  readValueF32,
+  vdbReadValueF32,
   treeNodes,
   type HddaSegment,
   type Vec3,
 } from "../../src/tools/cpu/march.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { sampleNearest, sampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { vdbSampleNearest, vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
 import { StatsAccumulator } from "../../src/tools/nanovdb/stats.js";
-import { NanoVDBFile } from "../../src/tools/nvdb-file.js";
+import { NvdbFile } from "../../src/tools/nvdb-file.js";
 
 const PRIMITIVES = ["box", "sphere", "torus"].flatMap((shape) => ["float", "fp8", "fpn"].map((type) => `${shape}_fog_${type}`));
 const fixtureUrl = (name: string) => new URL(`../../../../fixtures/primitives/${name}.nvdb`, import.meta.url);
@@ -55,7 +55,7 @@ function load(name: string): Uint32Array {
   let img = images.get(name);
   if (!img) {
     const buf = readFileSync(fileURLToPath(fixtureUrl(name)));
-    img = NanoVDBFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)).gridImage(0);
+    img = NvdbFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)).gridImage(0);
     images.set(name, img);
   }
   return img;
@@ -125,10 +125,10 @@ describe("Fp leaf stats: fixed readers' twin vs tools stats", () => {
     const values = new Float32Array(n * n * n);
     const r = rng(7);
     for (let i = 0; i < values.length; i++) values[i] = r() < 0.6 ? r() * 2 : 0;
-    const float = buildFromDense(values, [n, n, n], { origin: [-5, 3, 9] });
+    const float = vdbBuildFromDense(values, [n, n, n], { origin: [-5, 3, 9] });
     const floatLeaves = new Map(treeNodes(float).filter((t) => t.level === 0).map((t) => [t.origin.join(), t.address]));
     for (const mode of ["fp8", "fpn"] as const) {
-      const img = quantize(float, mode);
+      const img = vdbQuantize(float, mode);
       let checked = 0;
       for (const node of treeNodes(img)) {
         if (node.level !== 0) continue;
@@ -213,8 +213,8 @@ describe("getDim and nodeMax", () => {
       const ijk: Vec3 = [0, 1, 2].map((a) => Math.floor(min[a]! - 16 + r() * (max[a]! - min[a]! + 33))) as Vec3;
       const a = getDim(img, ijk);
       expect([1, 8, 128, 4096]).toContain(a);
-      const v = readValueF32(img, ijk);
-      expect(Math.abs(v - readValue(img, ijk).value)).toBeLessThanOrEqual(1e-6);
+      const v = vdbReadValueF32(img, ijk);
+      expect(Math.abs(v - vdbReadValueCpu(img, ijk).value)).toBeLessThanOrEqual(1e-6);
       if (a > 1) {
         for (const dim of [1, 8, 128, 4096].filter((d) => d <= a)) expect(nodeMax(img, ijk, dim)).toBe(v); // uniform cell: its value
       }
@@ -228,7 +228,7 @@ describe("getDim and nodeMax", () => {
   it("without HAS_MIN_MAX the stats branches return valueMax (+Infinity by default), tiles keep their value", () => {
     const n = 20;
     const values = new Float32Array(n * n * n).map((_, i) => (i % 3 === 0 ? 0.5 + (i % 7) / 10 : 0));
-    const withStats = buildFromDense(values, [n, n, n]);
+    const withStats = vdbBuildFromDense(values, [n, n, n]);
     expect(gridHasStats(withStats)).toBe(true);
     const img = withStats.slice(); // the twins cache per array: edit a copy before first use
     img[20 >>> 2]! &= ~4; // clear HAS_MIN_MAX in GridData.mFlags (byte 20)
@@ -256,7 +256,7 @@ describe("trilinear samples need the dilated bound", () => {
     let undilatedMisses = 0;
     for (let k = 0; k < 3000; k++) {
       const p: Vec3 = [0, 1, 2].map((a) => min[a]! - 2 + r() * (max[a]! - min[a]! + 4)) as Vec3;
-      const s = sampleTrilinear(img, p);
+      const s = vdbSampleTrilinear(img, p);
       const b: Vec3 = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])];
       let dilated = -Infinity;
       for (let t = 0; t < 8; t++) {
@@ -329,7 +329,7 @@ function checkWalk(img: Uint32Array, o: Vec3, d: Vec3, segs: HddaSegment[], thre
   let checked = 0;
   for (const v of voxelIntervals(o, d, clip.t0, clip.t1)) {
     if (v.tb - v.ta < 0.1 || !isActive(img, v.ijk)) continue;
-    const value = readValueF32(img, v.ijk);
+    const value = vdbReadValueF32(img, v.ijk);
     if (value < threshold) continue;
     const tm = (v.ta + v.tb) / 2;
     const kept = segs.filter((s) => !s.skip && s.t0 - eps(tm) <= tm && tm <= s.t1 + eps(tm));
@@ -366,7 +366,7 @@ describe("hddaWalk properties", () => {
 
   it("a ray that misses the bbox walks nothing", () => {
     const n = 16;
-    const img = buildFromDense(new Float32Array(n * n * n).fill(1), [n, n, n]);
+    const img = vdbBuildFromDense(new Float32Array(n * n * n).fill(1), [n, n, n]);
     expect(hddaWalk(img, [-10, -10, -10], [-1, 0.5, 0.25])).toEqual([]);
     const segs = hddaWalk(img, [-10, 4.5, 3.25], [1, 0.001, 0.002]);
     expect(segs.length).toBeGreaterThan(0);
@@ -385,29 +385,29 @@ describe("hddaWalk properties", () => {
 
 describe("outside: 'zero' samplers (voxel centres at integers)", () => {
   // Value 1 on voxels [0, 7]^3, background 3 (as on the sphere fixture's root).
-  const img = buildFromDense(new Float32Array(512).fill(1), [8, 8, 8], { background: 3 });
+  const img = vdbBuildFromDense(new Float32Array(512).fill(1), [8, 8, 8], { background: 3 });
 
   it("trilinear: zero outside [min - 1, max + 1), taps outside the box read 0, symmetric at both ends", () => {
     const zero = { outside: "zero" } as const;
-    expect(sampleTrilinear(img, [3, 3, 3], zero)).toBe(1);
-    expect(sampleTrilinear(img, [-0.5, 3, 3], zero)).toBeCloseTo(0.5, 6);
-    expect(sampleTrilinear(img, [7.5, 3, 3], zero)).toBeCloseTo(0.5, 6);
-    expect(sampleTrilinear(img, [-1, 3, 3], zero)).toBe(0);
-    expect(sampleTrilinear(img, [8, 3, 3], zero)).toBe(0);
-    expect(sampleTrilinear(img, [-1.2, 3, 3], zero)).toBe(0);
+    expect(vdbSampleTrilinear(img, [3, 3, 3], zero)).toBe(1);
+    expect(vdbSampleTrilinear(img, [-0.5, 3, 3], zero)).toBeCloseTo(0.5, 6);
+    expect(vdbSampleTrilinear(img, [7.5, 3, 3], zero)).toBeCloseTo(0.5, 6);
+    expect(vdbSampleTrilinear(img, [-1, 3, 3], zero)).toBe(0);
+    expect(vdbSampleTrilinear(img, [8, 3, 3], zero)).toBe(0);
+    expect(vdbSampleTrilinear(img, [-1.2, 3, 3], zero)).toBe(0);
     // Background mode blends the background in.
-    expect(sampleTrilinear(img, [7.5, 3, 3])).toBeCloseTo(2, 6);
+    expect(vdbSampleTrilinear(img, [7.5, 3, 3])).toBeCloseTo(2, 6);
   });
 
   it("nearest: zero outside [min - 0.5, max + 0.5)", () => {
     const zero = { outside: "zero" } as const;
-    expect(sampleNearest(img, [-0.4, 3, 3], zero)).toBe(1);
-    expect(sampleNearest(img, [-0.5, 3, 3], zero)).toBe(1);
-    expect(sampleNearest(img, [-0.6, 3, 3], zero)).toBe(0);
-    expect(sampleNearest(img, [7.4, 3, 3], zero)).toBe(1);
-    expect(sampleNearest(img, [7.5, 3, 3], zero)).toBe(0);
-    expect(sampleNearest(img, [7.6, 3, 3], zero)).toBe(0);
-    expect(sampleNearest(img, [7.6, 3, 3])).toBe(3); // background mode reads voxel 8
+    expect(vdbSampleNearest(img, [-0.4, 3, 3], zero)).toBe(1);
+    expect(vdbSampleNearest(img, [-0.5, 3, 3], zero)).toBe(1);
+    expect(vdbSampleNearest(img, [-0.6, 3, 3], zero)).toBe(0);
+    expect(vdbSampleNearest(img, [7.4, 3, 3], zero)).toBe(1);
+    expect(vdbSampleNearest(img, [7.5, 3, 3], zero)).toBe(0);
+    expect(vdbSampleNearest(img, [7.6, 3, 3], zero)).toBe(0);
+    expect(vdbSampleNearest(img, [7.6, 3, 3])).toBe(3); // background mode reads voxel 8
   });
 });
 
@@ -424,7 +424,7 @@ describe("cellBoundTrilinear (vdbCellBoundTrilinear twin)", () => {
     let cellOnlyMisses = 0;
     for (let k = 0; k < 3000; k++) {
       const p: Vec3 = [0, 1, 2].map((a) => min[a]! - 2 + r() * (max[a]! - min[a]! + 4)) as Vec3;
-      const s = sampleTrilinear(img, p);
+      const s = vdbSampleTrilinear(img, p);
       const b: Vec3 = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])];
       for (const dim of [8, 1]) {
         const cell: Vec3 = [b[0] & ~(dim - 1), b[1] & ~(dim - 1), b[2] & ~(dim - 1)];
@@ -449,9 +449,9 @@ describe("cellBoundTrilinear (vdbCellBoundTrilinear twin)", () => {
     // Voxels [8, 15] x [0, 7] x [0, 7] are 1: cell x=0 holds nothing, but its samples at x in (7, 8) read voxel 8.
     const dense = new Float32Array(16 * 8 * 8);
     for (let x = 8; x < 16; x++) for (let y = 0; y < 8; y++) for (let z = 0; z < 8; z++) dense[x * 64 + y * 8 + z] = 1;
-    const img = buildFromDense(dense, [16, 8, 8]);
+    const img = vdbBuildFromDense(dense, [16, 8, 8]);
     expect(nodeMax(img, [0, 0, 0], 8)).toBeLessThanOrEqual(0);
-    expect(sampleTrilinear(img, [7.5, 3, 3])).toBeCloseTo(0.5, 6);
+    expect(vdbSampleTrilinear(img, [7.5, 3, 3])).toBeCloseTo(0.5, 6);
     expect(cellBoundTrilinear(img, [0, 0, 0], 8)).toBe(1);
   });
 });
@@ -482,7 +482,7 @@ describe("hddaCellEnd (vdbHddaCellEnd twin)", () => {
 
 describe("rayClipSupport (vdbRayClipSupport twin)", () => {
   // Value 1 on voxels [0, 7]^3.
-  const img = buildFromDense(new Float32Array(512).fill(1), [8, 8, 8]);
+  const img = vdbBuildFromDense(new Float32Array(512).fill(1), [8, 8, 8]);
   const o: Vec3 = [-10, 3.5, 3.5];
   const d: Vec3 = [1, 0, 0];
 
@@ -490,23 +490,23 @@ describe("rayClipSupport (vdbRayClipSupport twin)", () => {
     expect(rayClip(img, o, d, [0, 100])).toEqual({ hit: true, t0: 10, t1: 18 });
     expect(rayClipSupport(img, o, d, [0, 100])).toEqual({ hit: true, t0: 9, t1: 18 });
     // What vdbRayClip cuts: x in (-1, 0) samples non-zero, also with outside: 'zero'.
-    expect(sampleTrilinear(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBeCloseTo(0.5, 6);
+    expect(vdbSampleTrilinear(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBeCloseTo(0.5, 6);
     // At and past the support box the zero-outside field is 0.
-    expect(sampleTrilinear(img, [-1, 3.5, 3.5], { outside: "zero" })).toBe(0);
-    expect(sampleTrilinear(img, [8, 3.5, 3.5], { outside: "zero" })).toBe(0);
+    expect(vdbSampleTrilinear(img, [-1, 3.5, 3.5], { outside: "zero" })).toBe(0);
+    expect(vdbSampleTrilinear(img, [8, 3.5, 3.5], { outside: "zero" })).toBe(0);
   });
 
   it("nearest: [min - 0.5, max + 0.5]", () => {
     expect(rayClipSupport(img, o, d, [0, 100], { sampler: "nearest" })).toEqual({ hit: true, t0: 9.5, t1: 17.5 });
-    expect(sampleNearest(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBe(1);
-    expect(sampleNearest(img, [-0.6, 3.5, 3.5], { outside: "zero" })).toBe(0);
+    expect(vdbSampleNearest(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBe(1);
+    expect(vdbSampleNearest(img, [-0.6, 3.5, 3.5], { outside: "zero" })).toBe(0);
   });
 
   it("hits a ray that passes only through the min-side support, which vdbRayClip misses", () => {
     const graze: Vec3 = [-0.5, -10, 3.5];
     expect(rayClip(img, graze, [0, 1, 0], [0, 100]).hit).toBe(false);
     expect(rayClipSupport(img, graze, [0, 1, 0], [0, 100])).toEqual({ hit: true, t0: 9, t1: 18 });
-    expect(sampleTrilinear(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBeGreaterThan(0);
+    expect(vdbSampleTrilinear(img, [-0.5, 3.5, 3.5], { outside: "zero" })).toBeGreaterThan(0);
   });
 
   it.skipIf(!present).each(PRIMITIVES)("%s: the support interval contains the voxel-cell interval", (name) => {

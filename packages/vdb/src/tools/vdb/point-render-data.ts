@@ -11,6 +11,7 @@
  * (K4.2) in one pass instead of a sliced generator; `Cd` of any decoded
  * 3-component real attribute (DIVERGES.md).
  */
+import { VDBToolsError } from "../errors.js";
 import type { VdbPointDataGrid } from "./types.js";
 
 /** What `VDBPoints` draws: world positions (xyz per point), optional linear RGB, the mean spacing. */
@@ -47,10 +48,10 @@ export const VDB_POINTS_DEFAULT_MAX = 4_000_000;
  */
 export function vdbPointRenderData(grid: VdbPointDataGrid, options: VDBPointRenderDataOptions = {}): VDBPointRenderData {
   if (grid?.valueType !== "ptdataidx32" || typeof grid.points !== "function") {
-    throw new Error("vdbPointRenderData: grid must be a parsed point data grid (valueType 'ptdataidx32').");
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", "vdbPointRenderData: grid must be a parsed point data grid (valueType 'ptdataidx32').");
   }
   const maxPoints = options.maxPoints ?? VDB_POINTS_DEFAULT_MAX;
-  if (!(maxPoints >= 1)) throw new Error(`vdbPointRenderData: maxPoints must be >= 1, got ${maxPoints}.`);
+  if (!(maxPoints >= 1)) throw new VDBToolsError("VDB_BAD_OPTION", `vdbPointRenderData: maxPoints must be >= 1, got ${maxPoints}.`);
   const list = grid.points();
   const totalCount = list.count;
   const stride = Math.max(1, Math.ceil(totalCount / maxPoints));

@@ -55,7 +55,7 @@ import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import { cameraPosition, code, positionWorld, screenCoordinate, uniform, wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
-import { getDevice, type ThreeRendererLike } from "./device.js";
+import { getDevice, type VDBThreeRendererLike } from "./device.js";
 import { VDBGridNode, type VDBTslNode } from "./grid-node.js";
 
 /** Default hard caps of the compiled loops (the live uniforms clamp under them). */
@@ -303,7 +303,7 @@ export class VDBVolumeMaterial<TGridId extends number | VDBTslNode = number> ext
    *   (another renderer, profile, helpers), a bad id or cap;
    *   `VDB_UNSUPPORTED_DEVICE` for an uninitialized renderer.
    */
-  constructor(renderer: ThreeRendererLike, grids: VDBGridNode, gridId: TGridId, params: VDBVolumeMaterialParameters = {}) {
+  constructor(renderer: VDBThreeRendererLike, grids: VDBGridNode, gridId: TGridId, params: VDBVolumeMaterialParameters = {}) {
     super();
     if (!(grids instanceof VDBGridNode)) throw bad("grids must be a VDBGridNode.");
     getDevice(renderer); // VDB_UNSUPPORTED_DEVICE before init

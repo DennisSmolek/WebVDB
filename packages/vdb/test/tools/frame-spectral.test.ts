@@ -49,7 +49,7 @@ import {
   type VDBFrameGridLayout,
   type VDBFrameVec3,
   type VDBFrameVec4,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { getFrameMediumProps, getFrameExtinctionSpectrum, getFrameSpectralGroups } from "../../src/three/frame/index.js";
 
 // K3.5: mjurczyk's spectral media (tools/frame/medium.ts, spectral.ts). Each test pins a property of his formula or

@@ -7,8 +7,8 @@ import {
   decodeHeader,
   decodeRecord,
   type VDBBrickMajorant,
-} from "../../src/core/index.js";
-import { NanoVDBFile } from "../../src/tools/index.js";
+} from "../../src/core/internal.js";
+import { NvdbFile } from "../../src/tools/index.js";
 import { FakeBuffer, FakeDevice, USAGE, type FakeOp } from "./fake-gpu.js";
 import { makeImage } from "./synthetic-image.js";
 
@@ -689,7 +689,7 @@ describe.skipIf(!present)("nine fixtures in a pool started at 4 KiB", () => {
   it("every image range is byte-identical to its file after growth and compaction", async () => {
     const images = NAMES.map((n) => {
       const buf = readFileSync(new URL(`${n}.nvdb`, dir));
-      return NanoVDBFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)).gridImage(0);
+      return NvdbFile.fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)).gridImage(0);
     });
     const pool = await VDBGridPool.create(device.asGPU(), { initialBytes: 4096, maxGrids: 4 });
     const ids: number[] = [];

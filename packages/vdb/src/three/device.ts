@@ -6,7 +6,7 @@
  * renderer's one `GPUDevice`: create the pool with
  * `VDBGridPool.create(getDevice(renderer))`.
  *
- * Typed structurally (`ThreeRendererLike`, the downsampler's pattern), so this
+ * Typed structurally (`VDBThreeRendererLike`, the downsampler's pattern), so this
  * file needs nothing from three at runtime. It reads two backend internals,
  * checked against three r187 (the peer range):
  * - `renderer.backend.device`: the `GPUDevice` (null until `renderer.init()`
@@ -23,7 +23,7 @@
 import { VDBError } from "../core/errors.js";
 
 /** The parts of three's WebGPU backend the adapter reads (structural, three r187). */
-export interface ThreeBackendLike {
+export interface VDBThreeBackendLike {
   readonly isWebGPUBackend?: boolean;
   readonly device?: GPUDevice | null;
   get(object: object): { texture?: GPUTexture; buffer?: GPUBuffer } & Record<string, unknown>;
@@ -35,13 +35,13 @@ export interface ThreeBackendLike {
  * `@types/three` does not declare the internals read here (`get`); they are
  * checked at runtime instead.
  */
-export interface ThreeRendererLike {
+export interface VDBThreeRendererLike {
   readonly backend: object;
 }
 
 /** Throws unless `renderer` is an initialized `WebGPURenderer` on its WebGPU backend; returns that backend. */
-export function webgpuBackendOf(renderer: unknown, what = "getDevice"): ThreeBackendLike & { readonly device: GPUDevice } {
-  const backend = (renderer as { backend?: ThreeBackendLike } | null | undefined)?.backend;
+export function webgpuBackendOf(renderer: unknown, what = "getDevice"): VDBThreeBackendLike & { readonly device: GPUDevice } {
+  const backend = (renderer as { backend?: VDBThreeBackendLike } | null | undefined)?.backend;
   if (backend?.isWebGPUBackend !== true || !backend.device || typeof backend.get !== "function") {
     throw new VDBError(
       "VDB_UNSUPPORTED_DEVICE",
@@ -49,7 +49,7 @@ export function webgpuBackendOf(renderer: unknown, what = "getDevice"): ThreeBac
         "the WebGL fallback backend has no GPUDevice.",
     );
   }
-  return backend as ThreeBackendLike & { readonly device: GPUDevice };
+  return backend as VDBThreeBackendLike & { readonly device: GPUDevice };
 }
 
 /**
@@ -58,7 +58,7 @@ export function webgpuBackendOf(renderer: unknown, what = "getDevice"): ThreeBac
  *
  * @throws VDBError `VDB_UNSUPPORTED_DEVICE` before `await renderer.init()`, or on the WebGL fallback backend.
  */
-export function getDevice(renderer: ThreeRendererLike): GPUDevice {
+export function getDevice(renderer: VDBThreeRendererLike): GPUDevice {
   return webgpuBackendOf(renderer, "getDevice").device;
 }
 
@@ -70,7 +70,7 @@ export function getDevice(renderer: ThreeRendererLike): GPUDevice {
  * @throws VDBError `VDB_UNSUPPORTED_DEVICE` for an uninitialized or non-WebGPU
  *   renderer; `VDB_BAD_OPTION` if the texture has no GPU allocation yet.
  */
-export function getGPUTexture(renderer: ThreeRendererLike, texture: object): GPUTexture {
+export function getGPUTexture(renderer: VDBThreeRendererLike, texture: object): GPUTexture {
   const backend = webgpuBackendOf(renderer, "getGPUTexture");
   const gpuTexture = backend.get(texture)?.texture;
   if (!gpuTexture) {

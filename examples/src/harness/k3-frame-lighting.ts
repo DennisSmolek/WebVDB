@@ -21,7 +21,7 @@ import * as THREE from "three";
 import { NodeMaterial, type WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import type { VDBFrameRenderer, VDBFrameVolume } from "@pmndrs/vdb/three";
-import { vdbFrameChunks } from "@pmndrs/vdb/three";
+import { vdbFrameChunks } from "../../../packages/vdb/src/three/internal.js";
 import {
   sampleWvdbDenseTexture,
   vdbFrameGridMipLevel,
@@ -55,7 +55,7 @@ import {
   vdbFrameTransmittanceVoxel,
   type VDBFrameAtlas,
   type VDBFrameGridLayout,
-} from "@pmndrs/vdb/tools";
+} from "../../../packages/vdb/src/tools/internal.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any;

@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { buildFromVdb, buildFromVdbDetailed } from "../../src/tools/index.js";
 import { parseVdb } from "../../src/tools/vdb/index.js";
 import type { VdbGrid } from "../../src/tools/vdb/types.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.resolve(__dirname, "../../../../fixtures/vdb-samples");
@@ -56,7 +56,7 @@ describe.skipIf(!fixturesAvailable)("buildFromVdb — real .vdb corpus round-tri
       for (let n = 0; n < 512; n++) {
         if (((leaf.valueMask[n >>> 5]! >>> (n & 31)) & 1) === 0) continue;
         const ijk = leafVoxelCoord(leaf.origin, n);
-        const got = readValue(image, ijk);
+        const got = vdbReadValueCpu(image, ijk);
         maxErr = Math.max(maxErr, Math.abs(got.value - leaf.values[n]!));
         if (!got.active) activeMismatch++;
         if (++checked >= READBACK_CAP) break outer;
@@ -98,7 +98,7 @@ describe.skipIf(!fixturesAvailable)("buildFromVdb — real .vdb corpus round-tri
       grid.indexBBox!.max[1] + 10_000,
       grid.indexBBox!.max[2] + 10_000,
     ];
-    const got = readValue(image, far);
+    const got = vdbReadValueCpu(image, far);
     expect(got.active).toBe(false);
     expect(got.value).toBeCloseTo(grid.background, 6);
   });

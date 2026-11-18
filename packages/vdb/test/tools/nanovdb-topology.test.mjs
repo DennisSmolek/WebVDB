@@ -5,13 +5,13 @@ import {
   classifyNanoVdbByteDifferences,
   compareNanoVdbTopology,
 } from "../../../../scripts/lib/nanovdb-topology.mjs";
-import { buildFromDense } from "../../src/tools/index.js";
+import { vdbBuildFromDense } from "../../src/tools/index.js";
 
 function fixtureImage() {
   const values = new Float32Array(16 * 16 * 16);
   values[(1 * 16 + 2) * 16 + 3] = 1;
   values[(12 * 16 + 11) * 16 + 10] = 2;
-  return buildFromDense(values, [16, 16, 16], { gridName: "strict-parity-test" });
+  return vdbBuildFromDense(values, [16, 16, 16], { gridName: "strict-parity-test" });
 }
 
 describe("strict NanoVDB topology evidence", () => {

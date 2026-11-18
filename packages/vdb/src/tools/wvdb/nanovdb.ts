@@ -14,10 +14,11 @@
  * informative, since the froxel renderer places volumes by their box, not the grid's Map.
  */
 
-import { buildFromDenseDetailed, type BuiltGrid } from "../nanovdb/serialize.js";
+import { VDBToolsError } from "../errors.js";
+import { vdbBuildFromDenseDetailed, type VDBBuiltGrid } from "../nanovdb/serialize.js";
 import type { WvdbDenseVolume } from "./dense.js";
 
-export interface WvdbDenseToNanoVdbOptions {
+export interface WvdbDenseToNvdbOptions {
   /** Channel to convert (a scalar one). Default `'density'`. */
   channel?: "density" | "mask" | "emission";
   /** Grid name. Default: the channel's grid name in the `.wvdb`. */
@@ -25,20 +26,20 @@ export interface WvdbDenseToNanoVdbOptions {
 }
 
 /** The converted grid plus the index box the dense texture covered. */
-export interface WvdbNanoVdbGrid extends BuiltGrid {
+export interface WvdbNvdbGrid extends VDBBuiltGrid {
   /** `[0, 0, 0]` to `dims − 1`: the dense texture's voxels (inclusive). */
   readonly textureIndexBox: { min: [number, number, number]; max: [number, number, number] };
 }
 
 /** Converts one scalar channel of a dense `.wvdb` level to a NanoVDB FLOAT grid, voxel for voxel. */
-export function wvdbDenseToNanoVdb(volume: WvdbDenseVolume, o: WvdbDenseToNanoVdbOptions = {}): WvdbNanoVdbGrid {
+export function wvdbDenseToNvdb(volume: WvdbDenseVolume, o: WvdbDenseToNvdbOptions = {}): WvdbNvdbGrid {
   const channel = o.channel ?? "density";
   const tex = volume[channel];
-  if (!tex) throw new Error(`wvdbDenseToNanoVdb: the volume has no ${channel} channel`);
-  if (tex.texelBytes !== 1) throw new Error(`wvdbDenseToNanoVdb: the ${channel} channel is not scalar (r8unorm)`);
+  if (!tex) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseToNvdb: the volume has no ${channel} channel`);
+  if (tex.texelBytes !== 1) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseToNvdb: the ${channel} channel is not scalar (r8unorm)`);
   const [w, h, d] = tex.dimensions;
   const values = new Float32Array(w * h * d);
-  // Texels are x fastest (x + (y + z·h)·w); buildFromDense reads x-major ((x·h + y)·d + z).
+  // Texels are x fastest (x + (y + z·h)·w); vdbBuildFromDense reads x-major ((x·h + y)·d + z).
   for (let z = 0; z < d; z++)
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) values[(x * h + y) * d + z] = tex.data[x + (y + z * h) * w]! / 255;
@@ -47,7 +48,7 @@ export function wvdbDenseToNanoVdb(volume: WvdbDenseVolume, o: WvdbDenseToNanoVd
   const worldOrigin: [number, number, number] = bbox
     ? [bbox[0][0] + voxelSize / 2, bbox[0][1] + (bbox[1][1] - bbox[0][1]) / h / 2, bbox[0][2] + (bbox[1][2] - bbox[0][2]) / d / 2]
     : [0, 0, 0];
-  const built = buildFromDenseDetailed(values, [w, h, d], {
+  const built = vdbBuildFromDenseDetailed(values, [w, h, d], {
     voxelSize: voxelSize > 0 ? voxelSize : 1,
     worldOrigin,
     background: 0,

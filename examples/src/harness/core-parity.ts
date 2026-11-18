@@ -16,10 +16,10 @@
  * `walkMain` runs the canonical HDDA walk (`HddaWalkOptions` doc in
  * tools/cpu/march.ts) per ray. Integers travel as f32 (exact below 2^24).
  */
-import { VDBGridPool, VDBError, checkModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
+import { VDBGridPool, VDBError, vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
 import type { VDBGridInfo, VDBGridTypeName, VDBModuleHelper, VDBModuleOptions } from "@pmndrs/vdb";
 import {
-  NanoVDBFile,
+  NvdbFile,
   cellBoundTrilinear,
   getDim,
   hddaWalk,
@@ -29,15 +29,15 @@ import {
   nodeMax,
   nodeStats,
   probeCoords,
-  quantize,
+  vdbQuantize,
   rayClip,
   rayClipSupport,
-  readValueF32,
-  sampleNearest,
-  sampleTrilinear,
+  vdbReadValueF32,
+  vdbSampleNearest,
+  vdbSampleTrilinear,
   treeNodes,
-} from "@pmndrs/vdb/tools";
-import type { HddaSegment, TreeNode, Vec3 } from "@pmndrs/vdb/tools";
+} from "../../../packages/vdb/src/tools/internal.js";
+import type { HddaSegment, TreeNode, Vec3 } from "../../../packages/vdb/src/tools/internal.js";
 
 // ---------------------------------------------------------------------------
 // Tunables (counts are per grid per variant unless noted) and tolerances.
@@ -58,7 +58,7 @@ const AFFINE_REL = 2e-6;
 const T_REL = 1e-4;
 
 const FILE_NAMES = ["box_fog", "sphere_fog", "torus_fog"].flatMap((p) => ["float", "fp8", "fpn"].map((t) => `${p}_${t}`));
-/** Synthetic Fp4 / Fp16 grids: `quantize(sphere_fog_float, mode)`; no sidecar (no native reference). */
+/** Synthetic Fp4 / Fp16 grids: `vdbQuantize(sphere_fog_float, mode)`; no sidecar (no native reference). */
 const SYNTH = [
   { name: "sphere_fog_fp4", mode: "fp4" },
   { name: "sphere_fog_fp16", mode: "fp16" },
@@ -240,12 +240,12 @@ function readRows(image: Uint32Array, seed: number, sidecar: Sidecar | null): Re
   const { min, max } = indexBBox(image);
   const rows: ReadRow[] = probeCoords({ seed: BigInt(seed), count: READ_RANDOM, bboxMin: min, bboxMax: max, dilate: 4 }).map((ijk) => ({
     ijk,
-    value: readValueF32(image, ijk),
+    value: vdbReadValueF32(image, ijk),
     active: isActive(image, ijk),
     sidecar: null,
   }));
   for (const s of sidecar?.samples ?? []) {
-    rows.push({ ijk: s.ijk, value: readValueF32(image, s.ijk), active: isActive(image, s.ijk), sidecar: { value: s.value, active: s.active } });
+    rows.push({ ijk: s.ijk, value: vdbReadValueF32(image, s.ijk), active: isActive(image, s.ijk), sidecar: { value: s.value, active: s.active } });
   }
   return rows;
 }
@@ -703,7 +703,7 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
             c.eq("negative", got === 0 ? 1 : 0, 1, tag(`type ${g.info.type} not compiled: sample ${p} -> ${got}`));
             return;
           }
-          const want = tri ? sampleTrilinear(g.image, p, opt) : sampleNearest(g.image, p, opt);
+          const want = tri ? vdbSampleTrilinear(g.image, p, opt) : vdbSampleNearest(g.image, p, opt);
           const d = Math.abs(got - want);
           if (tri) c.rec("sample", d <= SAMPLE_TOL * Math.max(1, Math.abs(want)), () => `${tag(`trilinear ${p}`)()}: gpu ${got} want ${want}`, d);
           else c.val("sample", got, fr(want), tag(`nearest ${p}`));
@@ -773,7 +773,7 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
         b.add(6, g.id, p, (out, o) => {
           // The GPU's own index position is the oracle's input: this checks the shader composes the two calls consistently.
           const idx: Vec3 = [out[o + 1]!, out[o + 2]!, out[o + 3]!];
-          const want = tri ? sampleTrilinear(g.image, idx, opt) : sampleNearest(g.image, idx, opt);
+          const want = tri ? vdbSampleTrilinear(g.image, idx, opt) : vdbSampleNearest(g.image, idx, opt);
           const d = Math.abs(out[o]! - want);
           c.rec("world-sample", d <= SAMPLE_TOL * Math.max(1, Math.abs(want)), () => `${tag(`world ${p} -> idx ${idx}`)()}: gpu ${out[o]} want ${want}`, d);
         });
@@ -1061,7 +1061,7 @@ async function run(): Promise<CoreParity> {
     FILE_NAMES.map(async (name) => {
       const [nv, sc] = await Promise.all([fetch(`/fixtures/primitives/${name}.nvdb`), fetch(`/fixtures/primitives/${name}.sidecar.json`)]);
       return {
-        image: nv.ok ? NanoVDBFile.fromArrayBuffer(await nv.arrayBuffer()).gridImage(0) : null,
+        image: nv.ok ? NvdbFile.fromArrayBuffer(await nv.arrayBuffer()).gridImage(0) : null,
         sidecar: sc.ok ? ((await sc.json()) as Sidecar) : null,
       };
     }),
@@ -1069,7 +1069,7 @@ async function run(): Promise<CoreParity> {
   const missing = FILE_NAMES.filter((_, k) => loaded[k]!.image === null || loaded[k]!.sidecar === null);
   if (missing.length > 0) return { ...result, done: true, missing };
   const sphereFloat = loaded[FILE_NAMES.indexOf("sphere_fog_float")]!.image!;
-  for (const s of SYNTH) loaded.push({ image: quantize(sphereFloat, s.mode), sidecar: null });
+  for (const s of SYNTH) loaded.push({ image: vdbQuantize(sphereFloat, s.mode), sidecar: null });
 
   device.pushErrorScope("validation");
   const pool = await VDBGridPool.create(device, { initialBytes: 4096, maxGrids: 2, label: "core parity" });
@@ -1131,9 +1131,9 @@ async function run(): Promise<CoreParity> {
   check("buffer and table both grew", versions[versions.length - 1]! >= 4 && pool.gridCapacity >= 16, `version ${pool.version}, capacity ${pool.gridCapacity}`);
   check("all images at non-zero 32 B aligned offsets", grids.every((g) => g.info.imageOffset! > 0 && g.info.imageOffset! % 32 === 0));
   check("removed id has no info", (() => { try { pool.info(deadId); return false; } catch (e) { return e instanceof VDBError && e.code === "VDB_UNKNOWN_GRID"; } })());
-  // checkModule: the all-types module covers this pool; a float-only module is refused naming fp8.
-  check("checkModule accepts the all-types module", (() => { try { checkModule(pool, moduleOptions(SPECS.find((s) => s.id === "read/all")!)); return true; } catch { return false; } })());
-  check("checkModule refuses a float-only module", (() => { try { checkModule(pool, moduleOptions(SPECS[0]!)); return false; } catch (e) { return e instanceof VDBError && e.code === "VDB_TYPE_NOT_COMPILED"; } })());
+  // vdbCheckModule: the all-types module covers this pool; a float-only module is refused naming fp8.
+  check("vdbCheckModule accepts the all-types module", (() => { try { vdbCheckModule(pool, moduleOptions(SPECS.find((s) => s.id === "read/all")!)); return true; } catch { return false; } })());
+  check("vdbCheckModule refuses a float-only module", (() => { try { vdbCheckModule(pool, moduleOptions(SPECS[0]!)); return false; } catch (e) { return e instanceof VDBError && e.code === "VDB_TYPE_NOT_COMPILED"; } })());
 
   result.pool = {
     byteLength: pool.byteLength,

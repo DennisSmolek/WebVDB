@@ -23,11 +23,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   buildFromVdbDetailed,
-  type BuiltGrid,
-  readValue,
-  readValueVec3,
+  type VDBBuiltGrid,
+  vdbReadValueCpu,
+  vdbReadValueVec3,
   readWvdb,
-  sampleTrilinearVec3,
+  vdbSampleTrilinearVec3,
   writeNvdb,
   type VdbFile,
   type VdbGrid,
@@ -127,7 +127,7 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
       for (const leaf of g.iterLeaves()) {
         for (let n = 0; n < 512; n += 37) {
           const ijk = leafCoord(leaf.origin, n);
-          expect(readValue(image, ijk)).toEqual(g.readValue(ijk));
+          expect(vdbReadValueCpu(image, ijk)).toEqual(g.readValue(ijk));
           checked++;
         }
       }
@@ -136,18 +136,18 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
   });
 
   describe("v -> NanoVDB Vec3f", () => {
-    let built: BuiltGrid;
+    let built: VDBBuiltGrid;
     let image: Uint32Array;
     beforeAll(() => {
       built = buildFromVdbDetailed(v);
       image = built.image;
     });
     afterAll(() => {
-      built = undefined as unknown as BuiltGrid;
+      built = undefined as unknown as VDBBuiltGrid;
       image = undefined as unknown as Uint32Array;
     });
 
-    it("readValueVec3 equals the parsed tree at every active voxel and 4000 random bbox coords", () => {
+    it("vdbReadValueVec3 equals the parsed tree at every active voxel and 4000 random bbox coords", () => {
       expect(built.voxelCount).toBe(Number(v.activeVoxelCount));
       expect(built.indexBBox).toEqual({ min: v.metadata["file_bbox_min"], max: v.metadata["file_bbox_max"] });
       let mismatches = 0;
@@ -155,7 +155,7 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
         for (let n = 0; n < 512; n++) {
           if (!isOn(leaf.valueMask, n)) continue;
           const ijk = leafCoord(leaf.origin, n);
-          const got = readValueVec3(image, ijk);
+          const got = vdbReadValueVec3(image, ijk);
           const want = v.readValue(ijk);
           if (!got.active || got.value[0] !== want.value[0] || got.value[1] !== want.value[1] || got.value[2] !== want.value[2]) {
             mismatches++;
@@ -168,11 +168,11 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
       const hi = v.metadata["file_bbox_max"] as Coord;
       for (let i = 0; i < 4000; i++) {
         const ijk = [0, 1, 2].map((a) => lo[a]! - 4 + Math.floor(r() * (hi[a]! - lo[a]! + 9))) as Coord;
-        expect(readValueVec3(image, ijk)).toEqual(v.readValue(ijk));
+        expect(vdbReadValueVec3(image, ijk)).toEqual(v.readValue(ijk));
       }
     });
 
-    it("sampleTrilinearVec3 is componentwise trilinear of the parsed tree (500 points)", () => {
+    it("vdbSampleTrilinearVec3 is componentwise trilinear of the parsed tree (500 points)", () => {
       const r = rng(7);
       const lo = v.metadata["file_bbox_min"] as Coord;
       const hi = v.metadata["file_bbox_max"] as Coord;
@@ -189,7 +189,7 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
           const c11 = lerp(tap(0, 1, 1)[c]!, tap(1, 1, 1)[c]!, f[0]!);
           return lerp(lerp(c00, c10, f[1]!), lerp(c01, c11, f[1]!), f[2]!);
         });
-        expect(sampleTrilinearVec3(image, p)).toEqual(want);
+        expect(vdbSampleTrilinearVec3(image, p)).toEqual(want);
       }
     });
 
@@ -250,7 +250,7 @@ describe.each(["bunny.vdb", "icosahedron.vdb", "fire.vdb"])("K4.7 — %s (OpenVD
       for (const leaf of [...g.iterLeaves()].slice(0, 400)) {
         for (let n = 0; n < 512; n += 3) {
           const ijk = leafCoord(leaf.origin, n);
-          const a = readValue(image, ijk);
+          const a = vdbReadValueCpu(image, ijk);
           const b = g.readValue(ijk);
           if (a.value !== b.value || a.active !== b.active) mismatches++;
         }

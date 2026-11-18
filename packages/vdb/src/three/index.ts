@@ -7,17 +7,23 @@
  * module as a `wgslFn` include). `VDBVolumeMaterial` raymarches one pooled
  * grid; `VDBSequence` plays a frame sequence into one pool id with
  * `pool.replace`. `vdbGridStats` / `vdbDecodeToAtlas` run the core compute
- * tools through the renderer's device.
+ * tools through the renderer's device. `VDBFrameVolume` / `VDBFrameRenderer`
+ * are mjurczyk's froxel renderer on a dense or sparse volume source.
  *
  * There is no renderer bootstrap: create the device yourself
  * (`adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) })`)
  * and pass it, `new WebGPURenderer({ device })`, so the pool outlives
  * `renderer.dispose()`.
+ *
+ * This barrel is the public API (D32). The frame renderer's pass materials, shader chunks and three
+ * internals hooks live in `./internal.ts`, imported by path by tests and harnesses; it is not a package
+ * export.
  */
 
-// K2.1/K2.2: the adapter over the engine-free core (docs/design/K1-core.md §6).
+// K2.1/K2.2: the adapter over the engine-free core (docs/design/K1-core.md §6). `getDevice` and
+// `getGPUTexture` keep the helper names the other pmndrs tools use (D32).
 export { getDevice, getGPUTexture } from "./device.js";
-export type { ThreeBackendLike, ThreeRendererLike } from "./device.js";
+export type { VDBThreeBackendLike, VDBThreeRendererLike } from "./device.js";
 export { VDBGridNode, vdbReadValue, vdbSample } from "./grid-node.js";
 export type { VDBGridNodeOptions, VDBGridNodePoolLike, VDBSampleOptions, VDBTslNode } from "./grid-node.js";
 
@@ -31,12 +37,6 @@ export {
 } from "./material.js";
 export type { VDBVolumeMaterialParameters, VDBProxyGridInfo, VDBUintUniform } from "./material.js";
 export { VDBSequence } from "./sequence.js";
-
-// K3.7 (R1 §6 Step 7): level-set surfaces traced on the sparse pool, and point grids as sprites.
-export { VDBLevelSetMaterial, VDB_LEVEL_SET_SAMPLES_CAP } from "./level-set-material.js";
-export type { VDBLevelSetMaterialParameters } from "./level-set-material.js";
-export { VDBPoints, vdbAttenuatedPointSize, vdbPointDiscTexture } from "./points.js";
-export type { VDBPointsData, VDBPointsOptions } from "./points.js";
 export type {
   VDBSequenceOptions,
   VDBSequenceStats,
@@ -45,14 +45,20 @@ export type {
   VDBFrameLoader,
 } from "./sequence.js";
 
+// K3.7 (R1 §6 Step 7): level-set surfaces traced on the sparse pool, and point grids as sprites.
+export { VDBLevelSetMaterial, VDB_LEVEL_SET_SAMPLES_CAP } from "./level-set-material.js";
+export type { VDBLevelSetMaterialParameters } from "./level-set-material.js";
+export { VDBPoints } from "./points.js";
+export type { VDBPointsData, VDBPointsOptions } from "./points.js";
+
 // K2.3: compute wrappers over the core tools (renderer in, promise out). The
-// core's `gridStats` / `decodeToAtlas` take a device and an encoder; the value
-// transform is the core's `applyValueTransform` (CPU).
+// core's `vdbGridStatsGpu` / `vdbDecodeToAtlasGpu` take a device and an encoder;
+// the value transform is the core's `vdbApplyValueTransform` (CPU).
 export { vdbGridStats, vdbDecodeToAtlas } from "./compute.js";
 export type { VDBThreeGridStatsOptions, VDBGridStatsResult, VDBThreeDecodeToAtlasOptions, VDBDecodeToAtlasResult } from "./compute.js";
 
 // K3.0: the dense `.wvdb` volume source (R1 §4.2) in his createVolumeNodes() shape.
-export { vdbDenseTextures, vdbVolumeUniforms, vdbVolumeNodes, vdbMinComponent, vdbMaxComponent } from "./volume-source.js";
+export { vdbDenseTextures, vdbVolumeUniforms, vdbVolumeNodes } from "./volume-source.js";
 export type {
   VDBDenseChannelTextures,
   VDBThreeDenseSource,
@@ -90,52 +96,18 @@ export type {
   VDBCoarseFirstSource,
 } from "./coarse-first.js";
 
-// K3.1: the froxel renderer with 'volume' lighting (his FrameVolume / FrameRenderer) on a volume source.
+// K3.1–K3.6: the froxel renderer (his FrameVolume / FrameRenderer) on a volume source: the volume, the
+// renderer, the light-mask flags, the measured media, the emission light and its blackbody colour hook.
 export {
   VDBFrameVolume,
   VDBFrameRenderer,
   vdbFrameRenderer,
-  VDBFrameInjectMaterial,
-  VDBFrameIntegrateMaterial,
-  VDBFrameShadowDensityMaterial,
-  VDBFrameTransmittanceMaterial,
-  VDBFrameDensityMaterial,
-  VDBFrameLightingMaterial,
-  VDBFrameTemporalMaterial,
-  VDBFrameEnvironmentMapMaterial,
-  VDBFrameEnvironmentGridMaterial,
-  VDBFrameGridMipMaterial,
   vdbFrameLights,
   vdbFrameAllLights,
-  vdbFrameChunks,
-  // His helper names stay inside frame/ (diffable with upstream); the public names follow D17.
-  getFramePhase as vdbFramePhase,
-  getFramePhaseSpectrum as vdbFramePhaseSpectrum,
-  getFramePhaseAsymmetry as vdbFramePhaseAsymmetry,
-  getFrameMultipleScattering as vdbFrameMultipleScattering,
-  getFrameScatteringOctaves as vdbFrameScatteringOctavesInto,
-  getFrameTwoSidedDiffusion as vdbFrameTwoSidedMode,
-  getAtlasLayout as vdbFrameAtlasLayout,
-  getFroxelSize as vdbFroxelSize,
-  getFroxelSlice as vdbFroxelSlice,
-  getFroxelSliceRange as vdbFroxelSliceRange,
-  getFroxelRect as vdbFroxelRect,
-  getFroxelArea as vdbFroxelArea,
-  // K3.5: spectral media (his getFrameMediumProps: the three Color / Vector3 volume props of a preset)
+  // His helper name stays inside frame/ (diffable with upstream); the public name follows D17.
   getFrameMediumProps as vdbFrameMedium,
-  getFrameExtinctionSpectrum as vdbFrameExtinctionSpectrumInto,
-  getFrameAngstromExponent as vdbFrameAngstromExponent,
-  frameAngstromExponents as vdbFrameAngstromExponents,
-  // K3.6: volume shadows on meshes (settings.castShadows), the emission light, the CIE blackbody colour hook
-  VDBFrameVolumeShadows,
-  VDBFrameVolumeShadowMaterial,
   VDBFrameEmissionLight,
-  VDBFrameEmissionLightNode,
-  VDBFrameEmissionDirectionMaterial,
-  VDBFrameEmissionReduceMaterial,
-  VDBFrameEmissionProbeMaterial,
   vdbFrameBlackbodyEmission,
-  vdbFrameCheckLightReset,
 } from "./frame/index.js";
 export type {
   VDBFrameVolumeProps,
@@ -143,13 +115,9 @@ export type {
   VDBFramePassHook,
   VDBFramePass,
   VDBFrameRedrawStats,
-  VDBFrameInjectMaterialOptions,
   VDBFramePhase,
   VDBFrameMultipleScattering,
-  FrameVolumeRecord,
-  FroxelArea,
   VDBFrameMediumVolumeProps,
   VDBFrameEmissionLightProps,
   VDBFrameBlackbodyHook,
-  VDBFrameShadowEntry,
 } from "./frame/index.js";

@@ -18,7 +18,7 @@ import {
   type WvdbPointsGrid,
   type WvdbVolumeGrid,
   type WvdbVolumeLevel,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { bytesEqual, fixture, hisAsset, readBytes, vdbSample } from "./wvdb-helpers.js";
 
 // K4.3 gate: his committed .wvdb files decode exactly per the spec

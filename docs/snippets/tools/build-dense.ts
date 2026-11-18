@@ -1,5 +1,5 @@
 // #region build-dense
-import { buildFromDense, inspect, writeNvdb } from '@pmndrs/vdb/tools';
+import { vdbBuildFromDense, vdbInspect, writeNvdb } from '@pmndrs/vdb/tools';
 // #endregion
 
 export function buildDense(): ArrayBuffer {
@@ -14,8 +14,8 @@ export function buildDense(): ArrayBuffer {
             }
 
     // Zero voxels become inactive background; the rest go into a sparse 5-4-3 tree.
-    const image = buildFromDense(values, dims, { voxelSize: 0.1, gridName: 'density', gridClass: 'FogVolume' });
-    console.log(inspect(image)); // { gridType, gridClass, voxelCount, nodeCounts, memoryBreakdown }
+    const image = vdbBuildFromDense(values, dims, { voxelSize: 0.1, gridName: 'density', gridClass: 'FogVolume' });
+    console.log(vdbInspect(image)); // { gridType, gridClass, voxelCount, nodeCounts, memoryBreakdown }
 
     return writeNvdb([image], { codec: 'zip' });
     // #endregion

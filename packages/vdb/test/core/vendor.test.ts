@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { pnanovdbWgslUrl } from "../../src/core/index.js";
+import { pnanovdbWgslUrl } from "../../src/core/internal.js";
 
 /**
  * Guards the D2 vendoring contract: the WGSL fork is pinned, attributed,

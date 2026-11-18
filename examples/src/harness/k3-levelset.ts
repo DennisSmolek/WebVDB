@@ -28,7 +28,7 @@ import * as THREE from "three";
 import { Mesh, WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbProxyGeometry, type VDBTslNode } from "@pmndrs/vdb/three";
-import { buildFromVdb, levelSetHit, levelSetNormal, parseVdb, vdbPointRenderData, vdbSrgbOetf, type VdbGrid, type VdbPointDataGrid } from "@pmndrs/vdb/tools";
+import { buildFromVdb, levelSetHit, levelSetNormal, parseVdb, vdbPointRenderData, vdbSrgbOetf, type VdbGrid, type VdbPointDataGrid } from "../../../packages/vdb/src/tools/internal.js";
 
 type V3 = [number, number, number];
 

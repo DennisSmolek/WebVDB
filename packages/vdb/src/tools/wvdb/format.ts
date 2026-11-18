@@ -18,6 +18,8 @@
  * No `three`, no `node:` imports: Node and browser.
  */
 
+import { WvdbFormatError } from "../errors.js";
+
 /** ASCII `WVDB`. */
 export const WVDB_MAGIC = "WVDB";
 /** Magic + version + headerLength. */
@@ -427,10 +429,5 @@ export function decodePoints(bytes: Uint8Array, { count, colors }: { count: numb
   return { positions, colors: rgb };
 }
 
-/** A `.wvdb` file breaks the spec (bad magic, header, offsets, sizes). */
-export class WvdbFormatError extends Error {
-  constructor(message: string) {
-    super(`@pmndrs/vdb/tools wvdb: ${message}`);
-    this.name = "WvdbFormatError";
-  }
-}
+/** A `.wvdb` file breaks the spec (bad magic, header, offsets, sizes); defined in `../errors.ts` (D32). */
+export { WvdbFormatError };

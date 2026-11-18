@@ -17,7 +17,8 @@ export interface VdbBBox {
   max: [number, number, number];
 }
 
-export type Vec3Tuple = [number, number, number];
+/** A 3-vector of numbers (also exported by the core as `VDBVec3`). */
+export type VDBVec3 = [number, number, number];
 
 /**
  * The OpenVDB value types this parser reads (the `<valueType>` of a
@@ -83,7 +84,7 @@ export interface VdbFloatGrid extends VdbGridBase<number> {
 }
 
 /** A `Vec3SGrid` / `Vec3DGrid` / `Vec3IGrid`. Values are `[x, y, z]`. */
-export interface VdbVec3Grid extends VdbGridBase<Vec3Tuple> {
+export interface VdbVec3Grid extends VdbGridBase<VDBVec3> {
   valueType: "vec3s" | "vec3d" | "vec3i";
   components: 3;
 }
@@ -115,7 +116,7 @@ export interface VdbPointAttributeInfo {
 /** Points decoded from a point data grid, in OpenVDB leaf and voxel order. */
 export interface VdbPointList {
   count: number;
-  /** World-space positions, xyz per point: `transform(voxel ijk + P)`. */
+  /** World-space positions, xyz per point: `vdbTransform(voxel ijk + P)`. */
   positions: Float32Array;
   /**
    * Every other decodable attribute, `count * stride * components` values

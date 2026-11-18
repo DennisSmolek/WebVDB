@@ -10,7 +10,7 @@ what you do not use compiles out, and every symbol is prefixed `vdb`. The same o
 
 {/* snippet: module-options */}
 ```ts
-import { VDB_ALL_SCALAR_TYPES, checkModule, vdbModuleEntries, vdbModuleWgsl } from '@pmndrs/vdb';
+import { VDB_ALL_SCALAR_TYPES, vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from '@pmndrs/vdb';
 import type { VDBSlotModuleOptions } from '@pmndrs/vdb';
 
 const options: VDBSlotModuleOptions = {
@@ -22,7 +22,7 @@ const options: VDBSlotModuleOptions = {
 const wgsl = vdbModuleWgsl(options); // deterministic: the same options give the same bytes
 const entries = vdbModuleEntries(options.slot); // the bind group layout entries for that slot
 
-checkModule(pool, options); // throws VDB_TYPE_NOT_COMPILED if the pool holds a type the module lacks
+vdbCheckModule(pool, options); // throws VDB_TYPE_NOT_COMPILED if the pool holds a type the module lacks
 ```
 
 ## Binding: slot or buffer
@@ -77,7 +77,7 @@ voxel past its base voxel, into the neighbour cells.
 The shader decodes only the types its module was generated for. A grid of any other type **reads as 0**. So a module
 must be generated for every type the host may ever add: the known set, or `VDB_ALL_SCALAR_TYPES` (`float`, `fp4`,
 `fp8`, `fp16`, `fpn`) to never rebuild a pipeline, at the price of the largest module. `pool.types` lists only the
-grids present now. After each `add`, call `checkModule(pool, options)`: it throws `VDB_TYPE_NOT_COMPILED` or
+grids present now. After each `add`, call `vdbCheckModule(pool, options)`: it throws `VDB_TYPE_NOT_COMPILED` or
 `VDB_LAYOUT_MISMATCH`. It also takes just `{ types, layoutVersion? }`.
 
 ## Size budgets

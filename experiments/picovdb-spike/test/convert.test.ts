@@ -16,7 +16,7 @@ import { convertToPicoVDB } from "../src/convert.js";
 import { PicoVDBView } from "../src/reader.js";
 import { loadPrimitive, primitivesAvailable, samplesAvailable } from "../src/fixtures.js";
 import { converted, corpus, variants } from "./helpers.js";
-import { NanoVDBFile } from "../../../packages/vdb/src/tools/nvdb-file.js";
+import { NvdbFile } from "../../../packages/vdb/src/tools/nvdb-file.js";
 
 const golden = JSON.parse(readFileSync(new URL("./native-golden.json", import.meta.url), "utf8")) as Record<
   string,
@@ -93,7 +93,7 @@ describe.skipIf(!haveCorpus)("TS converter vs native picovdb (byte-for-byte)", (
 
 describe.skipIf(!primitivesAvailable())("converter scope (same as native, but loud)", () => {
   it("rejects quantized NanoVDB sources (native would silently read Fp8 bytes as f32)", () => {
-    const fp8 = NanoVDBFile.fromArrayBuffer(loadPrimitive("sphere").nativeFp8!.buffer);
+    const fp8 = NvdbFile.fromArrayBuffer(loadPrimitive("sphere").nativeFp8!.buffer);
     expect(() => convertToPicoVDB([{ image: fp8.gridImage(0) }])).toThrow(/not FLOAT/);
   });
 

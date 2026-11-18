@@ -59,11 +59,11 @@ import * as THREE from "three";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
-import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "../../../packages/vdb/src/three/internal.js";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { densityTwin, environmentGridTwin, furnaceEnvironment, gridMipTwin, lightingTwin, probeGrid, probeScattering, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
 import {
-  wvdbDenseToNanoVdb,
+  wvdbDenseToNvdb,
   readWvdb,
   vdbFrameDistanceFade,
   vdbFrameHenyeyGreenstein,
@@ -81,7 +81,7 @@ import {
   vdbSrgbEotf as vdbSrgbEotfLocal,
   wvdbDenseVolume,
   type VDBFrameFroxelSample,
-} from "@pmndrs/vdb/tools";
+} from "../../../packages/vdb/src/tools/internal.js";
 import { probeSpectral, spectralDensityTwin, spectralEnvironmentGridTwin, spectralIntegrateTwin, spectralLightingTwin, spectralTransmittanceTwin } from "./k3-frame-spectral.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
@@ -739,11 +739,11 @@ async function main(): Promise<void> {
   result.sourceKind = SOURCE_KIND;
   result.settings = { ...frameRenderer.settings };
 
-  // Dense: his bytes. Sparse: the same texels as a NanoVDB FLOAT grid (wvdbDenseToNanoVdb, voxel-exact), the K3.2
+  // Dense: his bytes. Sparse: the same texels as a NanoVDB FLOAT grid (wvdbDenseToNvdb, voxel-exact), the K3.2
   // default LOD ('coarse-pyramid', D28), normalized by the dense mean so only the sampler differs (K3.2 A/B).
   let source: VDBThreeVolumeSource;
   if (SOURCE_KIND === "sparse") {
-    const grid = wvdbDenseToNanoVdb(dense);
+    const grid = wvdbDenseToNvdb(dense);
     const pool = await VDBGridPool.create(device, { label: "k3-frame" });
     const id = pool.add(grid.image);
     pool.flush();

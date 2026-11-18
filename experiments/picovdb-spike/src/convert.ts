@@ -28,7 +28,7 @@
  */
 
 import { defineNumber, gridTypeConstantsFor } from "../../../packages/vdb/src/tools/cpu/stride-tables.js";
-import { readValue } from "../../../packages/vdb/src/tools/cpu/read-value.js";
+import { vdbReadValueCpu } from "../../../packages/vdb/src/tools/cpu/read-value.js";
 
 // ---- PicoVDB format constants (src/picovdb.zig / ts/picovdb.ts) ----------
 export const PICOVDB_MAGIC = [0x6f636950, 0x30424456] as const; // "PicoVDB0"
@@ -376,7 +376,7 @@ function convertLeaf(m: Mutable, ctx: Ctx, leafAddr: number, origin: [number, nu
           } else {
             // native: pnanovdb_readaccessor_get_value_address -> read_float / voxel_size
             // (divides even for fog, but this branch is SDF-only).
-            const r = readValue(ctx.w, [origin[0] + nx, origin[1] + ny, origin[2] + nz]).value;
+            const r = vdbReadValueCpu(ctx.w, [origin[0] + nx, origin[1] + ny, origin[2] + nz]).value;
             nv = fround(r / ctx.voxelSize);
           }
           if ((value < 0) !== (nv < 0) || (value <= 0) !== (nv <= 0)) {

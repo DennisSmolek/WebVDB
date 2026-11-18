@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 
-// K3.2a: the sparse source's coarse pyramid built on the GPU (core `createBoxPyramid`) against its CPU
+// K3.2a: the sparse source's coarse pyramid built on the GPU (core `vdbCreateBoxPyramid`) against its CPU
 // twin (tools `vdbBoxPyramid` + three's `DataUtils.toHalfFloat`, the K3.2 path), texel for texel on
 // the r16f textures (examples/src/harness/k3-pyramid.ts). Gate: every base and atlas texel within
 // 1 f16 ulp (the f32 GPU sums vs the f64 CPU sums can only move a truncation by one step), no

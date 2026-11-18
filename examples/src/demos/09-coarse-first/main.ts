@@ -2,7 +2,7 @@
  * Demo 09 — coarse-first (K4.20): stream one `.nvdb` that holds a small preview grid and then the full grid
  * (docs/design/K4-5-coarse-first.md, K4.16), and watch the volume go from preview to full with a byte counter.
  *
- * - The file is baked in the page (`bakeCoarseFirst` on `fixtures/vdb-samples/smoke.vdb`: `[density.lod48, density]`,
+ * - The file is baked in the page (`vdbBakeCoarseFirst` on `fixtures/vdb-samples/smoke.vdb`: `[density.lod48, density]`,
  *   box previews, FpN, codec ZIP; K4.19 proposes trilinear as the default, docs/handoffs/K4-19.md), made a `Blob`, and fetched back as a `Response` so the loader
  *   sees what a network delivers. `?file=<url>` streams a file you baked yourself instead
  *   (`node scripts/bake-coarse-first.mjs --out fixtures/smoke.coarse.nvdb`, then `?file=/fixtures/smoke.coarse.nvdb`).
@@ -25,7 +25,7 @@
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { bakeCoarseFirst, parseVdb } from "@pmndrs/vdb/tools";
+import { vdbBakeCoarseFirst, parseVdb } from "@pmndrs/vdb/tools";
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbCoarseFirstApply, vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import type { WebGPURenderer } from "three/webgpu";
@@ -117,7 +117,7 @@ async function openSource(): Promise<{ response: Response; total: number; label:
   if (!resp.ok) throw new Error(`${SOURCE_VDB} -> ${resp.status} (pnpm fixtures:vdb-samples)`);
   statsEl.textContent = "baking [density.lod48, density] in the page…";
   await sleep(0); // let the status paint before the bake blocks the main thread
-  const baked = bakeCoarseFirst(parseVdb(await resp.arrayBuffer()), { previewResolution: 48, filter: "box", quantize: "fpn" });
+  const baked = vdbBakeCoarseFirst(parseVdb(await resp.arrayBuffer()), { previewResolution: 48, filter: "box", quantize: "fpn" });
   const url = URL.createObjectURL(new Blob([baked as BlobPart], { type: "application/octet-stream" }));
   const response = await fetch(url);
   return { response, total: baked.length, label: `smoke.vdb baked in page (${kib(baked.length)}, ZIP)` };

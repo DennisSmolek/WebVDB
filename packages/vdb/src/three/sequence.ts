@@ -62,7 +62,7 @@
  */
 
 import { VDBError } from "../core/errors.js";
-import { NanoVDBFile } from "../tools/index.js";
+import { NvdbFile } from "../tools/index.js";
 
 /** The part of a `VDBGridPool` the player uses. */
 export interface VDBSequencePoolLike {
@@ -90,7 +90,7 @@ export interface VDBSequenceOptions {
   /** Loop back to frame 0 after the last frame. Default true. */
   loop?: boolean;
   /**
-   * Decode override. Default: `NanoVDBFile.fromURL(url)` -> `gridImage(0)`.
+   * Decode override. Default: `NvdbFile.fromURL(url)` -> `gridImage(0)`.
    * The demo passes an in-memory loader (build frames on the fly, no fetch);
    * the URL/fetch path is exercised via a Blob-URL manifest + this default.
    */
@@ -123,7 +123,7 @@ export interface VDBSequenceStats {
 
 /** Default loader: real fetch + parse of grid 0. */
 async function defaultLoader(url: string): Promise<Uint32Array> {
-  const file = await NanoVDBFile.fromURL(url);
+  const file = await NvdbFile.fromURL(url);
   return file.gridImage(0);
 }
 

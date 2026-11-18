@@ -29,7 +29,7 @@ import * as THREE from "three";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbSparseSource, vdbVolumeNodes, type VDBFrameShadowEntry, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbSparseSource, vdbVolumeNodes, type VDBFrameShadowEntry, type VDBThreeVolumeSource } from "../../../packages/vdb/src/three/internal.js";
 import {
   readWvdb,
   sampleWvdbDenseTexture,
@@ -49,14 +49,14 @@ import {
   vdbFrameShadowMapTexel,
   vdbFrameShadowPassRay,
   vdbFrameShadowReceiver,
-  wvdbDenseToNanoVdb,
+  wvdbDenseToNvdb,
   wvdbDenseVolume,
   writeWvdb,
   vdbSrgbOetf,
   type VDBFrameAtlas,
   type VDBFrameGridLayout,
   type WvdbDenseVolume,
-} from "@pmndrs/vdb/tools";
+} from "../../../packages/vdb/src/tools/internal.js";
 import { accumulate, finish, gridLayout, newStats, readAtlas, type TwinStats } from "./k3-frame-lighting.js";
 import { installPassTimer } from "./k3-pass-timer.js";
 import cloudUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
@@ -192,10 +192,10 @@ const v3 = (v: THREE.Vector3): V3 => [v.x, v.y, v.z];
 async function makeSource(renderer: WebGPURenderer, device: GPUDevice, dense: WvdbDenseVolume, emission: boolean): Promise<VDBThreeVolumeSource> {
   if (SOURCE_KIND !== "sparse") return vdbDenseTextures(dense);
   // The same texels as NanoVDB FLOAT grids (voxel for voxel), the K3.2 default LOD; the emission grid shares the texture box
-  const grid = wvdbDenseToNanoVdb(dense);
+  const grid = wvdbDenseToNvdb(dense);
   const pool = await VDBGridPool.create(device, { label: "k3-shadows" });
   const id = pool.add(grid.image);
-  const flames = emission ? wvdbDenseToNanoVdb(dense, { channel: "emission" }) : null;
+  const flames = emission ? wvdbDenseToNvdb(dense, { channel: "emission" }) : null;
   const emissionId = flames ? pool.add(flames.image) : undefined;
   pool.flush();
   await pool.settled();

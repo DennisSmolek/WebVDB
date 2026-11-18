@@ -152,7 +152,7 @@ function readLayer(o: ApiOptions, profileRank: number): string {
  *   inside), i.e. `xyz` in `[min - 1, max + 1)`.
  * - nearest: the voxel `floor(xyz + 0.5)` must lie in `[min, max]`, i.e.
  *   `xyz` in `[min - 0.5, max + 0.5)`; else 0.
- * CPU twins: `tools` `sampleTrilinear` / `sampleNearest` with `{ outside: 'zero' }`.
+ * CPU twins: `tools` `vdbSampleTrilinear` / `vdbSampleNearest` with `{ outside: 'zero' }`.
  */
 function sampleFunction(o: ApiOptions, profileRank: number): string[] {
   const read = (ijk: string) => `vdb_readaccessor_get_value_float((*acc).gridType, (*acc).buf, &inner, ${ijk})`;

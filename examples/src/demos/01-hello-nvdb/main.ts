@@ -17,7 +17,7 @@
  *      (|Δ| ≤ 1e-5, active flag exact); `window.__DEMO01__` feeds the e2e gate.
  */
 import { VDBGridPool } from "@pmndrs/vdb";
-import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import { NvdbFile } from "@pmndrs/vdb/tools";
 import { VDBGridNode, getDevice, vdbReadValue } from "@pmndrs/vdb/three";
 import { WebGPURenderer, StorageBufferAttribute } from "three/webgpu";
 import { Fn, instanceIndex, ivec3, storage, uint, wgslFn } from "three/tsl";
@@ -99,7 +99,7 @@ async function run(): Promise<void> {
   // 1. Load fixture + sidecar (CPU side).
   // -------------------------------------------------------------------------
   const [file, sidecar] = await Promise.all([
-    NanoVDBFile.fromURL(FIXTURE_NVDB),
+    NvdbFile.fromURL(FIXTURE_NVDB),
     fetch(FIXTURE_SIDECAR).then((r) => {
       if (!r.ok) throw new Error(`sidecar fetch failed: ${r.status}`);
       return r.json() as Promise<Sidecar>;

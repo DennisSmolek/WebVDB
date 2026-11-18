@@ -25,7 +25,7 @@
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import { NvdbFile } from "@pmndrs/vdb/tools";
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import type { WebGPURenderer } from "three/webgpu";
@@ -151,7 +151,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const file = NanoVDBFile.fromArrayBuffer(hit.buffer);
+  const file = NvdbFile.fromArrayBuffer(hit.buffer);
   const image = file.gridImage(0);
   const gridType = file.grids[0]!.gridType;
   const fixtureName = hit.url.split("/").pop() ?? hit.url;

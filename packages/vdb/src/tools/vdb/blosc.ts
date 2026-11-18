@@ -8,7 +8,7 @@
  * openvdb.org `bunny_cloud.vdb` and `explosion.vdb` samples are stored this
  * way. This decoder covers the frames that writer produces, plus the
  * `zlib` codec and memcpy'd frames for safety; other codecs (BloscLZ, Snappy,
- * Zstd) and bit-shuffle throw `VdbUnsupportedError`.
+ * Zstd) and bit-shuffle throw `VDBUnsupportedError`.
  *
  * Frame layout (c-blosc 1.x `blosc.c`, format version 2):
  *
@@ -27,7 +27,7 @@
  * Derived from the format description above, not from any third-party code.
  */
 
-import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+import { VdbFormatError, VDBUnsupportedError } from "./errors.js";
 import { inflateZlib } from "./inflate.js";
 
 const HEADER_SIZE = 16;
@@ -73,9 +73,9 @@ export function decompressBlosc(frame: Uint8Array, limits: BloscLimits = {}): Ui
   const blocksize = view.getUint32(8, true);
   const cbytes = view.getUint32(12, true);
   if (version === 0 || version > 2) {
-    throw new VdbUnsupportedError(`blosc frame format version ${version} (only Blosc1, versions 1-2, is supported)`);
+    throw new VDBUnsupportedError(`blosc frame format version ${version} (only Blosc1, versions 1-2, is supported)`);
   }
-  if (flags & 0x08) throw new VdbUnsupportedError("blosc frame has compressor flags from a future version");
+  if (flags & 0x08) throw new VDBUnsupportedError("blosc frame has compressor flags from a future version");
   if (cbytes < HEADER_SIZE || cbytes > frame.length) {
     throw new VdbFormatError(`blosc header field cbytes=${cbytes} is outside the ${frame.length}-byte frame`);
   }
@@ -101,11 +101,11 @@ export function decompressBlosc(frame: Uint8Array, limits: BloscLimits = {}): Ui
   }
 
   if (flags & FLAG_BITSHUFFLE) {
-    throw new VdbUnsupportedError("blosc bit-shuffle is not supported (OpenVDB writes byte shuffle)");
+    throw new VDBUnsupportedError("blosc bit-shuffle is not supported (OpenVDB writes byte shuffle)");
   }
   const codec = (flags >> 5) & 0x7;
   if (codec !== CODEC_LZ4 && codec !== CODEC_ZLIB) {
-    throw new VdbUnsupportedError(
+    throw new VDBUnsupportedError(
       `blosc codec ${CODEC_NAMES[codec] ?? `#${codec}`} is not supported (LZ4 and zlib are; OpenVDB writes LZ4)`,
     );
   }

@@ -19,13 +19,13 @@ siblings) were never published to npm; `@pmndrs/vdb` is the first published name
   revision counters, host-buffer mode, dispose), with a versioned GPU layout.
 - Core: generated WGSL modules per feature set (`read`, `sample`, `march`
   profiles; Float, Fp8 and FpN grids), with every symbol prefixed `vdb`, slot and
-  buffer binding modes, a size budget and snapshot guarded in CI, and CPU twins
-  of the traversal (`hddaWalk`, `nodeStats`, `readValueF32`).
+  buffer binding modes, a size budget and snapshot guarded in CI. Compute tools
+  `vdbGridStatsGpu`, `vdbDecodeToAtlasGpu`, `vdbApplyValueTransform` and the GPU
+  coarse pyramid `vdbCreateBoxPyramid`.
 - three.js adapter: `VDBGridNode` and the `vdbSample()` TSL helper,
   `VDBVolumeMaterial` (with `vdbProxyGeometry`), `VDBSequence` (frame playback on
-  `pool.replace`), compute helpers (`gridStats`, `valueTransform`,
-  `decodeToAtlas`), and `getDevice(renderer)` / `getGPUTexture` so tools share one
-  GPU device.
+  `pool.replace`), compute helpers (`vdbGridStats`, `vdbDecodeToAtlas`), and
+  `getDevice(renderer)` / `getGPUTexture` so tools share one GPU device.
 - Tools: `.nvdb` reader and writer; `.vdb` (OpenVDB) parser including Blosc and
   zlib compression, active tiles, vector grids and point grids; build from dense
   data or from a `.vdb`; Fp8/FpN quantize; inspect and transform; resample-to-
@@ -35,7 +35,16 @@ siblings) were never published to npm; `@pmndrs/vdb` is the first published name
 
 ### Notes
 
-- `readValue` returns the exact f64 decode; `readValueF32` matches the GPU's
-  evaluation order. The two can differ by 1 ulp on Fp grids.
+- `vdbReadValueCpu` returns the exact f64 decode; `vdbReadValueF32` matches the
+  GPU's evaluation order. The two can differ by 1 ulp on Fp grids.
+- Public names follow D32: library API is `VDB*` / `VDB_*` / `vdb*`; anything bound
+  to one file format keeps its prefix (`Vdb*` for `.vdb`, `Nvdb*` for `.nvdb`,
+  `Wvdb*` for `.wvdb`), and format readers and writers may read as a verb and the
+  format (`parseVdb`, `writeNvdb`, `readWvdb`). Each entry point exports only the
+  user-facing API; the CPU twins of the WGSL used as test oracles are not
+  exported.
+- Every error `@pmndrs/vdb/tools` throws on bad input is a `VDBToolsError` with a
+  `code` (`VdbFormatError`, `NvdbFormatError`, `WvdbFormatError` and
+  `VDBUnsupportedError` extend it); the core throws `VDBError`.
 - Code is MIT licensed. The vendored `pnanovdb.wgsl` keeps its Apache-2.0 licence
   and NOTICE, which are shipped in the package.

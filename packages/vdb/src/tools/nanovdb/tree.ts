@@ -53,6 +53,7 @@
  * documented and intended (topology follows activity).
  */
 
+import { VDBToolsError } from "../errors.js";
 import {
   leafCoordToOffset,
   lowerCoordToOffset,
@@ -247,7 +248,7 @@ export function buildTreeFromLeaves(
   for (const src of source) {
     const [lx, ly, lz] = src.origin;
     if (src.values.length !== LEAF_TABLE_COUNT * components) {
-      throw new Error(
+      throw new VDBToolsError("VDB_BAD_OPTION", 
         `buildFromLeaves: leaf at [${lx}, ${ly}, ${lz}] has ${src.values.length} values, ` +
           `expected ${LEAF_TABLE_COUNT * components}`,
       );
@@ -381,16 +382,16 @@ function assembleTree(
     const { dim, value } = tile;
     const active = tile.active !== false;
     if ((typeof value === "number") !== (components === 1)) {
-      throw new Error(`buildFromLeaves: tile value ${JSON.stringify(value)} does not have ${components} component(s)`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: tile value ${JSON.stringify(value)} does not have ${components} component(s)`);
     }
     if (TILE_STATS_WEIGHT[dim] === undefined) {
-      throw new Error(`buildFromLeaves: tile dim ${dim} must be 8, 128 or 4096`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: tile dim ${dim} must be 8, 128 or 4096`);
     }
     if (alignDown(tx, dim) !== tx || alignDown(ty, dim) !== ty || alignDown(tz, dim) !== tz) {
-      throw new Error(`buildFromLeaves: tile origin [${tx}, ${ty}, ${tz}] is not ${dim}-aligned`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: tile origin [${tx}, ${ty}, ${tz}] is not ${dim}-aligned`);
     }
     const duplicate = (): never => {
-      throw new Error(`buildFromLeaves: duplicate ${dim}^3 tile at [${tx}, ${ty}, ${tz}]`);
+      throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: duplicate ${dim}^3 tile at [${tx}, ${ty}, ${tz}]`);
     };
     if (dim === 8) {
       const lower = lowerAt(tx, ty, tz);
@@ -423,7 +424,7 @@ function assembleTree(
 
   // A slot holds a child or a tile, never both.
   const overlap = (where: string, origin: readonly number[]): never => {
-    throw new Error(`buildFromLeaves: active tile overlaps child data in ${where} at [${origin.join(", ")}]`);
+    throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: active tile overlaps child data in ${where} at [${origin.join(", ")}]`);
   };
   for (const lower of lowerMap.values()) {
     for (const slot of [...lower.tiles.keys(), ...lower.inactiveTiles.keys()]) {

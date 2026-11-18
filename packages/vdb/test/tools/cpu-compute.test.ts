@@ -1,22 +1,22 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  NanoVDBFile,
+  NvdbFile,
   atlasDims,
   atlasFromRaw,
   bboxSize,
-  buildFromDense,
-  decodeToAtlasCpu,
+  vdbBuildFromDense,
+  vdbDecodeToAtlasCpu,
   getDim,
-  gridStatsCpu,
+  vdbGridStatsCpu,
   indexBBox,
   isActive,
-  readValue,
-  readValueF32,
+  vdbReadValueCpu,
+  vdbReadValueF32,
   rootStats,
-  sampleTrilinear,
+  vdbSampleTrilinear,
   transformLeafValues,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 // K2.3: CPU twins of the core compute tools. The GPU side is checked against
 // these in e2e/compute.spec.ts (bit-exact on SwiftShader); here they are
@@ -24,14 +24,14 @@ import {
 
 const dir = new URL("../../../../fixtures/primitives/", import.meta.url);
 const has = (n: string) => existsSync(new URL(`${n}.nvdb`, dir));
-const load = (n: string) => NanoVDBFile.fromArrayBuffer(new Uint8Array(readFileSync(new URL(`${n}.nvdb`, dir))).buffer).gridImage(0);
+const load = (n: string) => NvdbFile.fromArrayBuffer(new Uint8Array(readFileSync(new URL(`${n}.nvdb`, dir))).buffer).gridImage(0);
 const sidecar = (n: string) => JSON.parse(readFileSync(new URL(`${n}.sidecar.json`, dir), "utf8")) as { grid: { activeVoxelCount: number } };
 const FIXTURES = ["box_fog_float", "sphere_fog_fp8", "torus_fog_fpn"].filter(has);
 
 function signedGrid(): Uint32Array {
   const dims: [number, number, number] = [12, 9, 7];
   const values = new Float32Array(dims[0] * dims[1] * dims[2]).map((_, i) => (i % 5 === 0 ? 0 : Math.sin(i * 0.37)));
-  return buildFromDense(values, dims, { origin: [-3, 2, -5], gridClass: "Unknown" });
+  return vdbBuildFromDense(values, dims, { origin: [-3, 2, -5], gridClass: "Unknown" });
 }
 
 describe("bboxSize / atlasDims", () => {
@@ -58,10 +58,10 @@ describe("atlasFromRaw (v1's post-readback step)", () => {
   });
 });
 
-describe.skipIf(FIXTURES.length === 0)("gridStatsCpu", () => {
+describe.skipIf(FIXTURES.length === 0)("vdbGridStatsCpu", () => {
   it.each(FIXTURES)("%s: count/min/max equal a plain f64 scan, mean close, histogram sums to the count", (name) => {
     const image = load(name);
-    const s = gridStatsCpu(image);
+    const s = vdbGridStatsCpu(image);
     const { min: lo, max: hi } = indexBBox(image);
     let count = 0;
     let min = Infinity;
@@ -70,7 +70,7 @@ describe.skipIf(FIXTURES.length === 0)("gridStatsCpu", () => {
     for (let x = lo[0]; x <= hi[0]; x++) {
       for (let y = lo[1]; y <= hi[1]; y++) {
         for (let z = lo[2]; z <= hi[2]; z++) {
-          const r = readValue(image, [x, y, z]);
+          const r = vdbReadValueCpu(image, [x, y, z]);
           if (!r.active) continue;
           count++;
           sum += r.value;
@@ -94,7 +94,7 @@ describe.skipIf(FIXTURES.length === 0)("gridStatsCpu", () => {
 
   it("a grid with negative values takes the dump path (f64 mean) and honours histogramBins", () => {
     const image = signedGrid();
-    const s = gridStatsCpu(image, { histogramBins: 16 });
+    const s = vdbGridStatsCpu(image, { histogramBins: 16 });
     expect(rootStats(image).min).toBeLessThan(0);
     expect(s.usedAtomicFastPath).toBe(false);
     expect(s.histogram).toHaveLength(16);
@@ -104,10 +104,10 @@ describe.skipIf(FIXTURES.length === 0)("gridStatsCpu", () => {
   });
 });
 
-describe.skipIf(FIXTURES.length === 0)("decodeToAtlasCpu", () => {
+describe.skipIf(FIXTURES.length === 0)("vdbDecodeToAtlasCpu", () => {
   it.each(FIXTURES)("%s: nearest reads voxel floor(min + i + 1) at full resolution (v1's cell-centre convention)", (name) => {
     const image = load(name);
-    const { raw, dims } = decodeToAtlasCpu(image, { filter: "nearest", maxDim: 1 << 20 });
+    const { raw, dims } = vdbDecodeToAtlasCpu(image, { filter: "nearest", maxDim: 1 << 20 });
     const { min } = indexBBox(image);
     expect(dims).toEqual(bboxSize(indexBBox(image)));
     // pos = min + (i + 0.5) / n * n = min + i + 0.5, so floor(pos + 0.5) = min + i + 1.
@@ -115,20 +115,20 @@ describe.skipIf(FIXTURES.length === 0)("decodeToAtlasCpu", () => {
       const x = i % dims[0];
       const y = Math.floor(i / dims[0]) % dims[1];
       const z = Math.floor(i / (dims[0] * dims[1]));
-      expect(raw[i]).toBe(readValueF32(image, [min[0] + x + 1, min[1] + y + 1, min[2] + z + 1]));
+      expect(raw[i]).toBe(vdbReadValueF32(image, [min[0] + x + 1, min[1] + y + 1, min[2] + z + 1]));
     }
   });
 
-  it.each(FIXTURES)("%s: trilinear agrees with the f64 sampleTrilinear twin to f32 rounding", (name) => {
+  it.each(FIXTURES)("%s: trilinear agrees with the f64 vdbSampleTrilinear twin to f32 rounding", (name) => {
     const image = load(name);
-    const { raw, dims } = decodeToAtlasCpu(image, { maxDim: 24 });
+    const { raw, dims } = vdbDecodeToAtlasCpu(image, { maxDim: 24 });
     const bbox = indexBBox(image);
     const size = bboxSize(bbox);
     let maxAbs = 0;
     for (let i = 0; i < raw.length; i += 7) {
       const g = [i % dims[0], Math.floor(i / dims[0]) % dims[1], Math.floor(i / (dims[0] * dims[1]))];
       const p = [0, 1, 2].map((a) => bbox.min[a]! + ((g[a]! + 0.5) / dims[a]!) * size[a]!) as [number, number, number];
-      maxAbs = Math.max(maxAbs, Math.abs(raw[i]! - sampleTrilinear(image, p)));
+      maxAbs = Math.max(maxAbs, Math.abs(raw[i]! - vdbSampleTrilinear(image, p)));
     }
     expect(maxAbs).toBeLessThan(1e-4);
   });
@@ -147,10 +147,10 @@ describe.skipIf(!has("box_fog_float"))("transformLeafValues", () => {
       const ijk = [0, 1, 2].map((a) => min[a]! + ((n * [7919, 104729, 1299709][a]!) % (max[a]! - min[a]! + 1))) as [number, number, number];
       if (getDim(image, ijk) === 1) {
         leaves++;
-        expect(readValueF32(out, ijk)).toBe(Math.fround(readValueF32(image, ijk) * 2 + 1));
+        expect(vdbReadValueF32(out, ijk)).toBe(Math.fround(vdbReadValueF32(image, ijk) * 2 + 1));
       } else {
         tiles++;
-        expect(readValueF32(out, ijk)).toBe(readValueF32(image, ijk));
+        expect(vdbReadValueF32(out, ijk)).toBe(vdbReadValueF32(image, ijk));
       }
       expect(isActive(out, ijk)).toBe(isActive(image, ijk));
     }

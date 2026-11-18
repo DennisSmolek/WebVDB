@@ -8,16 +8,16 @@
  * stage is checked against the values the spec put in.
  *
  * Oracles: the spec itself (parser), the proven CPU reader `readValue` /
- * `sampleTrilinear` (NanoVDB), and NanoVDB `GridStats` for stats weighting.
+ * `vdbSampleTrilinear` (NanoVDB), and NanoVDB `GridStats` for stats weighting.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { buildFromVdbDetailed, inspect, quantizeDetailed, writeNvdb } from "../../src/tools/index.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { sampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
-import { buildFromLeavesDetailed } from "../../src/tools/nanovdb/serialize.js";
-import { FLOAT_LEAF_CODEC } from "../../src/tools/nanovdb/leaf-codec.js";
+import { buildFromVdbDetailed, vdbInspect, vdbQuantizeDetailed, writeNvdb } from "../../src/tools/index.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbBuildFromLeavesDetailed } from "../../src/tools/nanovdb/serialize.js";
+import { VDB_FLOAT_LEAF_CODEC } from "../../src/tools/nanovdb/leaf-codec.js";
 import { parseVdb } from "../../src/tools/vdb/index.js";
 import type { VdbGrid, VdbTile } from "../../src/tools/vdb/types.js";
 import { writeSyntheticVdb, type SynthLeaf, type SynthSpec } from "./synthetic-vdb.js";
@@ -166,7 +166,7 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
     expect(built.voxelCount).toBe(LEAF_ACTIVE + TILE_VOXELS);
     // Tiles are not expanded: only the two real leaves exist.
     expect(built.nodeCounts).toEqual({ leaf: 2, lower: 2, upper: 2 });
-    expect(inspect(image).voxelCount).toBe(LEAF_ACTIVE + TILE_VOXELS);
+    expect(vdbInspect(image).voxelCount).toBe(LEAF_ACTIVE + TILE_VOXELS);
   });
 
   it("writes the root tile as state-on, child-less, holding its value, in origin order", () => {
@@ -199,7 +199,7 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
   it("the CPU oracle returns tile values, active, everywhere inside each tile", () => {
     for (const t of ALL_TILES) {
       for (const ijk of coordsInTile(t.origin, t.dim)) {
-        expect(readValue(image, ijk)).toEqual({ value: t.value, active: true });
+        expect(vdbReadValueCpu(image, ijk)).toEqual({ value: t.value, active: true });
       }
     }
   });
@@ -209,20 +209,20 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
       for (let n = 0; n < 512; n++) {
         const ijk: Coord = [leaf.origin[0] + ((n >> 6) & 7), leaf.origin[1] + ((n >> 3) & 7), leaf.origin[2] + (n & 7)];
         const active = ((leaf.valueMask[n >>> 5]! >>> (n & 31)) & 1) !== 0;
-        expect(readValue(image, ijk)).toEqual({ value: leaf.values[n], active });
+        expect(vdbReadValueCpu(image, ijk)).toEqual({ value: leaf.values[n], active });
       }
     }
     for (const [ijk, value] of [[[8192, 5, 5], 9], [[259, 1, 1], 7], [[18, 0, 0], 3], [[0, 8192, 0], 0]] as [Coord, number][]) {
-      expect(readValue(image, ijk)).toEqual({ value, active: false });
+      expect(vdbReadValueCpu(image, ijk)).toEqual({ value, active: false });
     }
   });
 
-  it("sampleTrilinear inside a tile is the tile value, and blends across a tile edge", () => {
-    expect(sampleTrilinear(image, [190.3, 60.7, 3.2])).toBeCloseTo(0.5, 6);
-    expect(sampleTrilinear(image, [-2000.5, 100.25, 7.75])).toBeCloseTo(0.25, 6);
-    expect(sampleTrilinear(image, [11.5, 3.5, 3.5])).toBeCloseTo(0.75, 6);
+  it("vdbSampleTrilinear inside a tile is the tile value, and blends across a tile edge", () => {
+    expect(vdbSampleTrilinear(image, [190.3, 60.7, 3.2])).toBeCloseTo(0.5, 6);
+    expect(vdbSampleTrilinear(image, [-2000.5, 100.25, 7.75])).toBeCloseTo(0.25, 6);
+    expect(vdbSampleTrilinear(image, [11.5, 3.5, 3.5])).toBeCloseTo(0.75, 6);
     // Halfway between the upper tile (x=128) and empty space (x=127, outside every leaf/tile).
-    expect(sampleTrilinear(image, [127.5, 64, 64])).toBeCloseTo(0.25, 6);
+    expect(vdbSampleTrilinear(image, [127.5, 64, 64])).toBeCloseTo(0.25, 6);
   });
 
   it("node stats follow NanoVDB GridStats tile weighting", () => {
@@ -255,13 +255,13 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
 
   it("quantize keeps the tiles as tiles (fp8 and fpn), including the root tile", () => {
     for (const mode of ["fp8", "fpn"] as const) {
-      const q = quantizeDetailed(image, mode);
+      const q = vdbQuantizeDetailed(image, mode);
       expect(q.tileCounts).toEqual({ lower: 2, upper: 1, root: 1 });
       expect(q.nodeCounts).toEqual(built.nodeCounts);
       expect(q.voxelCount).toBe(built.voxelCount);
       for (const t of ALL_TILES) {
         for (const ijk of coordsInTile(t.origin, t.dim, 8)) {
-          expect(readValue(q.image, ijk)).toEqual({ value: t.value, active: true }); // tiles stay f32
+          expect(vdbReadValueCpu(q.image, ijk)).toEqual({ value: t.value, active: true }); // tiles stay f32
         }
       }
     }
@@ -277,7 +277,7 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
 describe("buildFromLeaves — tile validation", () => {
   const leaf = { origin: [0, 0, 0] as Coord, values: new Float32Array(512), valueMask: new Uint32Array(16).fill(1) };
   const build = (tiles: { origin: Coord; dim: number; value: number }[]) =>
-    buildFromLeavesDetailed([leaf], FLOAT_LEAF_CODEC, { tiles });
+    vdbBuildFromLeavesDetailed([leaf], VDB_FLOAT_LEAF_CODEC, { tiles });
 
   it("rejects a tile that shares a slot with a leaf", () => {
     expect(() => build([{ origin: [0, 0, 0], dim: 8, value: 1 }])).toThrow(/overlaps/);

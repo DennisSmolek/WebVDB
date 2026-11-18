@@ -2,13 +2,15 @@
 //   src/three-openvdb/frame/webgpu/frameMipmaps.js L14–106 (level sizes, the mip atlas layout).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: the layout alone (no data), shared by the CPU pyramid (`vdbBoxPyramid`) and the GPU build
-// in the core (`createBoxPyramid`, K3.2a).
+// in the core (`vdbCreateBoxPyramid`, K3.2a).
 
 /**
  * The texel layout of the sparse source's coarse pyramid (K3.2 / K3.2a): the base level L₀ and its
  * size, and his box mip atlas above it (levels 1..n side by side on x). Pure arithmetic, so the CPU
- * build (`vdbBoxPyramid`) and the GPU build (core `createBoxPyramid`) agree on every size and offset.
+ * build (`vdbBoxPyramid`) and the GPU build (core `vdbCreateBoxPyramid`) agree on every size and offset.
  */
+
+import { VDBToolsError } from "../errors.js";
 
 type Vec3 = [number, number, number];
 
@@ -50,9 +52,9 @@ export interface VDBBoxPyramidLayout {
  */
 export function vdbBoxPyramidLayout(texels: readonly number[], o: { pyramidMax?: number; level?: number } = {}): VDBBoxPyramidLayout {
   const t: Vec3 = [texels[0]!, texels[1]!, texels[2]!];
-  if (t.some((v) => !(v > 0) || !Number.isInteger(v))) throw new Error(`vdbBoxPyramidLayout: texels must be positive integers, got ${JSON.stringify(texels)}`);
+  if (t.some((v) => !(v > 0) || !Number.isInteger(v))) throw new VDBToolsError("VDB_BAD_OPTION", `vdbBoxPyramidLayout: texels must be positive integers, got ${JSON.stringify(texels)}`);
   const level = o.level ?? vdbPyramidBaseLevel(t, o.pyramidMax ?? 128);
-  if (!Number.isInteger(level) || level < 0) throw new Error(`vdbBoxPyramidLayout: level must be an integer >= 0, got ${level}`);
+  if (!Number.isInteger(level) || level < 0) throw new VDBToolsError("VDB_BAD_OPTION", `vdbBoxPyramidLayout: level must be an integer >= 0, got ${level}`);
   const dims: Vec3 = [vdbPyramidLevelSize(t[0], level), vdbPyramidLevelSize(t[1], level), vdbPyramidLevelSize(t[2], level)];
   const [width, height, depth] = dims;
   const count = Math.ceil(Math.log2(Math.max(width, height, depth, 1)));

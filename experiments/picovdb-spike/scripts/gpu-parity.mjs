@@ -84,7 +84,7 @@ async function main() {
   const cv = await ts.load("src/convert.ts");
   const cmp = await ts.load("src/compare.ts");
   const rd = await ts.load("src/reader.ts");
-  const { readValue } = await ts.load("../../packages/vdb/src/tools/cpu/read-value.ts");
+  const { vdbReadValueCpu: readValue } = await ts.load("../../packages/vdb/src/tools/cpu/read-value.ts");
   const { probeCoords } = await ts.load("../../packages/vdb/src/tools/cpu/probe-coords.ts");
 
   // Build every case up front (CPU side).
@@ -112,8 +112,8 @@ async function main() {
   // root search (arrayLength of the padded roots binding) and index upper[1],
   // which does not exist.
   if (!ONLY || "hazard/padding-root".includes(ONLY)) {
-    const { buildFromDense } = await ts.load("../../packages/vdb/src/tools/index.ts");
-    const image = buildFromDense(new Float32Array(512).fill(0.5), [8, 8, 8], { origin: [-100, -100, -100] });
+    const { vdbBuildFromDense } = await ts.load("../../packages/vdb/src/tools/index.ts");
+    const image = vdbBuildFromDense(new Float32Array(512).fill(0.5), [8, 8, 8], { origin: [-100, -100, -100] });
     const f = { id: "hazard/padding-root", kind: "fog", image, voxelSize: 1, gridClassId: 2 };
     const coords = [];
     for (let i = 0; i < 4096; i++) coords.push(i % 2 ? [(i * 37) % 4096, (i * 101) % 4096, (i * 13) % 4096] : [-100 + (i % 8), -100 + ((i >> 3) % 8), -100 + ((i >> 6) % 8)]);

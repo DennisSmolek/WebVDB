@@ -6,7 +6,7 @@
 
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { readWvdb, vdbFrameSliceDepth, vdbFrameSliceRange, wvdbDenseVolume } from "../../src/tools/index.js";
+import { readWvdb, vdbFrameSliceDepth, vdbFrameSliceRange, wvdbDenseVolume } from "../../src/tools/internal.js";
 import { VDBFrameRenderer, VDBFrameVolume, vdbDenseTextures, vdbFrameAllLights } from "../../src/three/index.js";
 import {
   getAtlasLayout,
@@ -23,12 +23,17 @@ import { fixture } from "../tools/wvdb-helpers.js";
 const dual = { phase: "dual-lobe" as const, phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0 };
 
 describe("@pmndrs/vdb/three K3.1 exports", () => {
-  it("exports the froxel renderer surface", async () => {
+  it("exports the froxel renderer surface; the pass materials and chunks stay internal (D32)", async () => {
     const three = (await import("../../src/three/index.js")) as Record<string, unknown>;
-    for (const name of ["VDBFrameVolume", "VDBFrameRenderer", "vdbFrameRenderer", "VDBFrameInjectMaterial", "VDBFrameIntegrateMaterial", "vdbFroxelRect"]) {
+    const internal = (await import("../../src/three/internal.js")) as Record<string, unknown>;
+    for (const name of ["VDBFrameVolume", "VDBFrameRenderer", "vdbFrameRenderer", "VDBFrameEmissionLight", "vdbFrameMedium", "vdbFrameBlackbodyEmission"]) {
       expect(typeof three[name], name).toBe("function");
     }
-    expect(typeof three.vdbFrameChunks).toBe("object");
+    for (const name of ["VDBFrameInjectMaterial", "VDBFrameIntegrateMaterial", "vdbFroxelRect", "vdbFrameChunks"]) {
+      expect(name in three, name).toBe(false);
+      expect(name in internal, name).toBe(true);
+    }
+    expect(typeof internal.vdbFrameChunks).toBe("object");
   });
 });
 

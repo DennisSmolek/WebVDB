@@ -16,13 +16,13 @@
  *
  *   1. What a NanoVDB grid IS — a single flat buffer, no pointers.
  *   2. What a `.nvdb` FILE adds around that grid, and how we get the grid
- *      back out of it (using the `NanoVDBFile` loader from `@pmndrs/vdb/tools`
+ *      back out of it (using the `NvdbFile` loader from `@pmndrs/vdb/tools`
  *      — we teach its API here, we do not reimplement it).
  *   3. How those bytes reach the GPU: unchanged, in one copy.
  *   4. How a WGSL function walks the grid's 4-level tree to read one voxel.
  *   5. Wiring it into an actual compute dispatch, and checking the answers.
  */
-import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import { NvdbFile } from "@pmndrs/vdb/tools";
 
 // ---------------------------------------------------------------------------
 // Types shared with the e2e harness (window.__DEMO03__) and the page table.
@@ -114,11 +114,11 @@ function log(text: string, cls = ""): void {
 // (optionally zlib-compressed) bytes.
 //
 // None of that parsing happens in this file — that's the job of
-// `NanoVDBFile` (packages/vdb/src/tools/nvdb-file.ts, exported as
+// `NvdbFile` (packages/vdb/src/tools/nvdb-file.ts, exported as
 // `@pmndrs/vdb/tools`). This demo is about the traversal, not the container
 // format, so we just call it:
 //
-//     const file = await NanoVDBFile.fromURL(url);
+//     const file = await NvdbFile.fromURL(url);
 //     const gridImage = file.gridImage(0); // Uint32Array, ready for the GPU
 //
 // `gridImage(0)` decompresses (if needed) and hands back exactly the flat
@@ -412,7 +412,7 @@ async function run(): Promise<void> {
 
   // --- Section 2 in practice: load the .nvdb file and pull out the grid image
   const [file, sidecar] = await Promise.all([
-    NanoVDBFile.fromURL(FIXTURE_NVDB),
+    NvdbFile.fromURL(FIXTURE_NVDB),
     fetch(FIXTURE_SIDECAR).then((r) => {
       if (!r.ok) throw new Error(`sidecar fetch failed: ${r.status}`);
       return r.json() as Promise<Sidecar>;

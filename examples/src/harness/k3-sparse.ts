@@ -4,7 +4,7 @@
  *
  * Assets (`?asset=`):
  * - `cloud04` (default): the committed CC0 `cloud_04_variant_0000.wvdb`; dense = his 8-bit texels,
- *   sparse = the same texels converted to a NanoVDB FLOAT grid (`wvdbDenseToNanoVdb`, voxel-exact),
+ *   sparse = the same texels converted to a NanoVDB FLOAT grid (`wvdbDenseToNvdb`, voxel-exact),
  *   so dense vs sparse `none` differ only in the sampler (the identical-voxel A/B).
  * - `bunny`: his `bunny_cloud.wvdb` from `/fixtures/k3/` (not committed), same conversion.
  * - `smoke`: `/fixtures/vdb-samples/smoke.vdb` full resolution on sparse; dense = the 128³ `.wvdb`
@@ -31,9 +31,9 @@ import * as TSL from "three/tsl";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBThreeVolumeSource, type VDBSparseLod } from "@pmndrs/vdb/three";
 import {
-  NanoVDBFile,
+  NvdbFile,
   buildFromVdb,
-  nanoVdbToWvdb,
+  nvdbToWvdb,
   nodeAverage,
   parseVdb,
   readWvdb,
@@ -41,10 +41,10 @@ import {
   vdbFrameSkipEmpty,
   vdbSrgbOetf,
   vdbToWvdb,
-  wvdbDenseToNanoVdb,
+  wvdbDenseToNvdb,
   wvdbDenseVolume,
   type WvdbDenseVolume,
-} from "@pmndrs/vdb/tools";
+} from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -194,7 +194,7 @@ async function loadAsset(needDense: boolean): Promise<Asset> {
   if (ASSET === "cloud04" || ASSET === "bunny") {
     const url = ASSET === "cloud04" ? cloudWvdbUrl : "/fixtures/k3/bunny_cloud.wvdb";
     const dense = wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(url))), { mipmaps: true });
-    const grid = wvdbDenseToNanoVdb(dense);
+    const grid = wvdbDenseToNvdb(dense);
     return { image: grid.image, dense, indexBox: grid.textureIndexBox, ...(dense.bbox ? { bbox: dense.bbox as [[number, number, number], [number, number, number]] } : {}), identical: true };
   }
   if (ASSET === "smoke") {
@@ -206,8 +206,8 @@ async function loadAsset(needDense: boolean): Promise<Asset> {
     return { image, dense, identical: false };
   }
   if (ASSET === "wdas") {
-    const image = NanoVDBFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0);
-    const dense = needDense ? wvdbDenseVolume(readWvdb(nanoVdbToWvdb(image, { resolution: DENSE_RES }).bytes), { mipmaps: true }) : null;
+    const image = NvdbFile.fromArrayBuffer(await fetchBytes("/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb")).gridImage(0);
+    const dense = needDense ? wvdbDenseVolume(readWvdb(nvdbToWvdb(image, { resolution: DENSE_RES }).bytes), { mipmaps: true }) : null;
     return { image, dense, identical: false };
   }
   throw new Error(`unknown ?asset=${ASSET}; use cloud04, bunny, smoke, wdas`);

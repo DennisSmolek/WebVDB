@@ -23,7 +23,7 @@ import {
   vdbFrameEnvironmentMapHeight,
   type VDBFrameAtlas,
   type VDBFrameGridLayout,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 // K3.3: the engine-free maths of mjurczyk's 'frame' lighting (tools/frame/grid.ts, environment.ts): his shadow grid
 // cascades, caster ranges and signatures, and the CPU twins the e2e harness compares the GPU passes with. Each test

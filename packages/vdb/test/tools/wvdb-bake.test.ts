@@ -4,9 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   bakeWvdb,
-  buildFromDense,
+  vdbBuildFromDense,
   buildFromVdb,
-  nanoVdbToWvdb,
+  nvdbToWvdb,
   parseVdb,
   readWvdb,
   sampleWvdbDense,
@@ -14,10 +14,10 @@ import {
   wvdbChunks,
   wvdbDensityStats,
   wvdbFinestDimensions,
-  wvdbSourceFromNanoVdb,
+  wvdbSourceFromNvdb,
   type WvdbSampleSource,
   type WvdbVolumeGrid,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { WVDB_FIXTURES, bytesEqual, headerWithoutOffsets, readBytes, vdbSample } from "./wvdb-helpers.js";
 
 const identity = (b: Uint8Array) => b;
@@ -57,12 +57,12 @@ describe("NanoVDB grid → .wvdb through the CPU oracle", () => {
   it("matches a direct dense source on a dense-built grid, and round-trips", () => {
     const dims: [number, number, number] = [20, 13, 9];
     const values = new Float32Array(dims[0] * dims[1] * dims[2]);
-    // buildFromDense indexes x-major (x slowest); fill by coordinates
+    // vdbBuildFromDense indexes x-major (x slowest); fill by coordinates
     const at = (x: number, y: number, z: number) => (x * dims[1] + y) * dims[2] + z;
     const f = (x: number, y: number, z: number) => (Math.hypot(x - 10, y - 6, z - 4) < 5 ? Math.fround(0.1 + (x + y + z) / 50) : 0);
     for (let x = 0; x < dims[0]; x++) for (let y = 0; y < dims[1]; y++) for (let z = 0; z < dims[2]; z++) values[at(x, y, z)] = f(x, y, z);
-    const image = buildFromDense(values, dims, { voxelSize: 0.5, worldOrigin: [1, 2, 3], gridName: "density" });
-    const src = wvdbSourceFromNanoVdb(image);
+    const image = vdbBuildFromDense(values, dims, { voxelSize: 0.5, worldOrigin: [1, 2, 3], gridName: "density" });
+    const src = wvdbSourceFromNvdb(image);
     expect(src.name).toBe("density");
     expect(src.class).toBe("fog volume");
     // active box -> world box (voxel centres): index (6..14, 2..10, 0..8) * 0.5 + origin
@@ -76,10 +76,10 @@ describe("NanoVDB grid → .wvdb through the CPU oracle", () => {
         return { value, active: value !== 0 };
       },
     };
-    const a = nanoVdbToWvdb(image, { resolution: 24, compress: identity });
+    const a = nvdbToWvdb(image, { resolution: 24, compress: identity });
     const b = bakeWvdb([direct], { resolution: 24, compress: identity });
     expect(bytesEqual(a.bytes, b.bytes)).toBe(true);
-    const file = readWvdb(nanoVdbToWvdb(image, { resolution: 24 }).bytes);
+    const file = readWvdb(nvdbToWvdb(image, { resolution: 24 }).bytes);
     const g = file.grids[0] as WvdbVolumeGrid;
     expect(g.levels[2]!.dimensions).toEqual(wvdbFinestDimensions(src.bbox, 24));
     expect(g.nonZeroVoxels).toBeGreaterThan(0);
@@ -122,7 +122,7 @@ describe.skipIf(!smokeVdb)("smoke.vdb → .wvdb reproduces his committed smoke.w
     const bytes = readBytes(smokeVdb!);
     const file = parseVdb(bytes.slice().buffer);
     const a = vdbToWvdb(file, { compress: identity });
-    const b = nanoVdbToWvdb(buildFromVdb(file.grids[0]!), { compress: identity });
+    const b = nvdbToWvdb(buildFromVdb(file.grids[0]!), { compress: identity });
     expect(bytesEqual(a.bytes, b.bytes)).toBe(true);
     // default (current) dims are cube texels: 128 on the longest side
     expect(a.header.grids[0]!.lods.at(-1)).toMatchObject({ dimensions: wvdbFinestDimensions(a.header.grids[0]!.bbox, 128) });

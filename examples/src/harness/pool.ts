@@ -5,8 +5,8 @@
  * byte-identical to its file, with header and records pointing at it.
  * Results go to `window.__VDB_POOL_READBACK__` for e2e/pool-readback.spec.ts.
  */
-import { VDBGridPool, VDB_POOL_RECORD_WORDS, VDB_POOL_TABLE_OFFSET, decodeHeader, decodeRecord } from "@pmndrs/vdb";
-import { NanoVDBFile } from "@pmndrs/vdb/tools";
+import { VDBGridPool, VDB_POOL_RECORD_WORDS, VDB_POOL_TABLE_OFFSET, decodeHeader, decodeRecord } from "../../../packages/vdb/src/core/internal.js";
+import { NvdbFile } from "@pmndrs/vdb/tools";
 
 interface FixtureCheck {
   name: string;
@@ -55,7 +55,7 @@ async function run(): Promise<PoolReadback> {
   const files = await Promise.all(
     NAMES.map(async (name) => {
       const res = await fetch(`/fixtures/primitives/${name}.nvdb`);
-      return res.ok ? NanoVDBFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0) : null;
+      return res.ok ? NvdbFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0) : null;
     }),
   );
   const missing = NAMES.filter((_, k) => files[k] === null);

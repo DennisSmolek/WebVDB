@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { BoxGeometry } from "three";
 import { vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "../../src/three/index.js";
-import { buildFromDense, NvdbFormatError, writeNvdb } from "../../src/tools/index.js";
+import { vdbBuildFromDense, NvdbFormatError, writeNvdb } from "../../src/tools/index.js";
 
 function ball(dims: number, name: string, voxelSize: number): Uint32Array {
   const v = new Float32Array(dims ** 3);
@@ -14,7 +14,7 @@ function ball(dims: number, name: string, voxelSize: number): Uint32Array {
   for (let x = 0; x < dims; x++)
     for (let y = 0; y < dims; y++)
       for (let z = 0; z < dims; z++) v[(x * dims + y) * dims + z] = Math.max(0, 1 - Math.hypot(x - c, y - c, z - c) / (dims / 2));
-  return buildFromDense(v, [dims, dims, dims], { gridName: name, voxelSize });
+  return vdbBuildFromDense(v, [dims, dims, dims], { gridName: name, voxelSize });
 }
 
 const LOD8 = ball(8, "density.lod8", 4);

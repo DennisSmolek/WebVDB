@@ -8,7 +8,7 @@ import type { VDBGridNode, VDBVolumeMaterial } from '@pmndrs/vdb/three';
 
 export async function coarseFirst(pool: VDBGridPool, grids: VDBGridNode, material: VDBVolumeMaterial, mesh: Mesh, url: string): Promise<number> {
     // #region coarse-first
-    // A file baked with bakeCoarseFirst() holds the preview grid first. The preview is added with the
+    // A file baked with vdbBakeCoarseFirst() holds the preview grid first. The preview is added with the
     // full size reserved, then replaced in place when the full grid arrives: the same pool id throughout.
     const { id } = await vdbStreamCoarseFirst(pool, await fetch(url), {
         // After each swap: pool.flush() + grids.update(), the proxy box from pool.info(id), and densityScale

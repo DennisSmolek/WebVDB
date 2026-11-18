@@ -32,7 +32,7 @@ import {
   VEC3I_FORMAT,
   VEC3S_FORMAT,
 } from "./compression.js";
-import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+import { VdbFormatError, VDBUnsupportedError } from "./errors.js";
 import { createVdbGrid } from "./grid.js";
 import { readMetadataMap } from "./metadata.js";
 import { readTransform } from "./transform.js";
@@ -105,13 +105,13 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
 
   const fileVersion = reader.u32();
   if (fileVersion < MIN_SUPPORTED_VERSION) {
-    throw new VdbUnsupportedError(
+    throw new VDBUnsupportedError(
       `file version ${fileVersion} is older than the minimum supported version ${MIN_SUPPORTED_VERSION}`,
     );
   }
 
   if (fileVersion > MAX_SUPPORTED_VERSION) {
-    throw new VdbUnsupportedError(
+    throw new VDBUnsupportedError(
       `file version ${fileVersion} is newer than the maximum supported version ${MAX_SUPPORTED_VERSION}`,
     );
   }
@@ -121,13 +121,13 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
 
   const hasGridOffsets = reader.bool();
   if (!hasGridOffsets) {
-    throw new VdbUnsupportedError("VDB streams without grid offsets are not supported");
+    throw new VDBUnsupportedError("VDB streams without grid offsets are not supported");
   }
 
   const headerCompression = readHeaderCompression(reader, fileVersion);
 
   if (fileVersion < VERSION_BOOST_UUID) {
-    throw new VdbUnsupportedError(`file version ${fileVersion} predates the Boost-UUID header layout (< 218)`);
+    throw new VDBUnsupportedError(`file version ${fileVersion} predates the Boost-UUID header layout (< 218)`);
   }
   reader.fixedString(36); // uuid (informational only)
 
@@ -152,7 +152,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
       instanceParentName = reader.string();
     }
     if (instanceParentName !== "") {
-      throw new VdbUnsupportedError(`grid "${name}": instanced grids (sharing another grid's tree) are not supported`);
+      throw new VDBUnsupportedError(`grid "${name}": instanced grids (sharing another grid's tree) are not supported`);
     }
 
     const gridPos = reader.u64AsNumber();
@@ -172,19 +172,19 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
 
     const match = GRID_TYPE_RE.exec(gridType);
     if (!match) {
-      throw new VdbUnsupportedError(
+      throw new VDBUnsupportedError(
         `grid "${name}": unrecognized grid type "${gridType}" (expected "Tree_<valueType>_<log2dim>_<log2dim>_<log2dim>")`,
       );
     }
     const [, valueType, d0, d1, d2] = match;
     if (!isSupportedValueType(valueType!)) {
-      throw new VdbUnsupportedError(
+      throw new VDBUnsupportedError(
         `grid "${name}": value type "${valueType}" is not supported ` +
           `(supported: ${Object.keys(VALUE_FORMATS).join(", ")})`,
       );
     }
     if (d0 !== "5" || d1 !== "4" || d2 !== "3") {
-      throw new VdbUnsupportedError(
+      throw new VDBUnsupportedError(
         `grid "${name}": tree configuration ${d0}-${d1}-${d2} is not supported (only the 5-4-3 tree is in scope)`,
       );
     }

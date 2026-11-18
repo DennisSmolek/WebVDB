@@ -8,9 +8,9 @@
  *
  * | v1 | core (`@pmndrs/vdb`) | this file (`@pmndrs/vdb/three`) |
  * |---|---|---|
- * | `gridStats(device, grid, pnanovdbSource, opts)` | `gridStats(device, pool, id, opts)` → `VDBReadback` | `vdbGridStats(renderer, pool, id, opts)` → `Promise` |
- * | `decodeToAtlas(device, grid, pnanovdbSource, opts)` | `decodeToAtlas(device, pool, id, opts)` → `VDBAtlasReadback` | `vdbDecodeToAtlas(renderer, pool, id, opts)` → `Promise`, plus a ready `Data3DTexture` |
- * | `valueTransform(device, grid, pnanovdbSource, wgslBodyOrPreset)` | `applyValueTransform(pool, id, sourceImage, fnOrPreset)` (CPU + `pool.replace`) | — (use the core function) |
+ * | `vdbGridStatsGpu(device, grid, pnanovdbSource, opts)` | `vdbGridStatsGpu(device, pool, id, opts)` → `VDBReadback` | `vdbGridStats(renderer, pool, id, opts)` → `Promise` |
+ * | `vdbDecodeToAtlasGpu(device, grid, pnanovdbSource, opts)` | `vdbDecodeToAtlasGpu(device, pool, id, opts)` → `VDBAtlasReadback` | `vdbDecodeToAtlas(renderer, pool, id, opts)` → `Promise`, plus a ready `Data3DTexture` |
+ * | `valueTransform(device, grid, pnanovdbSource, wgslBodyOrPreset)` | `vdbApplyValueTransform(pool, id, sourceImage, fnOrPreset)` (CPU + `pool.replace`) | — (use the core function) |
  *
  * The `vdb` prefix keeps these apart from the core functions of the same job
  * (D17). For recording into your own encoder (the D8 pattern), use the core
@@ -19,9 +19,9 @@
  */
 import { Data3DTexture, FloatType, LinearFilter, RedFormat, UnsignedByteType } from "three";
 import type { VDBGridPool } from "../core/pool/pool.js";
-import { gridStats, type VDBGridStats } from "../core/compute/stats.js";
-import { decodeToAtlas, type VDBAtlas, type VDBDecodeToAtlasOptions } from "../core/compute/atlas.js";
-import { getDevice, type ThreeRendererLike } from "./device.js";
+import { vdbGridStatsGpu, type VDBGridStats } from "../core/compute/stats.js";
+import { vdbDecodeToAtlasGpu, type VDBAtlas, type VDBDecodeToAtlasOptions } from "../core/compute/atlas.js";
+import { getDevice, type VDBThreeRendererLike } from "./device.js";
 
 /** Options of {@link vdbGridStats}. */
 export interface VDBThreeGridStatsOptions {
@@ -39,13 +39,13 @@ export type VDBGridStatsResult = VDBGridStats;
  * into its own encoder and submits it. Rejects (never throws) on bad input.
  */
 export function vdbGridStats(
-  renderer: ThreeRendererLike,
+  renderer: VDBThreeRendererLike,
   pool: VDBGridPool,
   gridId: number,
   options: VDBThreeGridStatsOptions = {},
 ): Promise<VDBGridStatsResult> {
   try {
-    return gridStats(getDevice(renderer), pool, gridId, options.histogramBins === undefined ? {} : { histogramBins: options.histogramBins }).read();
+    return vdbGridStatsGpu(getDevice(renderer), pool, gridId, options.histogramBins === undefined ? {} : { histogramBins: options.histogramBins }).read();
   } catch (e) {
     return Promise.reject(e);
   }
@@ -77,13 +77,13 @@ export interface VDBDecodeToAtlasResult extends VDBAtlas {
  * `Data3DTexture`. Records into its own encoder and submits it.
  */
 export async function vdbDecodeToAtlas(
-  renderer: ThreeRendererLike,
+  renderer: VDBThreeRendererLike,
   pool: VDBGridPool,
   gridId: number,
   options: VDBThreeDecodeToAtlasOptions = {},
 ): Promise<VDBDecodeToAtlasResult> {
   const { encoder: _e, readback: _r, ...rest } = options as VDBDecodeToAtlasOptions;
-  const atlas = await decodeToAtlas(getDevice(renderer), pool, gridId, rest).read();
+  const atlas = await vdbDecodeToAtlasGpu(getDevice(renderer), pool, gridId, rest).read();
   const [dx, dy, dz] = atlas.dims;
   const texture = new Data3DTexture(atlas.data, dx, dy, dz);
   texture.format = RedFormat;

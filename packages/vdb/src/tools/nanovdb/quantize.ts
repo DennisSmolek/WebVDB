@@ -7,7 +7,7 @@
  * all 512 values, value mask), its active tiles (root, upper, lower; kept as
  * tiles since K4.1 — tile values stay plain f32 in Fp8/FpN grids) and its
  * GridData transform/background, then re-runs the leaf-iterator build path
- * ({@link buildFromLeavesDetailed}) with the chosen quantizing {@link LeafCodec}. The result satisfies the repo's proven decoders
+ * ({@link vdbBuildFromLeavesDetailed}) with the chosen quantizing {@link VDBLeafCodec}. The result satisfies the repo's proven decoders
  * (`read-value.ts` `leafFp*ReadFloat`, `pnanovdb.wgsl`).
  *
  * - `fp4` / `fp8` / `fp16` — fixed 4/8/16-bit codes; per-leaf quantum = (max-min)/(2^bits-1).
@@ -22,6 +22,7 @@
  * `nanovdb_convert --fp8/--fpn` pipeline does too.
  */
 
+import { VDBToolsError } from "../errors.js";
 import {
   FLOAT_LAYOUT,
   GRID_OFF_GRID_CLASS,
@@ -45,13 +46,13 @@ import {
   UPPER_OFF_CHILD_MASK,
   UPPER_TABLE_COUNT,
 } from "./bytes.js";
-import { FLOAT_LEAF_CODEC, FP4_LEAF_CODEC, FP8_LEAF_CODEC, FP16_LEAF_CODEC, makeFpNLeafCodec, type LeafCodec } from "./leaf-codec.js";
-import { buildFromLeavesDetailed, type BuiltGrid } from "./serialize.js";
+import { VDB_FLOAT_LEAF_CODEC, VDB_FP4_LEAF_CODEC, VDB_FP8_LEAF_CODEC, VDB_FP16_LEAF_CODEC, vdbMakeFpNLeafCodec, type VDBLeafCodec } from "./leaf-codec.js";
+import { vdbBuildFromLeavesDetailed, type VDBBuiltGrid } from "./serialize.js";
 import type { LeafInput, TileInput } from "./tree.js";
 
-export type QuantizeMode = "fp4" | "fp8" | "fp16" | "fpn";
+export type VDBQuantizeMode = "fp4" | "fp8" | "fp16" | "fpn";
 
-export interface QuantizeOptions {
+export interface VDBQuantizeOptions {
   /**
    * Also collapse uniform leaves and nodes of the source into tiles (OpenVDB
    * `prune`, tolerance 0; K4.6). Default false: quantizing keeps the source
@@ -61,30 +62,30 @@ export interface QuantizeOptions {
 }
 
 /** Quantizes a FLOAT grid image (or built grid) to Fp8/FpN. Returns a new image. */
-export function quantize(
-  input: Uint32Array | BuiltGrid,
-  mode: QuantizeMode,
+export function vdbQuantize(
+  input: Uint32Array | VDBBuiltGrid,
+  mode: VDBQuantizeMode,
   tolerance?: number,
-  options: QuantizeOptions = {},
+  options: VDBQuantizeOptions = {},
 ): Uint32Array {
-  return quantizeDetailed(input, mode, tolerance, options).image;
+  return vdbQuantizeDetailed(input, mode, tolerance, options).image;
 }
 
-/** As {@link quantize}, but returns the computed metadata alongside the image. */
-export function quantizeDetailed(
-  input: Uint32Array | BuiltGrid,
-  mode: QuantizeMode,
+/** As {@link vdbQuantize}, but returns the computed metadata alongside the image. */
+export function vdbQuantizeDetailed(
+  input: Uint32Array | VDBBuiltGrid,
+  mode: VDBQuantizeMode,
   tolerance?: number,
-  options: QuantizeOptions = {},
-): BuiltGrid {
+  options: VDBQuantizeOptions = {},
+): VDBBuiltGrid {
   const image = input instanceof Uint32Array ? input : input.image;
   const src = readFloatGrid(image);
-  const codec: LeafCodec =
-    mode === "fp4" ? FP4_LEAF_CODEC
-    : mode === "fp8" ? FP8_LEAF_CODEC
-    : mode === "fp16" ? FP16_LEAF_CODEC
-    : makeFpNLeafCodec(tolerance);
-  return buildFromLeavesDetailed(src.leaves, codec, {
+  const codec: VDBLeafCodec =
+    mode === "fp4" ? VDB_FP4_LEAF_CODEC
+    : mode === "fp8" ? VDB_FP8_LEAF_CODEC
+    : mode === "fp16" ? VDB_FP16_LEAF_CODEC
+    : vdbMakeFpNLeafCodec(tolerance);
+  return vdbBuildFromLeavesDetailed(src.leaves, codec, {
     voxelSize: src.voxelSize,
     worldOrigin: src.translation,
     background: src.background,
@@ -101,10 +102,10 @@ export function quantizeDetailed(
  * collapsed into tiles (OpenVDB `prune`, tolerance 0; K4.6). Values read back
  * identically; see `tree.ts` for the rules.
  */
-export function collapseGrid(input: Uint32Array | BuiltGrid): BuiltGrid {
+export function vdbCollapseGrid(input: Uint32Array | VDBBuiltGrid): VDBBuiltGrid {
   const image = input instanceof Uint32Array ? input : input.image;
-  const src = readFloatGrid(image, "collapseGrid");
-  return buildFromLeavesDetailed(src.leaves, FLOAT_LEAF_CODEC, {
+  const src = readFloatGrid(image, "vdbCollapseGrid");
+  return vdbBuildFromLeavesDetailed(src.leaves, VDB_FLOAT_LEAF_CODEC, {
     voxelSize: src.voxelSize,
     worldOrigin: src.translation,
     background: src.background,
@@ -142,7 +143,7 @@ function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   const gridType = view.getUint32(GRID_OFF_GRID_TYPE, true);
   if (gridType !== GRID_TYPE_FLOAT) {
-    throw new Error(
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
       `${caller}: source grid type ${gridType} is not FLOAT (${GRID_TYPE_FLOAT}); ` +
         `v1 re-encodes float grids only (float -> float/fp8/fpn).`,
     );

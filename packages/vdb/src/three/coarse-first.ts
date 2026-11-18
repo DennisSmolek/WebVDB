@@ -1,6 +1,6 @@
 /**
  * `vdbStreamCoarseFirst` (K4.16): stream a coarse-first `.nvdb`
- * (`bakeCoarseFirst`, docs/design/K4-5-coarse-first.md option a) into one
+ * (`vdbBakeCoarseFirst`, docs/design/K4-5-coarse-first.md option a) into one
  * pool id. The preview is added as soon as its bytes are in, with the full
  * grid's size reserved, and each finer grid replaces it in place:
  *
@@ -40,7 +40,7 @@ import {
   NvdbStreamReader,
   nvdbResponseLength,
   parseNvdbLodName,
-  type GridMetadata,
+  type NvdbGridMetadata,
   type NvdbProgress,
   type NvdbStreamGrid,
   type NvdbStreamReaderOptions,
@@ -242,7 +242,7 @@ export async function vdbStreamCoarseFirst(
   let current: NvdbStreamGrid | null = null;
   const shown: VDBCoarseFirstEvent[] = [];
 
-  const familyGrids = (): GridMetadata[] => reader.grids.filter((g) => familyOf(g.name) === family);
+  const familyGrids = (): NvdbGridMetadata[] => reader.grids.filter((g) => familyOf(g.name) === family);
   const fullVoxel = (grid: NvdbStreamGrid): number => {
     const full = familyGrids().find((g) => g.name === family);
     return full ? grid.metadata.voxelSize[0] / full.voxelSize[0] : 1;

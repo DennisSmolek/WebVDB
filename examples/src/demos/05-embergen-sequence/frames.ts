@@ -2,7 +2,7 @@
  * Synthetic animated-fog frames for demo 05 — a self-contained stand-in for a
  * real EmberGen `.nvdb` sequence, so the whole sequence-playback pipeline is
  * exercised end-to-end in-sandbox (no network, no EmberGen download). Authored
- * with the project's OWN serializer (`@pmndrs/vdb/tools.buildFromDense`), so every
+ * with the project's OWN serializer (`@pmndrs/vdb/tools.vdbBuildFromDense`), so every
  * frame is a genuine, loader-parseable NanoVDB FLOAT grid — the same contract a
  * real pack satisfies.
  *
@@ -16,7 +16,7 @@
  *
  * Shared by the demo (in-memory + Blob-URL paths) and any node-side script.
  */
-import { buildFromDense } from "@pmndrs/vdb/tools";
+import { vdbBuildFromDense } from "@pmndrs/vdb/tools";
 
 /** Voxel resolution of the (fixed) animation domain. */
 export const FRAME_DIM = 64;
@@ -73,7 +73,7 @@ export function makeDenseFrame(frameIndex: number, dim = FRAME_DIM, frameCount =
  */
 export function makeFrame(frameIndex: number, dim = FRAME_DIM, frameCount = FRAME_COUNT): Uint32Array {
   const dense = makeDenseFrame(frameIndex, dim, frameCount);
-  return buildFromDense(dense, [dim, dim, dim], {
+  return vdbBuildFromDense(dense, [dim, dim, dim], {
     gridName: `synthetic_smoke_${String(frameIndex).padStart(4, "0")}`,
     background: 0,
     gridClass: "FogVolume",

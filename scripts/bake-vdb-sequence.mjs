@@ -7,7 +7,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { NanoVDBFile } from "../packages/vdb/dist/tools/nvdb-file.js";
+import { NvdbFile } from "../packages/vdb/dist/tools/nvdb-file.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = path.join(ROOT, "fixtures");
@@ -60,7 +60,7 @@ async function validateNvdb(file) {
   const buffer = await readFile(file);
   if (buffer.byteLength === 0) throw new Error(`empty conversion output: ${file}`);
   const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-  const parsed = NanoVDBFile.fromArrayBuffer(arrayBuffer);
+  const parsed = NvdbFile.fromArrayBuffer(arrayBuffer);
   if (parsed.grids.length === 0) throw new Error(`no NanoVDB grids in ${file}`);
   return parsed.grids[0];
 }

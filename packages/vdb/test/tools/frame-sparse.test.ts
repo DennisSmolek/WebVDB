@@ -1,21 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildFromDenseDetailed,
+  vdbBuildFromDenseDetailed,
   indexBBox,
   nodeAverage,
-  readValueF32,
+  vdbReadValueF32,
   readWvdb,
-  sampleTrilinear,
+  vdbSampleTrilinear,
   vdbBoxMipAtlasF32,
   vdbBoxPyramid,
   vdbFrameNodeAverageSample,
   vdbFrameSkipEmpty,
   vdbBoxPyramidLayout,
   vdbPyramidBaseLevel,
-  wvdbDenseToNanoVdb,
+  wvdbDenseToNvdb,
   wvdbDenseVolume,
   wvdbMipAtlas,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 import { fixture } from "./wvdb-helpers.js";
 
 // K3.2: the CPU half of the sparse volume source (LOD strategies) and the twins of its WGSL.
@@ -32,17 +32,17 @@ function blob(n: number): { values: Float32Array; dims: V3 } {
         const r = Math.hypot(x - c, y - c, z - c) / (n * 0.25);
         let v = r < 1 ? 1 - r * r : 0;
         if (x >= n - 10 && x < n - 4 && y >= 3 && y < 9 && z >= 3 && z < 9) v = 0.5;
-        values[(x * n + y) * n + z] = v; // buildFromDense is x-major
+        values[(x * n + y) * n + z] = v; // vdbBuildFromDense is x-major
       }
   return { values, dims: [n, n, n] };
 }
 
 const lcg = (seed: number) => () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
 
-describe("wvdbDenseToNanoVdb: the dense texels as a NanoVDB FLOAT grid", () => {
+describe("wvdbDenseToNvdb: the dense texels as a NanoVDB FLOAT grid", () => {
   it("is voxel-exact: voxel (x, y, z) reads texel / 255 as f32, zero texels are the 0 background", () => {
     const dense = wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")), { mipmaps: false });
-    const grid = wvdbDenseToNanoVdb(dense);
+    const grid = wvdbDenseToNvdb(dense);
     const [w, h, d] = dense.dimensions;
     expect(grid.textureIndexBox).toEqual({ min: [0, 0, 0], max: [w - 1, h - 1, d - 1] });
     const tex = dense.density.data;
@@ -51,7 +51,7 @@ describe("wvdbDenseToNanoVdb: the dense texels as a NanoVDB FLOAT grid", () => {
       const x = i % w;
       const y = Math.floor(i / w) % h;
       const z = Math.floor(i / (w * h));
-      expect(readValueF32(grid.image, [x, y, z])).toBe(Math.fround(tex[i]! / 255));
+      expect(vdbReadValueF32(grid.image, [x, y, z])).toBe(Math.fround(tex[i]! / 255));
       if (tex[i]) nonZero++;
     }
     expect(nonZero).toBeGreaterThan(1000);
@@ -61,7 +61,7 @@ describe("wvdbDenseToNanoVdb: the dense texels as a NanoVDB FLOAT grid", () => {
 
 describe("nodeAverage (twin of the vdbNodeAverage helper)", () => {
   const { values, dims } = blob(40);
-  const built = buildFromDenseDetailed(values, dims);
+  const built = vdbBuildFromDenseDetailed(values, dims);
   const img = built.image;
   const mean = (lo: V3, size: number) => {
     let s = 0;
@@ -106,7 +106,7 @@ describe("vdbBoxPyramid ('coarse-pyramid' LOD)", () => {
 
   it("the base level is the box mean of 2^L₀ blocks (aligned box) and the atlas is his layout in float", () => {
     const { values, dims } = blob(32);
-    const built = buildFromDenseDetailed(values, dims);
+    const built = vdbBuildFromDenseDetailed(values, dims);
     const box = { min: [0, 0, 0] as V3, max: [31, 31, 31] as V3 };
     const p = vdbBoxPyramid(built.image, { indexBox: box, level: 2 });
     expect(p.level).toBe(2);
@@ -129,7 +129,7 @@ describe("vdbBoxPyramid ('coarse-pyramid' LOD)", () => {
   });
 
   it("vdbBoxPyramidLayout (shared with the core GPU build, K3.2a) = the CPU pyramid's sizes and his atlas offsets", () => {
-    const grid = wvdbDenseToNanoVdb(wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")), { mipmaps: false }));
+    const grid = wvdbDenseToNvdb(wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")), { mipmaps: false }));
     const box = grid.textureIndexBox;
     for (const pyramidMax of [128, 64, 32, 7, 1]) {
       const p = vdbBoxPyramid(grid.image, { indexBox: box, pyramidMax });
@@ -163,7 +163,7 @@ describe("vdbBoxPyramid ('coarse-pyramid' LOD)", () => {
 
 describe("vdbFrameSkipEmpty (twin of the shadow march's HDDA query)", () => {
   const { values, dims } = blob(48);
-  const built = buildFromDenseDetailed(values, dims);
+  const built = vdbBuildFromDenseDetailed(values, dims);
   const img = built.image;
   const bb = indexBBox(img);
 
@@ -184,7 +184,7 @@ describe("vdbFrameSkipEmpty (twin of the shadow march's HDDA query)", () => {
           const s = t + ((ts - t) * (k + 0.5)) / 24;
           if (s >= ts) continue;
           const p: V3 = [o[0] + d[0] * s, o[1] + d[1] * s, o[2] + d[2] * s];
-          expect(sampleTrilinear(img, p)).toBe(0);
+          expect(vdbSampleTrilinear(img, p)).toBe(0);
         }
         skipped += ts - t;
         if (ts >= t1) break;
@@ -208,11 +208,11 @@ describe("vdbFrameSkipEmpty (twin of the shadow march's HDDA query)", () => {
         const p: V3 = [o[0] + d[0] * s, o[1] + d[1] * s, o[2] + d[2] * s];
         // The level-0 tap and the level-3 node-average tap are 0, and (first sample of each ray, brute force)
         // every voxel a level-2 pyramid tap reaches, floor(p) − 6 … floor(p) + 7, is 0.
-        expect(sampleTrilinear(img, p)).toBe(0);
+        expect(vdbSampleTrilinear(img, p)).toBe(0);
         expect(vdbFrameNodeAverageSample(img, p, 8)).toBe(0);
         if (k === 0 && r % 4 === 0) {
           const b: V3 = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])];
-          for (let z = -6; z <= 7; z++) for (let y = -6; y <= 7; y++) for (let x = -6; x <= 7; x++) expect(readValueF32(img, [b[0] + x, b[1] + y, b[2] + z])).toBe(0);
+          for (let z = -6; z <= 7; z++) for (let y = -6; y <= 7; y++) for (let x = -6; x <= 7; x++) expect(vdbReadValueF32(img, [b[0] + x, b[1] + y, b[2] + z])).toBe(0);
         }
       }
     }

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { MeshStandardNodeMaterial, PointsNodeMaterial } from "three/webgpu";
 import { VDB_GPU_LAYOUT_VERSION, VDBError } from "../../src/core/index.js";
-import { VDB_LEVEL_SET_SAMPLES_CAP, VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbAttenuatedPointSize, vdbPointDiscTexture } from "../../src/three/index.js";
+import { VDB_LEVEL_SET_SAMPLES_CAP, VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbAttenuatedPointSize, vdbPointDiscTexture } from "../../src/three/internal.js";
 import { fakeRenderer } from "./fake-three.js";
 
 const shared = fakeRenderer().renderer;

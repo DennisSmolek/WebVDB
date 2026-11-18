@@ -15,16 +15,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { buildFromDense, inspect, transform } from "../../src/tools/index.js";
-import { readValue } from "../../src/tools/cpu/read-value.js";
-import { NanoVDBFile } from "../../src/tools/nvdb-file.js";
+import { vdbBuildFromDense, vdbInspect, vdbTransform } from "../../src/tools/index.js";
+import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
+import { NvdbFile } from "../../src/tools/nvdb-file.js";
 
 
 function loadPrimitive(name: string): Uint32Array {
   const p = fileURLToPath(new URL(`../../../../fixtures/primitives/${name}`, import.meta.url));
   const buf = readFileSync(p);
   const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  return NanoVDBFile.fromArrayBuffer(ab).gridImage(0);
+  return NvdbFile.fromArrayBuffer(ab).gridImage(0);
 }
 
 interface Sidecar {
@@ -57,7 +57,7 @@ describe.skipIf(!nativeFixturesPresent)("inspect — against native fixtures", (
   it.each(FIXTURES)("$nvdb: type/class/voxelCount/nodeCounts + memory sums to mGridSize", (f) => {
     const image = loadPrimitive(f.nvdb);
     const sc = loadSidecar(f.sidecar);
-    const rep = inspect(image);
+    const rep = vdbInspect(image);
 
     expect(rep.gridType).toBe(f.type);
     expect(rep.gridClass).toBe(sc.grid.class);
@@ -77,11 +77,11 @@ describe.skipIf(!nativeFixturesPresent)("inspect — against native fixtures", (
   it("box_fog: concrete per-leaf memory anchor (float 336x2144, fp8 336x608)", () => {
     // A concrete anchor (the T3 brief's "788-leaf sphere numbers" analogue):
     // box_fog_float has 336 leaves at 2144 B each = 720384 B of leaf data.
-    const rep = inspect(loadPrimitive("box_fog_float.nvdb"));
+    const rep = vdbInspect(loadPrimitive("box_fog_float.nvdb"));
     expect(rep.nodeCounts.leaf).toBe(336);
     expect(rep.memoryBreakdown.leaf).toBe(336 * 2144);
     // Its fp8 counterpart: same 336 leaves at 608 B = 204288 B.
-    const fp8 = inspect(loadPrimitive("box_fog_fp8.nvdb"));
+    const fp8 = vdbInspect(loadPrimitive("box_fog_fp8.nvdb"));
     expect(fp8.nodeCounts.leaf).toBe(336);
     expect(fp8.memoryBreakdown.leaf).toBe(336 * 608);
   });
@@ -97,12 +97,12 @@ describe("transform — metadata-only affine Map edit", () => {
           const d = Math.hypot(x - 8, y - 8, z - 8);
           values[(x * 16 + y) * 16 + z] = d < 7 ? 1 - d / 7 : 0;
         }
-    return { image: buildFromDense(values, dims, { voxelSize: 1, background: 0 }), dims, values };
+    return { image: vdbBuildFromDense(values, dims, { voxelSize: 1, background: 0 }), dims, values };
   }
 
   it("rewrites voxelSize + Map; the loader reflects the new transform", () => {
     const { image } = sampleGrid();
-    const out = transform(image, { voxelSize: 0.25, worldOrigin: [3, 4, 5] });
+    const out = vdbTransform(image, { voxelSize: 0.25, worldOrigin: [3, 4, 5] });
 
     const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
     expect(dv.getFloat64(608, true)).toBeCloseTo(0.25, 9); // voxelSize
@@ -114,7 +114,7 @@ describe("transform — metadata-only affine Map edit", () => {
 
   it("leaves every voxel value untouched (tree/leaf region byte-identical)", () => {
     const { image, dims } = sampleGrid();
-    const out = transform(image, { voxelSize: 10, worldOrigin: [100, 0, 0] });
+    const out = vdbTransform(image, { voxelSize: 10, worldOrigin: [100, 0, 0] });
 
     // Tree region (everything after GridData's 672 bytes) is byte-for-byte equal.
     const a = new Uint8Array(image.buffer, image.byteOffset + 672, image.byteLength - 672);
@@ -125,17 +125,17 @@ describe("transform — metadata-only affine Map edit", () => {
     for (let x = 0; x < dims[0]; x++)
       for (let y = 0; y < dims[1]; y++)
         for (let z = 0; z < dims[2]; z++) {
-          expect(readValue(out, [x, y, z]).value).toBe(readValue(image, [x, y, z]).value);
+          expect(vdbReadValueCpu(out, [x, y, z]).value).toBe(vdbReadValueCpu(image, [x, y, z]).value);
         }
     // Source image is not mutated.
-    expect(readValue(image, [8, 8, 8]).value).toBeGreaterThan(0);
+    expect(vdbReadValueCpu(image, [8, 8, 8]).value).toBeGreaterThan(0);
   });
 
   it("accepts a 4x4 uniform-scale matrix and updates the world bbox", () => {
     const { image } = sampleGrid();
     // prettier-ignore
     const m = new Float32Array([2, 0, 0, 1, 0, 2, 0, 2, 0, 0, 2, 3, 0, 0, 0, 1]);
-    const out = transform(image, m);
+    const out = vdbTransform(image, m);
     const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
     expect(dv.getFloat64(608, true)).toBeCloseTo(2, 9);
     // world bbox min = indexMin*2 + t; read index bbox from root for the check.
@@ -148,9 +148,9 @@ describe("transform — metadata-only affine Map edit", () => {
     const { image } = sampleGrid();
     // prettier-ignore
     const rot = new Float32Array([2, 0.5, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]);
-    expect(() => transform(image, rot)).toThrowError(/rotated|sheared|GPU resampling/i);
+    expect(() => vdbTransform(image, rot)).toThrowError(/rotated|sheared|GPU resampling/i);
     // prettier-ignore
     const aniso = new Float32Array([2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]);
-    expect(() => transform(image, aniso)).toThrowError(/non-uniform|GPU resampling/i);
+    expect(() => vdbTransform(image, aniso)).toThrowError(/non-uniform|GPU resampling/i);
   });
 });

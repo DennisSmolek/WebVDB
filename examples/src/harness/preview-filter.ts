@@ -4,7 +4,7 @@
  * For each volume (smoke, and the WDAS quarter cloud) the page puts the full grid and every preview variant
  * in one pool, then renders each with one `VDBVolumeMaterial` (`gridId` swapped, jitter off):
  *
- * - previews: `resampleGrid(source, { resolution: 48, filter, quantize: 'fpn' })` for filter in
+ * - previews: `vdbResampleGrid(source, { resolution: 48, filter, quantize: 'fpn' })` for filter in
  *   box / point / trilinear, on the source's active cell box ("aligned") and on the same lattice shifted by
  *   half a preview voxel on every axis ("shifted", `bbox` + `dimensions`), the aliasing check;
  * - each preview is drawn with `densityScale x voxelRatio` (K4.16: the material integrates per index voxel);
@@ -19,12 +19,12 @@ import * as THREE from "three";
 import type { WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBVolumeMaterial, vdbProxyGeometry } from "@pmndrs/vdb/three";
-import { NanoVDBFile, buildFromVdb, inspect, parseVdb, resampleGrid, type ResampleFilter } from "@pmndrs/vdb/tools";
+import { NvdbFile, buildFromVdb, vdbInspect, parseVdb, vdbResampleGrid, type VDBResampleFilter } from "@pmndrs/vdb/tools";
 import { createDeviceRenderer } from "../demos/device-renderer";
 
 interface VariantInfo {
   key: string;
-  filter: ResampleFilter;
+  filter: VDBResampleFilter;
   shift: "aligned" | "shifted";
   dims: number[];
   voxelCount: number;
@@ -72,7 +72,7 @@ const H = Number(params.get("h") ?? 224);
 const RESOLUTION = Number(params.get("resolution") ?? 48);
 const WANTED = (params.get("volumes") ?? "smoke,wdas").split(",");
 const BACKGROUND = 0x223049;
-const FILTERS: ResampleFilter[] = ["box", "point", "trilinear"];
+const FILTERS: VDBResampleFilter[] = ["box", "point", "trilinear"];
 // Demo 02's two test poses: [azimuth, elevation, radius in diagonals].
 const POSES: [number, number, number][] = [
   [Math.PI * 0.25, Math.PI * 0.16, 1.7],
@@ -118,7 +118,7 @@ async function loadSource(spec: VolumeSpec): Promise<Uint32Array | null> {
     if (!grid) throw new Error(`${spec.url}: no float grid`);
     return buildFromVdb(grid);
   }
-  return NanoVDBFile.fromArrayBuffer(buf).gridImage(0);
+  return NvdbFile.fromArrayBuffer(buf).gridImage(0);
 }
 
 async function run(): Promise<void> {
@@ -169,13 +169,13 @@ async function run(): Promise<void> {
     const fullId = pool.add(source);
     const variants: (VariantInfo & { id: number; frames: string[]; nonBackground: number[] })[] = [];
     for (const filter of FILTERS) {
-      const base = resampleGrid(source, { resolution: RESOLUTION, filter, quantize: "fpn" });
+      const base = vdbResampleGrid(source, { resolution: RESOLUTION, filter, quantize: "fpn" });
       const h = base.voxelSize / 2;
       const shiftedBox: [[number, number, number], [number, number, number]] = [
         [base.bbox[0][0] + h, base.bbox[0][1] + h, base.bbox[0][2] + h],
         [base.bbox[1][0] + h, base.bbox[1][1] + h, base.bbox[1][2] + h],
       ];
-      const shifted = resampleGrid(source, { dimensions: base.dimensions, bbox: shiftedBox, filter, quantize: "fpn" });
+      const shifted = vdbResampleGrid(source, { dimensions: base.dimensions, bbox: shiftedBox, filter, quantize: "fpn" });
       for (const [shift, g] of [["aligned", base], ["shifted", shifted]] as const) {
         const id = pool.add(g.image);
         const info = pool.info(id);
@@ -229,7 +229,7 @@ async function run(): Promise<void> {
       name: spec.name,
       source: spec.url,
       fullDensityScale: spec.densityScale,
-      fullVoxelCount: inspect(source).voxelCount,
+      fullVoxelCount: vdbInspect(source).voxelCount,
       fullWorldBBox: [[...fullInfo.worldBBox.min], [...fullInfo.worldBBox.max]],
       previewVoxel: variants[0] ? variants[0].voxelRatio : 0,
       full: [],

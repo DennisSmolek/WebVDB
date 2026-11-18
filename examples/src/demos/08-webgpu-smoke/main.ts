@@ -24,9 +24,9 @@
  * `?test=1` pins the camera and renders only on demand.
  * State for e2e/demo-08.spec.ts: `window.__DEMO08__`.
  */
-import { VDBGridPool, checkModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
+import { VDBGridPool, vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
 import type { VDBSlotModuleOptions } from "@pmndrs/vdb";
-import { NanoVDBFile, buildFromVdb, parseVdb } from "@pmndrs/vdb/tools";
+import { NvdbFile, buildFromVdb, parseVdb } from "@pmndrs/vdb/tools";
 import { FRAME_FLOATS, HOST_WGSL } from "./shader.js";
 
 interface Demo08State {
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
     profile: "march",
     helpers: ["cellBoundTrilinear", "hddaCellEnd"],
   };
-  checkModule(pool, moduleOptions);
+  vdbCheckModule(pool, moduleOptions);
   const vdbWgsl = vdbModuleWgsl(moduleOptions);
   const code = vdbWgsl + HOST_WGSL;
   state.wgslBytes = new TextEncoder().encode(vdbWgsl).byteLength;
@@ -266,9 +266,9 @@ async function main(): Promise<void> {
     secondButton.disabled = true;
     const res = await fetch(SECOND_URL);
     if (!res.ok) throw new Error(`${SECOND_URL}: ${res.status}. Run pnpm fixtures:bake.`);
-    const image = NanoVDBFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0);
+    const image = NvdbFile.fromArrayBuffer(await res.arrayBuffer()).gridImage(0);
     secondId = pool.add(image, { label: "torus", transform: torusTransform(pool.info(smokeId).worldBBox, 0) });
-    checkModule(pool, moduleOptions); // the pool now holds fp8: the module must decode it
+    vdbCheckModule(pool, moduleOptions); // the pool now holds fp8: the module must decode it
     frameBounds([smokeId, secondId]);
     state.secondGrid = true;
     spinBox.disabled = false;

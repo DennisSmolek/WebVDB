@@ -1,5 +1,5 @@
 /**
- * `applyValueTransform`: per-voxel value edits for pool grids (K2.3).
+ * `vdbApplyValueTransform`: per-voxel value edits for pool grids (K2.3).
  *
  * Decided for 0.1: the transform runs on the CPU (`transformLeafValues` in
  * `@pmndrs/vdb/tools`) and the result is staged with `pool.replace`. v1 ran a
@@ -46,13 +46,13 @@ export type VDBValueTransformPreset = keyof typeof VDB_VALUE_TRANSFORM_PRESETS;
  * may be stale). Like `replace`, the pool holds the returned array until
  * `settled()`; don't reuse it before then.
  */
-export function applyValueTransform(
+export function vdbApplyValueTransform(
   pool: VDBGridPool,
   gridId: number,
   sourceImage: Uint32Array,
   transform: VDBValueTransform | VDBValueTransformPreset,
 ): Uint32Array {
-  const where = "applyValueTransform";
+  const where = "vdbApplyValueTransform";
   const fn = typeof transform === "string" ? VDB_VALUE_TRANSFORM_PRESETS[transform] : transform;
   if (typeof fn !== "function") {
     throw new VDBError(

@@ -52,7 +52,7 @@ export interface VDBModuleCommonOptions {
    * pool, or regenerated (and its pipeline rebuilt) when a new type arrives:
    * `pool.types` only lists the grids present now. Pass
    * `VDB_ALL_SCALAR_TYPES` to never rebuild (the largest module), and call
-   * `checkModule(pool, options)` after each `add`.
+   * `vdbCheckModule(pool, options)` after each `add`.
    */
   readonly types: Iterable<VDBGridTypeName>;
   readonly profile: VDBModuleProfile;
@@ -96,7 +96,7 @@ export interface VDBBufferModuleOptions extends VDBModuleCommonOptions {
 export type VDBModuleOptions = VDBSlotModuleOptions | VDBBufferModuleOptions;
 
 /**
- * The type/layout-only form of `checkModule`'s options: the types a module
+ * The type/layout-only form of `vdbCheckModule`'s options: the types a module
  * decodes and, optionally, the pool layout it targets (default
  * `VDB_GPU_LAYOUT_VERSION`). No binding or profile needed.
  */
@@ -105,7 +105,7 @@ export interface VDBModuleTypeCheck {
   readonly layoutVersion?: number | undefined;
 }
 
-/** What `checkModule` needs from a pool (structural, so tests and adapters can pass plain objects). */
+/** What `vdbCheckModule` needs from a pool (structural, so tests and adapters can pass plain objects). */
 export interface VDBModulePoolLike {
   readonly types: Iterable<VDBGridTypeName>;
   readonly layoutVersion: number;

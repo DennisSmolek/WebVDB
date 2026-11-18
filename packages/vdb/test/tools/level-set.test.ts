@@ -18,9 +18,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  buildFromLeavesDetailed,
+  vdbBuildFromLeavesDetailed,
   buildFromVdb,
-  FLOAT_LEAF_CODEC,
+  VDB_FLOAT_LEAF_CODEC,
   levelSetGradient,
   levelSetHit,
   levelSetHitReference,
@@ -29,7 +29,7 @@ import {
   vdbPointRenderData,
   type VdbPointDataGrid,
   type VdbPointList,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 type V3 = [number, number, number];
 
@@ -60,7 +60,7 @@ function buildLevelSet(sdf: (p: V3) => number, lo: V3, hi: V3, voxelSize = 0.05,
       }
     }
   }
-  return buildFromLeavesDetailed(leaves, FLOAT_LEAF_CODEC, { voxelSize, background: bg, gridClass: "LevelSet", tiles }).image;
+  return vdbBuildFromLeavesDetailed(leaves, VDB_FLOAT_LEAF_CODEC, { voxelSize, background: bg, gridClass: "LevelSet", tiles }).image;
 }
 
 const C: V3 = [3.3, -2.6, 1.7];
