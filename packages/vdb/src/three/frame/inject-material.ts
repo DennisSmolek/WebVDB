@@ -5,8 +5,9 @@
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
 // Changes: TypeScript; reads density only through `vdbVolumeNodes` (the VDBVolumeSource seam), so
 // one material is built per volume source; grey only (no spectral outputs); no octaves, two-sided,
-// hemisphere, light-probe or environment terms yet (K3.3–K3.5). Divergences: DIVERGES.md (K3.1
-// rows), V23–V25.
+// hemisphere, light-probe or environment terms yet (K3.3–K3.5); with a sparse source the shadow
+// march skips empty space through the source's HDDA query (K3.2, same lattice, same values).
+// Divergences: DIVERGES.md (K3.1 and K3.2 rows), V23–V25.
 
 /**
  * `'volume'` lighting (R1 §2): lights one volume in each froxel with a shadow march through that
@@ -18,7 +19,7 @@ import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import * as TSL from "three/tsl";
 import type { VDBTslNode } from "../grid-node.js";
-import type { VDBThreeDenseSource, VDBVolumeNodes, VDBVolumeNodesOptions, VDBVolumeUniforms } from "../volume-source.js";
+import type { VDBThreeVolumeSource, VDBVolumeNodes, VDBVolumeNodesOptions, VDBVolumeUniforms } from "../volume-source.js";
 import { vdbVolumeNodes } from "../volume-source.js";
 import {
   createFrameVolumeUniforms,
@@ -44,20 +45,22 @@ import { vdbFrameLights } from "./lights.js";
 
 // NOTE TSL's r187 typings narrow node types; the ported shader code is written against untyped nodes,
 // as volume-source.ts is (VDBTslNode).
-const { Break, Discard, Fn, If, Loop, dot, exp, float, int, length, mat3, max, min, mix, normalize, select, smoothstep, uniform, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { Break, Continue, Discard, Fn, If, Loop, ceil, dot, exp, float, int, length, mat3, max, min, mix, normalize, select, smoothstep, uniform, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
 export interface VDBFrameInjectMaterialOptions {
   froxelUniforms: FroxelUniforms;
   froxelTileUniforms: TileUniforms;
   lightUniforms: LightUniforms;
-  /** The volume source (dense in Step 1; the sparse source in Step 2 has the same node shape). */
-  source: VDBThreeDenseSource;
+  /** The volume source (dense, or sparse since K3.2: the same node shape). */
+  source: VDBThreeVolumeSource;
   /** The source's live uniforms (`vdbVolumeUniforms`). */
   sourceUniforms: VDBVolumeUniforms;
   /** Sample the source's mip levels (his shaders built with mipmaps). */
   mipmaps: boolean;
   /** Emission colour hook of `vdbVolumeNodes` (DIVERGES V24). */
   emissionColor?: VDBVolumeNodesOptions["emissionColor"];
+  /** Skip empty space in the shadow march when the source can (`skipEmpty`; sparse). Default false (K3.2 A/B). */
+  hdda?: boolean;
 }
 
 // NOTE Lights one volume in each froxel, with a shadow march in this volume. Other volumes do not cast shadows.
@@ -67,7 +70,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
   readonly lightUniforms: LightUniforms;
   readonly volumeUniforms: FrameVolumeUniforms;
   readonly sourceUniforms: VDBVolumeUniforms;
-  readonly source: VDBThreeDenseSource;
+  readonly source: VDBThreeVolumeSource;
   readonly frameLights = uniform(0, "int");
   readonly frameShadowSteps = uniform(32, "int");
   // NOTE Multiple scattering of this volume (phase.ts). 0.0 is single scattering.
@@ -77,6 +80,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
   readonly frameRect = uniform(new THREE.Vector4());
   readonly frameSliceStart = uniform(0.0);
   mipmaps: boolean;
+  hdda: boolean;
   readonly emissionColor: VDBVolumeNodesOptions["emissionColor"];
 
   constructor(o: VDBFrameInjectMaterialOptions) {
@@ -89,6 +93,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
     this.source = o.source;
     this.sourceUniforms = o.sourceUniforms;
     this.mipmaps = o.mipmaps;
+    this.hdda = o.hdda ?? false;
     this.emissionColor = o.emissionColor;
 
     this.vertexNode = frameTileVertex(o.froxelTileUniforms, this.frameRect, this.frameSliceStart);
@@ -118,6 +123,15 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
     }
   }
 
+  // NOTE HDDA skipping is compiled in only when on (K3.2 A/B)
+  setHdda(hdda: boolean): void {
+    if (hdda !== this.hdda) {
+      this.hdda = hdda;
+      this.fragmentNode = this.createFragmentNode();
+      this.needsUpdate = true;
+    }
+  }
+
   createFragmentNode(): VDBTslNode {
     const { froxelUniforms, lightUniforms, volumeUniforms, sourceUniforms, source } = this;
     const { froxelGrid, froxelSubSteps, froxelAtlasSize, frameJitter } = froxelUniforms;
@@ -125,6 +139,7 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
     const { frameViewToLocal, frameLocalToView, frameWorldToLocal, frameOpacity, frameAbsorbance, frameScatterColor } = volumeUniforms;
     const frameWorldScale = sourceUniforms.worldScale;
     const volume: VDBVolumeNodes = vdbVolumeNodes(source, sourceUniforms, { useMipmaps: this.mipmaps, ...(this.emissionColor ? { emissionColor: this.emissionColor } : {}) });
+    const skipEmpty = this.hdda && volume.skipEmpty ? volume.skipEmpty.bind(volume) : null;
 
     const useLights = (flag: number) => this.frameLights.bitAnd(int(flag)).notEqual(0);
 
@@ -204,19 +219,55 @@ export class VDBFrameInjectMaterial extends NodeMaterial {
             const worldStep = localStep.mul(length(mat3(frameLocalToView).mul(direction)));
             const stepScale = worldStep.mul(frameAbsorbance).toVar();
             const depths = vec3(0.0).toVar();
-            const probe = localPosition.add(direction.mul(localStep).mul(shadowNoise)).toVar();
 
-            Loop(this.frameShadowSteps, () => {
-              const extinction = volume.sampleExtinction(probe, stepLod).mul(stepScale).toVar();
+            if (skipEmpty) {
+              // K3.2: the same sample lattice t_k = localStep (k + noise), but runs of samples the source proves
+              // empty (exactly 0 extinction, so 0 depth) are jumped over. Positions are computed, not accumulated.
+              // The source is asked only at the start and after a zero sample, so dense runs pay nothing for it.
+              const k = int(0).toVar();
+              const cellEnd = float(-1.0).toVar();
+              const lastZero = float(1.0).toVar();
+              const tEnd = marchDistance.add(localStep).toVar();
 
-              depths.addAssign(frameShadowStep(extinction, frameShadowAbsorption(extinction, albedo), this.frameMultipleScattering));
+              Loop(k.lessThan(this.frameShadowSteps), () => {
+                const t = localStep.mul(float(k).add(shadowNoise)).toVar();
 
-              If(frameShadowMarchDepth(depths, this.frameMultipleScattering).greaterThan(8.0), () => {
-                Break();
+                If(t.greaterThanEqual(cellEnd).and(lastZero.greaterThan(0.5)), () => {
+                  const span = skipEmpty(localPosition, direction, t, tEnd, stepLod).toVar();
+                  cellEnd.assign(span.y);
+
+                  If(span.x.greaterThan(t), () => {
+                    k.assign(max(k.add(1), int(ceil(span.x.div(localStep).sub(shadowNoise)))));
+                    Continue();
+                  });
+                });
+
+                const extinction = volume.sampleExtinction(localPosition.add(direction.mul(t)), stepLod).mul(stepScale).toVar();
+                lastZero.assign(select(extinction.lessThanEqual(0.0), float(1.0), float(0.0)));
+
+                depths.addAssign(frameShadowStep(extinction, frameShadowAbsorption(extinction, albedo), this.frameMultipleScattering));
+
+                If(frameShadowMarchDepth(depths, this.frameMultipleScattering).greaterThan(8.0), () => {
+                  Break();
+                });
+
+                k.addAssign(1);
               });
+            } else {
+              const probe = localPosition.add(direction.mul(localStep).mul(shadowNoise)).toVar();
 
-              probe.addAssign(direction.mul(localStep));
-            });
+              Loop(this.frameShadowSteps, () => {
+                const extinction = volume.sampleExtinction(probe, stepLod).mul(stepScale).toVar();
+
+                depths.addAssign(frameShadowStep(extinction, frameShadowAbsorption(extinction, albedo), this.frameMultipleScattering));
+
+                If(frameShadowMarchDepth(depths, this.frameMultipleScattering).greaterThan(8.0), () => {
+                  Break();
+                });
+
+                probe.addAssign(direction.mul(localStep));
+              });
+            }
 
             const shadow = frameShadowTransmittance(depths, this.frameMultipleScattering);
 

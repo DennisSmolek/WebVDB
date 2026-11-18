@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/core/FrameVolume.js L8–11 (render order, all lights), L152–270 (props,
 //   proxy), L339–353 (box matrix), L554–568 (getDensityScale), L624–650 (dispose).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
-// Changes: TypeScript; takes a VDBVolumeSource (dense `.wvdb` in Step 1) instead of resampling grids
+// Changes: TypeScript; takes a VDBVolumeSource (dense `.wvdb`, or the sparse pool since K3.2) instead of resampling grids
 // on the CPU (his L279–552: conversion, progressive upload, level sets, points, instances); one
 // volume per frame volume; the mean density is the source's. Divergences: DIVERGES.md (K3.1 rows),
 // V23–V25.
@@ -20,7 +20,7 @@
 
 import * as THREE from "three";
 import { VDBError } from "../../core/errors.js";
-import type { VDBThreeDenseSource, VDBVolumeNodesOptions, VDBVolumeUniforms } from "../volume-source.js";
+import type { VDBThreeVolumeSource, VDBVolumeNodesOptions, VDBVolumeUniforms } from "../volume-source.js";
 import { vdbVolumeUniforms } from "../volume-source.js";
 import type { VDBFrameInjectMaterial } from "./inject-material.js";
 import { vdbFrameAllLights } from "./lights.js";
@@ -35,7 +35,7 @@ const frameRenderOrder = 1000000;
 export interface VDBFrameVolumeProps {
   /** The froxel renderer (default: the shared {@link vdbFrameRenderer}). */
   frameRenderer?: VDBFrameRenderer;
-  /** World box of the volume (default: the source's `.wvdb` bbox, else the unit box at the origin). */
+  /** World box of the volume (default: the source's box: the `.wvdb` bbox or the sparse grid's world box; else the unit box at the origin). */
   bbox?: THREE.Box3 | [[number, number, number], [number, number, number]];
   baseColor?: THREE.ColorRepresentation;
   scatterColor?: THREE.ColorRepresentation;
@@ -66,18 +66,24 @@ export interface VDBFrameVolumeProps {
   mipmaps?: boolean;
   /** Emission colour hook (DIVERGES V24); default white. */
   emissionColor?: VDBVolumeNodesOptions["emissionColor"];
+  /**
+   * HDDA empty-space skipping in the shadow march (sparse sources; K3.2). Skipped samples are exactly
+   * 0, so the image does not change (within float noise); dense sources ignore it. Default false: on
+   * SwiftShader it cost more than it saved in every K3.2 scene (provisional, D25; hardware rerun K3.2c).
+   */
+  hdda?: boolean;
 }
 
-const toBox = (bbox: VDBFrameVolumeProps["bbox"], source: VDBThreeDenseSource): THREE.Box3 => {
+const toBox = (bbox: VDBFrameVolumeProps["bbox"], source: VDBThreeVolumeSource): THREE.Box3 => {
   if (bbox instanceof THREE.Box3) return bbox.clone();
-  const b = bbox ?? source.volume.bbox;
+  const b = bbox ?? (source.kind === "dense" ? source.volume.bbox : source.bbox);
   if (!b) return new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
   return new THREE.Box3(new THREE.Vector3(...b[0]), new THREE.Vector3(...b[1]));
 };
 
 export class VDBFrameVolume extends THREE.Group {
   readonly isVDBFrameVolume = true as const;
-  readonly source: VDBThreeDenseSource;
+  readonly source: VDBThreeVolumeSource;
   readonly sourceUniforms: VDBVolumeUniforms;
   readonly frameRenderer: VDBFrameRenderer;
   readonly proxy: THREE.Mesh<THREE.InstancedBufferGeometry>;
@@ -108,12 +114,14 @@ export class VDBFrameVolume extends THREE.Group {
   lights: number;
   shadowSteps: number;
   mipmaps: boolean;
+  hdda: boolean;
 
-  constructor(source: VDBThreeDenseSource, props: VDBFrameVolumeProps = {}) {
+  constructor(source: VDBThreeVolumeSource, props: VDBFrameVolumeProps = {}) {
     super();
 
-    if (!source || source.kind !== "dense" || !source.textures?.density) {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameVolume: pass a volume source from vdbDenseTextures() (@pmndrs/vdb/three).");
+    const ok = source && ((source.kind === "dense" && !!source.textures?.density) || (source.kind === "sparse" && typeof source.createNodes === "function"));
+    if (!ok) {
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameVolume: pass a volume source from vdbDenseTextures() or vdbSparseSource() (@pmndrs/vdb/three).");
     }
 
     const {
@@ -142,6 +150,7 @@ export class VDBFrameVolume extends THREE.Group {
       shadowSteps = 32,
       mipmaps = true,
       emissionColor,
+      hdda = false,
     } = props;
 
     this.source = source;
@@ -169,6 +178,7 @@ export class VDBFrameVolume extends THREE.Group {
     this.lights = lights;
     this.shadowSteps = shadowSteps;
     this.mipmaps = mipmaps;
+    this.hdda = hdda;
 
     this.sourceUniforms = vdbVolumeUniforms(source, { extinction, densityScale, normalizeDensity });
 

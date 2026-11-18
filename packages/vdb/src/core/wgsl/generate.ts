@@ -53,6 +53,7 @@ const SHADER_STAGE_FRAGMENT_COMPUTE = 0x2 | 0x4;
 const HELPERS: Readonly<Record<VDBModuleHelper, { readonly rank: number }>> = {
   cellBoundTrilinear: { rank: 2 },
   hddaCellEnd: { rank: 2 },
+  nodeAverage: { rank: 2 },
   rayClipSupport: { rank: 1 },
 };
 const HELPER_NAMES = Object.keys(HELPERS) as VDBModuleHelper[];

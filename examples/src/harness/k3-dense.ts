@@ -194,12 +194,13 @@ async function main(): Promise<void> {
     renderer.render(scene, camera);
     const pixels = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, W, H)) as Uint8Array;
     renderer.setRenderTarget(null);
-    // Bottom-up with 256-byte row padding (three r185–r187): flip into tight rows, top first.
+    // three r187 returns rows top first (row 0 = screenCoordinate.y 0), padded to 256 bytes: strip the padding only
+    // (K3.1b: this used to flip the rows, which made the PNGs upside down).
     const tight = W * 4;
     const stride = H > 1 ? (pixels.byteLength - tight) / (H - 1) : tight;
     if (!Number.isInteger(stride) || stride < tight) throw new Error(`readback layout: ${pixels.byteLength} bytes for ${W}x${H}`);
     const out = new Uint8Array(W * H * 4);
-    for (let y = 0; y < H; y++) out.set(pixels.subarray((H - 1 - y) * stride, (H - 1 - y) * stride + tight), y * tight);
+    for (let y = 0; y < H; y++) out.set(pixels.subarray(y * stride, y * stride + tight), y * tight);
     return out;
   }
 

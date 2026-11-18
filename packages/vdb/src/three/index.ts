@@ -54,7 +54,20 @@ export type {
   VDBVolumeNodesOptions,
   VDBVolumeUniformParameters,
   VDBVolumeUniforms,
+  VDBThreeVolumeSource,
+  VDBThreeSourceFactory,
 } from "./volume-source.js";
+
+// K3.2: the sparse volume source (a VDBGridPool grid behind the same seam) with its LOD strategies.
+export { vdbSparseSource } from "./sparse-source.js";
+export type {
+  VDBSparseLod,
+  VDBSparseSourceGrids,
+  VDBSparseSourceOptions,
+  VDBThreeSparseSource,
+  VDBSparseVolumeUniforms,
+  VDBIndexBox,
+} from "./sparse-source.js";
 
 // K4.16: coarse-first `.nvdb` streaming into one pool id (add the preview with
 // the full size reserved, then replace). Engine-free glue; here because tools

@@ -18,8 +18,12 @@ const VARIANTS: { id: string; options: VDBModuleOptions }[] = variantMatrix();
 
 /** The §3.6 row for a variant (see `rule` in size-budgets.json), in bytes. */
 function budgetBytes(options: VDBModuleOptions): number {
-  const helpers = [...(options.helpers ?? [])].length > 0;
-  const key = helpers ? `${options.profile}+helpers` : options.profile === "read" && options.isActive === false ? "read.isActive=false" : options.profile;
+  const helpers = [...(options.helpers ?? [])];
+  const key = helpers.includes("nodeAverage")
+    ? `${options.profile}+nodeAverage`
+    : helpers.length > 0
+      ? `${options.profile}+helpers`
+      : options.profile === "read" && options.isActive === false ? "read.isActive=false" : options.profile;
   const row = BUDGETS.profiles[key];
   if (!row) throw new Error(`no budget row for ${key}`);
   const fpCount = [...options.types].filter((t) => t !== "float").length;

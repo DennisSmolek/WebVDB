@@ -156,6 +156,7 @@ export {
   indexBBox,
   isActive,
   leafVoxels,
+  nodeAverage,
   nodeMax,
   nodeStats,
   rayClip,
@@ -264,6 +265,7 @@ export {
   wvdbToByte,
   wvdbDensityScale,
   sampleWvdbDenseTexture,
+  wvdbDenseToNanoVdb,
 } from "./wvdb/index.js";
 export type {
   WvdbBake,
@@ -316,6 +318,8 @@ export type {
   WvdbLevelSetSource,
   BakeWvdbOptions,
   VdbToWvdbOptions,
+  WvdbDenseToNanoVdbOptions,
+  WvdbNanoVdbGrid,
 } from "./wvdb/index.js";
 
 /**
@@ -347,3 +351,10 @@ export {
   vdbFrameSrgbBlend,
 } from "./frame/index.js";
 export type { VDBFrameFroxelSample } from "./frame/index.js";
+
+/**
+ * K3.2: the sparse volume source's LOD strategies on the CPU (the coarse pyramid build, his box mip
+ * atlas in float) and the CPU twins of its WGSL (node-average tap, HDDA empty-space query).
+ */
+export { vdbPyramidBaseLevel, vdbBoxMipAtlasF32, vdbBoxPyramid, vdbFrameNodeAverageSample, vdbFrameSkipEmpty } from "./frame/sparse.js";
+export type { VDBFloatMipAtlas, VDBBoxPyramidOptions, VDBBoxPyramid } from "./frame/sparse.js";

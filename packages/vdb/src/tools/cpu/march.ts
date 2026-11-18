@@ -586,6 +586,34 @@ export function cellBoundTrilinear(gridWords: Uint32Array, ijk: Vec3, dim: numbe
   return m;
 }
 
+/**
+ * Twin of the opt-in `vdbNodeAverage(acc, ijk, dim)` (helper `'nodeAverage'`,
+ * K3.2): the box mean of the aligned `dim`-cell holding `ijk` from node
+ * statistics. A cell inside one tile (or the background) is the tile's value;
+ * without stats (or `dim <= 1`) the value at `ijk`; `dim <= 8`: the leaf's
+ * `ave * activeVoxels / 512` (exact for fog leaves, whose inactive voxels are
+ * 0); larger: the lower node's `ave` (mean of its ACTIVE voxels; `dim` is meant
+ * to be 8 or 128). f32 arithmetic in WGSL order.
+ */
+export function nodeAverage(gridWords: Uint32Array, ijk: Vec3, dim: number): number {
+  const g = grid(gridWords);
+  const path = locate(g, ijk);
+  const a = DIM_OF_LEVEL[path.level]!;
+  if ((a > 1 && dim <= a) || !g.hasStats || dim <= 1) return readValueF32(gridWords, ijk);
+  if (dim <= 8) {
+    let n = 0;
+    for (let w = 0; w < 16; w++) {
+      let v = u32(g.words, path.leaf + LEAF_OFF_VALUE_MASK + 4 * w);
+      while (v) {
+        v &= v - 1;
+        n++;
+      }
+    }
+    return f(nodeStats(gridWords, 0, path.leaf).ave * f(n / 512));
+  }
+  return nodeStats(gridWords, 1, path.lower).ave;
+}
+
 // ---------------------------------------------------------------------------
 // The canonical walk
 
