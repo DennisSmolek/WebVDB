@@ -5,25 +5,18 @@
 // is unchanged). Used as a vitest globalSetup and a Playwright globalSetup.
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { VDB_SAMPLES as PINNED_VDB_SAMPLES } from "./lib/vdb-samples.mjs";
 
 const root = new URL("../fixtures/", import.meta.url);
 
 const PRIMITIVES = ["box", "sphere", "torus"].flatMap((s) =>
   ["float", "fp8", "fpn"].map((q) => `primitives/${s}_fog_${q}.nvdb`),
 );
-const VDB_SAMPLES = [
-  "bunny",
-  "bunny_cloud",
-  "cube",
-  "explosion",
-  "fire",
-  "icosahedron",
-  "smoke",
-  "sphere",
-  "sphere_points",
-  "utahteapot",
-  "waterfall_points",
-].map((n) => `vdb-samples/${n}.vdb`);
+// Only what `pnpm fixtures:vdb-samples` can fetch in CI (the pinned manifest). Other
+// samples (Stanford-bunny derivatives, which are excluded on purpose — see
+// fixtures/ATTRIBUTION.md — plus explosion, fire, icosahedron, the point grids)
+// are optional local assets; their tests keep skipping when absent.
+const VDB_SAMPLES = Object.keys(PINNED_VDB_SAMPLES).map((n) => `vdb-samples/${n}`);
 
 export const REQUIRED_FIXTURES = [...PRIMITIVES, ...VDB_SAMPLES];
 
