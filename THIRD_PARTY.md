@@ -41,3 +41,5 @@ DEALINGS IN THE SOFTWARE.
 ```
 
 Divergences from his code are recorded in [DIVERGES.md](DIVERGES.md) (V10, V16 to V19).
+
+- `packages/vdb/src/tools/vdb/points.ts` — portions derived from mjurczyk/openvdb (`src/openvdb/core/PointDataBuffers.js`, `src/openvdb/utils/points.js`), commit 75e7345, MIT, © mjurczyk/openvdb contributors. File header: "Portions derived from mjurczyk/openvdb (MIT), commit 75e7345".
