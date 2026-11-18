@@ -19,6 +19,8 @@ export default defineConfig({
     ],
   },
   test: {
+    // WEBVDB_REQUIRE_FIXTURES=1 (CI): missing fixtures fail instead of skipping.
+    globalSetup: ["./scripts/require-fixtures.mjs"],
     // Each package is its own Vitest project; "examples" holds node-side
     // checks of the demos (the demos themselves run in Playwright).
     projects: ["packages/*", "examples"],

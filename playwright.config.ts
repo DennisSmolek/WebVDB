@@ -8,6 +8,8 @@ const baseURL = `http://127.0.0.1:${port}`;
 // --enable-unsafe-webgpu; the Phase 0 smoke passes without an adapter.
 export default defineConfig({
   testDir: "e2e",
+  // WEBVDB_REQUIRE_FIXTURES=1 (CI): missing fixtures fail instead of test.skip.
+  globalSetup: "./scripts/require-fixtures.mjs",
   snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}-{projectName}-linux{ext}",
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

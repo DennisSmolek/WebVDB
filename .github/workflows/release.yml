@@ -1,0 +1,172 @@
+name: Release
+
+# Publishes @pmndrs/vdb to npm. MANUAL ONLY: Actions -> Release -> Run workflow
+# (from main). It never runs on push, pull_request or tag.
+#
+# Input `version` is the exact SemVer to publish (e.g. 0.1.0, or 0.2.0-beta.1).
+# Leave it empty to publish the version already in packages/vdb/package.json.
+# Prereleases publish under the dist-tag of their first identifier (beta, rc,
+# ...), never `latest`. The run: checks the tag is free and the version is not
+# on npm, stamps package.json in this checkout, runs the full gate (typecheck,
+# unit with fixtures required, build, wgsl:size, pack dry-run, packed-subpaths),
+# publishes with provenance, then pushes the tag v<version>.
+#
+# OWNER ACTIONS before the first run (the workflow cannot do these):
+#   1. Move the repo to pmndrs/vdb (task K0.7). The package.json
+#      repository/homepage/bugs URLs must match the repo that publishes, or
+#      provenance verification fails.
+#   2. On npmjs.com, configure @pmndrs/vdb for Trusted Publishing: publisher
+#      GitHub Actions, organization pmndrs, repository vdb, workflow filename
+#      `release.yml` (keep this filename), no environment. For a package that
+#      does not exist yet, npm needs it created first (pending trusted
+#      publisher, or a one-time manual `npm publish --access public`).
+#   There is no NPM_TOKEN secret: auth is OIDC (`id-token: write`), which
+#   needs npm >= 11.5.1, installed below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact SemVer to publish (e.g. 0.1.0). Empty = the version in packages/vdb/package.json."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write # push the v<version> tag
+  id-token: write # npm trusted publishing (OIDC) + provenance
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: gate · publish · tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BAKE_MODE: local # see ci.yml: avoid the Docker full-OpenVDB build
+      WEBVDB_REQUIRE_FIXTURES: "1" # fixture-backed gates must run, not skip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, to refuse an existing v<version>
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm >= 11.5.1; Node 22 bundles 10.x.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Resolve version
+        id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" != "refs/heads/main" ]]; then
+            echo "::error::Run this workflow from main, not $REF."
+            exit 1
+          fi
+          VERSION="${INPUT_VERSION#v}"
+          if [[ -z "$VERSION" ]]; then
+            VERSION=$(node -p "require('./packages/vdb/package.json').version")
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a SemVer version."
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Tag v$VERSION already exists."
+            exit 1
+          fi
+          # npm dist-tag: `latest` for stable, the first prerelease identifier otherwise.
+          if [[ "$VERSION" == *-* ]]; then
+            PRE="${VERSION#*-}"
+            DIST_TAG="${PRE%%.*}"
+            if [[ "$DIST_TAG" =~ ^[0-9]+$ ]]; then DIST_TAG=next; fi
+          else
+            DIST_TAG=latest
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION under dist-tag '$DIST_TAG'."
+
+      - name: Stamp package version (this checkout only)
+        working-directory: packages/vdb
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Refuse a version already on npm
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "@pmndrs/vdb@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@pmndrs/vdb@$VERSION is already on npm."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      # --- Full gate (same checks as ci.yml, minus the browser e2e) ---------
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: WGSL size budget
+        run: pnpm wgsl:size
+
+      - name: Cache fixtures
+        id: fixtures-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            fixtures/primitives/*.nvdb
+            fixtures/vdb-samples
+            fixtures/downloads/openvdb-sparse
+          key: fixtures-${{ runner.os }}-${{ hashFiles('docker/fixture-bake/bake_primitives.cpp', 'scripts/bake-fixtures.mjs', 'scripts/fetch-vdb-samples.mjs') }}
+
+      - name: Bake primitive fixtures + fetch .vdb samples
+        if: steps.fixtures-cache.outputs.cache-hit != 'true'
+        run: |
+          pnpm fixtures:bake
+          pnpm fixtures:vdb-samples
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Pack dry-run
+        run: pnpm pack:dry
+
+      - name: Packed subpaths resolve from a clean consumer
+        run: pnpm verify:packed-subpaths
+
+      # --- Publish, then tag ------------------------------------------------
+      # Trusted publishing attaches provenance automatically; --provenance
+      # makes it explicit and fails the publish if it cannot be generated.
+      - name: Publish to npm
+        working-directory: packages/vdb
+        env:
+          DIST_TAG: ${{ steps.v.outputs.dist_tag }}
+        run: npm publish --provenance --access public --tag "$DIST_TAG"
+
+      - name: Tag the release
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "@pmndrs/vdb v$VERSION"
+          git push origin "refs/tags/v$VERSION"
