@@ -13,3 +13,6 @@
  * `@pmndrs/vdb/pnanovdb.wgsl?raw` instead.
  */
 export const pnanovdbWgslUrl = new URL("../../vendor/pnanovdb.wgsl", import.meta.url);
+
+export { VDBError } from "./errors.js";
+export type { VDBErrorCode } from "./errors.js";
