@@ -4,24 +4,18 @@ import {
   buildFromVdb,
   inspect,
   quantize,
-  readNvdb,
   transform,
   writeNvdb,
 } from "../../src/tools/index.js";
 
 // The v1 API is real now (buildFromVdb, quantize, transform, inspect) — each has
 // its own suite (build-from-vdb / quantize / inspect-transform tests). This file
-// just guards the public barrel: everything is exported and callable, and the one
-// remaining stub (readNvdb) still throws with its Phase-5 pointer.
+// just guards the public barrel: everything is exported and callable.
 describe("@pmndrs/vdb/tools public barrel", () => {
   it("exports the v1 API as functions", () => {
     for (const fn of [buildFromDense, writeNvdb, buildFromVdb, quantize, transform, inspect]) {
       expect(typeof fn).toBe("function");
     }
-  });
-
-  it("readNvdb is the only remaining stub", () => {
-    expect(() => readNvdb(new ArrayBuffer(0))).toThrowError(/Phase 5/);
   });
 
   it("the v1 API validates its inputs instead of silently no-op'ing", () => {

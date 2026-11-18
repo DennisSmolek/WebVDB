@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 // K1.6: the K1 regression gate (docs/design/K1-core.md §7, docs/handoffs/K1-6.md).
-// One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures plus
+// One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures, two synthetic quantized grids (sphere_fog_fp4 / sphere_fog_fp16, K5.4b) plus
 // torus_fog_fp8 again with an instance transform; every generated-module variant of
 // the matrix is dispatched and compared with the CPU twins. The page does the
 // comparing and publishes counts, max deltas and failure lines.
@@ -58,7 +58,7 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
   });
   await page.goto(PAGE_URL);
   await page.waitForFunction(() => (window as { __CORE_PARITY__?: { done: boolean } }).__CORE_PARITY__?.done === true, undefined, {
-    timeout: 140_000,
+    timeout: 240_000,
   });
   const r = (await page.evaluate(() => (window as { __CORE_PARITY__?: unknown }).__CORE_PARITY__)) as CoreParity;
 
@@ -82,12 +82,14 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
     r.variants.map((v) => v.id),
     detail,
   ).toEqual(r.expected!.variants);
-  expect(r.variants.length).toBe(23);
+  expect(r.variants.length).toBe(29); // 21 base + 2 fastTrilinear (K3.2d) + 6 fp4/fp16 (K5.4)
 
   for (const v of r.variants) {
     expect(v.compileErrors, `${v.id} compile`).toEqual([]);
     const profile = v.id.split("/")[0];
-    const required = [...READ_CATS, ...(profile !== "read" ? SAMPLE_CATS : []), ...(profile === "march" ? MARCH_CATS : [])];
+    // fp4 / fp16 exist only as synthetic quantize() grids (no native sidecar), so their single-type modules have no sidecar-value rows.
+    const readCats = /\/fp(4|16)$/.test(v.id) ? READ_CATS.filter((c) => c !== "sidecar-value") : READ_CATS;
+    const required = [...readCats, ...(profile !== "read" ? SAMPLE_CATS : []), ...(profile === "march" ? MARCH_CATS : [])];
     if (["sample/all", "march/all", "march/all/buffer"].includes(v.id)) required.push(...XFORM_CATS);
     // K1.7a opt-in helpers (vdbHddaCellEnd feeds the walk categories above).
     if (v.id === "march/all/helpers") required.push("cellbound", "clip-support-hit", "clip-support-t", "clip-hit");
@@ -114,7 +116,7 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
     }
   }
 
-  expect(r.totalMs, "runtime budget").toBeLessThan(90_000);
+  expect(r.totalMs, "runtime budget").toBeLessThan(180_000); // 29 variants; headroom for loaded machines and small CI runners
   const t = r.totals;
   test.info().annotations.push({
     type: "core-parity",

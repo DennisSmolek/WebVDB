@@ -4,6 +4,7 @@
  * records the calls; the GPU path is the e2e (e2e/coarse-first.spec.ts).
  */
 import { describe, expect, it } from "vitest";
+import { BoxGeometry } from "three";
 import { vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "../../src/three/index.js";
 import { buildFromDense, NvdbFormatError, writeNvdb } from "../../src/tools/index.js";
 
@@ -127,5 +128,76 @@ describe("vdbStreamCoarseFirst (K4.16)", () => {
     const controller = new AbortController();
     controller.abort(new Error("stop"));
     await expect(vdbStreamCoarseFirst(stubPool(), new Response(file), { signal: controller.signal })).rejects.toThrow(/stop/);
+  });
+
+  describe("bind (K5.4c)", () => {
+    function bindPool() {
+      const log: string[] = [];
+      const pool = {
+        ...stubPool(),
+        flush: () => log.push("flush"),
+        info: (id: number) => {
+          log.push(`info ${id}`);
+          return { indexBBox: { min: [0, 0, 0], max: [7, 7, 7] }, indexToWorld: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0] } as never;
+        },
+        setMajorant: (id: number, m: unknown) => log.push(`majorant ${id} ${m === null ? "null" : "set"}`),
+      };
+      return { pool, log };
+    }
+
+    it("scales the material by base x voxelRatio, rebuilds the proxy, updates the node and re-applies the majorant", async () => {
+      const file = new Uint8Array(writeNvdb([LOD8, LOD16, FULL], { codec: "zip" }));
+      const { pool, log } = bindPool();
+      const material = { densityScale: { value: 5 } };
+      const first = new BoxGeometry(1, 1, 1);
+      const mesh = { geometry: first };
+      const scales: number[] = [];
+      const geoms: unknown[] = [];
+      let disposed = 0;
+      first.dispose = () => void disposed++;
+      const majorants: boolean[] = [];
+      await vdbStreamCoarseFirst(pool, new Response(file), {
+        bind: {
+          material,
+          mesh,
+          grids: { update: () => log.push("update") },
+          majorant: (e) => {
+            majorants.push(e.final);
+            return e.final ? ({ brickLog2: 3 } as never) : null;
+          },
+        },
+        onGrid: () => {
+          scales.push(material.densityScale.value);
+          geoms.push(mesh.geometry);
+        },
+      });
+      expect(scales).toEqual([20, 10, 5]); // base 5 captured at the first swap, x 4, x 2, x 1
+      expect(majorants).toEqual([false, false, true]);
+      expect(log.filter((l) => l.startsWith("majorant"))).toEqual(["majorant 7 set"]);
+      expect(log.filter((l) => l === "update").length).toBe(3);
+      // bind runs before onGrid: flush, then update, in order, per swap.
+      expect(log.indexOf("flush")).toBeLessThan(log.indexOf("update"));
+      expect(new Set(geoms).size).toBe(3);
+      expect(geoms[0]).not.toBe(first);
+      expect(disposed).toBe(1); // the geometry the caller supplied is disposed on the first swap
+    });
+
+    it("an explicit densityScale wins, members may be filled in later, and a pool without the calls is refused", async () => {
+      const file = new Uint8Array(writeNvdb([LOD8, FULL], { codec: "none" }));
+      const { pool } = bindPool();
+      const material = { densityScale: { value: 1 } };
+      const bind: { material?: typeof material; densityScale?: number } = { densityScale: 3 };
+      const seen: number[] = [];
+      await vdbStreamCoarseFirst(pool, new Response(file), {
+        bind,
+        onGrid: (e) => {
+          bind.material ??= material; // assigned on the first event; applied from the next swap
+          seen.push(material.densityScale.value);
+          void e;
+        },
+      });
+      expect(seen).toEqual([1, 3]);
+      await expect(vdbStreamCoarseFirst(stubPool(), new Response(file), { bind: { grids: { update() {} } } })).rejects.toThrow(/flush\(\)/);
+    });
   });
 });

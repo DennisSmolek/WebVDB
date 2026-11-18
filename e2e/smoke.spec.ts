@@ -10,7 +10,7 @@ test("examples app boots and reports WebGPU capability", async ({ page }) => {
   const report = page.getByTestId("webgpu-report");
   // main.ts imported constants from @pmndrs/vdb/tools — proves workspace wiring.
   await expect(report).toContainText("workspace ok");
-  await expect(report).toContainText("Float, Fp8, FpN");
+  await expect(report).toContainText("Float, Fp4, Fp8, Fp16, FpN");
   // The probe always sets data-webgpu, whatever the environment offers.
   await expect(report).toHaveAttribute(
     "data-webgpu",

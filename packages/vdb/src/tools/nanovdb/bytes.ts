@@ -36,7 +36,9 @@ export const PATCH_VERSION = 1;
 export const VERSION_PACKED = (MAJOR_VERSION << 21) | (MINOR_VERSION << 10) | PATCH_VERSION;
 
 export const GRID_TYPE_FLOAT = 1;
+export const GRID_TYPE_FP4 = 13;
 export const GRID_TYPE_FP8 = 14;
+export const GRID_TYPE_FP16 = 15;
 export const GRID_TYPE_FPN = 16;
 export const GRID_TYPE_VEC3F = 6;
 export const GRID_CLASS_UNKNOWN = 0;
@@ -278,6 +280,10 @@ function quantizedLayout(gridType: number, leafSize: number): GridTypeLayout {
 
 /** Fp8: fixed 8-bit codes. Leaf = 96-byte header + 512 bytes = 608. */
 export const FP8_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP8, 608);
+/** Fp4: fixed 4-bit codes. Leaf = 96-byte header + 256 bytes = 352. */
+export const FP4_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP4, 352);
+/** Fp16: fixed 16-bit codes. Leaf = 96-byte header + 1024 bytes = 1120. */
+export const FP16_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP16, 1120);
 /** FpN: variable bit-width. `leafSize` is the 96-byte base (see codec). */
 export const FPN_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FPN, FP_LEAF_HEADER_SIZE);
 

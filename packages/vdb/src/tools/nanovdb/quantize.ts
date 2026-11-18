@@ -1,5 +1,5 @@
 /**
- * quantize.ts — re-encode a FLOAT NanoVDB grid image as Fp8 or FpN.
+ * quantize.ts — re-encode a FLOAT NanoVDB grid image as Fp4, Fp8, Fp16 or FpN.
  *
  * Quantization is a leaf-value-representation change only: topology, masks,
  * internal-node tables/stats, GridData and the transform are unchanged. So
@@ -10,7 +10,10 @@
  * ({@link buildFromLeavesDetailed}) with the chosen quantizing {@link LeafCodec}. The result satisfies the repo's proven decoders
  * (`read-value.ts` `leafFp*ReadFloat`, `pnanovdb.wgsl`).
  *
- * - `fp8` — fixed 8-bit codes; per-leaf quantum = (max-min)/255.
+ * - `fp4` / `fp8` / `fp16` — fixed 4/8/16-bit codes; per-leaf quantum = (max-min)/(2^bits-1).
+ *   The CreateNanoGrid rules Fp8 uses (min/quantum over all 512 values, round-to-nearest, no
+ *   dither); `tolerance` is ignored. No native Fp4/Fp16 fixtures exist, so these are verified
+ *   by decoder round-trip and GPU parity, not byte-compared to `nanovdb_convert`.
  * - `fpn` — per-leaf variable bit-width, smallest of 1/2/4/8/16 bits whose
  *   dequantized values stay within `tolerance` (default: native's FogVolume 0.01).
  *
@@ -42,11 +45,11 @@ import {
   UPPER_OFF_CHILD_MASK,
   UPPER_TABLE_COUNT,
 } from "./bytes.js";
-import { FLOAT_LEAF_CODEC, FP8_LEAF_CODEC, makeFpNLeafCodec, type LeafCodec } from "./leaf-codec.js";
+import { FLOAT_LEAF_CODEC, FP4_LEAF_CODEC, FP8_LEAF_CODEC, FP16_LEAF_CODEC, makeFpNLeafCodec, type LeafCodec } from "./leaf-codec.js";
 import { buildFromLeavesDetailed, type BuiltGrid } from "./serialize.js";
 import type { LeafInput, TileInput } from "./tree.js";
 
-export type QuantizeMode = "fp8" | "fpn";
+export type QuantizeMode = "fp4" | "fp8" | "fp16" | "fpn";
 
 export interface QuantizeOptions {
   /**
@@ -76,7 +79,11 @@ export function quantizeDetailed(
 ): BuiltGrid {
   const image = input instanceof Uint32Array ? input : input.image;
   const src = readFloatGrid(image);
-  const codec: LeafCodec = mode === "fp8" ? FP8_LEAF_CODEC : makeFpNLeafCodec(tolerance);
+  const codec: LeafCodec =
+    mode === "fp4" ? FP4_LEAF_CODEC
+    : mode === "fp8" ? FP8_LEAF_CODEC
+    : mode === "fp16" ? FP16_LEAF_CODEC
+    : makeFpNLeafCodec(tolerance);
   return buildFromLeavesDetailed(src.leaves, codec, {
     voxelSize: src.voxelSize,
     worldOrigin: src.translation,

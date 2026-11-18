@@ -20,12 +20,13 @@ import { NanoVDBFile } from '@pmndrs/vdb/tools';
 const file = await NanoVDBFile.fromURL(url); // or NanoVDBFile.fromArrayBuffer(bytes)
 for (const meta of file.grids) console.log(meta.name, meta.gridType, meta.gridClass, meta.voxelSize);
 
-// The grid image is what VDBGridPool.add() takes, byte for byte. Float, Fp8 and FpN grids load.
+// The grid image is what VDBGridPool.add() takes, byte for byte. Float, Fp4, Fp8, Fp16 and FpN grids load.
 const image = file.gridImage(0); // decompressed when the file is zipped
 ```
 
-`NanoVDBFile` loads Float, Fp8 and FpN grids. The pool also holds Fp4 and Fp16 grids, but those only arrive through
-your own builder.
+`NanoVDBFile` loads Float, Fp4, Fp8, Fp16 and FpN grids. It is the one reader: there is no separate `readNvdb`, so use
+`NanoVDBFile` for bytes you already hold (`fromArrayBuffer`, or `fromURL` for a fetch) and `readNvdbStream` for a stream.
+Native `nanovdb_convert` writes Float, Fp8 and FpN; `quantize(image, 'fp4' | 'fp16')` makes the other two.
 
 ## Write
 
@@ -74,7 +75,7 @@ console.log(parseNvdbLodName(nvdbLodName('cloud', 48))); // { baseName: 'cloud',
 
 `readValue` and the sampling functions are the WGSL module's tree descent in TypeScript, so you can check GPU results
 or read voxels with no GPU. They take a grid image and **index-space** coordinates. `readValue` is the exact f64 decode;
-`readValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp8 and FpN
+`readValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16 and FpN
 grids (and `readValueVec3` / `sampleTrilinearVec3` read Vec3f).
 
 {/* snippet: cpu-reads */}
@@ -82,7 +83,7 @@ grids (and `readValueVec3` / `sampleTrilinearVec3` read Vec3f).
 import { readValue, sampleTrilinear } from '@pmndrs/vdb/tools';
 
 // The same tree descent as the WGSL module, in TypeScript: an oracle for GPU results, no GPU needed.
-// Index space: the integer coordinates are voxels. (Float, Fp8 and FpN grids.)
+// Index space: the integer coordinates are voxels. (Float, Fp4, Fp8, Fp16 and FpN grids.)
 console.log(readValue(image, [10, 20, 30])); // { value, active }
 console.log(sampleTrilinear(image, [10.5, 20.25, 30])); // continuous index-space sample
 ```

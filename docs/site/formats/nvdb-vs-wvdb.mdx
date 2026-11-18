@@ -10,7 +10,7 @@ Both are supported by `@pmndrs/vdb/tools`, for different jobs (D14).
 | | `.nvdb` | `.wvdb` |
 | --- | --- | --- |
 | What | NanoVDB's file format: grid images in a small container | mjurczyk's WebVDB delivery format (spec v0.5) |
-| Data | Sparse tree at full resolution; Float, Fp8, FpN (and Fp4, Fp16 in the pool) | Dense bricks at several LODs, resampled to a target resolution (8-bit texels in the dense renderer source) |
+| Data | Sparse tree at full resolution; Float, Fp4, Fp8, Fp16, FpN | Dense bricks at several LODs, resampled to a target resolution (8-bit texels in the dense renderer source) |
 | Read on the GPU | Directly: the file's grid image is what the pool holds, byte for byte | After a conversion to 3D textures (dense source) or to a NanoVDB grid (sparse source) |
 | Read | `NanoVDBFile`, `readNvdbStream` | `readWvdb`, `WvdbStreamReader` |
 | Write | `writeNvdb` | `writeWvdb`, `vdbToWvdb`, `nanoVdbToWvdb`, `bakeWvdb` |

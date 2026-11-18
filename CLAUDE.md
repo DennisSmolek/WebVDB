@@ -131,7 +131,7 @@ From v1; details in docs/handoffs/.
   boxes are cell boxes (`[i − ½, i + ½]`). Compare a preview's box with the full grid's after shifting each by
   −voxelSize/2.
 - `VDBVolumeMaterial` integrates density per index voxel, so a coarse preview with k-times larger voxels looks
-  k-times thinner at the same `densityScale`. `vdbStreamCoarseFirst` reports `voxelRatio`; scale by it.
+  k-times thinner at the same `densityScale`. `vdbStreamCoarseFirst` reports `voxelRatio`; pass `bind: { material }` (or call `vdbCoarseFirstApply`) to scale by it.
 - three r187 WebGPU `readRenderTargetPixelsAsync` returns rows **top first** (row 0 = `screenCoordinate.y` 0),
   padded to 256 bytes; don't flip them (the K3.0 `k3-dense` harness did until K3.2 fixed it, K3.1b).
 - three r187's TSL typings narrow node types and reject most ported shader code; the K3 frame files take TSL

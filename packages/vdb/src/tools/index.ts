@@ -52,7 +52,9 @@ export {
   buildFromDenseDetailed,
   buildFromLeavesDetailed,
   FLOAT_LEAF_CODEC,
+  FP4_LEAF_CODEC,
   FP8_LEAF_CODEC,
+  FP16_LEAF_CODEC,
   makeFpNLeafCodec,
   VEC3F_LEAF_CODEC,
 } from "./nanovdb/index.js";
@@ -63,7 +65,7 @@ export type {
   LeafCodec,
 } from "./nanovdb/index.js";
 
-/** Quantize a FLOAT grid image to Fp8/FpN (per-leaf min/quantum + packed codes). */
+/** Quantize a FLOAT grid image to Fp4/Fp8/Fp16/FpN (per-leaf min/quantum + packed codes). */
 export { collapseGrid, quantize, quantizeDetailed } from "./nanovdb/index.js";
 export type { QuantizeMode, QuantizeOptions } from "./nanovdb/index.js";
 
@@ -93,11 +95,6 @@ export type { InspectReport } from "./nanovdb/index.js";
 
 export { writeNvdb } from "./nanovdb/index.js";
 export type { WriteNvdbOptions } from "./nanovdb/index.js";
-
-/** Read `.nvdb` files. Phase 5 follow-up (`NanoVDBFile` in this module covers reading today). */
-export function readNvdb(_buffer: ArrayBuffer): never {
-  throw new Error("readNvdb: not implemented (Phase 5)");
-}
 
 /**
  * `.nvdb` file loader (from the former `nanovdb-wgsl` package).

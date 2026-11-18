@@ -1,6 +1,6 @@
 ---
 title: Build, quantize, resample
-description: Make NanoVDB grid images from dense arrays or .vdb grids, shrink them to Fp8 or FpN, and resample them.
+description: Make NanoVDB grid images from dense arrays or .vdb grids, shrink them to Fp4, Fp8, Fp16 or FpN, and resample them.
 nav: 31
 sourcecode: packages/vdb/src/tools/nanovdb/index.ts
 ---
@@ -15,7 +15,7 @@ take. Everything on this page returns one, or a `BuiltGrid` that carries one in 
 - `buildFromDense(values, dims, options?)` builds a Float grid from a dense array (x fastest). Options: `origin`,
   `voxelSize`, `worldOrigin`, `background`, `activeThreshold`, `gridName`, `gridClass`, `collapse`.
 - `buildFromLeavesDetailed(leaves, codec, options?)` is the general entry: your leaves and a `LeafCodec`
-  (`FLOAT_LEAF_CODEC`, `FP8_LEAF_CODEC`, `VEC3F_LEAF_CODEC`, or `makeFpNLeafCodec`).
+  (`FLOAT_LEAF_CODEC`, `FP4_LEAF_CODEC`, `FP8_LEAF_CODEC`, `FP16_LEAF_CODEC`, `VEC3F_LEAF_CODEC`, or `makeFpNLeafCodec`).
 
 {/* snippet: build-dense */}
 ```ts
@@ -41,16 +41,18 @@ return writeNvdb([image], { codec: 'zip' });
 
 ## Quantize
 
-`quantize(image, mode, tolerance?, options?)` re-encodes a Float grid as Fp8 or FpN with a per-leaf minimum and
-quantum, and packed codes. Fp8 is one byte per voxel. FpN picks its bit width per leaf from the absolute `tolerance`.
-Both load on the GPU through the generated module (`types: ['fp8']` or `['fpn']`).
+`quantize(image, mode, tolerance?, options?)` re-encodes a Float grid as Fp4, Fp8, Fp16 or FpN with a per-leaf minimum and
+quantum, and packed codes. Fp4, Fp8 and Fp16 are fixed at 4, 8 and 16 bits per voxel (`tolerance` is ignored). FpN picks
+its bit width per leaf from the absolute `tolerance`. All load on the GPU through the generated module (`types: ['fp4']`,
+`['fp8']`, `['fp16']` or `['fpn']`). Fp8 and FpN match `nanovdb_convert` byte for byte on the fixtures; Fp4 and Fp16 use
+the same rules but have no native fixture to compare with.
 
 {/* snippet: quantize */}
 ```ts
 import { collapseGrid, quantize } from '@pmndrs/vdb/tools';
 
-// Per-leaf min and quantum plus packed codes. Fp8 is one byte per voxel; FpN picks the bit width per
-// leaf from the tolerance (an absolute error bound in value units).
+// Per-leaf min and quantum plus packed codes. Fp8 is one byte per voxel ('fp4' and 'fp16' are 4 and
+// 16 bits); FpN picks the bit width per leaf from the tolerance (an absolute error bound in value units).
 const fp8 = quantize(image, 'fp8');
 const fpn = quantize(image, 'fpn', 0.001);
 

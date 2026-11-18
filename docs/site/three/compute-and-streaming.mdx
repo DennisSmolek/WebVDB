@@ -41,22 +41,26 @@ import { vdbStreamCoarseFirst } from '@pmndrs/vdb/three';
 // A file baked with bakeCoarseFirst() holds the preview grid first. The preview is added with the
 // full size reserved, then replaced in place when the full grid arrives: the same pool id throughout.
 const { id } = await vdbStreamCoarseFirst(pool, await fetch(url), {
-    onGrid: ({ action, final, voxelRatio }) => {
-        pool.flush(); // the preview, or the replacement, reaches the GPU
-        grids.update();
-        // A preview's voxels are voxelRatio times larger: keep the same optical depth, then restore it.
-        material.densityScale.value = final ? 1 : voxelRatio;
-        console.log(action, final ? 'full grid' : 'preview');
-    },
+    // After each swap: pool.flush() + grids.update(), the proxy box from pool.info(id), and densityScale
+    // = its current value x voxelRatio (a preview's voxels are larger), back to the base at the full grid.
+    bind: { grids, material, mesh },
+    onGrid: ({ action, final }) => console.log(action, final ? 'full grid' : 'preview'),
 });
 ```
 
-Things to redo in `onGrid`, because a swap changes what the id holds:
+A swap changes what the id holds, so three things need redoing. The opt-in `bind` option does them after each swap,
+before `onGrid` runs; every member is optional:
 
-- `replace` drops a brick majorant: call `pool.setMajorant` again.
-- `VDBVolumeMaterial` marches in index voxels, so a preview with k-times larger voxels has 1/k the optical depth at the
-  same `densityScale`. Scale it by `voxelRatio` while a preview shows, and back to 1 at `final`.
-- The preview's box is the full box grown to whole preview voxels: build a new `vdbProxyGeometry(pool.info(id))`.
+- `bind.material`: `VDBVolumeMaterial` marches in index voxels, so a preview with k-times larger voxels has 1/k the
+  optical depth at the same `densityScale`. `bind` sets `densityScale = base × voxelRatio` (the base is `bind.densityScale`,
+  else the material's value at the first swap), which is the base again at the full grid.
+- `bind.mesh`: the preview's box is the full box grown to whole preview voxels, so the mesh gets a new
+  `vdbProxyGeometry(pool.info(id))` (`proxyPad` sets its pad) and the old geometry is disposed.
+- `bind.majorant(event)`: `replace` drops a brick majorant. Return the one for the grid just shown (or `null` for none) and
+  `pool.setMajorant` is called for you.
+- `bind.grids`: a `VDBGridNode`; `pool.flush()` then `grids.update()`.
 
-It touches only `pool.add` and `pool.replace`, so it works with any pool host. It lives in `./three` because `tools`
+The members are read at every swap, so they can be assigned in `onGrid` once the first grid exists. Code that handles a
+swap asynchronously can call `vdbCoarseFirstApply(pool, event, bind)` itself. Without `bind` the loader touches only
+`pool.add` and `pool.replace`, so it works with any pool host. It lives in `./three` because `tools`
 may not import the core. Pass `signal` to abort, and `reader` for `maxGridBytes` limits.
