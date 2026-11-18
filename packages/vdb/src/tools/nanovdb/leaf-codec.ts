@@ -31,6 +31,7 @@
 
 import {
   FLOAT_LAYOUT,
+  VEC3F_LAYOUT,
   FP8_LAYOUT,
   FP_LEAF_HEADER_SIZE,
   FPN_LAYOUT,
@@ -49,7 +50,8 @@ import {
   NODE_FLAG_STATS,
 } from "./bytes.js";
 import type { GridImageWriter } from "./bytes.js";
-import type { StatsAccumulator } from "./stats.js";
+import { type StatsAccumulator, Vec3StatsAccumulator } from "./stats.js";
+import type { TileValue } from "./tree.js";
 
 /** The leaf data a codec needs: origin, all 512 values, mask, active-value stats. */
 export interface EncodableLeaf {
@@ -67,6 +69,8 @@ export interface LeafPlan {
 
 export interface LeafCodec {
   readonly layout: GridTypeLayout;
+  /** Scalars per value: 1 (default) or 3 (Vec3f). */
+  readonly components?: 1 | 3;
   /**
    * Computes a leaf's encoding plan (its byte size, and for FpN the chosen
    * bit-width) from its 512 values. Called once before layout so variable-size
@@ -80,7 +84,13 @@ export interface LeafCodec {
    */
   encodeLeaf(w: GridImageWriter, leafOff: number, leaf: EncodableLeaf, plan: LeafPlan): void;
   /** Writes a single constant value (an internal-node tile / background). */
-  writeConstant(w: GridImageWriter, off: number, value: number): void;
+  writeConstant(w: GridImageWriter, off: number, value: TileValue): void;
+}
+
+/** A scalar codec's constant: tiles and backgrounds of scalar grids are numbers. */
+function scalar(value: TileValue): number {
+  if (typeof value !== "number") throw new Error(`leaf codec: expected a scalar value, got [${value.join(", ")}]`);
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,9 +151,61 @@ export const FLOAT_LEAF_CODEC: LeafCodec = {
     w.setF32(leafOff + L.leafOffStdDev, s.stdDev);
   },
   writeConstant(w, off, value) {
-    w.setF32(off, value);
+    w.setF32(off, scalar(value));
   },
 };
+
+// ---------------------------------------------------------------------------
+// Vec3f
+// ---------------------------------------------------------------------------
+
+/** Writes a Vec3f (3 x f32) at `off`. */
+function writeVec3(w: GridImageWriter, off: number, v: readonly number[]): void {
+  w.setF32(off, v[0]!);
+  w.setF32(off + 4, v[1]!);
+  w.setF32(off + 8, v[2]!);
+}
+
+/**
+ * Vec3f leaf codec (K4.2): 512 x 3 f32 values (xyz interleaved in
+ * `leaf.values`), Vec3f min/max and f32 ave/stddev of the squared lengths
+ * (NanoVDB `Stats<Vec3f, 1>`, see {@link Vec3StatsAccumulator}).
+ */
+export const VEC3F_LEAF_CODEC: LeafCodec = {
+  layout: VEC3F_LAYOUT,
+  components: 3,
+  planLeaf() {
+    return { byteSize: VEC3F_LAYOUT.leafSize };
+  },
+  encodeLeaf(w, leafOff, leaf) {
+    writeLeafHeader(w, leafOff, leaf, NODE_FLAG_STATS);
+    const L = VEC3F_LAYOUT;
+    const values = leaf.values;
+    for (let i = 0; i < LEAF_TABLE_COUNT * 3; i++) w.setF32(leafOff + L.leafOffTable + i * 4, values[i]!);
+    writeVec3StatsBlock(w, leafOff, L.leafOffMin, L.leafOffMax, L.leafOffAve, L.leafOffStdDev, leaf.stats);
+  },
+  writeConstant(w, off, value) {
+    if (typeof value === "number") throw new Error(`Vec3f codec: expected a vector value, got ${value}`);
+    writeVec3(w, off, value);
+  },
+};
+
+/** Writes a Vec3f node's stats block: Vec3f min/max (zeros when empty), f32 ave/stddev. */
+export function writeVec3StatsBlock(
+  w: GridImageWriter,
+  base: number,
+  offMin: number,
+  offMax: number,
+  offAve: number,
+  offStdDev: number,
+  stats: StatsAccumulator,
+): void {
+  const empty = stats.isEmpty || !(stats instanceof Vec3StatsAccumulator);
+  writeVec3(w, base + offMin, empty ? [0, 0, 0] : (stats as Vec3StatsAccumulator).minVec);
+  writeVec3(w, base + offMax, empty ? [0, 0, 0] : (stats as Vec3StatsAccumulator).maxVec);
+  w.setF32(base + offAve, stats.average);
+  w.setF32(base + offStdDev, stats.stdDev);
+}
 
 // ---------------------------------------------------------------------------
 // Quantized (Fp8 / FpN) shared helpers
@@ -262,7 +324,7 @@ export const FP8_LEAF_CODEC: LeafCodec = {
     packCodes(w, leafOff, 8, (n) => quantizeF32(values[n]!, min, encode, mask));
   },
   writeConstant(w, off, value) {
-    w.setF32(off, value);
+    w.setF32(off, scalar(value));
   },
 };
 
@@ -335,7 +397,7 @@ export function makeFpNLeafCodec(tolerance: number = FPN_DEFAULT_TOLERANCE): Lea
       }
     },
     writeConstant(w, off, value) {
-      w.setF32(off, value);
+      w.setF32(off, scalar(value));
     },
   };
 }

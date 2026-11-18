@@ -8,20 +8,36 @@
  * WASM is an optional escalation rung (W1), never the foundation.
  */
 
-export type { VdbBBox, VdbFile, VdbGrid, VdbLeaf, VdbTile, VdbTransformInfo } from "./vdb/index.js";
+export type {
+  VdbBBox,
+  VdbFile,
+  VdbFloatGrid,
+  VdbGrid,
+  VdbLeaf,
+  VdbPointAttributeArray,
+  VdbPointAttributeInfo,
+  VdbPointDataGrid,
+  VdbPointList,
+  VdbTile,
+  VdbTransformInfo,
+  VdbValueType,
+  VdbVec3Grid,
+  Vec3Tuple,
+} from "./vdb/index.js";
 export { VdbFormatError, VdbUnsupportedError } from "./vdb/index.js";
 
 /**
- * Parse a `.vdb` container: FloatGrid, 5-4-3 tree, uncompressed/zlib
- * (blosc raises a clear "not supported" error, per SPEC §4). Phase 5 —
- * see `src/vdb/` for the reader implementation.
+ * Parse a `.vdb` container: 5-4-3 trees of float, vec3s/vec3d/vec3i and point
+ * data (`ptdataidx32`) grids; uncompressed, zlib or Blosc (LZ4/zlib); half-float
+ * storage; active tiles. See `src/vdb/` for the reader implementation.
  */
 export { parseVdb } from "./vdb/index.js";
 
 /**
- * Build a NanoVDB FLOAT grid image from a parsed `.vdb` grid — streams the
- * parser's leaves into the serializer (no dense array), carrying the `.vdb`
- * uniform scale+translate transform into the NanoVDB Map.
+ * Build a NanoVDB grid image from a parsed `.vdb` grid (FLOAT, or Vec3f for
+ * vector grids) — streams the parser's leaves into the serializer (no dense
+ * array), carrying the `.vdb` uniform scale+translate transform into the
+ * NanoVDB Map.
  */
 export { buildFromVdb, buildFromVdbDetailed } from "./nanovdb/index.js";
 export type { BuildFromVdbOptions } from "./nanovdb/index.js";
@@ -38,6 +54,7 @@ export {
   FLOAT_LEAF_CODEC,
   FP8_LEAF_CODEC,
   makeFpNLeafCodec,
+  VEC3F_LEAF_CODEC,
 } from "./nanovdb/index.js";
 export type {
   BuildFromDenseOptions,
@@ -88,9 +105,9 @@ export type { GridMetadata } from "./nvdb-file.js";
  * generated module (`./cpu/stride-tables.generated.ts`), so these are safe to
  * import from any Vite/browser page as well as Node.
  */
-export { readValue } from "./cpu/read-value.js";
-export type { ReadResult } from "./cpu/read-value.js";
-export { sampleNearest, sampleTrilinear } from "./cpu/sample-trilinear.js";
+export { readValue, readValueVec3 } from "./cpu/read-value.js";
+export type { ReadResult, ReadVec3Result } from "./cpu/read-value.js";
+export { sampleNearest, sampleTrilinear, sampleTrilinearVec3 } from "./cpu/sample-trilinear.js";
 export type { SampleOptions } from "./cpu/sample-trilinear.js";
 
 /**

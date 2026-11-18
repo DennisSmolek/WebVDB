@@ -95,3 +95,53 @@ export class StatsAccumulator {
     return this.count === 0;
   }
 }
+
+const fround = Math.fround;
+
+/** `Vec3<float>::lengthSqr()` evaluated in f32: `x*x + y*y + z*z`, left to right. */
+export function lengthSqrF32(x: number, y: number, z: number): number {
+  return fround(fround(fround(x * x) + fround(y * y)) + fround(z * z));
+}
+
+/**
+ * Vector statistics, NanoVDB `tools/GridStats.h` `Stats<Vec3f, 1>` (rank 1):
+ * every value is ranked by its f32 `lengthSqr()`. `min`/`max` (inherited) are
+ * the extreme squared lengths and {@link minVec}/{@link maxVec} the vectors
+ * that hold them (first one wins on ties, as `Pair::operator<` is strict);
+ * `average` and `stdDev` are the mean and population standard deviation of the
+ * squared lengths, not of the components.
+ */
+export class Vec3StatsAccumulator extends StatsAccumulator {
+  minVec: [number, number, number] = [0, 0, 0];
+  maxVec: [number, number, number] = [0, 0, 0];
+
+  /** Adds one active voxel with vector value (vx, vy, vz) at index coord (x, y, z). */
+  addVoxelVec(vx: number, vy: number, vz: number, x: number, y: number, z: number): void {
+    const s = lengthSqrF32(vx, vy, vz);
+    if (s < this.min) this.minVec = [vx, vy, vz];
+    if (s > this.max) this.maxVec = [vx, vy, vz];
+    this.addVoxel(s, x, y, z);
+  }
+
+  /** Adds an active vector tile with GridStats weight `weight` (see {@link StatsAccumulator.addTile}). */
+  addTileVec(
+    value: readonly [number, number, number],
+    weight: number,
+    bboxMin: readonly [number, number, number],
+    bboxMax: readonly [number, number, number],
+  ): void {
+    const s = lengthSqrF32(value[0], value[1], value[2]);
+    if (s < this.min) this.minVec = [value[0], value[1], value[2]];
+    if (s > this.max) this.maxVec = [value[0], value[1], value[2]];
+    this.addTile(s, weight, bboxMin, bboxMax);
+  }
+
+  override merge(child: StatsAccumulator): void {
+    if (child.count === 0) return;
+    if (child instanceof Vec3StatsAccumulator) {
+      if (child.min < this.min) this.minVec = [...child.minVec];
+      if (child.max > this.max) this.maxVec = [...child.maxVec];
+    }
+    super.merge(child);
+  }
+}

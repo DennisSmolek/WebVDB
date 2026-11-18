@@ -38,9 +38,11 @@ export const VERSION_PACKED = (MAJOR_VERSION << 21) | (MINOR_VERSION << 10) | PA
 export const GRID_TYPE_FLOAT = 1;
 export const GRID_TYPE_FP8 = 14;
 export const GRID_TYPE_FPN = 16;
+export const GRID_TYPE_VEC3F = 6;
 export const GRID_CLASS_UNKNOWN = 0;
 export const GRID_CLASS_LEVEL_SET = 1;
 export const GRID_CLASS_FOG_VOLUME = 2;
+export const GRID_CLASS_STAGGERED = 3;
 
 /**
  * GridData.mFlags for a grid that carries a bbox and full min/max/ave/stddev
@@ -278,6 +280,45 @@ function quantizedLayout(gridType: number, leafSize: number): GridTypeLayout {
 export const FP8_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP8, 608);
 /** FpN: variable bit-width. `leafSize` is the 96-byte base (see codec). */
 export const FPN_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FPN, FP_LEAF_HEADER_SIZE);
+
+/**
+ * Vec3f (K4.2): every value is 3 f32 (12 bytes); `mMinimum`/`mMaximum` are
+ * Vec3f and `mAverage`/`mStdDevi` stay f32 (`FloatTraits<Vec3f>` is float).
+ * Internal-node table slots are 16 bytes (the union of a 12-byte value and an
+ * i64 child offset); the leaf table is 32-byte aligned at 128. Values from
+ * `PNANOVDB_GRID_TYPE_VEC3F` in the vendored stride tables.
+ */
+export const VEC3F_LAYOUT: GridTypeLayout = {
+  gridType: GRID_TYPE_VEC3F,
+  rootSize: 96,
+  rootTileSize: 32,
+  rootTileOffValue: 20,
+  rootOffBackground: 28,
+  rootOffMin: 40,
+  rootOffMax: 52,
+  rootOffAve: 64,
+  rootOffStdDev: 68,
+  tableStride: 16,
+  valueStrideBits: 96,
+  upperSize: 532544,
+  upperOffTable: 8256,
+  upperOffMin: 8224,
+  upperOffMax: 8236,
+  upperOffAve: 8248,
+  upperOffStdDev: 8252,
+  lowerSize: 66624,
+  lowerOffTable: 1088,
+  lowerOffMin: 1056,
+  lowerOffMax: 1068,
+  lowerOffAve: 1080,
+  lowerOffStdDev: 1084,
+  leafSize: 6272,
+  leafOffTable: 128,
+  leafOffMin: 80,
+  leafOffMax: 92,
+  leafOffAve: 104,
+  leafOffStdDev: 108,
+};
 
 // ---------------------------------------------------------------------------
 // coord -> key / coord -> offset (structural bit math, identical for all types)

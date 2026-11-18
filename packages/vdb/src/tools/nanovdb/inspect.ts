@@ -2,15 +2,17 @@
  * inspect.ts — a structural report for a NanoVDB grid image: grid type/class,
  * active voxel count, per-level node counts and a memory breakdown by section.
  * Everything is read straight from GridData/TreeData/RootData, so it works on
- * any FLOAT/Fp8/FpN image (ours or native `nanovdb_convert` output).
+ * any FLOAT/Fp8/FpN/Vec3f image (ours or native `nanovdb_convert` output).
  *
- * The section sizes use the shared root/tile/upper/lower strides (identical for
- * all three grid types); the leaf block is whatever remains up to `mGridSize`,
- * which correctly accounts for FpN's variable-size leaves.
+ * The section sizes use the root/tile/upper/lower strides (shared by FLOAT,
+ * Fp8 and FpN; Vec3f has its own); the leaf block is whatever remains up to
+ * `mGridSize`, which correctly accounts for FpN's variable-size leaves.
  */
 
 import {
   FLOAT_LAYOUT,
+  GRID_TYPE_VEC3F,
+  VEC3F_LAYOUT,
   GRID_OFF_GRID_CLASS,
   GRID_OFF_GRID_SIZE,
   GRID_OFF_GRID_TYPE,
@@ -38,6 +40,7 @@ const GRID_TYPE_NAMES: Record<number, string> = {
   0: "Unknown",
   1: "Float",
   2: "Double",
+  6: "Vec3f",
   14: "Fp8",
   16: "FpN",
 };
@@ -67,7 +70,8 @@ export function inspect(image: Uint32Array): InspectReport {
   const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
   const leafOff = treeOff + Number(view.getBigUint64(treeOff + TREE_OFF_NODE_OFFSET_LEAF, true));
 
-  const L = FLOAT_LAYOUT; // root/tile/upper/lower strides are shared across grid types
+  // Root/tile/upper/lower strides are shared by FLOAT/Fp8/FpN; Vec3f differs.
+  const L = gridTypeId === GRID_TYPE_VEC3F ? VEC3F_LAYOUT : FLOAT_LAYOUT;
   const rootSection = L.rootSize + nTiles * L.rootTileSize;
   const upperSection = nUpper * L.upperSize;
   const lowerSection = nLower * L.lowerSize;

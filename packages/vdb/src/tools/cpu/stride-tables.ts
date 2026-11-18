@@ -99,8 +99,8 @@ export function defineBigInt(name: string): bigint {
   return BigInt(value);
 }
 
-/** Layout constants for one of the three grid types this module supports. */
-export function gridTypeConstantsFor(gridTypeName: "FLOAT" | "FP8" | "FPN"): GridTypeConstants {
+/** Layout constants for one of the grid types the CPU readers support (FLOAT, FP8, FPN, VEC3F). */
+export function gridTypeConstantsFor(gridTypeName: "FLOAT" | "FP8" | "FPN" | "VEC3F"): GridTypeConstants {
   const constants = gridTypeConstants[gridTypeName];
   if (!constants) {
     throw new Error(`stride-tables.json: no gridTypeConstants for "${gridTypeName}"`);

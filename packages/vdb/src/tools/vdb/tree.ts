@@ -35,15 +35,24 @@
  * Inactive tiles are still dropped (they read back as the grid background),
  * as before.
  *
+ * ## Value types and point data (K4.2)
+ *
+ * Values follow the grid's {@link ValueFormat} (float, vec3s/vec3d/vec3i, or
+ * `PointDataIndex32` for point data grids): the root background and root
+ * tile values are full-width `ValueType`s, internal-node and leaf arrays go
+ * through `readCompressedValues`, `components` scalars per value. Point data
+ * grids write their leaf buffers in passes; `points.ts` reads those.
+ *
  * Scope limits (throw `VdbUnsupportedError`, not silently wrong data):
  * multi-buffer trees.
  */
 
 import { countBits, countZeroBits, iterOnes, testBit } from "./bit-utils.js";
 import type { ByteReader } from "./byte-reader.js";
-import type { CompressionFlags } from "./compression.js";
-import { readCompressedValues } from "./compression.js";
+import type { CompressionFlags, ValueFormat } from "./compression.js";
+import { FLOAT_FORMAT, readCompressedValues, readFullValue } from "./compression.js";
 import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
+import { type PointLeafData, readPointDataBuffers } from "./points.js";
 
 export const LEAF_LOG2DIM = 3;
 export const LOWER_LOG2DIM = 4;
@@ -64,7 +73,7 @@ export const ROOT_TILE_DIM = 4096; // 1 << (3 + 4 + 5): a root tile covers one u
 
 export interface LeafData {
   origin: [number, number, number];
-  values: Float32Array; // length 512
+  values: Float32Array; // 512 * components
   valueMask: Uint32Array; // 16 x u32 = 512 bits
 }
 
@@ -74,12 +83,16 @@ export interface TileData {
   origin: [number, number, number];
   /** Edge length in voxels: 8 (lower-node tile), 128 (upper-node tile) or 4096 (root tile). */
   dim: 8 | 128 | 4096;
-  value: number;
+  /** The tile value, `components` scalars. */
+  value: number[];
 }
 
 export interface TreeReadResult {
-  background: number;
+  /** The background value, `components` scalars. */
+  background: number[];
   leaves: LeafData[];
+  /** Point data grids only: per-leaf attribute data, in `leaves` order. */
+  pointLeaves?: PointLeafData[];
   /** Active tiles at root, upper and lower level (inactive tiles are dropped). */
   tiles: TileData[];
   /** Active voxels in leaves plus `dim^3` per active tile. */
@@ -91,7 +104,8 @@ interface TreeCtx {
   fileVersion: number;
   compression: CompressionFlags;
   useHalf: boolean;
-  background: number;
+  format: ValueFormat;
+  background: number[];
   /** Active tiles collected during the topology pass. */
   tiles: TileData[];
 }
@@ -141,19 +155,22 @@ function readInternalNodeTopology(
     background: ctx.background,
     numValues: numValuesForStream,
     valueMask,
+    format: ctx.format,
   });
+  const comps = ctx.format.components;
   const dim = (1 << childTotal) as TileData["dim"];
   let packedIdx = 0;
   for (let i = 0; i < fullNumValues; i++) {
     if (testBit(childMask, i)) continue;
-    const value = packed ? values[packedIdx++]! : values[i]!;
+    const at = (packed ? packedIdx++ : i) * comps;
     if (!testBit(valueMask, i)) continue;
+    const value = Array.from(values.subarray(at, at + comps));
     ctx.tiles.push({ origin: offsetToGlobalCoord(i, log2dim, childTotal, origin), dim, value });
   }
   return { childMask, valueMask };
 }
 
-interface LeafPlaceholder {
+export interface LeafPlaceholder {
   origin: [number, number, number];
 }
 
@@ -192,6 +209,11 @@ function readUpperTopology(ctx: TreeCtx, origin: [number, number, number]): Uppe
 }
 
 function readLeafBuffer(ctx: TreeCtx, placeholder: LeafPlaceholder): LeafData {
+  // The value mask is re-serialized immediately before the buffer data — a
+  // real on-disk quirk of LeafNode::writeBuffers, not a bug in this reader.
+  const valueMask = ctx.reader.maskWords(LEAF_NUM_VALUES);
+  // Before v222 the origin and a buffer count follow the mask
+  // (OpenVDB `LeafNode::readBuffers`).
   if (ctx.fileVersion < 222) {
     ctx.reader.vec3i(); // origin (redundant with topology-derived origin)
     const numBuffers = ctx.reader.u8();
@@ -199,9 +221,6 @@ function readLeafBuffer(ctx: TreeCtx, placeholder: LeafPlaceholder): LeafData {
       throw new VdbFormatError(`leaf node numBuffers ${numBuffers} !== 1 (multi-buffer leaves unsupported)`);
     }
   }
-  // The value mask is re-serialized immediately before the buffer data — a
-  // real on-disk quirk of LeafNode::writeBuffers, not a bug in this reader.
-  const valueMask = ctx.reader.maskWords(LEAF_NUM_VALUES);
   const values = readCompressedValues(ctx.reader, {
     fileVersion: ctx.fileVersion,
     compression: ctx.compression,
@@ -209,6 +228,7 @@ function readLeafBuffer(ctx: TreeCtx, placeholder: LeafPlaceholder): LeafData {
     background: ctx.background,
     numValues: LEAF_NUM_VALUES,
     valueMask,
+    format: ctx.format,
   });
   return { origin: placeholder.origin, values, valueMask };
 }
@@ -217,6 +237,13 @@ export interface TreeReadOptions {
   fileVersion: number;
   compression: CompressionFlags;
   useHalf: boolean;
+  /** The grid's value layout. Default: float. */
+  format?: ValueFormat;
+  /**
+   * A `PointDataGrid`: leaf buffers are written in passes (OpenVDB
+   * `Grid::readBuffers` with `io::MultiPass`) and hold attribute arrays.
+   */
+  pointData?: boolean;
 }
 
 export function readTree(reader: ByteReader, options: TreeReadOptions): TreeReadResult {
@@ -225,13 +252,16 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
     throw new VdbUnsupportedError(`multi-buffer trees are not supported (bufferCount=${bufferCount})`);
   }
 
-  const background = reader.f32();
+  // RootNode::readTopology: the background is a full-width ValueType.
+  const format = options.format ?? FLOAT_FORMAT;
+  const background = readFullValue(reader, format);
   const tiles: TileData[] = [];
   const ctx: TreeCtx = {
     reader,
     fileVersion: options.fileVersion,
     compression: options.compression,
     useHalf: options.useHalf,
+    format,
     background,
     tiles,
   };
@@ -243,7 +273,7 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
   // OpenVDB `RootNode::readTopology`), active flag. Inactive tiles are dropped.
   for (let i = 0; i < numTiles; i++) {
     const origin = reader.vec3i();
-    const value = reader.f32();
+    const value = readFullValue(reader, format);
     const active = reader.bool();
     if (!active) continue;
     if (origin.some((c) => c % ROOT_TILE_DIM !== 0)) {
@@ -258,19 +288,26 @@ export function readTree(reader: ByteReader, options: TreeReadOptions): TreeRead
     uppers.push(readUpperTopology(ctx, origin));
   }
 
-  const leaves: LeafData[] = [];
-  let activeVoxelCount = 0;
+  const placeholders: LeafPlaceholder[] = [];
   for (const upper of uppers) {
     for (const lower of upper.lowers.values()) {
-      for (const placeholder of lower.leaves.values()) {
-        const leaf = readLeafBuffer(ctx, placeholder);
-        activeVoxelCount += countBits(leaf.valueMask);
-        leaves.push(leaf);
-      }
+      for (const placeholder of lower.leaves.values()) placeholders.push(placeholder);
     }
   }
 
+  let leaves: LeafData[];
+  let pointLeaves: PointLeafData[] | undefined;
+  if (options.pointData) {
+    // Compression is recorded per array (paged, Blosc flag), not taken from the grid.
+    pointLeaves = readPointDataBuffers(reader, { fileVersion: options.fileVersion, leaves: placeholders });
+    leaves = pointLeaves.map((p) => ({ origin: p.origin, values: Float32Array.from(p.offsets), valueMask: p.valueMask }));
+  } else {
+    leaves = placeholders.map((placeholder) => readLeafBuffer(ctx, placeholder));
+  }
+
+  let activeVoxelCount = 0;
+  for (const leaf of leaves) activeVoxelCount += countBits(leaf.valueMask);
   for (const tile of tiles) activeVoxelCount += tile.dim ** 3;
 
-  return { background, leaves, tiles, activeVoxelCount };
+  return { background, leaves, tiles, activeVoxelCount, ...(pointLeaves ? { pointLeaves } : {}) };
 }

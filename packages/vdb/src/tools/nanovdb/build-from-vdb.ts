@@ -9,34 +9,45 @@
  * teapot in a large bbox stays sparse — and writes the active tiles as NanoVDB
  * tiles at the same level (K4.1).
  *
+ * Vector grids (`vec3s`, and `vec3d`/`vec3i` converted to f32) build a NanoVDB
+ * Vec3f grid with the Vec3f leaf codec (K4.2). Point data grids have no NanoVDB
+ * build here (use `grid.points()`).
+ *
  * The `.vdb` transform is carried into the NanoVDB Map. v1 supports uniform
  * scale + translate only (which is what all four openvdb.org samples use); a
  * non-uniform scale, rotation or shear throws clearly (GPU resampling is the
  * roadmap for those).
  */
 
+import { VdbUnsupportedError } from "../vdb/errors.js";
 import type { VdbGrid, VdbTransformInfo } from "../vdb/types.js";
-import { FLOAT_LEAF_CODEC } from "./leaf-codec.js";
+import { FLOAT_LEAF_CODEC, VEC3F_LEAF_CODEC } from "./leaf-codec.js";
 import {
   buildFromLeavesDetailed,
   type BuildFromLeavesOptions,
   type BuiltGrid,
+  type GridClassName,
 } from "./serialize.js";
 
 export interface BuildFromVdbOptions {
   /** Grid name for the output image. Default: the source grid's name (or "grid"). */
   gridName?: string;
   /** Grid class. Default: mapped from source metadata. */
-  gridClass?: "FogVolume" | "LevelSet" | "Unknown";
+  gridClass?: GridClassName;
 }
 
-/** Builds a FLOAT NanoVDB grid image from a parsed `.vdb` grid. */
+/** Builds a NanoVDB grid image (FLOAT, or Vec3f for vector grids) from a parsed `.vdb` grid. */
 export function buildFromVdb(grid: VdbGrid, opts: BuildFromVdbOptions = {}): Uint32Array {
   return buildFromVdbDetailed(grid, opts).image;
 }
 
 /** As {@link buildFromVdb}, but returns the computed metadata alongside the image. */
 export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = {}): BuiltGrid {
+  if (grid.valueType === "ptdataidx32") {
+    throw new VdbUnsupportedError(
+      `buildFromVdb: grid "${grid.name}" is a point data grid; NanoVDB point output is not implemented (use grid.points())`,
+    );
+  }
   const { voxelSize, translation } = uniformTransform(grid.transform);
   const buildOpts: BuildFromLeavesOptions = {
     voxelSize,
@@ -46,13 +57,17 @@ export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = 
     gridClass: opts.gridClass ?? sourceGridClass(grid),
     tiles: grid.iterTiles(),
   };
-  return buildFromLeavesDetailed(grid.iterLeaves(), FLOAT_LEAF_CODEC, buildOpts);
+  const isVector = grid.valueType === "vec3s" || grid.valueType === "vec3d" || grid.valueType === "vec3i";
+  const codec = isVector ? VEC3F_LEAF_CODEC : FLOAT_LEAF_CODEC;
+  return buildFromLeavesDetailed(grid.iterLeaves(), codec, buildOpts);
 }
 
-function sourceGridClass(grid: VdbGrid): NonNullable<BuildFromVdbOptions["gridClass"]> {
+/** OpenVDB `GridClass` metadata -> NanoVDB class (CreateNanoGrid's `mapToGridClass`). */
+function sourceGridClass(grid: VdbGrid): GridClassName {
   const gridClass = typeof grid.metadata.class === "string" ? grid.metadata.class.toLowerCase() : "";
   if (gridClass === "level set" || gridClass === "levelset") return "LevelSet";
   if (gridClass === "fog volume" || gridClass === "fogvolume") return "FogVolume";
+  if (gridClass === "staggered") return "Staggered";
   return "Unknown";
 }
 

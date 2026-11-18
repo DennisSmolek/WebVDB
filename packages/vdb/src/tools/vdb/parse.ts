@@ -23,14 +23,21 @@
  */
 
 import { ByteReader } from "./byte-reader.js";
-import type { CompressionFlags } from "./compression.js";
-import { compressionFromBits } from "./compression.js";
+import type { CompressionFlags, ValueFormat } from "./compression.js";
+import {
+  compressionFromBits,
+  FLOAT_FORMAT,
+  PTDATAIDX32_FORMAT,
+  VEC3D_FORMAT,
+  VEC3I_FORMAT,
+  VEC3S_FORMAT,
+} from "./compression.js";
 import { VdbFormatError, VdbUnsupportedError } from "./errors.js";
-import { VdbGridImpl } from "./grid.js";
+import { createVdbGrid } from "./grid.js";
 import { readMetadataMap } from "./metadata.js";
 import { readTransform } from "./transform.js";
 import { readTree } from "./tree.js";
-import type { VdbBBox, VdbFile, VdbGrid } from "./types.js";
+import type { VdbBBox, VdbFile, VdbGrid, VdbValueType } from "./types.js";
 
 const MAGIC_LOW = 0x56444220; // 'V','D','B',' ' read little-endian, low 32 bits
 const MIN_SUPPORTED_VERSION = 213; // OPENVDB_FILE_VERSION_ROOTNODE_MAP
@@ -41,6 +48,19 @@ const VERSION_NODE_MASK_COMPRESSION = 222;
 const VERSION_BLOSC_COMPRESSION = 223;
 
 const GRID_TYPE_RE = /^Tree_([A-Za-z0-9]+)_(\d+)_(\d+)_(\d+)$/;
+
+/** Value types this parser reads, and their on-disk layout. */
+const VALUE_FORMATS: Record<VdbValueType, ValueFormat> = {
+  float: FLOAT_FORMAT,
+  vec3s: VEC3S_FORMAT,
+  vec3d: VEC3D_FORMAT,
+  vec3i: VEC3I_FORMAT,
+  ptdataidx32: PTDATAIDX32_FORMAT,
+};
+
+function isSupportedValueType(t: string): t is VdbValueType {
+  return Object.prototype.hasOwnProperty.call(VALUE_FORMATS, t);
+}
 
 function readHeaderCompression(reader: ByteReader, fileVersion: number): CompressionFlags {
   let compression: CompressionFlags = { zip: false, activeMask: true, blosc: true }; // DEFAULT_COMPRESSION
@@ -150,9 +170,10 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
       );
     }
     const [, valueType, d0, d1, d2] = match;
-    if (valueType !== "float") {
+    if (!isSupportedValueType(valueType!)) {
       throw new VdbUnsupportedError(
-        `grid "${name}": value type "${valueType}" is not supported (only FloatGrid is in scope for this parser)`,
+        `grid "${name}": value type "${valueType}" is not supported ` +
+          `(supported: ${Object.keys(VALUE_FORMATS).join(", ")})`,
       );
     }
     if (d0 !== "5" || d1 !== "4" || d2 !== "3") {
@@ -162,12 +183,19 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
     }
 
     const transform = readTransform(reader);
-    const { background, leaves, tiles, activeVoxelCount } = readTree(reader, { fileVersion, compression, useHalf });
+    const { background, leaves, tiles, activeVoxelCount, pointLeaves } = readTree(reader, {
+      fileVersion,
+      compression,
+      useHalf,
+      format: VALUE_FORMATS[valueType],
+      pointData: valueType === "ptdataidx32",
+    });
 
     grids.push(
-      new VdbGridImpl({
+      createVdbGrid({
         name,
         gridType,
+        valueType,
         transform,
         metadata,
         indexBBox: readBBoxFromMetadata(metadata),
@@ -175,6 +203,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
         background,
         leaves,
         tiles,
+        ...(pointLeaves ? { pointLeaves } : {}),
       }),
     );
 
