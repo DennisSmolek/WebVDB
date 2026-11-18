@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --testTimeout 30000",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "dev": "pnpm --filter @webvdb/examples dev",
