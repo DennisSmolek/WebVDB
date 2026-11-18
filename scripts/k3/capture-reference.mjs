@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // K3 reference capture (R1 §6 Step 0): renders mjurczyk's renderer at the pinned commit to PNG, for the
-// owner to run on a machine with a real GPU. Agents must NOT run this script (CLAUDE.md: his code is read,
-// not run, in the cloud sandbox); it starts his Vite dev server and drives his examples page.
+// a machine with a real GPU. It starts his Vite dev server and drives his examples page: run it only as CLAUDE.md
+// allows (the owner's machine, K3 reference captures only, never in the cloud sandbox).
 //
 // ── How to run (owner's machine) ────────────────────────────────────────────────────────────────────
 //
@@ -54,6 +54,17 @@ const PINNED_COMMIT = "75e73454f2d6f4384c9ffd57b704319767499360";
 const PINNED_SHORT = PINNED_COMMIT.slice(0, 7);
 const PINNED_THREE = "0.187.0";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+/**
+ * K3.6b: the explosion frame every explosion capture shows. His sequence is time-driven (frame.js: a 60 Hz setInterval
+ * calls FrameVolumeAnimation.update(delta) while it plays), and the settle frames after `advanceFrames` and the order of
+ * that interval and the render's requestAnimationFrame in the last clock step left the drawn frame 1–2 behind the
+ * `currentFrame` read after the screenshot (K3.6a: recorded 36–37, drawn ~34–35). `pinFrame` (scenario prop, not a GUI
+ * field): after `advanceFrames` (the sequence has loaded and plays), his public API pauses every FrameVolumeAnimation
+ * (`pause()`) and shows this frame (`frame = N`), then frames are rendered so his emission probes and shadow maps follow
+ * it. The manifest records `pinFrame` and the animation's frame / playing state read after the screenshot (checked).
+ */
+const EXPLOSION_PIN_FRAME = 30;
 
 /** Fields every parity capture adds to its scenario (GUI field ids of his frame demo). */
 const PARITY_OVERRIDES = Object.freeze({ jitter: false, temporal: false, animateLights: false });
@@ -185,8 +196,8 @@ const SCENARIOS = [
     ["step6-explosion-emission-cascades-4", { emissionCascades: 4 }],
     ["step6-explosion-emission-probes-8", { emissionResolution: 8 }],
   ].flatMap(([name, extra]) => [
-    { name: `${name}-asis`, step: 6, fields: { demo: "frame", source: "explosion", emissionSpectrum: "planck", ...extra, advanceFrames: 30 }, sanity: null },
-    { name: `${name}-env-isolated`, step: 6, fields: { demo: "frame", source: "explosion", emissionSpectrum: "planck", lightSetup: "none", showObstacle: true, ...extra, advanceFrames: 30 }, sanity: null, isolate: "emission" },
+    { name: `${name}-asis`, step: 6, fields: { demo: "frame", source: "explosion", emissionSpectrum: "planck", ...extra, advanceFrames: 30 }, sanity: null, pinFrame: EXPLOSION_PIN_FRAME },
+    { name: `${name}-env-isolated`, step: 6, fields: { demo: "frame", source: "explosion", emissionSpectrum: "planck", lightSetup: "none", showObstacle: true, ...extra, advanceFrames: 30 }, sanity: null, isolate: "emission", pinFrame: EXPLOSION_PIN_FRAME },
   ]),
   // The shadow-only diff (R1 §6): as `*-dir-isolated`, with every FrameVolume's proxy mesh hidden for the captured frame
   // (`isolate: 'shadow-only'`): the volumes still cast (the grid and maps come from the receivers), only the floor, the
@@ -195,7 +206,7 @@ const SCENARIOS = [
   { name: "step6-cast-shadow-obstacle-shadow-only-dir-isolated", step: 6, fields: { demo: "frame", lightSetup: "dir", castShadow: true, showObstacle: true }, sanity: null, isolate: "shadow-only" },
   { name: "step6-cast-shadow-obstacle-cascades-4-shadow-only-dir-isolated", step: 6, fields: { demo: "frame", lightSetup: "dir", castShadow: true, showObstacle: true, castShadowCascades: 4 }, sanity: null, isolate: "shadow-only" },
   // His own explosion JPEG (the 'approximate' spectrum): the capture rig's sanity check for the sequence only (INFO).
-  { name: "step6-source-explosion-approximate-asis", step: 6, fields: { demo: "frame", source: "explosion", advanceFrames: 30 }, sanity: "demo-1-source-explosion.jpg" },
+  { name: "step6-source-explosion-approximate-asis", step: 6, fields: { demo: "frame", source: "explosion", advanceFrames: 30 }, sanity: "demo-1-source-explosion.jpg", pinFrame: EXPLOSION_PIN_FRAME },
 ];
 
 // His tests/playwright.config.js and tests/validation.spec.js, mirrored.
@@ -471,7 +482,9 @@ async function readMetadata(page) {
         // K3.6: his FrameVolumeAnimation (the explosion sequence): the frame it shows after advanceFrames
         if (o.isFrameVolumeAnimation) {
           out.animations = out.animations ?? [];
-          out.animations.push({ frame: o.currentFrame ?? o.frame, frames: o.frames?.length ?? null, fps: o.fps, matrixWorld: o.matrixWorld.toArray() });
+          // K3.6b: playing (false when pinned) and the frames drawn (visible), to check the pin
+          const visibleFrames = (o.frames ?? []).flatMap((f, i) => (f.visible ? [i] : []));
+          out.animations.push({ frame: o.currentFrame ?? o.frame, playing: o.playing, visibleFrames, frames: o.frames?.length ?? null, fps: o.fps, matrixWorld: o.matrixWorld.toArray() });
         }
         if (!o.isFrameVolume) return;
         let shown = true;
@@ -635,6 +648,28 @@ async function capture(context, scenario, fields, type) {
     await page.clock.runFor(advanceFrames * FRAME_TIME);
     await waitForIdle(page, pending, errors);
   }
+  // K3.6b: pin the explosion's frame (see EXPLOSION_PIN_FRAME), his public FrameVolumeAnimation API
+  if (scenario.pinFrame !== undefined) {
+    const pinned = await page.evaluate(async (n) => {
+      const { scene } = await import("/src/main.jsx");
+      const out = [];
+      scene.traverse((o) => {
+        if (!o.isFrameVolumeAnimation) return;
+        o.pause();
+        o.frame = n;
+        out.push({ frame: o.currentFrame, frames: o.frames.length, loadedFrames: o.loadedFrames, totalFrames: o.totalFrames, playing: o.playing });
+      });
+      return out;
+    }, scenario.pinFrame);
+    if (pinned.length !== 1 || pinned[0].frame !== scenario.pinFrame || pinned[0].playing || pinned[0].loadedFrames !== pinned[0].totalFrames) {
+      throw new Error(`${scenario.name}: could not pin the sequence at frame ${scenario.pinFrame}: ${JSON.stringify(pinned)}`);
+    }
+    // His emission light reads its emitters and his shadow maps their signature on each render: render the pinned frame
+    for (let i = 0; i < 6; i++) {
+      await page.clock.runFor(FRAME_TIME);
+      await page.waitForTimeout(150);
+    }
+  }
   if (scenario.isolate === "normals" || scenario.isolate === "points") {
     await isolateStep7(page, scenario.isolate);
     await waitForIdle(page, pending, errors);
@@ -672,6 +707,12 @@ async function capture(context, scenario, fields, type) {
   if (errors.length) throw new Error(`${scenario.name}: page errors: ${errors.join(" | ")}`);
   const metadata = await readMetadata(page);
   await page.close();
+  if (scenario.pinFrame !== undefined) {
+    const a = metadata.animations?.[0];
+    if (metadata.animations?.length !== 1 || a.frame !== scenario.pinFrame || a.playing || a.visibleFrames.join() !== String(scenario.pinFrame)) {
+      throw new Error(`${scenario.name}: the sequence left frame ${scenario.pinFrame} before the metadata read: ${JSON.stringify(metadata.animations?.map(({ matrixWorld, ...r }) => r))}`);
+    }
+  }
   return { bytes, metadata };
 }
 
@@ -742,7 +783,7 @@ try {
     const parity = await capture(context, s, fields, "png");
     const file = `${s.name}.png`;
     writeFileSync(path.join(outDir, file), parity.bytes);
-    const entry = { name: s.name, step: s.step, fields, isolate: s.isolate ?? false, file, sha256: sha256(parity.bytes), metadata: parity.metadata, asis: null, sanity: null };
+    const entry = { name: s.name, step: s.step, fields, isolate: s.isolate ?? false, ...(s.pinFrame !== undefined ? { pinFrame: s.pinFrame } : {}), file, sha256: sha256(parity.bytes), metadata: parity.metadata, asis: null, sanity: null };
     const description = parity.metadata.adapter?.description ?? "";
     if (/swiftshader|llvmpipe|software/i.test(`${description} ${parity.metadata.adapter?.vendor ?? ""}`)) {
       throw new Error(`the browser used a software adapter (${description}); references must come from a hardware GPU (try --executable with an installed Chrome)`);

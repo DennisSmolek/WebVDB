@@ -14,7 +14,8 @@
  *   matrices. 1280x720, his froxel defaults (512x512x24, 32 sub-steps). `parityExpected` says whether
  *   the Step 1 port can match his capture (see docs/handoffs/K3-1.md: environment and 'frame' lighting).
  *
- * Pipeline: scene → linear HalfFloat RenderTarget (as his canvas frame-buffer target; no MSAA) →
+ * Pipeline: scene → linear HalfFloat RenderTarget (as his canvas frame-buffer target: 4x MSAA for his scenes, his
+ * `antialias: true`; none for ours, `?msaa=`) → resolve →
  * readback → sRGB OETF on the CPU (three's formula, NoToneMapping) → RGBA8. Jitter and temporal
  * off: deterministic. Also: a probe pass of the TSL chunks against the CPU twins (`vdbFrame*`,
  * tools/frame) and, with `?twin=1`, the integrate pass against `vdbFrameIntegrate` from the read-back
@@ -211,7 +212,7 @@ const STEP5_SCENES: Record<string, SceneDef> = Object.fromEntries(
 // 'environment' light setup (INFO). `*-dir-isolated`: his sun only, the floor and props kept (`isolate: 'shadow'`): the
 // gate, with a shadow-only diff on his ShadowMaterial floor. `*-env-isolated`: the explosion lit by nothing, the props lit
 // by its emission light only (`isolate: 'emission'`). The explosion frame comes from fixtures/k3/ground_explosion/ (his
-// CC0 EmberGen sequence: copy the folder from his clone); the frame index from the capture's manifest (default 30).
+// CC0 EmberGen sequence: copy the folder from his clone); the frame is the capture's `pinFrame` (K3.6b; default 30).
 const STEP6_WHY_EXPLOSION_ASIS = "his 'environment' light setup (scene lights from the HDR map, the map as scene.environment, the grounded skybox; not rendered here)";
 const step6 = (name: string, step: NonNullable<SceneDef["step6"]>, extra: Partial<SceneDef> = {}): SceneDef[] => [
   step3(`${name}-asis`, { lightSetup: "environment", multipleScattering: "neural", step6: step, ...extra }, false, step.explosion ? STEP6_WHY_EXPLOSION_ASIS : STEP3_WHY_ENV),
@@ -307,6 +308,12 @@ interface Result {
   width?: number;
   height?: number;
   froxels?: number[];
+  /** K3.6b: MSAA samples of the render target (his page: 4). */
+  msaa?: number;
+  /** K3.6b: the volume's densityScale (explosion: frame mean / his sequence mean). */
+  densityScale?: number;
+  /** K3.6b: the explosion frame loaded (the capture's pinned frame). */
+  explosionFrame?: number | null;
   rgba?: string;
   /** Screen rectangle of the volume box in pixels (top-left origin): x0, y0, x1, y1. */
   volumeRect?: number[];
@@ -388,6 +395,12 @@ const MEDIUM_PROPS = MEDIUM ? vdbFrameMedium(MEDIUM) : null;
 const SPECTRAL = params.has("spectral") ? params.get("spectral") === "1" : !!(def?.spectral || MEDIUM_PROPS);
 // K3.6
 const SHADOW_ONLY = !!def?.step6?.shadowOnly;
+// K3.6b: his page's output path. main.jsx makes `new WebGPURenderer({ antialias: !isPhone })` (desktop: 4 samples) with
+// outputColorSpace sRGB, so three renders the scene into its frame-buffer target (Renderer._getFrameBufferTarget: HalfFloat,
+// `samples: renderer.samples` = 4) and the output pass resolves + sRGB-encodes it to the canvas. His volume proxy draws in
+// that MSAA pass (its viewport colour / depth copies read the resolved target), so mesh edges are 4x MSAA. His scenes get 4
+// samples here too (`?msaa=0|4` overrides); our own test scenes (smoke, twins) stay at 0.
+const MSAA = Number(params.get("msaa") ?? (def?.smoke ? 0 : 4));
 const ANGSTROM = params.has("angstrom") ? Number(params.get("angstrom")) : (def?.angstromExponent ?? null);
 // K3.4: ?ms=0|1|two-sided|octaves|neural
 const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
@@ -465,15 +478,17 @@ function toDisplay(linear: Float32Array): Uint8Array {
 
 interface ManifestScenario {
   name: string;
+  /** K3.6b: the explosion frame the capture paused his sequence at. */
+  pinFrame?: number;
   metadata?: {
     camera?: { matrixWorld: number[]; projectionMatrix: number[]; near: number; far: number; fov: number; aspect: number };
-    volumes?: { matrixWorld: number[]; visible?: boolean }[];
+    volumes?: { matrixWorld: number[]; visible?: boolean; densityScale?: number; meanDensity?: number }[];
     /** K3.3 captures: scene.environment intensity and rotation. */
     environment?: { intensity: number; rotation: [number, number, number, string] } | null;
     /** K3.6 captures: the meshes outside the volumes, the lights' shadows and the emission light, his animation frame. */
     meshes?: CapturedMesh[];
     lights?: { type: string; intensity: number; color?: number[]; matrixWorld: number[]; castShadow?: boolean; shadow?: { mapSize: number[]; bias: number; normalBias: number; radius: number; camera: { left?: number; right?: number; top?: number; bottom?: number; near: number; far: number } }; resolution?: number; range?: number; cascades?: number; distance?: number; steps?: number }[];
-    animations?: { frame: number }[];
+    animations?: { frame: number; playing?: boolean; visibleFrames?: number[] }[];
     shadowMap?: { enabled: boolean; type: number };
   };
 }
@@ -639,9 +654,22 @@ async function main(): Promise<void> {
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
 
   // --- the dense volume (his bytes) ----------------------------------------------------------
-  // K3.6: the explosion's frame (the capture's manifest records the frame his sequence showed; else 30, his advanceFrames)
+  // K3.6: the explosion's frame. K3.6b: the capture pins his sequence (paused at `pinFrame`, capture-reference.mjs
+  // EXPLOSION_PIN_FRAME; the manifest's animation frame is checked equal and not playing); an older capture's recorded
+  // frame was read after the screenshot of a playing sequence (not the drawn one), so it is refused.
   const manifest = def.smoke ? null : await loadManifest(def.name);
-  const explosionFrame = def.step6?.explosion ? Number(params.get("explosionFrame") ?? manifest?.metadata?.animations?.[0]?.frame ?? 30) : null;
+  let explosionFrame: number | null = null;
+  if (def.step6?.explosion) {
+    const anim = manifest?.metadata?.animations?.[0];
+    if (params.has("explosionFrame")) explosionFrame = Number(params.get("explosionFrame"));
+    else if (manifest) {
+      if (manifest.pinFrame === undefined || anim?.frame !== manifest.pinFrame || anim.playing !== false) {
+        throw new Error(`${def.name}: the capture did not pin the explosion frame (pinFrame ${manifest.pinFrame}, animation ${JSON.stringify(anim ? { frame: anim.frame, playing: anim.playing } : null)}); recapture it with scripts/k3/capture-reference.mjs --merge`);
+      }
+      explosionFrame = manifest.pinFrame;
+    } else explosionFrame = 30;
+  }
+  result.explosionFrame = explosionFrame;
   const file = params.get("file") ?? (explosionFrame !== null ? `/fixtures/k3/ground_explosion/ground_explosion_${String(explosionFrame).padStart(4, "0")}.wvdb` : def.file);
   const response = await fetch(file);
   if (!response.ok) throw new Error(`fetch ${file}: ${response.status}${def.smoke ? "" : " (his .wvdb files are not committed: copy them from his clone into fixtures/k3/)"}`);
@@ -735,6 +763,14 @@ async function main(): Promise<void> {
   const size = bbox.getSize(new THREE.Vector3());
   const center = bbox.getCenter(new THREE.Vector3());
 
+  // K3.6b: his explosion is a FrameVolumeAnimation, and normalizeDensity divides by the SEQUENCE's mean density
+  // (FrameVolume.getDensityScale: `(owner.sequence ?? owner).meanDensity`, the mean of all 200 frames' non-zero texels),
+  // not the frame's own (ours: the source's). The capture records his getDensityScale() of the shown frame (densityScale
+  // 1 / sequence mean); densityScale = frame mean × that makes ours divide by the same mean. Without a capture: 1.
+  const capturedVolume = manifest?.metadata?.volumes?.find((v) => v.visible !== false);
+  const explosionDensityScale = explosionFrame !== null && capturedVolume?.densityScale ? capturedVolume.densityScale * dense.meanDensity : 1.0;
+  result.densityScale = explosionDensityScale;
+
   // His frame.js demo params (L93–116, utils/phase.js phaseParams): dual-lobe 0.8 / -0.3 / 0.2, extinction 100.
   // K3.4: his volume phase fields (`def.volumePhase`), and `?phase*` for 'volume' lighting.
   const volumePhase = { phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0, ...(def.volumePhase ?? {}) };
@@ -747,7 +783,7 @@ async function main(): Promise<void> {
     // His frame.js default angstromExponent 0 (grey); a medium sets its own
     angstromExponent: MEDIUM_PROPS ? MEDIUM_PROPS.angstromExponent : (ANGSTROM ?? 0.0),
     absorbance: 1.0,
-    densityScale: 1.0,
+    densityScale: explosionDensityScale,
     normalizeDensity: true,
     opacity: 1.0,
     extinction: num("extinction") ?? (def.smoke ? 40 : 100),
@@ -930,7 +966,8 @@ async function main(): Promise<void> {
     if (def.step6) result.volumeRect = [0, 0, W, H];
   }
 
-  const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+  const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: MSAA });
+  result.msaa = MSAA;
 
   let frames = 0;
   async function frame(): Promise<Float32Array> {
