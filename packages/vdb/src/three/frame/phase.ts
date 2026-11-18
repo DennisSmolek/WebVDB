@@ -3,7 +3,7 @@
 //   L79–108 (getFramePhaseAsymmetry, isFrameDiffusion, getFrameTwoSidedDiffusion,
 //   getFrameMultipleScattering); K3.4: L61–76 (getFrameMieTexels, via tools/frame/mie.ts), L110–129
 //   (frameMaxScatteringOctaves, getFrameScatteringOctaves).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; the Mie tables are our generator's output (tools/frame/mie-table.ts, identical
 // numbers). Divergences: DIVERGES.md (K3.1, K3.4 rows).
 

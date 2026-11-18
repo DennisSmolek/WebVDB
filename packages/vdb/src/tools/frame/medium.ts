@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/core/frameMedium.js L1–76 (frameMediumPresets with their citations),
 //   L78–90 (getFrameMediumProps, engine-free here).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript, engine-free (albedo and extinction scale as arrays; the three adapter
 // `getFrameMediumProps` in `@pmndrs/vdb/three` makes his `Color` / `Vector3`). He has no generator for the
 // table: its values are midpoints and fits of the cited measurements. `vdbFrameMediumMeasurements` holds

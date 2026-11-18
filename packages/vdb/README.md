@@ -1,12 +1,13 @@
 # @pmndrs/vdb
 
-Sparse NanoVDB volumes on WebGPU, from the [WebVDB](../../README.md) repo. One package, three subpaths:
+Sparse NanoVDB volumes on WebGPU: an engine-free WGSL core, pure-TypeScript CPU tools and a three.js adapter with a
+froxel volume renderer, level sets and points. One package, three subpaths. Full docs: [docs/site](https://github.com/pmndrs/vdb/tree/main/docs/site).
 
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
 | `@pmndrs/vdb` | the engine-free core: the vendored `pnanovdb.wgsl` module | no engine |
-| `@pmndrs/vdb/tools` | CPU side: `.nvdb` loader, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, writer | no |
-| `@pmndrs/vdb/three` | the three.js / TSL adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBSequence`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
+| `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
+| `@pmndrs/vdb/three` | the three.js / TSL adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, the froxel renderer (`VDBFrameVolume`, `VDBFrameRenderer`), `VDBLevelSetMaterial`, `VDBPoints`, `VDBSequence`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
 
 ```sh
@@ -14,14 +15,14 @@ npm install @pmndrs/vdb          # core + tools
 npm install @pmndrs/vdb three    # to use @pmndrs/vdb/three
 ```
 
-Boundaries: `core` and `tools` never import `three`; `tools` never imports `core` (enforced by
-`test/boundaries.test.ts`).
+`three` is an optional peer dependency (r187 only). `@webgpu/types` and `fflate` are regular dependencies.
+`core` and `tools` never import `three`.
 
 ## `@pmndrs/vdb` (core) and the raw WGSL module
 
 Renderer-agnostic NanoVDB traversal/sampling **WGSL module** + a
 TypeScript **`.nvdb` file loader**. This is the low-level layer of
-[WebVDB](../../README.md): it doesn't know about three.js or any
+`@pmndrs/vdb`: it doesn't know about three.js or any
 particular renderer — just how to get NanoVDB grid bytes off disk/network
 and how to walk them, in WGSL or in plain TS.
 
@@ -73,7 +74,7 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 
 - **`examples/src/demos/08-webgpu-smoke`**: raw WebGPU on the core
   (`VDBGridPool` + `vdbModuleWgsl`), no engine.
-- **`@pmndrs/vdb/three`** ([`src/three`](./src/three)): `VDBGridNode` binds
+- **`@pmndrs/vdb/three`** ([`src/three`](https://github.com/pmndrs/vdb/tree/main/packages/vdb/src/three)): `VDBGridNode` binds
   the pool through three's node system (below).
 - **`examples/src/demos/03-gpu-read`** is a from-scratch, heavily-commented
   raw-WebGPU walkthrough (no three.js) that hand-derives a FLOAT-only
@@ -87,18 +88,19 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 | `Float` | yes | lossless, 4 bytes/voxel |
 | `Fp8` | yes | per-leaf min/quantum, 1 byte/voxel |
 | `FpN` | yes | per-leaf variable bit-width (oracle-matched to native) |
-| other `GridType`s | rejected | `NvdbFile` throws a clear "unsupported grid type" error — v1 targets FogVolume rendering (SPEC §2.1) |
+| `Fp4`, `Fp16` | yes | per-leaf min/quantum |
+| other `GridType`s | rejected | `NvdbFile` throws a clear "unsupported grid type" error |
 
 | File codec | Support |
 |---|---|
 | `NONE` | yes |
 | `ZIP` (zlib, via `fflate`) | read and write (`writeNvdb(images, { codec: 'zip' })`) |
-| `BLOSC` | not supported — throws (see [D3](../../docs/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)) |
+| `BLOSC` | not supported for `.nvdb`: throws; re-export with `nanovdb_convert --codec=zip` (Blosc inside `.vdb` files is supported) |
 
 ### The vendoring story
 
 The WGSL module is not written from scratch: per
-[decision D2](../../docs/DECISIONS.md#d2--gpu-traversal-base), it's
+[decision D2](https://github.com/pmndrs/vdb/blob/main/docs/DECISIONS.md#d2--gpu-traversal-base), it's
 **vendored as a pinned, audited fork** of
 [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb)'s
 `pnanovdb.wgsl` — Apache-2.0, NOTICE preserved, every local change logged
@@ -109,11 +111,11 @@ fixes if the author engages. Full pin/hash/diff-log details:
 
 ## `@pmndrs/vdb/tools`
 
-The CPU half of [WebVDB](../../README.md): parse `.vdb` containers, build
+The CPU half: parse `.vdb` containers, build
 NanoVDB grid images (from a dense array or straight from a parsed `.vdb`),
 quantize to Fp4/Fp8/Fp16/FpN, apply affine transforms, inspect memory layout, and
-write `.nvdb` files — all **pure TypeScript, zero runtime dependencies,
-zero WASM** ([decision D3](../../docs/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)).
+write `.nvdb` files — all **pure TypeScript, no WASM** (the one runtime dependency is
+`fflate` for zlib; [decision D3](https://github.com/pmndrs/vdb/blob/main/docs/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)).
 WASM stays an optional escalation rung, adopted only on demonstrated need
 — nothing in this package requires it.
 
@@ -121,7 +123,7 @@ WASM stays an optional escalation rung, adopted only on demonstrated need
 
 The full authoring round-trip — generate/obtain voxels, build a NanoVDB
 grid, optionally quantize, write a real `.nvdb` file — trimmed from
-[`examples/src/demos/07-builder`](../../examples/src/demos/07-builder):
+[`examples/src/demos/07-builder`](https://github.com/pmndrs/vdb/tree/main/examples/src/demos/07-builder):
 
 ```ts
 import { vdbBuildFromDenseDetailed, vdbQuantize, writeNvdb } from "@pmndrs/vdb/tools";
@@ -147,7 +149,7 @@ byte-for-byte (that loader is this subpath's read path, see above).
 ### Quickstart: parse a real `.vdb` and build NanoVDB from it
 
 The drop-in-a-file pipeline, trimmed from
-[`examples/src/demos/06-explorer`](../../examples/src/demos/06-explorer):
+[`examples/src/demos/06-explorer`](https://github.com/pmndrs/vdb/tree/main/examples/src/demos/06-explorer):
 
 ```ts
 import { parseVdb, buildFromVdbDetailed, vdbInspect } from "@pmndrs/vdb/tools";
@@ -160,7 +162,7 @@ const report = vdbInspect(built.image);
 console.log(report.nodeCounts, report.memoryBreakdown);
 ```
 
-`buildFromVdb`/`buildFromVdbDetailed` stream the parser's leaves straight
+`buildFromVdb`/`buildFromVdbDetailed` (float grids) stream the parser's leaves straight
 into the NanoVDB serializer (proven on a 7M-voxel teapot with no dense
 array), carrying the `.vdb` file's uniform scale+translate transform into
 the NanoVDB `Map`.
@@ -169,12 +171,12 @@ the NanoVDB `Map`.
 
 | Function | What it does |
 |---|---|
-| `parseVdb(buffer)` | Reads a `.vdb` container: FloatGrid, 5-4-3 tree, uncompressed or zlib. Throws a clear error for blosc. |
+| `parseVdb(buffer)` | Reads a `.vdb` container: float, vec3 and point grids, 5-4-3 tree, uncompressed, zlib or Blosc, active tiles |
 | `vdbBuildFromDense` / `vdbBuildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
 | `vdbBuildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `vdbQuantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
 | `vdbQuantize` / `vdbQuantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
-| `vdbTransform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](../../docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
+| `vdbTransform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](https://github.com/pmndrs/vdb/blob/main/docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
 | `vdbInspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
 | `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2, `io::Segment` layout; `{ codec: 'zip' }` for NanoVDB's ZIP codec) |
 | `vdbBakeCoarseFirst` | Coarse-first `.nvdb`: a small preview grid (`<name>.lod48`, box, FpN) then the full grid, ZIP by default |
@@ -185,10 +187,9 @@ the NanoVDB `Map`.
 
 | | Support |
 |---|---|
-| Grid type | `FloatGrid` |
+| Grid type | float, vec3 (`Vec3f`/`Vec3d`/`Vec3i`) and point data grids |
 | Tree configuration | 5-4-3 (OpenVDB's default) |
-| Compression | none, zlib |
-| Compression | blosc — throws a clear "not supported" error |
+| Compression | none, zlib, Blosc (LZ4 and zlib) |
 | Half-float leaf storage | yes |
 | Transform | uniform scale + translate (affine `Map`); non-uniform/rotated throws on `vdbTransform()`, parses fine on `parseVdb()`/`buildFromVdb()` |
 
@@ -199,7 +200,7 @@ Every function above is validated byte/value-wise against real
 openvdb.org samples + primitives). The one anchor that needs a native
 machine to close out (this package's numbers already match at every
 tested coordinate) is tracked in
-[`docs/handoffs/PHASE-5.md`](../../docs/handoffs/PHASE-5.md#native-machine-checklist-the-deferred-anchor)
+[`docs/handoffs/PHASE-5.md`](https://github.com/pmndrs/vdb/blob/main/docs/handoffs/PHASE-5.md)
 — see that doc for the full parity checklist and known semantic edge
 cases (root background vs. near-field tile fill, active-tile compression,
 CRC).
@@ -215,7 +216,7 @@ pool's own buffer); `VDBVolumeMaterial` raymarches one pooled grid, and
 
 ### Quickstart: render a cloud
 
-This mirrors [`examples/src/demos/02-cloud`](../../examples/src/demos/02-cloud),
+This mirrors [`examples/src/demos/02-cloud`](https://github.com/pmndrs/vdb/tree/main/examples/src/demos/02-cloud),
 trimmed to the essentials (no camera controls, no live uniforms):
 
 ```ts
@@ -333,7 +334,7 @@ voxel `min + i` (the last cell is `max`); the texture spans the voxel-centred bo
 `[min - 0.5, max + 0.5]`. `vdbApplyValueTransform` rewrites leaf values
 (not tiles) and does not recompute the image's statistics. CPU versions live in
 `@pmndrs/vdb/tools` (`vdbGridStatsCpu`, `vdbDecodeToAtlasCpu`). See
-[`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback)
+[`examples/src/demos/04-atlas-fallback`](https://github.com/pmndrs/vdb/tree/main/examples/src/demos/04-atlas-fallback)
 for the atlas fallback path through a stock `Data3DTexture`.
 
 ### Coarse-first loading: `vdbStreamCoarseFirst`
@@ -400,6 +401,25 @@ unconfirmed. The player never writes into them; a custom `loader` that
 recycles frame buffers must not reuse one before `await pool.settled()` after
 the update that wrote it.
 
+### The froxel volume renderer
+
+`VDBFrameVolume` and `VDBFrameRenderer` (ported from mjurczyk/openvdb, re-based on the sparse pool) render volumes
+through a froxel grid with `'volume'` or `'frame'` lighting, temporal accumulation, phase functions (including
+Lorenz-Mie), multiple scattering (two-sided, octaves, neural), spectral media and measured presets, mesh shadows and an
+emission light. Volume sources are dense (`vdbDenseTextures`) or sparse (`vdbSparseSource`, with LOD). See
+[docs/site/three/frame-renderer.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/three/frame-renderer.mdx).
+
+### Level sets and points
+
+`VDBLevelSetMaterial` sphere-traces a level-set grid as a lit mesh surface (three's lights, shadows and depth).
+`VDBPoints` draws a `.vdb` point grid (`vdbPointRenderData`) as instanced sprites.
+
+### `.wvdb`
+
+`@pmndrs/vdb/tools` reads and writes mjurczyk/openvdb's `.wvdb` format (`readWvdb`, `writeWvdb`, `WvdbStreamReader`,
+`bakeWvdb`) and converts to and from NanoVDB (`vdbToWvdb`, `nvdbToWvdb`, `wvdbDenseToNvdb`). See
+[docs/site/formats/nvdb-vs-wvdb.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/formats/nvdb-vs-wvdb.mdx).
+
 ### Device ownership (D8)
 
 The host creates the `GPUDevice` (with `VDBGridPool.requiredLimits(adapter)`)
@@ -411,9 +431,9 @@ its device and destroys it, with the pool's buffer, in `renderer.dispose()`.
 
 This package is MIT (see [LICENSE](./LICENSE)). The vendored `pnanovdb.wgsl` and `PNanoVDB.h` are Apache-2.0.
 The published package ships `vendor/NOTICE` and `vendor/LICENSE` (Apache-2.0) alongside the vendored WGSL, and
-they must stay in the package and any redistribution. The `.wvdb` reader and writer port logic from
+they must stay in the package and any redistribution. The `.wvdb` code, the froxel renderer, level sets and points port logic from
 mjurczyk/openvdb (MIT). Test fixtures are CC0, and `fflate` is an MIT runtime dependency. The full list, with
-licences and file locations, is in [THIRD_PARTY.md](https://github.com/pmndrs/vdb/blob/main/THIRD_PARTY.md).
+licences and file locations, is in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) (shipped in the package).
 
 ## Packaging note (for contributors)
 

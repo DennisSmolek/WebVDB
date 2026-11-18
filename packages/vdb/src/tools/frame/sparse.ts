@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/frameMipmaps.js L14–106 (level sizes, 2x2x2 box downsample with
 //   clamped edge taps, the mip atlas layout), as float data.
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: f32 data without the 8-bit rounding; the first level comes from a sparse grid through
 // `vdbResampleGrid` (box); node-average sampling and the HDDA skip are ours (K3.2). Divergences:
 // DIVERGES.md (K3.2 rows).

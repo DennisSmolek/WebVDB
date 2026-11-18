@@ -3,7 +3,7 @@
 //   sampleMipmapped, sample3D, sampleOptional), src/three-openvdb/frame/core/FrameVolume.js L14–22 and
 //   src/three-openvdb/frame/webgpu/FrameRenderer.js L483–487 (texture setup: linear filter, clamp to edge,
 //   no GPU mipmaps), src/three-openvdb/frame/webgpu/frameMipmaps.js L183–189 (mip atlas texture).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TSL → WGSL, raw WebGPU upload; mip level count from textureDimensions instead of a uniform.
 // Divergences: DIVERGES.md V23–V25.
 

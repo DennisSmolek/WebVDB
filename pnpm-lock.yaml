@@ -45,6 +45,9 @@ importers:
 
   packages/vdb:
     dependencies:
+      '@webgpu/types':
+        specifier: ^0.1.60
+        version: 0.1.71
       fflate:
         specifier: ^0.8.3
         version: 0.8.3

@@ -1,3 +1,4 @@
+/// <reference types="@webgpu/types" preserve="true" />
 /**
  * @pmndrs/vdb (core) - the engine-free WebGPU core: a pool of NanoVDB grids in one storage buffer,
  * the generated `vdb*` WGSL module that reads it, and compute tools that run on it.

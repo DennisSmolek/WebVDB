@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/FrameEnvironmentGridMaterial.js L35–283 (the grey pass; K3.4: the
 //   octave uniform and terms; K3.5: the absorption map, setSpectral and the spectral branch L104–197).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript.
 // Divergences: DIVERGES.md (K3.3 rows).
 

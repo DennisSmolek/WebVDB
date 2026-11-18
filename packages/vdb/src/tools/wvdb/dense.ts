@@ -5,7 +5,7 @@
 //   src/three-openvdb/frame/core/FrameVolume.js (getDensityStats, getMeanDensity, getDensityScale),
 //   src/three-openvdb/frame/webgpu/frameMipmaps.js (box mip atlas: downsample, packAtlas),
 //   src/three-openvdb/frame/webgpu/frameShaderChunks.js (sampleMipAtlas, sampleMipmapped, getLod).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript, works from our decoded `.wvdb` levels (read.ts) instead of his worker kernel;
 // Gaussian mips not ported. Divergences: DIVERGES.md V23–V25.
 

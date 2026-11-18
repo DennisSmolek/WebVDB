@@ -1,7 +1,7 @@
 // Data: the weights of mjurczyk/openvdb's neural indirect light network (multipleScattering 'neural'),
 // copied unchanged from src/three-openvdb/frame/core/frameNeuralIndirect.js at commit 75e7345 (v0.26.0)
 // (made by his scripts/neural-indirect/train.mjs). Copyright (c) mjurczyk/openvdb contributors. Licensed under
-// the MIT License (see THIRD_PARTY.md).
+// the MIT License (see THIRD_PARTY_NOTICES.md).
 // Provenance caveat (R1 §7, owner question): his training data includes procedural media and his examples'
 // bunny_cloud.wvdb and smoke.wvdb, which derive from openvdb.org samples (CC BY-SA 4.0). The weights carry no
 // separate licence. They live in this module alone so a host can swap them (VDBFrameRenderer.neuralNetwork) or

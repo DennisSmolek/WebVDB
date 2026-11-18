@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/webgpu/frameShaderChunks.js L729–763 (createVolumeUniforms, the source
 //   half), L834–1028 (createVolumeNodes: getLod, sampleExtinction, sampleAlbedo, sampleEmission and
 //   the box helpers, through ./volume-source.ts).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: the density is read from a sparse NanoVDB grid in a VDBGridPool (vdbSample, trilinear)
 // instead of an 8-bit 3D texture; three LOD strategies instead of his box mip atlas; an HDDA
 // empty-space query for marches. Divergences: DIVERGES.md (K3.2 rows), V23–V25.

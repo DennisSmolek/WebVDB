@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/core/FrameVolume.js L8–11 (render order, all lights), L152–270 (props,
 //   proxy), L339–353 (box matrix), L554–568 (getDensityScale), L624–650 (dispose).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; takes a VDBVolumeSource (dense `.wvdb`, or the sparse pool since K3.2) instead of resampling grids
 // on the CPU (his L279–552: conversion, progressive upload, level sets, points, instances); one
 // volume per frame volume; the mean density is the source's. Divergences: DIVERGES.md (K3.1 rows),

@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/webgpu/FrameLightingMaterial.js L43–119 (constructor, uniforms),
 //   L277–437 (the grey `createFragmentNode`); K3.5: L55–62 (the spectral maps and groups), L86–112
 //   (setSpectral, rebuildNodes), L114–275 (createSpectralFragmentNode).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; source-free. K3.4: the octave uniform (L71–72) and the octave light of lights
 // without a shadow slot (L386–397).
 // Divergences: DIVERGES.md (K3.3 rows).

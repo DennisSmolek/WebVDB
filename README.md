@@ -1,80 +1,59 @@
 # @pmndrs/vdb
 
-Sparse NanoVDB volumes on WebGPU, **browser-first**: traverse and render
-sparse volumes directly in WGSL on WebGPU (three.js `WebGPURenderer` + TSL),
-with pure-TypeScript CPU tooling for parsing, building, and inspecting grids.
-No dense-bake tricks, no WASM in the default install.
+Sparse NanoVDB volumes on WebGPU, **browser-first**: traverse and render sparse volumes directly in WGSL (three.js
+`WebGPURenderer` + TSL), with pure-TypeScript CPU tooling for parsing, building and inspecting grids. No dense-bake
+tricks, no WASM. Part of the pmndrs rendering initiative.
 
-Part of the pmndrs rendering initiative. The repo is still named WebVDB until it moves to `pmndrs/vdb`.
+One package, three entry points:
 
-**Status: Phases 0–7 complete (CI scope)** — workspace scaffold, vendored
-WGSL fork, fixture pipeline, WebGPU traversal, TSL volume rendering,
-pure-TS CPU tooling (parse/build/quantize/transform/inspect), and
-sequence playback all ship and are e2e-gated on `main`. Suite: 255 unit /
-11 e2e (goldens byte-stable) / clean tsc. See
-[STATUS.md](./STATUS.md) and [docs/PLAN.md](./docs/PLAN.md) for the phase
-gates, and [docs/handoffs/](./docs/handoffs) for the phase-by-phase
-handoff notes. Remaining work needs a native/hardware machine or network
-access this environment doesn't have (native parity sweep, WDAS perf
-table, EmberGen fixtures) — see STATUS.md's "Needs a native/hardware
-machine" line.
-
-## Packages
-
-| Package | What it is |
+| Import | What it is |
 |---|---|
-| [`@pmndrs/vdb`](./packages/vdb) (core, `src/core`) | Renderer-agnostic NanoVDB traversal/sampling WGSL module (vendored Apache-2.0 fork of [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb)'s `pnanovdb.wgsl`, pinned + audited) |
-| `@pmndrs/vdb/three` ([`src/three`](./packages/vdb/src/three)) | TSL/three.js layer: `VDBGridNode`, `VDBVolumeMaterial`, `VDBSequence`, `vdbGridStats` / `vdbDecodeToAtlas`, `getDevice` |
-| `@pmndrs/vdb/tools` ([`src/tools`](./packages/vdb/src/tools)) | Pure-TS CPU tooling: the TS `.nvdb` loader and CPU oracle, `.vdb` parse, NanoVDB build, Fp8/FpN quantize, affine transform, inspect (WASM only as an opt-in escalation) |
-| [`examples/`](./examples) | Vite demo site — one demo per phase gate |
+| `@pmndrs/vdb` | The engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module, GPU compute tools |
+| `@pmndrs/vdb/tools` | CPU side: parse `.vdb`, build and quantize NanoVDB, read and write `.nvdb` and `.wvdb`, CPU reads |
+| `@pmndrs/vdb/three` | The three.js (r187) adapter: volume material, froxel renderer, level sets, points, sequences |
 
-## Demos
+```sh
+npm install @pmndrs/vdb          # core + tools
+npm install @pmndrs/vdb three    # to use @pmndrs/vdb/three
+```
 
-Each demo is a phase gate (see [docs/SPEC.md §5](./docs/SPEC.md)); run
-`pnpm dev` and open the listed path.
+Start with the [package README](./packages/vdb/README.md), then the docs in [`docs/site`](./docs/site).
 
-| # | Demo | Proves |
-|---|---|---|
-| 01 | [`hello-nvdb`](./examples/src/demos/01-hello-nvdb) — load `.nvdb`, compute-shader probe of known voxels vs. native ground truth | contract + traversal correctness |
-| 02 | [`cloud`](./examples/src/demos/02-cloud) — Fp8 fog volume fragment-raymarched with sun lighting, orbit camera, live controls | **main goal** |
-| 03 | [`gpu-read`](./examples/src/demos/03-gpu-read) — minimal annotated "read VDBs on the GPU" example (one file, heavily commented, raw WebGPU) | **main goal (educational)** |
-| 04 | [`atlas-fallback`](./examples/src/demos/04-atlas-fallback) — same style of volume through compute → dense atlas → stock volume material | mobile/compat path |
-| 05 | [`embergen-sequence`](./examples/src/demos/05-embergen-sequence) — animated volume playback: `VDBSequence` swaps frames in place with `pool.replace` | animation |
-| 06 | [`explorer`](./examples/src/demos/06-explorer) — drag-drop `.nvdb`/`.vdb`: metadata panel, node-bbox wireframes, slice view, histogram, memory breakdown | technical tool |
-| 07 | [`builder`](./examples/src/demos/07-builder) — author a grid in-browser (procedural dense → `@pmndrs/vdb/tools` build → render, byte-verified round trip) | `@pmndrs/vdb/tools` v1 round-trip |
+## Status
 
-## Founding documents
+Version **0.1.0** is being prepared: the plan ([PHASES.md](./PHASES.md)) is built through K4 and K5 (release prep
+and the docs site); the on-device gates passed. Open work is in [TASKS.md](./TASKS.md), current state in
+[STATUS.md](./STATUS.md). To cut a release see [RELEASING.md](./RELEASING.md); changes are in
+[packages/vdb/CHANGELOG.md](./packages/vdb/CHANGELOG.md).
 
-The feasibility study, spec, decisions, and build plan live in
-[`docs/`](./docs). **[docs/DECISIONS.md](./docs/DECISIONS.md) (D1–D6) is
-binding** — browser-first mission, vendored WGSL fork, pure-TS CPU path,
-desktop-only v1 with device-first `GPUDevice` creation, and a native
-companion service kept strictly as an interim crutch with a
-browser-parity retirement roadmap.
+## Repo layout
 
-## Getting started
+- [`packages/vdb`](./packages/vdb): the published package (`src/core`, `src/tools`, `src/three`, `vendor/`)
+- [`docs/site`](./docs/site): the pmndrs/docs MDX pages (snippets compiled by `pnpm docs:check`)
+- [`examples`](./examples): the Vite demo site (nine demos; the cloud, sequence, explorer and builder are the
+  place to start)
+- [`DECISIONS.md`](./DECISIONS.md) (settled choices, D1 onward), [`DIVERGES.md`](./DIVERGES.md) (where we differ
+  from a source), [`THIRD_PARTY.md`](./THIRD_PARTY.md) (licences)
+
+## Development
 
 ```sh
 pnpm install
-pnpm typecheck    # tsc --build across the workspace (project references)
-pnpm test         # Vitest across the workspace (255 unit tests)
-pnpm test:e2e     # Playwright against the examples app (11 e2e specs)
-pnpm dev          # examples dev server → http://localhost:5173
-pnpm build        # tsc --build each package's dist/ (for publishing)
-pnpm pack:dry     # npm pack --dry-run of @pmndrs/vdb, tarball contents only
-pnpm fixtures     # download test volumes into fixtures/ (git-ignored)
+pnpm typecheck       # tsc --build across the workspace
+pnpm test            # Vitest (fixture-backed tests skip when fixtures are missing)
+pnpm test:e2e        # Playwright against the examples app (needs a WebGPU browser)
+pnpm dev             # examples dev server, http://localhost:5173
+pnpm build           # the published dist/
+pnpm docs:check      # docs snippets are current and compile
+pnpm pack:dry        # what npm would publish
+pnpm fixtures        # download test volumes into fixtures/ (git-ignored)
 ```
 
-`typecheck`/`test`/`dev` all resolve cross-package imports (`@pmndrs/vdb`,
-`@pmndrs/vdb/tools`, `@pmndrs/vdb/three`) straight to TypeScript source via tsconfig `paths` and
-Vite/Vitest aliases — no build step needed for day-to-day work. `pnpm build` is only needed to produce the `dist/` a
-published package ships (see [packages/vdb/README.md](./packages/vdb/README.md) "packaging note").
+In-repo imports resolve to TypeScript source through tsconfig `paths` and Vite/Vitest aliases; `pnpm build` is only
+needed for the `dist/` that ships. Fixtures are never committed; see [fixtures/README.md](./fixtures/README.md).
 
-Fixtures (WDAS cloud, EmberGen free pack) are **never committed** — see
-[fixtures/README.md](./fixtures/README.md) for the pipeline and licenses.
+## Licence
 
-## License
-
-Project code: MIT (see [LICENSE](./LICENSE)). Vendored third-party code keeps its upstream
-license and attribution — see
-[`packages/vdb/vendor/NOTICE`](./packages/vdb/vendor/NOTICE).
+MIT (see [LICENSE](./LICENSE)). The vendored `pnanovdb.wgsl` is Apache-2.0 and the renderer and `.wvdb` code
+derive from [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) (MIT); see [THIRD_PARTY.md](./THIRD_PARTY.md)
+and the shipped `packages/vdb/THIRD_PARTY_NOTICES.md`.

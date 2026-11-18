@@ -166,6 +166,14 @@ describe.skipIf(!fixturesPresent)("NvdbFile — primitive fixtures", () => {
 });
 
 describe("NvdbFile — error handling", () => {
+  it("rejects a ZIP grid whose declared size no deflate stream could produce, before allocating it", async () => {
+    const { buffer: noneBuffer } = await loadFixture("box_fog_float");
+    const zip = rewriteAsZip(noneBuffer);
+    // FileMetaData.gridSize (u64 at +0) and .fileSize (+8) declare far more than the payload can inflate to.
+    new DataView(zip).setBigUint64(FILE_HEADER_SIZE + 0, 1n << 40n, true);
+    expect(() => NvdbFile.fromArrayBuffer(zip).gridImage(0)).toThrowError(/cannot inflate/);
+  });
+
   it("throws for garbage magic bytes", () => {
     const buffer = new ArrayBuffer(32);
     new Uint8Array(buffer).set([..."NotANvdb"].map((c) => c.charCodeAt(0)), 0);

@@ -4,7 +4,7 @@
 //   frameMieRgbTable.js), src/three-openvdb/frame/core/framePhase.js L61–76 (getFrameMieTexels),
 //   src/three-openvdb/frame/webgpu/frameShaderChunks.js L250–271 (frameMieTexel, the 'lorenz-mie' and
 //   'lorenz-mie-rgb' table reads).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; the generator is a function (the script that writes ./mie-table.ts is
 // scripts/k3/mie-phase-table.mjs); the table read is an f64 CPU twin. Divergences: DIVERGES.md (K3.4 rows).
 

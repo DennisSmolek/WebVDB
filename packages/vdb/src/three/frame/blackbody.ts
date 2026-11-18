@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/frameShaderChunks.js L222–256 (the blackbody table texture and
 //   frameBlackbodyColor), L1003–1010 (the 'planck' / 'soot' branch of sampleEmission).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; an `emissionColor` hook of `VDBFrameVolume` (the volume-source seam) instead of a built-in
 // spectrum switch; his 'approximate' (Shadertoy) spectrum is not ported (R1 §7, DIVERGES V24). The table is engine-free
 // (`@pmndrs/vdb/tools` `vdbFrameBlackbodyTable`, with a CPU twin of the read). D33: the colour matching functions are

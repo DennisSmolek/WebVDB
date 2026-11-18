@@ -1,7 +1,7 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
 //   src/three-openvdb/frame/webgpu/frameNeuralChunks.js L1–131 (all: weight layout, dense layers,
 //   sampleLevel, getLocalInputs, neuralLight).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; the network (weights and sizes) is a parameter (VDBFrameNeuralNetwork) instead of
 // a module import, so the weights module can be swapped or left out. CPU twin: tools/frame/neural.ts.
 // Divergences: DIVERGES.md (K3.4 rows).

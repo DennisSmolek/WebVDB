@@ -14,7 +14,7 @@
 //   K3.5: L483–622 (frameMeanComponent and the spectral chunks: frameSpectralShadowUnit / Depths / Step,
 //   frameSpectralGridAlbedo, frameSpectralShadowTransmittance, frameSpectralOctaveLight, frameSpectralShadowTotal,
 //   frameSpectralShadowedLight, frameUnpackSpectralGroup).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; the source half of createVolumeUniforms/createVolumeNodes is
 // `../volume-source.ts`; the Mie table texture is made on first use
 // from our generator's tables (tools/frame/mie-table.ts, his numbers). The Shadertoy `blackBody()`

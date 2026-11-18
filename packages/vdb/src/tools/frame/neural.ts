@@ -3,7 +3,7 @@
 //   getLocalInputs, neuralLight), src/three-openvdb/frame/webgpu/FrameGridMipMaterial.js L10–66 (the 2x2x2
 //   box mip of the last grid cascade), src/three-openvdb/frame/webgpu/FrameRenderer.js L647–699
 //   (renderGridMips: level sizes and atlas layouts).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; f64 CPU twins of the TSL (test oracles); the network is a value
 // (VDBFrameNeuralNetwork) so the weights module (./neural-weights.ts) can be swapped or left out.
 // Divergences: DIVERGES.md (K3.4 rows).

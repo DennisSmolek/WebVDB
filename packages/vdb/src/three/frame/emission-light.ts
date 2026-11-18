@@ -3,7 +3,7 @@
 //   cascades, prepareProbes); src/three-openvdb/frame/webgpu/FrameEmissionLight.js L59–658 (probe grid uniforms,
 //   the direction / reduce / probe pass materials, FrameEmissionLightNode, FrameEmissionLight: targets, slots,
 //   updateProbes, dispose, the node registration).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; one class (his CPU base and WebGPU subclass merged); the direction pass reads each emitter
 // through its own volume source (one direction material per source, as the other passes, DIVERGES V30) instead of
 // one material that swaps 3D textures; no CPU mip step (the sources hold their LOD); the pass materials belong to

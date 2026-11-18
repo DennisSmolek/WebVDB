@@ -7,7 +7,7 @@
 //   L200–229 (the spectral pre-integration), L286–348 (the spectral shadow march), L350–383
 //   (totalTransmittance, the diffusion pair, isotropicTransmittance), L385–451 (the light-probe,
 //   environment and hemisphere terms), L499–532 (frameSpectralShadowedLight, the spectral outputs).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; reads density only through `vdbVolumeNodes` (the VDBVolumeSource seam), so
 // one material is built per volume source; with a sparse source the shadow march skips empty space
 // through the source's HDDA query (K3.2, same lattice, same values; also for the spectral march); the

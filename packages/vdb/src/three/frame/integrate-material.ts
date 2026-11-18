@@ -2,7 +2,7 @@
 //   src/three-openvdb/frame/webgpu/FrameIntegrateMaterial.js L33–138 (constructor, sRGB blending,
 //   scene depth), L219–294 (slice march and composite); K3.5: L45–47 (the alpha atlas), L80–106
 //   (setSpectral, updateNodes), L140–217 (createSpectralFragmentNode).
-// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY.md).
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript.
 // Divergences: DIVERGES.md (K3.1 rows).
 
