@@ -40,7 +40,7 @@ Spec: [docs/design/K1-core.md](docs/design/K1-core.md) (§8 has the acceptance p
 | K1.6 | GPU parity harness on generated modules: every profile × Float/Fp8/FpN | T2 | ✅ | `e2e/core-parity.spec.ts`: 19 variants, one growing pool, 0 ulp on SwiftShader. Fresh-eyes verification passed (D11): independent reader agrees with sidecars and twins at 0 ulp. |
 | K1.7 | Raw-WebGPU example: smoke rendered with no engine | T2 | ✅ | `examples/src/demos/08-webgpu-smoke`, `e2e/demo-08.spec.ts`. Goldens made on macOS SwiftShader: confirm on Linux CI. API feedback in docs/handoffs/K1-7.md. |
 | K1.7a | Core API follow-ups from K1.7 (vdbModuleEntries visibility default, a trilinear-safe cell bound helper, HDDA cell-exit helper, types-up-front guidance) | T3 | ✅ | docs/handoffs/K1-7.md "K1.7a". |
-| K1.9 | `readValue` (f64 decode) vs `readValueF32` (GPU order) differ by 1 ulp on Fp grids: document or align; make the parity gate fail (not skip) in CI when fixtures are missing | T2 | ⬜ | From the K1 verification. |
+| K1.9 | `readValue` (f64 decode) vs `readValueF32` (GPU order) differ by 1 ulp on Fp grids: document or align; make the parity gate fail (not skip) in CI when fixtures are missing | T2 | ✅ | From the K1 verification. |
 | K1.8 | Optional `reader: 'lean'` (≤ 4 KB `read`/Float), A/B vs vendored accessor | T3 | ⬜ | Not gating (D21). |
 
 ## K2 — three.js adapter, v1 parity
@@ -103,7 +103,7 @@ Plan: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) �
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
 | K5.1 | pmndrs/docs MDX site with compiled snippets | T2 | ⬜ | |
-| K5.2 | Release workflow: manual, npm trusted publishing, CHANGELOG | T1 | ⬜ | |
+| K5.2 | Release workflow: manual, npm trusted publishing, CHANGELOG | T1 | 🟨 | `.github/workflows/release.yml` + `packages/vdb/CHANGELOG.md` ready. Owner: move repo (K0.7), update repository URLs, configure the npm trusted publisher for `@pmndrs/vdb` (workflow `release.yml`). |
 | K5.3 | Cloud-system showcase example | owner | ⬜ | |
 
 ## After 0.1
