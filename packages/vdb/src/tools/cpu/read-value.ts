@@ -345,6 +345,11 @@ function checkMagic(gridWords: Uint32Array, fn: string): void {
  * Looks up voxel `ijk` in a NanoVDB grid image (little-endian u32 words,
  * `GridData` at word 0). Supports grid types FLOAT (1), FP8 (14) and FPN
  * (16); throws for anything else.
+ *
+ * The value is the exact f64 decode (ground truth). It is NOT the GPU's
+ * evaluation order: `readValueF32` (CPU twin of `vdbReadValue`) matches the
+ * shader's f32 arithmetic, and the two can differ by 1 ulp (f32) on Fp grids.
+ * Use `readValueF32` as the oracle for GPU parity.
  */
 export function readValue(gridWords: Uint32Array, ijk: [number, number, number]): ReadResult {
   checkMagic(gridWords, "readValue");

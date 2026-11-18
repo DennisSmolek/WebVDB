@@ -294,7 +294,13 @@ export function isActive(gridWords: Uint32Array, ijk: Vec3): boolean {
   return locate(grid(gridWords), ijk).active;
 }
 
-/** Twin of `vdbReadValue` (f32 decode in WGSL order; any of Float/Fp4/Fp8/Fp16/FpN). */
+/**
+ * Twin of `vdbReadValue` (f32 decode in WGSL order; any of Float/Fp4/Fp8/Fp16/FpN).
+ *
+ * This matches the GPU's evaluation order (f32 arithmetic), so it is the right
+ * oracle for GPU parity checks. `readValue` instead returns the exact f64
+ * decode; on Fp grids the two can differ by 1 ulp (f32).
+ */
 export function readValueF32(gridWords: Uint32Array, ijk: Vec3): number {
   const g = grid(gridWords);
   const path = locate(g, ijk);

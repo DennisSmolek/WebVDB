@@ -20,6 +20,10 @@ jobs:
       # otherwise prefer — that path builds full OpenVDB (30-60 min). The
       # local path compiles the header-only NanoVDB bake program with g++.
       BAKE_MODE: local
+      # K1.9: fixture-backed parity gates (unit + e2e/core-parity) must run,
+      # not skip. scripts/require-fixtures.mjs fails vitest/playwright startup
+      # when any required fixture is missing.
+      WEBVDB_REQUIRE_FIXTURES: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +41,9 @@ jobs:
 
       - name: Build packages
         run: pnpm build
+
+      - name: WGSL size budget
+        run: pnpm wgsl:size
 
       - name: Pack dry-run (publishable tarballs)
         run: pnpm pack:dry

@@ -50,6 +50,7 @@
   },
   "files": [
     "dist",
+    "CHANGELOG.md",
     "LICENSE",
     "vendor/pnanovdb.wgsl",
     "vendor/NOTICE",
