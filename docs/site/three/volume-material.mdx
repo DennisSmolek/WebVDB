@@ -1,0 +1,79 @@
+---
+title: VDBVolumeMaterial
+description: A fragment raymarch of one pooled grid, with a sun, a shadow march and live uniforms.
+nav: 52
+sourcecode: packages/vdb/src/three/material.ts
+---
+
+`VDBVolumeMaterial` is a `NodeMaterial` that raymarches one grid of a `VDBGridPool` through a `VDBGridNode`. The grid
+node needs the `rayClipSupport` helper.
+
+{/* snippet: first-render */}
+```ts
+import * as THREE from 'three/webgpu';
+import { VDBGridPool } from '@pmndrs/vdb';
+import { NanoVDBFile } from '@pmndrs/vdb/tools';
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from '@pmndrs/vdb/three';
+
+const image = (await NanoVDBFile.fromURL(url)).gridImage(0);
+
+const pool = await VDBGridPool.create(getDevice(renderer));
+const id = pool.add(image);
+pool.flush(); // the grid is on the GPU after this
+await pool.settled();
+
+// One VDBGridNode per renderer. The ray clip the material needs is an opt-in helper.
+const grids = new VDBGridNode(renderer, pool, { helpers: ['rayClipSupport'] });
+const material = new VDBVolumeMaterial(renderer, grids, id, { densityScale: 1, stepSize: 0.75, shadowSteps: 12 });
+scene.add(new THREE.Mesh(vdbProxyGeometry(pool.info(id)), material)); // a box around the grid's index bbox
+
+renderer.setAnimationLoop(() => {
+    grids.update(); // rebinds only if the pool replaced its buffer
+    renderer.render(scene, camera);
+});
+```
+
+It renders on a proxy box with `side: BackSide`, so the camera can be inside. Entry and exit come from the analytic ray
+clip, not the rasterized faces. The material is transparent, writes no depth, and uses premultiplied alpha. It does
+not composite against scene depth.
+
+## Parameters
+
+Every parameter is a live TSL uniform: change `.value` between frames and nothing recompiles.
+
+{/* snippet: material-params */}
+```ts
+import { Color, Vector3 } from 'three/webgpu';
+
+// The parameters are uniforms: change them between frames, nothing recompiles.
+material.densityScale.value = 2; // extinction per world unit at value 1
+material.stepSize.value = 0.5; // march step, in voxels
+material.maxSteps.value = 512;
+material.sunDirection.value.copy(new Vector3(0.3, 1, 0.2).normalize());
+material.sunColor.value.set(new Color(1, 0.95, 0.85));
+material.shadowSteps.value = 8; // 0 turns the sun shadow march off
+material.anisotropy.value = 0.3; // Henyey-Greenstein g of the sun's phase
+material.jitter.value = 1; // per-pixel start jitter; 0 for a deterministic image
+```
+
+| Uniform | Meaning |
+| --- | --- |
+| `densityScale` | Extinction per **index voxel** at value 1 |
+| `stepSize` | March step, in index voxels |
+| `maxSteps`, `shadowSteps` | Caps on the march and on the shadow march toward the sun (0 turns shadows off) |
+| `sunDirection`, `sunColor`, `sunIntensity`, `anisotropy`, `shadowDensity`, `ambient` | The sun, its Henyey-Greenstein phase, and the ambient floor |
+| `jitter` | Per-pixel start jitter, 1 or 0 |
+
+The constructor's `maxStepsCap`, `shadowStepsCap` and `sampleBudgetCap` bound the per-fragment cost
+(`VDB_VOLUME_MAX_STEPS_CAP` 1024, `VDB_VOLUME_SHADOW_STEPS_CAP` 128, `VDB_VOLUME_SAMPLE_BUDGET_CAP` 16384).
+
+## Things to know
+
+- **The march runs in index space.** `stepSize` is in voxels and `densityScale` integrates per voxel, so scaling a grid
+  with `pool.setTransform` or a NanoVDB map scales its footprint, not how opaque it looks.
+- **The proxy mesh is not tied to the grid.** After `pool.setTransform(id, ...)` or `material.gridId.value = other`,
+  build a new `vdbProxyGeometry(pool.info(id))`, or fragments outside the old box are never rasterized.
+- **One material, many grids.** When you pass a number, `material.gridId` is a `uint` uniform: set `.value` to show
+  another grid of the types the `VDBGridNode` compiles. Pass a TSL node instead to drive the id from a shader.
+- **Perspective cameras only.** The view ray is `positionWorld - cameraPosition`. An orthographic camera renders
+  wrongly.

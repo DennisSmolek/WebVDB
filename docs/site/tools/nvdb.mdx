@@ -1,0 +1,91 @@
+---
+title: .nvdb files
+description: Read, write and stream .nvdb, bake coarse-first files, and read voxels on the CPU.
+nav: 32
+sourcecode: packages/vdb/src/tools/nvdb-file.ts
+---
+
+`.nvdb` is NanoVDB's file format: a header, then each grid's metadata and image. It is the exact format here
+(D14): sparse, full resolution, read and written byte for byte.
+
+## Read
+
+`NanoVDBFile` parses a file with the NONE and ZIP codecs. A grid image decompressed from a zipped file is a copy; from
+an uncompressed one it may be a view of the source buffer (`isGridImageZeroCopy(i)`).
+
+{/* snippet: nvdb-read */}
+```ts
+import { NanoVDBFile } from '@pmndrs/vdb/tools';
+
+const file = await NanoVDBFile.fromURL(url); // or NanoVDBFile.fromArrayBuffer(bytes)
+for (const meta of file.grids) console.log(meta.name, meta.gridType, meta.gridClass, meta.voxelSize);
+
+// The grid image is what VDBGridPool.add() takes, byte for byte. Float, Fp8 and FpN grids load.
+const image = file.gridImage(0); // decompressed when the file is zipped
+```
+
+`NanoVDBFile` loads Float, Fp8 and FpN grids. The pool also holds Fp4 and Fp16 grids, but those only arrive through
+your own builder.
+
+## Write
+
+`writeNvdb(images, { codec, zipLevel })` writes any number of grid images to one file. `codec` is `'none'` or `'zip'`.
+`build-dense` on [building grids](/tools/build-and-quantize) shows it in use.
+
+## Stream
+
+`readNvdbStream(source)` takes a `Response`, a `ReadableStream` or any async iterable of byte chunks, and yields each
+grid as soon as its bytes are complete.
+
+{/* snippet: nvdb-stream */}
+```ts
+import { readNvdbStream } from '@pmndrs/vdb/tools';
+
+const response = await fetch(url);
+// Each grid is emitted as soon as its bytes (raw or zipped) are complete, so the first grid can be
+// on screen while the rest downloads.
+for await (const grid of readNvdbStream(response, { onProgress: (p) => console.log(p.bytesReceived, p.bytesTotal) })) {
+    console.log(grid.index, grid.baseName, grid.lod, grid.image.byteLength);
+}
+```
+
+Under it, `NvdbStreamReader` is the push parser (`push(chunk)` returns the grids a chunk completed). Hostile input is
+bounded: `maxGridBytes` and `maxNameBytes` cap what a header may claim.
+
+## Coarse-first
+
+`bakeCoarseFirst(source, options)` writes one `.nvdb` holding `[<name>.lod48, <name>]`: a coarse preview first, the
+full grid after it. A reader that streams (`readNvdbStream`, or `vdbStreamCoarseFirst` in [three.js](/three/compute-and-streaming))
+shows the preview as soon as its bytes arrive, then swaps in the full grid. The preview filter defaults to
+`'trilinear'` (D26); keep `'box'` for thin or high-frequency data.
+
+{/* snippet: coarse-first-bake */}
+```ts
+import { bakeCoarseFirst, nvdbLodName, parseNvdbLodName } from '@pmndrs/vdb/tools';
+
+// One .nvdb holding [<name>.lod48, <name>]: a coarse preview first, the full grid after it.
+const file = bakeCoarseFirst(image, { previewResolution: 48, quantize: 'fp8', fullQuantize: 'fpn', codec: 'zip' });
+
+console.log(nvdbLodName('cloud', 48)); // the name of the preview grid
+console.log(parseNvdbLodName(nvdbLodName('cloud', 48))); // { baseName: 'cloud', lod: 48 }
+```
+
+## CPU reads
+
+`readValue` and the sampling functions are the WGSL module's tree descent in TypeScript, so you can check GPU results
+or read voxels with no GPU. They take a grid image and **index-space** coordinates. `readValue` is the exact f64 decode;
+`readValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp8 and FpN
+grids (and `readValueVec3` / `sampleTrilinearVec3` read Vec3f).
+
+{/* snippet: cpu-reads */}
+```ts
+import { readValue, sampleTrilinear } from '@pmndrs/vdb/tools';
+
+// The same tree descent as the WGSL module, in TypeScript: an oracle for GPU results, no GPU needed.
+// Index space: the integer coordinates are voxels. (Float, Fp8 and FpN grids.)
+console.log(readValue(image, [10, 20, 30])); // { value, active }
+console.log(sampleTrilinear(image, [10.5, 20.25, 30])); // continuous index-space sample
+```
+
+Every WGSL entry point has a CPU twin in the same package, used as its test oracle: `hddaWalk`, `rayClip`, `nodeMax`,
+`gridStatsCpu`, `decodeToAtlasCpu` and, for the froxel renderer, the `vdbFrame*` functions.

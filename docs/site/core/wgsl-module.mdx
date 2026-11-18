@@ -1,0 +1,95 @@
+---
+title: The WGSL module
+description: vdbModuleWgsl generates the traversal code for exactly the grid types, profile and helpers you use.
+nav: 11
+sourcecode: packages/vdb/src/core/wgsl/generate.ts
+---
+
+`vdbModuleWgsl(options)` returns WGSL text to put in front of your own shader. It is generated per feature set, so
+what you do not use compiles out, and every symbol is prefixed `vdb`. The same options always give the same bytes.
+
+{/* snippet: module-options */}
+```ts
+import { VDB_ALL_SCALAR_TYPES, checkModule, vdbModuleEntries, vdbModuleWgsl } from '@pmndrs/vdb';
+import type { VDBSlotModuleOptions } from '@pmndrs/vdb';
+
+const options: VDBSlotModuleOptions = {
+    slot: { group: 0, firstBinding: 0 }, // where the pool is bound: @group(0) @binding(0) var<storage, read> vdbPool
+    types: ['float', 'fp8'], // or VDB_ALL_SCALAR_TYPES to never rebuild the pipeline when a new type arrives
+    profile: 'march', // 'read' < 'sample' < 'march'; each includes the one before
+    helpers: ['cellBoundTrilinear', 'hddaCellEnd'], // opt-in WGSL helpers
+};
+const wgsl = vdbModuleWgsl(options); // deterministic: the same options give the same bytes
+const entries = vdbModuleEntries(options.slot); // the bind group layout entries for that slot
+
+checkModule(pool, options); // throws VDB_TYPE_NOT_COMPILED if the pool holds a type the module lacks
+```
+
+## Binding: slot or buffer
+
+Exactly one of `slot` and `buffer`:
+
+- `slot: { group, firstBinding }` declares `@group(g) @binding(b) var<storage, read> vdbPool: array<u32>`. The same
+  `VDBSlot` goes to `vdbModuleEntries(slot)` for the layout and to `pool.bindGroupEntry(slot)` for the bind group.
+- `buffer: '<wgsl expression>'` declares nothing and reads your `array<u32>` through that expression. This is how
+  engine adapters bind the pool through their own storage node.
+
+{/* snippet: module-buffer */}
+```ts
+import { vdbModuleWgsl } from '@pmndrs/vdb';
+
+// Buffer mode declares no binding: the module reads the host's `array<u32>` through this expression.
+// This is how the three.js adapter binds the pool through three's own storage node.
+return vdbModuleWgsl({ buffer: 'vdbPool.value', types: ['float'], profile: 'sample' });
+```
+
+## Profiles
+
+Each profile includes the one before it.
+
+| Profile | Adds |
+| --- | --- |
+| `read` | `vdbAccessorInit`, `vdbReadValue`, `vdbIsActive`, `vdbGridCount`, `vdbGridType`, `vdbIndexMin`, `vdbIndexMax` |
+| `sample` | `vdbSample` (trilinear, or `nearest` with `sampler`), `vdbWorldToIndex`, `vdbWorldToIndexDir`, `vdbIndexToWorld`, `vdbIndexToWorldDir`, `vdbRayClip` |
+| `march` | the HDDA (`vdbHddaInit`, `vdbHddaUpdate`, `vdbHddaStep`), `vdbGetDim`, `vdbHasStats`, `vdbValueMax`, `vdbNodeMax` |
+
+A `majorant` profile is reserved and throws `VDB_BAD_OPTION` in 0.1.
+
+Other options: `sampler` (`'trilinear'` default, or `'nearest'`), `isActive: false` to drop `vdbIsActive`, and
+`outside`: `'background'` (default, the tree's background value) or `'zero'` (the field is 0 outside the index bbox).
+
+## Helpers
+
+Opt-in, and none is emitted unless listed:
+
+| Helper | Profile | Function |
+| --- | --- | --- |
+| `cellBoundTrilinear` | `march` | `vdbCellBoundTrilinear(acc, ijk, dim)`: a bound for every trilinear sample whose base voxel is in that cell |
+| `hddaCellEnd` | `march` | `vdbHddaCellEnd(&h)`: the ray `t` where the HDDA's current cell ends |
+| `nodeAverage` | `march` | `vdbNodeAverage(acc, ijk, dim)`: the box mean of the aligned cell, from the node's stored average |
+| `rayClipSupport` | `sample`+ | `vdbRayClipSupport(g, o, d, t)`: `vdbRayClip` against the sampler's support box |
+
+When you skip empty cells with a bound, use `cellBoundTrilinear`, not `vdbNodeMax` alone. A trilinear tap reads one
+voxel past its base voxel, into the neighbour cells.
+
+## Grid types must match
+
+The shader decodes only the types its module was generated for. A grid of any other type **reads as 0**. So a module
+must be generated for every type the host may ever add: the known set, or `VDB_ALL_SCALAR_TYPES` (`float`, `fp4`,
+`fp8`, `fp16`, `fpn`) to never rebuild a pipeline, at the price of the largest module. `pool.types` lists only the
+grids present now. After each `add`, call `checkModule(pool, options)`: it throws `VDB_TYPE_NOT_COMPILED` or
+`VDB_LAYOUT_MISMATCH`. It also takes just `{ types, layoutVersion? }`.
+
+## Size budgets
+
+The generated text has a size budget per profile and type set, checked in CI by `pnpm wgsl:size` (minified bytes, KiB
+of 1024):
+
+| Profile | Float only | One Fp type | Float + Fp8 + FpN |
+| --- | ---: | ---: | ---: |
+| `read` | 17.5 | 19 | 19.5 |
+| `sample` | 21.5 | 23 | 24 |
+| `march` | 29 | 30.5 | 31 |
+
+Helpers add 1 KiB to the profile's budget, and `nodeAverage` adds 1.5 KiB. The budgets exist because a path tracer's
+kernels are already 41 to 55 KB of WGSL and compile time is on watch.

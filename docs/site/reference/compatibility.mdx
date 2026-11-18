@@ -1,0 +1,55 @@
+---
+title: Compatibility and limits
+description: three version, WebGPU requirements, supported grid types, WGSL size budgets and known divergences.
+nav: 90
+sourcecode: packages/vdb/src/core/pool/limits.ts
+---
+
+## three
+
+`@pmndrs/vdb/three` supports three `>=0.187.0 <0.188.0` (r187) and needs `WebGPURenderer` on the WebGPU backend.
+`VDBGridNode` relies on three's backend internals, so it checks them: another three revision warns once, and the first
+node on a backend self-tests the disposal guard (`VDB_ENGINE_MISMATCH` if it fails). Core and tools have no three
+dependency.
+
+## WebGPU
+
+- The pool needs a **core** (non-compatibility) `GPUDevice` with at least one storage buffer per shader stage, a
+  storage-buffer binding limit of at least the pool's minimum, and a device that is not lost.
+  `VDBGridPool.unsupportedReason(device)` says which.
+- Request the device with `VDBGridPool.requiredLimits(adapter)` (`maxStorageBufferBindingSize` and `maxBufferSize` of
+  the adapter). The pool never grows past the device's storage-buffer binding size, and `VDB_POOL_LIMIT` is the error
+  when it would.
+- A kernel uses **one** storage binding for the pool, at a slot you choose. No textures or samplers are required by
+  the core. The dense frame-renderer source and the pyramid use 3D textures.
+- CI runs the WebGPU paths on SwiftShader; hardware checks run on Chrome with an Apple GPU. Timings recorded so far are
+  provisional (D25).
+
+## Grids
+
+| | Supported |
+| --- | --- |
+| Pool and WGSL | Scalar grids: Float, Fp4, Fp8, Fp16, FpN. Generate the module for every type you add, or use `VDB_ALL_SCALAR_TYPES`. |
+| `NanoVDBFile`, `readValue`, `sampleTrilinear` | Float, Fp8, FpN. |
+| Vec3f | Built by `buildFromVdb`, read on the CPU by `readValueVec3` and `sampleTrilinearVec3`. Not in the pool. |
+| `.vdb` | 5-4-3 float, vec3 and point-data grids; Blosc (LZ4, zlib) and zlib. |
+| Size | Child offsets are read as 32-bit words, so a grid over 4 GiB is not supported. |
+
+## WGSL size budgets
+
+Budgets per profile and type set are in [the WGSL module](/core/wgsl-module#size-budgets). CI runs `pnpm wgsl:size` and
+fails a generated module that grows past its budget.
+
+## Known divergences
+
+Where this package does something differently from emcfarlane's `pnanovdb.wgsl`, OpenVDB, NanoVDB, or mjurczyk's
+renderer, the difference and its reason are listed in
+[DIVERGES.md](https://github.com/pmndrs/vdb/blob/main/DIVERGES.md). Read it before comparing images or bytes against
+another implementation.
+
+## Not in 0.1
+
+- The `majorant` WGSL profile (`VDB_BAD_OPTION`), and brick-majorant skipping built on it.
+- A `readNvdb` function: use `NanoVDBFile` for files in memory and `readNvdbStream` for streams.
+- Spectral colour in the froxel renderer (grey only).
+- A Babylon.js adapter.

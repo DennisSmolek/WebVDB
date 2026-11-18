@@ -1,0 +1,109 @@
+---
+title: VDBGridNode
+description: A VDBGridPool in three's node system, for TSL materials, compute and wgslFn.
+nav: 51
+sourcecode: packages/vdb/src/three/grid-node.ts
+---
+
+`new VDBGridNode(renderer, pool, options?)` exposes a pool to three's node system. It is not itself a node: it holds the
+storage node (`storage`), the generated module as a code node (`module`), and the functions behind the TSL helpers.
+
+Options are the [module options](/core/wgsl-module) minus the binding, which the adapter owns:
+
+| Option | Default |
+| --- | --- |
+| `types` | the pool's types now (`[...pool.types]`, checked) |
+| `profile` | `'sample'`. `'read'`, `'sample'` or `'march'`. |
+| `sampler`, `isActive`, `outside`, `helpers` | as in the module options |
+| `name` | `'vdbPool'`, the name of the storage binding three emits |
+
+## TSL
+
+`vdbSample(grids, id, position, options?)` is the grid's value at a `vec3` node, through the grid's own transform
+(`{ space: 'index' }` skips it). It needs profile `sample` or `march`. `vdbReadValue(grids, id, ijk)` reads the voxel at an
+`ivec3` node, in any profile. `id` is a number or a `uint` node. A dead id, or a grid type the module does not compile,
+reads 0.
+
+{/* snippet: grid-node-tsl */}
+```ts
+import { MeshBasicNodeMaterial } from 'three/webgpu';
+import { ivec3, positionWorld, vec3 } from 'three/tsl';
+import { VDBGridNode, vdbReadValue, vdbSample } from '@pmndrs/vdb/three';
+
+// profile 'sample' (the default) includes vdbSample; 'read' is smaller and only has vdbReadValue.
+const grids = new VDBGridNode(renderer, pool, { profile: 'sample', sampler: 'trilinear' });
+
+const material = new MeshBasicNodeMaterial();
+// The grid's value at this fragment's world position, through the grid's own transform
+// (pass { space: 'index' } for index-space positions).
+const density = vdbSample(grids, id, positionWorld);
+material.colorNode = vec3(density);
+
+// The voxel at integer index coordinates (any profile). `id` may be a number or a uint node.
+const voxel = vdbReadValue(grids, id, ivec3(0, 0, 0));
+material.opacityNode = voxel.add(1).clamp(0, 1);
+```
+
+## WGSL
+
+Include `grids.module` in a `wgslFn`. `wgslFn` parses only its first `fn`, so every helper stays in the module. The
+generated `vdb*` functions are callable by name:
+
+{/* snippet: grid-node-wgsl */}
+```ts
+import { wgslFn } from 'three/tsl';
+import { VDBGridNode } from '@pmndrs/vdb/three';
+
+const grids = new VDBGridNode(renderer, pool, { profile: 'sample' });
+
+// grids.module is the generated WGSL module as a code node. wgslFn parses only the first `fn`
+// in your text, so the module's helpers (vdbAccessorInit, vdbSample, ...) come in as an include.
+const shade = wgslFn(
+    /* wgsl */ `
+    fn shade(g: u32, p: vec3f) -> f32 {
+        var acc = vdbAccessorInit(g);
+        return vdbSample(&acc, vdbWorldToIndex(g, p));
+    }`,
+    [grids.module],
+);
+```
+
+## Each frame
+
+The pool's buffer is a different object after a growth (`pool.version` moves). `grids.update()` compares the version
+and rebinds; it returns `true` when it did, and is cheap when nothing changed. Pool changes that stay in the same
+buffer (`add` into free space, `replace` in place, `setTransform`) need nothing.
+
+{/* snippet: grid-node-frame */}
+```ts
+import { VDBGridNode } from '@pmndrs/vdb/three';
+
+const grids = new VDBGridNode(renderer, pool, { profile: 'sample' });
+grids.check(); // throws VDB_TYPE_NOT_COMPILED if the pool holds a grid type the module lacks
+
+const frame = () => {
+    pool.replace(id, replacement); // any pool change is staged...
+    pool.flush(); // ...and must be on the GPU before three renders
+    grids.update(); // rebinds the node when the pool grew into a new buffer (pool.version moved)
+    renderer.render(scene, camera);
+};
+```
+
+Skipping `update()` after a growth leaves three binding the old buffer, which the pool destroys a couple of updates
+later. `grids.check()` throws `VDB_TYPE_NOT_COMPILED` or `VDB_LAYOUT_MISMATCH` if the module cannot read every grid
+the pool holds now.
+
+## How it binds
+
+`grids.storage` is a read-only three storage node named `vdbPool`, backed by a stand-in `StorageBufferAttribute`.
+Before three first sees it, the backend's record for it is given the pool's `GPUBuffer`, so three binds that buffer as
+is: no copy, no CPU write, one binding. The module reads it through `vdbPool.value`, the generator's `buffer` mode.
+The name is fixed, so the shader text is the same on every load.
+
+## Rules
+
+- One `VDBGridNode` per renderer, and one module per shader. A shader that reads grids through two nodes fails with
+  `VDB_BAD_OPTION` at build.
+- Build the node from `pool.types` only if every type you will ever add is already in the pool. Otherwise pass
+  `types` for all of them, or `VDB_ALL_SCALAR_TYPES`.
+- `dispose()` releases the stand-in. The pool's buffer is not destroyed.
