@@ -1,112 +1,84 @@
 /**
- * `NanoVDBVolumeMaterial` — the fragment-stage sparse-volume raymarch that is
- * WebVDB's stated main goal (SPEC §3.2, docs/PLAN.md Phase 3). Extends
- * three.js `NodeMaterial` (three/webgpu): a `fragmentNode` marches a ray
- * through a `NanoVDBGrid`'s storage buffer directly (no 3D-texture
- * intermediary), sampling the vendored `pnanovdb.wgsl` traversal library.
+ * `VDBVolumeMaterial`: the fragment raymarch of one grid in a `VDBGridPool`,
+ * through a `VDBGridNode` (task K2.3, docs/handoffs/K2.md). It replaces v1's
+ * `NanoVDBVolumeMaterial`, which bound one grid image as its own storage
+ * attribute and rewrote the vendored library's buffer global.
  *
- * ## What ships in v1
+ *   const grids = new VDBGridNode(renderer, pool, { helpers: ['rayClipSupport'] });
+ *   const material = new VDBVolumeMaterial(renderer, grids, id, { densityScale: 40 });
+ *   scene.add(new Mesh(vdbProxyGeometry(pool.info(id)), material));
+ *   // per frame: pool.update(encoder) (or pool.flush()), then grids.update(), then render.
  *
- * - Renders on the grid's proxy box, `side: BackSide` (so the camera can enter
- *   the volume without the box being culled; entry/exit come from an analytic
- *   bbox clip, not the rasterized face).
- * - Ray setup: `cameraPosition` + `positionWorld` → world ray → transformed to
- *   INDEX space by the library's own `Map` accessors → clipped against the root
- *   index bbox (`pnanovdb_hdda_ray_clip`).
- * - March: fixed-step density accumulation with the per-grid-type trilinear
- *   sampler (selected at build time — no runtime switch), premultiplied
- *   transmittance/emission compositing, early-out at low transmittance, hard
- *   `maxSteps` cap. HDDA node-skipping is a documented stretch goal, NOT shipped
- *   here — plain fixed step per the gate's allowance.
- * - Lighting: Henyey–Greenstein phase (param `g`) on a directional sun +
- *   N-step secondary shadow march + a constant ambient floor. Output is
- *   premultiplied `vec4(rgb, alpha)` (material uses premultiplied-alpha
- *   blending).
- * - Depth/scene compositing is deliberately SKIPPED (SPEC says v1.1): the
- *   material is `transparent`, `depthWrite: false`.
+ * The march is one entry `wgslFn` over the public `vdb*` WGSL API, with
+ * `grids.module` as its include (the module carries the pool binding):
+ * - the world ray goes into the grid's index space through the record's
+ *   affine (`vdbWorldToIndex`/`vdbWorldToIndexDir`), so `pool.setTransform`
+ *   instances render where they are;
+ * - it is clipped to the sampler's support box (`vdbRayClipSupport`,
+ *   `[min - 1, max + 1]` for trilinear), not the voxel-cell box, so the
+ *   min-side half voxel the trilinear taps reach is marched too;
+ * - fixed-step density accumulation with `vdbSample` (the node's sampler),
+ *   premultiplied front-to-back compositing, early-out at low transmittance.
+ *   The step lattice is anchored at the voxel-box entry (`vdbRayClip`, where
+ *   v1 started) and extended back over the support shell, so samples inside
+ *   the box sit where v1's did; only the shell samples are new (v1 skipped
+ *   that half voxel, which shows where a grid's min-side voxels are dense);
+ * - lighting as in v1: Henyey-Greenstein phase on a directional sun, an
+ *   N-step shadow march toward the sun (a second accessor), a constant
+ *   ambient floor, and a per-fragment budget on the total samples.
  *
- * All tunables are live-updatable TSL `uniform()` nodes exposed as public
- * fields (`material.densityScale.value = ...`).
+ * Rendered on a proxy box with `side: BackSide` (the camera can be inside);
+ * entry and exit come from the analytic clip, not the rasterized faces. The
+ * material is `transparent`, `depthWrite: false`, premultiplied alpha. Scene
+ * depth compositing is not done (v1 neither).
  *
- * The integration strategy that makes the full library run inside a NodeMaterial
- * lives in `./wgsl.ts` (`assembleVolumeWgsl`); this file does the TSL wiring.
+ * Every tunable is a live TSL uniform (`material.densityScale.value = ...`).
+ * The grid is a `uint` uniform too when the constructor got a number
+ * (`material.gridId.value = otherId`), so one material can show any grid of
+ * the types its `VDBGridNode` compiles without a rebuild.
  */
 
 import * as THREE from "three";
-import { NodeMaterial, StorageBufferAttribute } from "three/webgpu";
-import {
-  cameraPosition,
-  code,
-  positionWorld,
-  screenCoordinate,
-  storage,
-  uniform,
-  wgslFn,
-} from "three/tsl";
-import type { NanoVDBGrid } from "./grid.js";
-import { assembleVolumeWgsl } from "./wgsl.js";
-import type { AssembledVolumeWgsl } from "./wgsl.js";
+import { NodeMaterial } from "three/webgpu";
+import { cameraPosition, code, positionWorld, screenCoordinate, uniform, wgslFn } from "three/tsl";
+import { VDBError } from "../core/errors.js";
+import { getDevice, type ThreeRendererLike } from "./device.js";
+import { VDBGridNode, type VDBTslNode } from "./grid-node.js";
 
-export interface NanoVDBVolumeMaterialParameters {
-  /** The grid to raymarch. */
-  grid: NanoVDBGrid;
-  /**
-   * The vendored `pnanovdb.wgsl` source text. Supplied by the caller so this
-   * package stays free of bundler-specific `?raw` imports (browser: pass
-   * `import src from "@pmndrs/vdb/pnanovdb.wgsl?raw"`; node/tests: read the
-   * file via `pnanovdbWgslUrl`). Required.
-   */
-  pnanovdbSource: string;
+/** Default hard caps of the compiled loops (the live uniforms clamp under them). */
+export const VDB_VOLUME_MAX_STEPS_CAP = 1024;
+export const VDB_VOLUME_SHADOW_STEPS_CAP = 128;
+/**
+ * Default cap on the total samples (primary + shadow) one fragment takes.
+ * `maxSteps` and `shadowSteps` are independent live uniforms, so their product
+ * can reach `maxStepsCap * shadowStepsCap` (~131k at the defaults), a driver
+ * timeout risk. Once the budget is spent the shadow loop stops first, then the
+ * primary loop, and the fragment returns its partial march.
+ */
+export const VDB_VOLUME_SAMPLE_BUDGET_CAP = 16384;
 
-  // --- Initial values for the live uniforms (all optional; defaults below) ---
+/** Parameters of {@link VDBVolumeMaterial}: initial uniform values and compile-time caps. */
+export interface VDBVolumeMaterialParameters {
   densityScale?: number;
+  /** March step in index voxels. */
   stepSize?: number;
   maxSteps?: number;
   sunDirection?: THREE.Vector3;
   sunColor?: THREE.Color;
   sunIntensity?: number;
-  /** Henyey–Greenstein anisotropy g in (-1, 1). */
+  /** Henyey-Greenstein anisotropy g in (-1, 1). */
   anisotropy?: number;
   shadowSteps?: number;
-  /** Density multiplier used along the shadow ray only. */
+  /** Density multiplier along the shadow ray only. */
   shadowDensity?: number;
   ambient?: number;
-  /** Per-pixel jitter toggle: 1 = on, 0 = off. */
+  /** Per-pixel jitter of the first sample. Default true. */
   jitter?: boolean;
-
-  /**
-   * Pre-allocate the grid storage buffer at this many BYTES so the grid can be
-   * swapped for a DIFFERENT-SIZED one later via `rebindGrid()` without a
-   * material/node rebuild (the paddable-buffer strategy — see `rebindGrid`).
-   *
-   * WHY THIS EXISTS: three's WebGPU backend allocates the storage GPUBuffer
-   * once, sized to the attribute array's byteLength at first upload, and never
-   * resizes it; subsequent updates are `device.queue.writeBuffer` into that
-   * fixed buffer. So a same-size grid swap is free, but a bigger grid would
-   * overflow the buffer. Sizing the buffer up front to the largest frame you
-   * will ever bind (e.g. `max(frame.image.byteLength)` across a sequence) makes
-   * every rebind an in-place sub-fill. Rounded up to a multiple of 4 bytes.
-   *
-   * Omit for a single static grid (the buffer is sized exactly to `grid`, and
-   * `rebindGrid` then only accepts a grid of the same-or-smaller byte length).
-   * The vendored traversal never bounds-checks reads against the buffer length,
-   * so the trailing padding is inert.
-   */
-  maxGridBytes?: number;
-
-  /** Hard compile-time caps (uniforms clamp under these). */
+  /** Hard cap on the primary loop. Default {@link VDB_VOLUME_MAX_STEPS_CAP}. */
   maxStepsCap?: number;
+  /** Hard cap on the shadow loop. Default {@link VDB_VOLUME_SHADOW_STEPS_CAP}. */
   shadowStepsCap?: number;
-  /**
-   * Hard cap on the TOTAL trilinear taps (primary + shadow) a single fragment
-   * may perform per frame. `maxSteps`/`shadowSteps` are independently-clamped
-   * LIVE uniforms, so their product can otherwise reach `maxStepsCap *
-   * shadowStepsCap` (~65k at the defaults) — a TDR risk on real hardware. This
-   * budget is enforced inside the generated WGSL with a per-fragment counter:
-   * once exhausted, the shadow loop breaks first, then the main march loop,
-   * so the fragment returns its partial march instead of a hard black pixel.
-   * Default 16384 (see `DEFAULT_SAMPLE_BUDGET_CAP` in `./wgsl.js`).
-   */
+  /** Hard cap on the total samples per fragment. Default {@link VDB_VOLUME_SAMPLE_BUDGET_CAP}. */
   sampleBudgetCap?: number;
 }
 
@@ -121,44 +93,139 @@ const DEFAULTS = {
   ambient: 0.15,
 } as const;
 
-/**
- * Live TSL uniforms. Update via `.value = ...`; the change is picked up on the
- * next render without rebuilding the material. Intersected with the concrete
- * `.value` type (three types `uniform()` as `value: unknown`) so callers get a
- * typed handle while the node still satisfies `wgslFn` argument positions.
- */
+/** A live TSL uniform with its value typed (three types `uniform()`'s value as unknown). */
 type ScalarUniform = ReturnType<typeof uniform> & { value: number };
 type Vec3Uniform = ReturnType<typeof uniform> & { value: THREE.Vector3 };
 type ColorUniform = ReturnType<typeof uniform> & { value: THREE.Color };
 
-export class NanoVDBVolumeMaterial extends NodeMaterial {
-  readonly isNanoVDBVolumeMaterial = true;
+/** Entry name of the march `wgslFn`. */
+const ENTRY = "vdbThreeVolumeMarch";
 
-  /** The assembled WGSL (library + entry) — exposed for inspection/testing. */
-  readonly assembled: AssembledVolumeWgsl;
-  /** The build-time-selected trilinear sampler function name. */
-  readonly samplerFn: string;
+/**
+ * Module-scope helpers of the march, a second include next to `grids.module`
+ * (`wgslFn` parses only its first `fn`, so the entry can't hold them).
+ */
+const VOLUME_HELPERS_WGSL = /* wgsl */ `
+fn vdbThreeHgPhase(cos_theta: f32, g: f32) -> f32 {
+    let gg = g * g;
+    let denom = 1.0 + gg - 2.0 * g * cos_theta;
+    return (1.0 - gg) / (12.566370614359172 * pow(max(denom, 1.0e-4), 1.5));
+}
+fn vdbThreeHash12(p: vec2f) -> f32 {
+    var p3 = fract(vec3f(p.x, p.y, p.x) * 0.1031);
+    p3 = p3 + dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+`;
 
-  /** Currently-bound grid (mutated by `rebindGrid`). */
-  private _grid: NanoVDBGrid;
-  /** The bound storage attribute — owns the (possibly padded) backing array. */
-  private readonly _gridAttribute: StorageBufferAttribute;
-  /** Capacity of the storage buffer in u32 words (>= any grid we can rebind to). */
-  private readonly _capacityWords: number;
-  /** True when we allocated our own padded backing (vs. binding `grid`'s own attribute zero-copy). */
-  private readonly _ownsBacking: boolean;
+/** The march entry, the one `fn` of its `wgslFn`. Caps are compiled in. */
+function marchWgsl(maxStepsCap: number, shadowStepsCap: number, sampleBudgetCap: number): string {
+  return /* wgsl */ `fn ${ENTRY}(
+    grid_id: u32,
+    ray_origin_w: vec3f,
+    ray_dir_w: vec3f,
+    sun_dir_w: vec3f,
+    sun_color: vec3f,
+    sun_intensity: f32,
+    density_scale: f32,
+    step_size: f32,
+    max_steps: f32,
+    g: f32,
+    shadow_steps: f32,
+    shadow_density: f32,
+    ambient: f32,
+    jitter: f32,
+    pix: vec2f
+) -> vec4f {
+    // World -> index through the pool record (instance transform included).
+    let o_idx = vdbWorldToIndex(grid_id, ray_origin_w);
+    let d_idx = normalize(vdbWorldToIndexDir(grid_id, ray_dir_w));
+    let sun_idx = normalize(vdbWorldToIndexDir(grid_id, sun_dir_w));
 
-  /** The grid currently bound for raymarching. Swap it with `rebindGrid`. */
-  get grid(): NanoVDBGrid {
-    return this._grid;
-  }
+    // Clip to the trilinear support box; a dead id misses.
+    var span = vec2f(0.0, 1.0e30);
+    if !vdbRayClipSupport(grid_id, o_idx, d_idx, &span) {
+        return vec4f(0.0);
+    }
+    let t0 = max(span.x, 0.0);
+    let t1 = span.y;
 
-  /** Storage-buffer capacity in bytes (the largest grid image this material can rebind to). */
-  get capacityBytes(): number {
-    return this._capacityWords * 4;
-  }
+    var acc = vdbAccessorInit(grid_id);
+    var sacc = vdbAccessorInit(grid_id);
 
-  // Live uniforms (SPEC §3.2 param list). Public for live tweaking.
+    // The phase uses the world-space view/sun angle.
+    let phase = vdbThreeHgPhase(dot(normalize(ray_dir_w), normalize(sun_dir_w)), g);
+
+    // The step lattice is anchored where the ray enters the voxel box
+    // (vdbRayClip, v1's entry) and extended back to the support entry, so the
+    // samples inside the box sit exactly where v1's did.
+    var t = t0;
+    var cell = vec2f(0.0, 1.0e30);
+    if vdbRayClip(grid_id, o_idx, d_idx, &cell) {
+        let anchor = max(cell.x, 0.0);
+        t = anchor - ceil((anchor - t0) / step_size) * step_size;
+    }
+    t += step_size * jitter * vdbThreeHash12(pix);
+    var transmittance = 1.0;
+    var color = vec3f(0.0);
+    let max_i = i32(clamp(max_steps, 1.0, ${maxStepsCap}.0));
+    let shadow_n = i32(clamp(shadow_steps, 0.0, ${shadowStepsCap}.0));
+    let budget = ${sampleBudgetCap};
+    var samples = 0;
+
+    for (var i = 0; i < max_i; i++) {
+        if t > t1 || transmittance < 0.003 || samples >= budget {
+            break;
+        }
+        let pos = o_idx + d_idx * t;
+        let density = max(vdbSample(&acc, pos), 0.0) * density_scale;
+        samples++;
+        if density > 0.0 {
+            let a = 1.0 - exp(-density * step_size);
+            var tau = 0.0;
+            var st = step_size;
+            for (var s = 0; s < shadow_n; s++) {
+                if samples >= budget {
+                    break;
+                }
+                let sd = max(vdbSample(&sacc, pos + sun_idx * st), 0.0) * density_scale * shadow_density;
+                samples++;
+                tau += sd * step_size;
+                st += step_size;
+            }
+            let lit = sun_color * (sun_intensity * exp(-tau) * phase) + vec3f(ambient);
+            color += transmittance * a * lit;
+            transmittance *= 1.0 - a;
+        }
+        t += step_size;
+    }
+    return vec4f(color, 1.0 - transmittance);
+}`;
+}
+
+function bad(message: string): VDBError {
+  return new VDBError("VDB_BAD_OPTION", `VDBVolumeMaterial: ${message}`);
+}
+
+function positiveInt(name: string, value: number | undefined, fallback: number): number {
+  const v = value ?? fallback;
+  if (!Number.isInteger(v) || v < 1) throw bad(`${name} must be an integer >= 1, got ${JSON.stringify(value)}.`);
+  return v;
+}
+
+export class VDBVolumeMaterial extends NodeMaterial {
+  readonly isVDBVolumeMaterial = true;
+
+  /** The pool node this material reads (its `module` is the march's include). */
+  readonly grids: VDBGridNode;
+  /**
+   * The grid id: a `uint` uniform when the constructor got a number
+   * (`material.gridId.value = otherId`), else the caller's node.
+   */
+  readonly gridId: VDBTslNode;
+  /** The entry `fn` text (for inspection and tests). */
+  readonly entrySource: string;
+
   readonly densityScale: ScalarUniform;
   readonly stepSize: ScalarUniform;
   readonly maxSteps: ScalarUniform;
@@ -169,55 +236,46 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
   readonly shadowSteps: ScalarUniform;
   readonly shadowDensity: ScalarUniform;
   readonly ambient: ScalarUniform;
+  /** 1 = jitter on, 0 = off. */
   readonly jitter: ScalarUniform;
 
-  constructor(params: NanoVDBVolumeMaterialParameters) {
+  /**
+   * @param renderer The initialized `WebGPURenderer` the pool and `grids` live on.
+   * @param grids A `VDBGridNode` with profile `sample` or `march` and
+   *   `helpers: ['rayClipSupport']`. Share one per pool: one module per shader.
+   * @param gridId The grid's pool id (a number, made a `uint` uniform) or a `uint` node.
+   * @throws VDBError `VDB_BAD_OPTION` for a `grids` this material can't use, a
+   *   bad id or cap; `VDB_UNSUPPORTED_DEVICE` for an uninitialized renderer.
+   */
+  constructor(renderer: ThreeRendererLike, grids: VDBGridNode, gridId: number | VDBTslNode, params: VDBVolumeMaterialParameters = {}) {
     super();
-
-    const { grid, pnanovdbSource } = params;
-    if (!pnanovdbSource || typeof pnanovdbSource !== "string") {
-      throw new Error(
-        "NanoVDBVolumeMaterial: `pnanovdbSource` (the vendored pnanovdb.wgsl text) is required — " +
-          'pass `import src from "@pmndrs/vdb/pnanovdb.wgsl?raw"` in a bundler, or read the file via ' +
-          "`pnanovdbWgslUrl` in node.",
-      );
+    if (!(grids instanceof VDBGridNode)) throw bad("grids must be a VDBGridNode.");
+    if (getDevice(renderer) !== grids.pool.device) {
+      throw bad("grids was made for a pool on another GPUDevice than this renderer's.");
     }
-    this._grid = grid;
-
-    // Storage-buffer capacity. Default: exactly the grid's image (zero-copy —
-    // bind the grid's own attribute, no copy). If `maxGridBytes` asks for
-    // headroom, allocate our own padded backing so a larger grid can be
-    // sub-filled in later without a rebuild (see `maxGridBytes` / `rebindGrid`).
-    const gridWords = grid.image.length;
-    const requestedWords = Math.ceil((params.maxGridBytes ?? 0) / 4);
-    this._capacityWords = Math.max(gridWords, requestedWords);
-    this._ownsBacking = this._capacityWords > gridWords;
-
-    if (this._ownsBacking) {
-      const backing = new Uint32Array(this._capacityWords);
-      backing.set(grid.image);
-      this._gridAttribute = new StorageBufferAttribute(backing, 1);
-    } else {
-      this._gridAttribute = grid.storageAttribute;
+    if (grids.options.profile === "read") {
+      throw bad("grids needs profile 'sample' or 'march' (vdbSample); this VDBGridNode was made with profile 'read'.");
     }
+    if (!grids.options.helpers?.includes("rayClipSupport")) {
+      throw bad("grids must compile the 'rayClipSupport' helper: new VDBGridNode(renderer, pool, { helpers: ['rayClipSupport'] }).");
+    }
+    if (typeof gridId === "number") {
+      if (!Number.isInteger(gridId) || gridId < 0) throw bad(`gridId must be a non-negative integer, got ${gridId}.`);
+    } else if (gridId === null || typeof gridId !== "object") {
+      throw bad("gridId must be a number or a uint TSL node.");
+    }
+    const maxStepsCap = positiveInt("maxStepsCap", params.maxStepsCap, VDB_VOLUME_MAX_STEPS_CAP);
+    const shadowStepsCap = positiveInt("shadowStepsCap", params.shadowStepsCap, VDB_VOLUME_SHADOW_STEPS_CAP);
+    const sampleBudgetCap = positiveInt("sampleBudgetCap", params.sampleBudgetCap, VDB_VOLUME_SAMPLE_BUDGET_CAP);
 
-    // Build-time WGSL assembly (throws upstream for unsupported grid types via
-    // samplerForGridType; NanoVDBGrid already gates the type at construction).
-    this.assembled = assembleVolumeWgsl(pnanovdbSource, {
-      gridTypeId: grid.gridTypeId,
-      ...(params.maxStepsCap !== undefined ? { maxStepsCap: params.maxStepsCap } : {}),
-      ...(params.shadowStepsCap !== undefined ? { shadowStepsCap: params.shadowStepsCap } : {}),
-      ...(params.sampleBudgetCap !== undefined ? { sampleBudgetCap: params.sampleBudgetCap } : {}),
-    });
-    this.samplerFn = this.assembled.samplerFn;
+    this.grids = grids;
+    this.gridId = typeof gridId === "number" ? uniform(gridId, "uint") : gridId;
+    this.entrySource = marchWgsl(maxStepsCap, shadowStepsCap, sampleBudgetCap);
 
-    // Live uniforms.
     this.densityScale = uniform(params.densityScale ?? DEFAULTS.densityScale) as ScalarUniform;
     this.stepSize = uniform(params.stepSize ?? DEFAULTS.stepSize) as ScalarUniform;
     this.maxSteps = uniform(params.maxSteps ?? DEFAULTS.maxSteps) as ScalarUniform;
-    this.sunDirection = uniform(
-      (params.sunDirection ?? new THREE.Vector3(0.5, 0.8, 0.3)).clone().normalize(),
-    ) as Vec3Uniform;
+    this.sunDirection = uniform((params.sunDirection ?? new THREE.Vector3(0.5, 0.8, 0.3)).clone().normalize()) as Vec3Uniform;
     this.sunColor = uniform(params.sunColor ?? new THREE.Color(1, 0.95, 0.9)) as ColorUniform;
     this.sunIntensity = uniform(params.sunIntensity ?? DEFAULTS.sunIntensity) as ScalarUniform;
     this.anisotropy = uniform(params.anisotropy ?? DEFAULTS.anisotropy) as ScalarUniform;
@@ -226,24 +284,11 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
     this.ambient = uniform(params.ambient ?? DEFAULTS.ambient) as ScalarUniform;
     this.jitter = uniform(params.jitter === false ? 0 : 1) as ScalarUniform;
 
-    // Grid storage node. setName() forces the emitted WGSL buffer identifier so
-    // the rewritten library's `<bufferName>.value[...]` reads resolve against
-    // it (strategy B in wgsl.ts). toReadOnly() + passing it as the entry's
-    // pointer param is what makes TSL emit + bind it. Same `storage(attr,'uint',
-    // count)` incantation demo 01 proved.
-    const gridStorage = storage(this._gridAttribute, "uint", this._capacityWords)
-      .toReadOnly()
-      .setName(this.assembled.bufferName);
-
-    const march = wgslFn(this.assembled.entrySource, [code(this.assembled.librarySource)]);
-
-    const rayDir = positionWorld.sub(cameraPosition).normalize();
-
-    // The wgslFn is typed as returning a bare Node; the WGSL returns vec4<f32>.
+    const march = wgslFn(this.entrySource, [grids.module, code(VOLUME_HELPERS_WGSL)] as never);
     this.fragmentNode = march({
-      grid_ptr: gridStorage,
+      grid_id: this.gridId,
       ray_origin_w: cameraPosition,
-      ray_dir_w: rayDir,
+      ray_dir_w: positionWorld.sub(cameraPosition).normalize(),
       sun_dir_w: this.sunDirection,
       sun_color: this.sunColor,
       sun_intensity: this.sunIntensity,
@@ -258,8 +303,6 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
       pix: screenCoordinate,
     });
 
-    // Transparent volume: premultiplied output, no depth write (v1: no scene
-    // depth compositing — SPEC §3.2 item 5 is v1.1).
     this.transparent = true;
     this.depthWrite = false;
     this.depthTest = true;
@@ -267,66 +310,45 @@ export class NanoVDBVolumeMaterial extends NodeMaterial {
     this.premultipliedAlpha = true;
     this.toneMapped = false;
   }
+}
 
-  /**
-   * Swap the grid this material raymarches WITHOUT rebuilding the material or
-   * its node graph — the Phase 7 sequence-playback primitive (docs/SPEC §3.5,
-   * the grid-rebind flag from docs/handoffs/PHASE-3.md).
-   *
-   * ## The mechanism (three r185–r187, verified against source)
-   *
-   * The `fragmentNode`/`storage()` node — and the trilinear sampler baked into
-   * the WGSL at construction — are fixed. What actually changes on the GPU is
-   * only the contents of the storage buffer. three's WebGPU backend allocates
-   * that GPUBuffer exactly once (sized to the attribute array's byteLength at
-   * first upload, `WebGPUAttributeUtils.createBuffer`) and thereafter re-uploads
-   * on any attribute version bump via `device.queue.writeBuffer(buffer, 0,
-   * array, 0)` into that SAME fixed buffer (`WebGPUAttributeUtils.updateAttribute`,
-   * gated by `Attributes.update`'s `version <` check). Consequences:
-   *
-   * - **Same or smaller byteLength**: copy the new image into the bound array
-   *   and bump `needsUpdate` — the cheapest path, no reallocation. (A smaller
-   *   image leaves a stale tail; the vendored traversal reads only via internal
-   *   grid offsets and never bounds-checks against the buffer length, so the
-   *   tail is inert.)
-   * - **Larger byteLength**: the fixed GPUBuffer can't grow, and a longer
-   *   `writeBuffer` would overflow it. This throws UNLESS the material was
-   *   constructed with `maxGridBytes` headroom covering the new image, in which
-   *   case the pre-sized buffer absorbs it as an in-place sub-fill.
-   *
-   * The grid TYPE cannot change: the sampler (`pnanovdb_sample_trilinear_*`) is
-   * selected at build time, so rebinding a different-typed grid throws — build a
-   * new material for a different grid type.
-   *
-   * @param grid The grid to bind. Must be the same grid TYPE and fit the
-   *   storage capacity (`capacityBytes`).
-   */
-  rebindGrid(grid: NanoVDBGrid): void {
-    if (grid.gridTypeId !== this._grid.gridTypeId) {
-      throw new Error(
-        `NanoVDBVolumeMaterial.rebindGrid: grid type changed ` +
-          `(${this._grid.metadata.gridType} -> ${grid.metadata.gridType}). The trilinear sampler is baked ` +
-          `into the shader at construction, so a different grid type needs a new material, not a rebind.`,
-      );
-    }
+/** What {@link vdbProxyGeometry} reads from `pool.info(id)`. */
+export interface VDBProxyGridInfo {
+  readonly indexBBox: { readonly min: readonly number[]; readonly max: readonly number[] };
+  /** 3x4 row-major index-to-world affine (`pool.info(id).indexToWorld`). */
+  readonly indexToWorld: ArrayLike<number>;
+}
 
-    const needWords = grid.image.length;
-    if (needWords > this._capacityWords) {
-      throw new Error(
-        `NanoVDBVolumeMaterial.rebindGrid: new grid image is ${needWords * 4} bytes but the storage buffer ` +
-          `capacity is ${this._capacityWords * 4} bytes. three's WebGPU backend fixes the GPUBuffer size at ` +
-          `first upload and cannot grow it. Construct the material with ` +
-          `\`maxGridBytes >= ${needWords * 4}\` (e.g. the largest frame in your sequence) to enable in-place ` +
-          `rebinds, or rebuild the material for this frame.`,
-      );
-    }
-
-    // In-place sub-fill of the bound backing array, then flag a re-upload. When
-    // we don't own the backing (no headroom requested) this writes into the
-    // grid's own attribute array — fine, we're replacing that grid anyway.
-    const backing = this._gridAttribute.array as Uint32Array;
-    backing.set(grid.image);
-    this._gridAttribute.needsUpdate = true;
-    this._grid = grid;
+/**
+ * A world-space box for a grid's proxy mesh (add it with an identity
+ * transform): the AABB of the index box's voxels `[min - pad, max + 1 + pad]`
+ * through the grid's index-to-world affine. `pad: 0` (default) is
+ * `pool.info(id).worldBBox`, the box v1 used; `pad: 1` also covers the
+ * min-side half voxel of the trilinear support that `VDBVolumeMaterial`
+ * marches (rays that cross only that shell are otherwise not rasterized).
+ */
+export function vdbProxyGeometry(info: VDBProxyGridInfo, options: { pad?: number } = {}): THREE.BoxGeometry {
+  const pad = options.pad ?? 0;
+  if (!Number.isFinite(pad) || pad < 0) throw bad(`vdbProxyGeometry pad must be a finite number >= 0, got ${pad}.`);
+  const m = info.indexToWorld;
+  const lo = [0, 1, 2].map((a) => info.indexBBox.min[a]! - pad);
+  const hi = [0, 1, 2].map((a) => info.indexBBox.max[a]! + 1 + pad);
+  const box = new THREE.Box3();
+  const p = new THREE.Vector3();
+  for (let k = 0; k < 8; k++) {
+    const x = k & 1 ? hi[0]! : lo[0]!;
+    const y = k & 2 ? hi[1]! : lo[1]!;
+    const z = k & 4 ? hi[2]! : lo[2]!;
+    p.set(
+      m[0]! * x + m[1]! * y + m[2]! * z + m[3]!,
+      m[4]! * x + m[5]! * y + m[6]! * z + m[7]!,
+      m[8]! * x + m[9]! * y + m[10]! * z + m[11]!,
+    );
+    box.expandByPoint(p);
   }
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+  geometry.translate(center.x, center.y, center.z);
+  return geometry;
 }

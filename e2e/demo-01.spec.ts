@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-// Demo 01 — hello-nvdb: the Phase 1 GPU-read gate. A compute pass runs the
-// hand-written WGSL NanoVDB traversal over 73 probe coords and must reproduce
-// the native sidecar's value (|Δ| ≤ 1e-5) and active flag exactly.
+// Demo 01 — hello-nvdb: the GPU-read gate. A TSL compute pass reads 73 probe
+// coords through VDBGridNode (vdbReadValue + a wgslFn calling vdbIsActive) and
+// must reproduce the native sidecar's value (|Δ| ≤ 1e-5) and active flag exactly.
 //
 // SwiftShader (software WebGPU) compiles + runs slowly, so we wait generously.
 const DEMO_URL = "/src/demos/01-hello-nvdb/index.html";

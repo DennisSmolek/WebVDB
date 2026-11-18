@@ -3,8 +3,8 @@ import { expect, test } from "@playwright/test";
 /**
  * Demo 02 — cloud: the Phase 3 golden-image gate (SPEC §5/§6, docs/PLAN.md).
  *
- * Loads the baked Fp8 fog-sphere fixture, fragment-raymarches it with
- * `NanoVDBVolumeMaterial` in deterministic test mode (fixed pose + params,
+ * Loads the baked Fp8 fog-sphere fixture into a `VDBGridPool`, fragment-raymarches it with
+ * `VDBVolumeMaterial` (through a `VDBGridNode`) in deterministic test mode (fixed pose + params,
  * jitter off, one settled frame), and compares against a Playwright-managed
  * golden. PLAN's SSIM image gate is satisfied here by Playwright's pixel-diff
  * equivalent (`maxDiffPixelRatio`) — recorded as an intentional substitution in
@@ -17,8 +17,10 @@ import { expect, test } from "@playwright/test";
  * with `--update-snapshots`. First creation happens on the first run of this
  * spec.
  *
- * SwiftShader compiles the full pnanovdb library shader slowly (~10-20s cold),
- * so timeouts are generous.
+ * `presentation=readback` because headless SwiftShader can't present a WebGPU
+ * canvas (DIVERGES V7); the demo's default is direct canvas presentation.
+ *
+ * SwiftShader compiles the shader slowly (~10-20s cold), so timeouts are generous.
  */
 
 const PRIMITIVE_FIXTURE = "/fixtures/primitives/sphere_fog_fp8.nvdb";
@@ -76,7 +78,7 @@ test.describe("demo 02 — cloud golden image", () => {
     // 641 RGBA8 pixels need 252 bytes of WebGPU row padding. The old blit
     // treated those padded bytes as pixels and smeared the volume across the canvas.
     await page.setViewportSize({ width: 641, height: 480 });
-    await page.goto(`${DEMO_URL}?fixture=primitive&presentation=readback&swizzle=off&keepAlive=off`);
+    await page.goto(`${DEMO_URL}?fixture=primitive&presentation=readback`);
     await page.waitForFunction(() => window.__DEMO02__?.ready === true, undefined, { timeout: 120_000 });
 
     const bounds = await page.evaluate(() => {

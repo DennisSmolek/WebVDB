@@ -1,23 +1,21 @@
 /**
- * Demo 02 — cloud: the WebVDB main goal (SPEC §5, docs/PLAN.md Phase 3).
+ * Demo 02 — cloud: the WebVDB main goal (SPEC §5, docs/PLAN.md Phase 3), on
+ * the K2 three adapter.
  *
- * Fragment-raymarches a NanoVDB fog volume with `NanoVDBVolumeMaterial`:
- * device-first renderer bootstrap, an orbit camera, a sun-lit cloud look, and
- * hand-rolled range controls for the live material params. Publishes
- * `window.__DEMO02__` for the e2e gate.
+ * Fragment-raymarches a NanoVDB fog volume: the grid goes into a
+ * `VDBGridPool` on the renderer's device, a `VDBGridNode` puts the pool into
+ * three's node system, and `VDBVolumeMaterial` marches grid `id` of it. An
+ * orbit camera, a sun-lit cloud look, and range controls for the live material
+ * uniforms. Publishes `window.__DEMO02__` for the e2e gate.
  *
  * ## Presentation
  *
- * The volume is rendered into an offscreen `RenderTarget`, read back, and drawn
- * to an ordinary 2D `<canvas>`. This is deliberate: on headless SwiftShader
- * (CI, and this sandbox) there is no GPU compositor, so configuring a WebGPU
- * *canvas context* drops the Dawn instance ("A valid external Instance
- * reference no longer exists") and nothing ever presents — whereas offscreen
- * render + `readRenderTargetPixelsAsync` works exactly as on real hardware
- * (demo 01's compute path never hit this). The blit path is portable across
- * both, at the cost of one GPU→CPU copy per frame. Stable-Chrome hardware and
- * performance checks use `?presentation=direct`; CI pins `presentation=readback`.
- * See docs/handoffs/PHASE-3.
+ * Default (`?presentation=direct`): three renders into the page's canvas, as
+ * on any hardware WebGPU browser. `?presentation=readback` renders into an
+ * offscreen `RenderTarget`, reads it back and draws it on a 2D canvas. The e2e
+ * spec uses it because headless SwiftShader has no compositor: configuring a
+ * WebGPU canvas context there drops the Dawn instance ("A valid external
+ * Instance reference no longer exists"; DIVERGES V7).
  *
  * ## Deterministic test mode (`?test=1`)
  *
@@ -26,9 +24,9 @@
  */
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VDBGridPool } from "@pmndrs/vdb";
 import { NanoVDBFile } from "@pmndrs/vdb/tools";
-import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, createVolumeRenderer, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
 
 interface Demo02State {
@@ -38,8 +36,7 @@ interface Demo02State {
   gridType?: string;
   adapter?: string;
   presentation?: string;
-  swizzleShim?: boolean;
-  keepAliveShim?: boolean;
+  poolVersion?: number;
   resolution?: string;
   stepSize?: number;
   shadowSteps?: number;
@@ -61,54 +58,6 @@ declare global {
   }
 }
 
-/**
- * Compatibility shim (three r185–r187 × this Chromium/SwiftShader build).
- *
- * three's `GPUTextureViewDescriptor` unconditionally sets `swizzle: 'rgba'`
- * (a string) on EVERY texture-view, assuming browsers without the
- * `texture-component-swizzle` feature ignore it. This build's WebGPU IDL knows
- * `swizzle` as a *dictionary*, so the string fails conversion and
- * `createView()` throws. `'rgba'` is the identity swizzle, so dropping it is a
- * semantic no-op. Patched at the app edge (the renderer bootstrap is out of
- * this lane).
- */
-function installSwizzleCompatShim(): void {
-  if (typeof GPUTexture === "undefined") return;
-  const proto = GPUTexture.prototype as unknown as {
-    createView: (d?: GPUTextureViewDescriptor) => GPUTextureView;
-    __swizzleShim?: boolean;
-  };
-  if (proto.__swizzleShim) return;
-  const orig = proto.createView;
-  proto.createView = function (this: GPUTexture, descriptor?: GPUTextureViewDescriptor): GPUTextureView {
-    if (descriptor && typeof (descriptor as { swizzle?: unknown }).swizzle === "string") {
-      const { swizzle: _drop, ...rest } = descriptor as GPUTextureViewDescriptor & { swizzle?: unknown };
-      return orig.call(this, rest);
-    }
-    return orig.call(this, descriptor);
-  };
-  proto.__swizzleShim = true;
-}
-
-/**
- * Pin every requested adapter (device-first hygiene). `createVolumeRenderer`
- * (decision D4) drops its local adapter reference on return; on Dawn a collected
- * adapter can invalidate the device. Cheap insurance kept at the app edge.
- */
-const _pinnedAdapters: unknown[] = [];
-function installAdapterKeepAliveShim(): void {
-  if (typeof navigator === "undefined" || !navigator.gpu) return;
-  const gpu = navigator.gpu as GPU & { __keepAliveShim?: boolean };
-  if (gpu.__keepAliveShim) return;
-  const orig = gpu.requestAdapter.bind(gpu);
-  gpu.requestAdapter = async (options?: GPURequestAdapterOptions): Promise<GPUAdapter | null> => {
-    const adapter = await orig(options);
-    if (adapter) _pinnedAdapters.push(adapter);
-    return adapter;
-  };
-  gpu.__keepAliveShim = true;
-}
-
 // Fixed camera presets for deterministic test mode: [azimuth, elevation, radiusFactor].
 const TEST_POSES: ReadonlyArray<readonly [number, number, number]> = [
   [Math.PI * 0.25, Math.PI * 0.16, 1.7],
@@ -118,9 +67,7 @@ const TEST_POSES: ReadonlyArray<readonly [number, number, number]> = [
 const params = new URLSearchParams(location.search);
 const TEST_MODE = params.get("test") === "1";
 const PERF_MODE = params.get("perf") === "1";
-const PRESENTATION = params.get("presentation") === "direct" ? "direct" : "readback";
-const SWIZZLE_SHIM = params.get("swizzle") !== "off";
-const KEEP_ALIVE_SHIM = params.get("keepAlive") !== "off";
+const PRESENTATION = params.get("presentation") === "readback" ? "readback" : "direct";
 const FIXTURE = params.get("fixture") ?? (TEST_MODE ? "primitive" : "auto");
 const QUALITY_STEP_SIZE = Number(params.get("stepSize") ?? "0.75");
 const QUALITY_SHADOW_STEPS = Number(params.get("shadowSteps") ?? "12");
@@ -196,8 +143,6 @@ async function run(): Promise<void> {
     throw new Error(`stepSize must be positive, got ${QUALITY_STEP_SIZE}`);
   if (!Number.isFinite(QUALITY_SHADOW_STEPS) || QUALITY_SHADOW_STEPS < 0)
     throw new Error(`shadowSteps must be non-negative, got ${QUALITY_SHADOW_STEPS}`);
-  if (SWIZZLE_SHIM) installSwizzleCompatShim();
-  if (KEEP_ALIVE_SHIM) installAdapterKeepAliveShim();
 
   const hit = await probeFixture();
   if (!hit) {
@@ -206,7 +151,8 @@ async function run(): Promise<void> {
   }
 
   const file = NanoVDBFile.fromArrayBuffer(hit.buffer);
-  const grid = NanoVDBGrid.fromFile(file, 0);
+  const image = file.gridImage(0);
+  const gridType = file.grids[0]!.gridType;
   const fixtureName = hit.url.split("/").pop() ?? hit.url;
 
   const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
@@ -216,7 +162,7 @@ async function run(): Promise<void> {
   let renderer: WebGPURenderer;
   let adapter = "unreported adapter";
   const created = await createVolumeRenderer({
-    gridBytes: grid.byteLength,
+    gridBytes: image.byteLength,
     ...(directCanvas ? { canvas: directCanvas } : {}),
     trackTimestamp: PERF_MODE,
   });
@@ -237,22 +183,29 @@ async function run(): Promise<void> {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x223049);
 
-  const worldBox = grid.worldBBox();
+  // The pool lives on the renderer's device; one VDBGridNode per pool, with the
+  // helper the material's ray clip needs.
+  const pool = await VDBGridPool.create(getDevice(renderer));
+  const id = pool.add(image);
+  pool.flush();
+  await pool.settled();
+  const grids = new VDBGridNode(renderer, pool, { helpers: ["rayClipSupport"] });
+  const info = pool.info(id);
+
+  const worldBox = new THREE.Box3(new THREE.Vector3(...info.worldBBox.min), new THREE.Vector3(...info.worldBBox.max));
   const center = worldBox.getCenter(new THREE.Vector3());
   const size = worldBox.getSize(new THREE.Vector3());
   const diag = size.length();
 
   const camera = new THREE.PerspectiveCamera(45, 1, 0.01, diag * 100);
 
-  const material = new NanoVDBVolumeMaterial({
-    grid,
-    pnanovdbSource,
+  const material = new VDBVolumeMaterial(renderer, grids, id, {
     jitter: !TEST_MODE,
     stepSize: QUALITY_STEP_SIZE,
     shadowSteps: QUALITY_SHADOW_STEPS,
     sampleBudgetCap: SAMPLE_BUDGET_CAP,
   });
-  const mesh = new THREE.Mesh(grid.proxyGeometry(), material);
+  const mesh = new THREE.Mesh(vdbProxyGeometry(info), material);
   scene.add(mesh);
 
   const controls = new OrbitControls(camera, display);
@@ -295,6 +248,10 @@ async function run(): Promise<void> {
 
   /** Render the scene to the offscreen RT, read it back, and blit to the 2D canvas. */
   async function presentFrame(): Promise<void> {
+    // The pool contract: the pool's update is submitted (flush) before the
+    // VDBGridNode rebinds and three renders. A static grid needs no update,
+    // but grids.update() is cheap and keeps the loop correct if grids change.
+    grids.update();
     if (PRESENTATION === "direct") {
       renderer.setRenderTarget(null);
       renderer.render(scene, camera);
@@ -378,7 +335,7 @@ async function run(): Promise<void> {
         : undefined;
 
     statsEl.textContent =
-      `fixture: ${fixtureName} (${grid.metadata.gridType})\n` +
+      `fixture: ${fixtureName} (${gridType})\n` +
       `adapter: ${adapter}\n` +
       `resolution: 1920x1080  ·  presentation: direct\n` +
       `stepSize: ${material.stepSize.value}  ·  shadowSteps: ${material.shadowSteps.value}  ·  ` +
@@ -391,11 +348,10 @@ async function run(): Promise<void> {
     window.__DEMO02__ = {
       ready: true,
       fixture: fixtureName,
-      gridType: grid.metadata.gridType,
+      gridType: gridType,
       adapter,
       presentation: PRESENTATION,
-      swizzleShim: SWIZZLE_SHIM,
-      keepAliveShim: KEEP_ALIVE_SHIM,
+      poolVersion: pool.version,
       resolution: "1920x1080",
       stepSize: material.stepSize.value,
       shadowSteps: material.shadowSteps.value,
@@ -435,11 +391,10 @@ async function run(): Promise<void> {
       window.__DEMO02__ = {
         ready: true,
         fixture: fixtureName,
-        gridType: grid.metadata.gridType,
+        gridType: gridType,
         adapter,
         presentation: PRESENTATION,
-        swizzleShim: SWIZZLE_SHIM,
-        keepAliveShim: KEEP_ALIVE_SHIM,
+        poolVersion: pool.version,
         resolution: "640x480",
         stepSize: material.stepSize.value,
         shadowSteps: material.shadowSteps.value,
@@ -485,8 +440,8 @@ async function run(): Promise<void> {
           frames = 0;
           lastFpsT = now;
           statsEl.textContent =
-            `fixture: ${fixtureName} (${grid.metadata.gridType})\n` +
-            `sampler: ${material.samplerFn}\n` +
+            `fixture: ${fixtureName} (${gridType})\n` +
+            `pool: ${(pool.byteLength / 1048576).toFixed(1)} MiB · v${pool.version}\n` +
             `fps: ${fps.toFixed(0)}  ·  step ${material.stepSize.value.toFixed(2)}  ·  ` +
             `maxSteps ${material.maxSteps.value.toFixed(0)}`;
         }
@@ -495,11 +450,10 @@ async function run(): Promise<void> {
           window.__DEMO02__ = {
             ready: true,
             fixture: fixtureName,
-            gridType: grid.metadata.gridType,
+            gridType: gridType,
             adapter,
             presentation: PRESENTATION,
-            swizzleShim: SWIZZLE_SHIM,
-            keepAliveShim: KEEP_ALIVE_SHIM,
+            poolVersion: pool.version,
             resolution: `${vw}x${vh}`,
             stepSize: material.stepSize.value,
             shadowSteps: material.shadowSteps.value,

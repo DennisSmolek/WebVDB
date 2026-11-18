@@ -120,14 +120,4 @@ describe.skipIf(!fixturesPresent)("NanoVDBGrid (box_fog_float fixture)", () => {
     expect(geomBox.min.toArray()).toEqual(worldBox.min.toArray());
     expect(geomBox.max.toArray()).toEqual(worldBox.max.toArray());
   });
-
-  it("storageAttribute is created lazily and cached (same object on repeat access)", async () => {
-    const grid = await loadGrid();
-    const a = grid.storageAttribute;
-    const b = grid.storageAttribute;
-    expect(a).toBe(b);
-    expect(a.itemSize).toBe(1);
-    expect(a.count).toBe(grid.image.length);
-    expect(a.array).toBe(grid.image);
-  });
 });

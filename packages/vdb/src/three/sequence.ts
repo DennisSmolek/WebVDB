@@ -1,45 +1,67 @@
 /**
- * `NanoVDBSequence` — manifest-driven animated-volume playback (docs/SPEC §3.5,
- * docs/PLAN.md Phase 7). Decodes per-frame NanoVDB grids ahead of time into a
- * bounded prefetch ring and swaps them into a `NanoVDBVolumeMaterial` via its
- * `rebindGrid()` in-place buffer update — no per-frame material rebuild.
+ * `VDBSequence`: manifest-driven animated-volume playback on a `VDBGridPool`
+ * (task K2.3; v1's `NanoVDBSequence`, docs/SPEC §3.5). Decodes per-frame grid
+ * images ahead of time into a bounded prefetch ring and swaps the shown one
+ * into ONE pool id with `pool.replace(id, image)`.
  *
- * ## Design for testability (the scheduler is a pure-ish clock consumer)
+ * ## The pool contract
  *
- * The player NEVER owns the animation loop or reads the wall clock itself.
+ *   const id = pool.add(firstFrame, { capacity: largestFrameBytes });
+ *   sequence.start({ pool, id });
+ *   // every frame:
+ *   sequence.update(performance.now());   // may call pool.replace(id, frame)
+ *   pool.update(encoder) / pool.flush();  // writes the frame in place
+ *   grids.update();                       // VDBGridNode: rebinds only after a growth
+ *   renderer.render(scene, camera);
+ *
+ * Reserve `capacity` for the largest frame: every `replace` then writes in
+ * place (no move, no `pool.version` change, no rebind, no new bind group). A
+ * frame larger than the capacity still works, but it moves the image, and the
+ * next `update` may grow the pool (a `version` bump), so keep calling
+ * `grids.update()` after the pool's update either way.
+ *
+ * **Frame arrays are held by reference.** `replace` keeps the image until the
+ * `update` that writes it, and until `pool.settled()` resolves while a growth
+ * is unconfirmed (the pool may have to stage it again after a rollback). The
+ * player never writes into a frame array, and its ring only drops references.
+ * A custom `loader` that recycles frame buffers must not reuse an array it
+ * returned before `await pool.settled()` after the update that wrote it.
+ *
+ * ## Design for testability (the scheduler is a pure clock consumer)
+ *
+ * The player never owns the animation loop or reads the wall clock itself.
  * `update(now)` takes the current time in ms; the consumer calls it from its
  * own `requestAnimationFrame` loop with `performance.now()`, and tests call it
- * with a fake, hand-advanced clock. All timing is a frame-duration accumulator
- * against the `now` handed to `start()`/`update()`. This makes the entire
- * ring + scheduler + stall logic exercisable in Vitest with a mocked `loader`
- * and no browser, no GPU (the material is reached only through the tiny
- * `SequenceTarget.rebindGrid` seam).
+ * with a fake, hand-advanced clock. The pool is reached only through
+ * `replace(id, image)`, so tests pass a stub.
  *
  * ## Stall policy: never block the render loop
  *
- * If the frame that is due hasn't finished decoding, `update()` does NOT wait —
- * it holds the last-shown frame, counts a stall, and returns immediately.
- * Decoding continues in the background; the next `update()` that finds the
- * frame ready advances to wherever the clock now points (intermediate frames
- * are dropped, i.e. real-time catch-up, not slow-motion).
+ * If the frame that is due hasn't finished decoding, `update()` does not wait:
+ * it holds the last-shown frame, counts a stall, and returns. Decoding
+ * continues in the background; the next `update()` that finds the frame ready
+ * advances to wherever the clock now points (intermediate frames are dropped:
+ * real-time catch-up, not slow motion).
  */
 
+import { VDBError } from "../core/errors.js";
 import { NanoVDBFile } from "../tools/index.js";
-import { NanoVDBGrid } from "./grid.js";
 
-/**
- * The only surface `NanoVDBSequence` needs from a render target — satisfied by
- * `NanoVDBVolumeMaterial`. Kept minimal so tests can pass a stub with no three
- * dependency.
- */
-export interface SequenceTarget {
-  rebindGrid(grid: NanoVDBGrid): void;
+/** The part of a `VDBGridPool` the player uses. */
+export interface VDBSequencePoolLike {
+  replace(id: number, image: Uint32Array): void;
 }
 
-/** Decodes one frame's URL (or index) into a GPU-ready grid. */
-export type FrameLoader = (url: string, index: number) => Promise<NanoVDBGrid>;
+/** Where frames go: grid `id` of `pool` (added with `capacity` for the largest frame). */
+export interface VDBSequenceTarget {
+  readonly pool: VDBSequencePoolLike;
+  readonly id: number;
+}
 
-export interface NanoVDBSequenceOptions {
+/** Decodes one frame's URL (or index) into a NanoVDB grid image. */
+export type VDBFrameLoader = (url: string, index: number) => Promise<Uint32Array>;
+
+export interface VDBSequenceOptions {
   /** Per-frame source URLs: an array, or `(i) => url`. Length/`frameCount` gate playback. */
   urls: string[] | ((index: number) => string);
   /** Total frame count. Defaults to `urls.length` when `urls` is an array (required otherwise). */
@@ -51,76 +73,77 @@ export interface NanoVDBSequenceOptions {
   /** Loop back to frame 0 after the last frame. Default true. */
   loop?: boolean;
   /**
-   * Decode override. Default: `NanoVDBFile.fromURL(url)` -> `NanoVDBGrid.fromFile`.
+   * Decode override. Default: `NanoVDBFile.fromURL(url)` -> `gridImage(0)`.
    * The demo passes an in-memory loader (build frames on the fly, no fetch);
    * the URL/fetch path is exercised via a Blob-URL manifest + this default.
    */
-  loader?: FrameLoader;
+  loader?: VDBFrameLoader;
   /** Clock source. Default `performance.now`. Injected as a fake in tests. */
   now?: () => number;
-  /** Fired whenever a NEW frame is shown (after a successful rebind). */
-  onFrame?: (stats: Readonly<NanoVDBSequenceStats>) => void;
+  /** Fired whenever a NEW frame is shown (after its `pool.replace`). */
+  onFrame?: (stats: Readonly<VDBSequenceStats>) => void;
   /** Fired if a frame fails to decode. Playback continues (that frame stays a stall). */
   onError?: (error: unknown, index: number) => void;
 }
 
-export interface NanoVDBSequenceStats {
+export interface VDBSequenceStats {
   /** Frame index currently shown. -1 before the first frame binds. */
   frame: number;
   /** Decoded-and-ready frames sitting in the ring ahead of `frame`. */
   decodedAhead: number;
   /** Cumulative count of updates that found the due frame not yet decoded. */
   stalls: number;
-  /** CPU time (ms) of the last `rebindGrid` staging copy (the GPU writeBuffer lands at next render). */
-  uploadMs: number;
-  /** Total successful rebinds since `start` (includes the initial frame-0 bind). */
-  rebinds: number;
+  /** CPU time (ms) of the last `pool.replace` (staging only; the GPU write lands in the next pool update). */
+  replaceMs: number;
+  /** `pool.replace` calls since `start` (the initial frame 0 included). */
+  swaps: number;
 }
 
-/** Default loader: real fetch + parse — the same path demo 02 uses for files. */
-async function defaultLoader(url: string): Promise<NanoVDBGrid> {
+/** Default loader: real fetch + parse of grid 0. */
+async function defaultLoader(url: string): Promise<Uint32Array> {
   const file = await NanoVDBFile.fromURL(url);
-  return NanoVDBGrid.fromFile(file, 0);
+  return file.gridImage(0);
 }
 
-export class NanoVDBSequence {
+export class VDBSequence {
   readonly frameCount: number;
   readonly fps: number;
   readonly prefetch: number;
   readonly loop: boolean;
 
   private readonly urlFor: (index: number) => string;
-  private readonly loader: FrameLoader;
+  private readonly loader: VDBFrameLoader;
   private readonly now: () => number;
-  private readonly onFrame: NanoVDBSequenceOptions["onFrame"];
-  private readonly onError: NanoVDBSequenceOptions["onError"];
+  private readonly onFrame: VDBSequenceOptions["onFrame"];
+  private readonly onError: VDBSequenceOptions["onError"];
   private readonly frameDurationMs: number;
 
-  /** Decoded grids by frame index. */
-  private readonly ring = new Map<number, NanoVDBGrid>();
+  /** Decoded frame images by frame index. */
+  private readonly ring = new Map<number, Uint32Array>();
   /** In-flight decode promises by frame index (dedupe + stall detection). */
   private readonly inflight = new Map<number, Promise<void>>();
 
-  private target: SequenceTarget | undefined;
+  private target: VDBSequenceTarget | undefined;
   private playing = false;
   private startNow = 0;
   private startFrame = 0;
   private _frame = -1;
   private _stalls = 0;
-  private _uploadMs = 0;
-  private _rebinds = 0;
+  private _replaceMs = 0;
+  private _swaps = 0;
 
-  constructor(opts: NanoVDBSequenceOptions) {
+  constructor(opts: VDBSequenceOptions) {
     const frameCount = opts.frameCount ?? (Array.isArray(opts.urls) ? opts.urls.length : undefined);
     if (frameCount === undefined || !Number.isInteger(frameCount) || frameCount < 1) {
-      throw new Error(
-        "NanoVDBSequence: `frameCount` is required (a positive integer) when `urls` is a function; " +
+      throw new VDBError(
+        "VDB_BAD_OPTION",
+        "VDBSequence: `frameCount` is required (a positive integer) when `urls` is a function; " +
           "with an array of urls it defaults to urls.length.",
       );
     }
     this.frameCount = frameCount;
     this.fps = opts.fps ?? 24;
-    if (this.fps <= 0) throw new Error(`NanoVDBSequence: fps must be > 0 (got ${this.fps}).`);
+    if (!(this.fps > 0)) throw new VDBError("VDB_BAD_OPTION", `VDBSequence: fps must be > 0 (got ${this.fps}).`);
     this.prefetch = Math.max(0, opts.prefetch ?? 3);
     this.loop = opts.loop ?? true;
     this.frameDurationMs = 1000 / this.fps;
@@ -133,13 +156,13 @@ export class NanoVDBSequence {
     this.onError = opts.onError;
   }
 
-  get stats(): Readonly<NanoVDBSequenceStats> {
+  get stats(): Readonly<VDBSequenceStats> {
     return {
       frame: this._frame,
       decodedAhead: this.decodedAhead(),
       stalls: this._stalls,
-      uploadMs: this._uploadMs,
-      rebinds: this._rebinds,
+      replaceMs: this._replaceMs,
+      swaps: this._swaps,
     };
   }
 
@@ -183,8 +206,8 @@ export class NanoVDBSequence {
     if (existing) return existing;
 
     const p = this.loader(this.urlFor(index), index)
-      .then((grid) => {
-        this.ring.set(index, grid);
+      .then((image) => {
+        this.ring.set(index, image);
       })
       .catch((err) => {
         this.onError?.(err, index);
@@ -220,20 +243,25 @@ export class NanoVDBSequence {
   }
 
   /**
-   * Begin playback into `target`. Binds frame 0 immediately if it is already
-   * decoded (otherwise the first `update` that finds it ready binds it), kicks
-   * off prefetch, and anchors the clock at `now` (defaults to the injected
-   * clock). Call `update(now)` every animation frame thereafter.
+   * Begin playback into grid `target.id` of `target.pool`. Replaces it with
+   * frame 0 at once if that is decoded (else the first `update` that finds it
+   * ready does), kicks off prefetch, and anchors the clock at `now` (defaults
+   * to the injected clock). Call `update(now)` every animation frame thereafter.
    */
-  start(target: SequenceTarget, now: number = this.now()): void {
+  start(target: VDBSequenceTarget, now: number = this.now()): void {
+    if (target === null || typeof target !== "object" || typeof target.pool?.replace !== "function" || !Number.isInteger(target.id) || target.id < 0) {
+      throw new VDBError(
+        "VDB_BAD_OPTION",
+        "VDBSequence.start: target must be { pool, id } with a VDBGridPool (or an object with replace(id, image)) and a non-negative grid id.");
+    }
     this.target = target;
     this.playing = true;
     this.startNow = now;
     this.startFrame = 0;
     this._frame = -1;
     this._stalls = 0;
-    this._uploadMs = 0;
-    this._rebinds = 0;
+    this._replaceMs = 0;
+    this._swaps = 0;
     this.ensurePrefetch(0);
     this.showFrame(0);
   }
@@ -265,9 +293,9 @@ export class NanoVDBSequence {
   }
 
   /**
-   * Advance the scheduler to time `now`. Binds the frame the clock points at if
-   * it is decoded; otherwise holds the last frame and counts a stall. Never
-   * blocks. Returns the frame index currently shown.
+   * Advance the scheduler to time `now`. Replaces the grid with the frame the
+   * clock points at if it is decoded; otherwise holds the last frame and counts
+   * a stall. Never blocks. Returns the frame index currently shown.
    */
   update(now: number): number {
     if (!this.playing || !this.target) return this._frame;
@@ -293,13 +321,14 @@ export class NanoVDBSequence {
   }
 
   /**
-   * Bind `index` if decoded (counts a rebind, fires `onFrame`, advances
-   * prefetch); otherwise count a stall and hold. Shared by start/seek/update.
+   * Show `index` if decoded (`pool.replace`, counts a swap, fires `onFrame`,
+   * advances prefetch); otherwise count a stall and hold. Shared by
+   * start/seek/update.
    */
   private showFrame(index: number): void {
     if (!this.target) return;
-    const grid = this.ring.get(index);
-    if (!grid) {
+    const image = this.ring.get(index);
+    if (!image) {
       // Not decoded yet — hold last frame, count a stall, keep decoding.
       if (this._frame !== index) this._stalls++;
       this.ensurePrefetch(index);
@@ -308,15 +337,15 @@ export class NanoVDBSequence {
     if (index === this._frame) return;
 
     const t0 = this.now();
-    this.target.rebindGrid(grid);
-    this._uploadMs = this.now() - t0;
+    this.target.pool.replace(this.target.id, image);
+    this._replaceMs = this.now() - t0;
     this._frame = index;
-    this._rebinds++;
+    this._swaps++;
     this.ensurePrefetch(index);
     this.onFrame?.(this.stats);
   }
 
-  /** Drop all decoded frames and in-flight tracking (playback state kept). */
+  /** Drop all decoded frames and in-flight tracking (playback state kept). The pool keeps the grid. */
   dispose(): void {
     this.playing = false;
     this.ring.clear();

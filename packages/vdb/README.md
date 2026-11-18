@@ -6,7 +6,7 @@ Sparse NanoVDB volumes on WebGPU, from the [WebVDB](../../README.md) repo. One p
 |---|---|---|
 | `@pmndrs/vdb` | the engine-free core: the vendored `pnanovdb.wgsl` module | no engine |
 | `@pmndrs/vdb/tools` | CPU side: `.nvdb` loader, CPU oracle (`readValue`, `sampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, writer | no |
-| `@pmndrs/vdb/three` | the three.js / TSL adapter: grid wrapper, volume material, compute utilities, sequences | `three` (optional peer, `>=0.178.0`) |
+| `@pmndrs/vdb/three` | the three.js / TSL adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBSequence`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
 
 ```sh
@@ -67,14 +67,15 @@ import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw"; // Vite/bundler `?ra
 library, not a drop-in snippet: its reads all bottom out in one function,
 `pnanovdb_buf_read_uint32`, that expects the *consumer* to declare a
 module-scope `var<storage, read> nanovdb_buffer: array<u32>` binding (see
-`vendor/VENDOR.md` and the header comment of `@pmndrs/vdb/three`'s
-`src/wgsl.ts` for the exact contract) — plus `pnanovdb_buf_t`/address
-plumbing and (for point-sampling) an accessor struct. Two real, working
-integrations to copy from instead of re-deriving the binding yourself:
+`vendor/VENDOR.md` for the exact contract) — plus `pnanovdb_buf_t`/address
+plumbing and (for point-sampling) an accessor struct. You rarely need it
+directly: the core's generator (`vdbModuleWgsl`) builds a pool-aware `vdb*`
+module from it. Integrations to copy from instead of re-deriving the binding:
 
-- **`@pmndrs/vdb/three`** ([`src/three`](./src/three)) splices
-  this exact file into a TSL fragment shader — `NanoVDBVolumeMaterial`
-  handles the buffer-global rewrite and entry-point assembly for you.
+- **`examples/src/demos/08-webgpu-smoke`**: raw WebGPU on the core
+  (`VDBGridPool` + `vdbModuleWgsl`), no engine.
+- **`@pmndrs/vdb/three`** ([`src/three`](./src/three)): `VDBGridNode` binds
+  the pool through three's node system (below).
 - **`examples/src/demos/03-gpu-read`** is a from-scratch, heavily-commented
   raw-WebGPU walkthrough (no three.js) that hand-derives a FLOAT-only
   traversal function equivalent to this library's, teaching the byte
@@ -205,11 +206,11 @@ CRC).
 
 ## `@pmndrs/vdb/three`
 
-The three.js/TSL layer of [WebVDB](../../README.md): wraps a NanoVDB grid
-image (from `@pmndrs/vdb/tools`) as a renderable object, ships
-a from-scratch fragment-raymarch volume material, a device-first WebGPU
-renderer bootstrap, and a handful of GPU compute utilities for stats,
-value remapping, and dense-atlas decoding.
+The three.js adapter over the engine-free core (D8), on three r187 (D23). The
+grids live in a `VDBGridPool` on the renderer's `GPUDevice`; `VDBGridNode`
+puts that pool into three's node system without copying it (three binds the
+pool's own buffer); `VDBVolumeMaterial` raymarches one pooled grid, and
+`VDBSequence` plays frames into one pool id.
 
 ### Quickstart: render a cloud
 
@@ -217,47 +218,71 @@ This mirrors [`examples/src/demos/02-cloud`](../../examples/src/demos/02-cloud),
 trimmed to the essentials (no camera controls, no live uniforms):
 
 ```ts
-import * as THREE from "three";
+import * as THREE from "three/webgpu";
+import { VDBGridPool } from "@pmndrs/vdb";
 import { NanoVDBFile } from "@pmndrs/vdb/tools";
-import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 
-const buffer = await fetch("/fixtures/wdas_cloud_quarter_fp8.nvdb").then((r) => r.arrayBuffer());
-const file = NanoVDBFile.fromArrayBuffer(buffer);
-const grid = NanoVDBGrid.fromFile(file, 0);
+// The host owns the device: the pool's limits, passed to the renderer so the
+// pool outlives renderer.dispose() (a renderer that made its own device destroys it).
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter!.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter!) });
+const renderer = new THREE.WebGPURenderer({ device, canvas });
+await renderer.init();
 
-// Device-first bootstrap (decision D4): requests the adapter and creates
-// the GPUDevice itself (raising maxStorageBufferBindingSize to fit `grid`),
-// then hands that device to `WebGPURenderer` — rather than letting the
-// renderer create its own device with default limits.
-const { renderer } = await createVolumeRenderer({ gridBytes: grid.byteLength });
+const file = await NanoVDBFile.fromURL("/fixtures/wdas_cloud_quarter_fp8.nvdb");
+const pool = await VDBGridPool.create(getDevice(renderer));
+const id = pool.add(file.gridImage(0));
+pool.flush(); // writes the grid (or record pool.update(encoder) into your own encoder)
 
+// One VDBGridNode per pool and shader (one WGSL module per shader). The
+// material needs the support-box ray clip helper.
+const grids = new VDBGridNode(renderer, pool, { helpers: ["rayClipSupport"] });
+const material = new VDBVolumeMaterial(renderer, grids, id, { densityScale: 40 });
 const scene = new THREE.Scene();
-const material = new NanoVDBVolumeMaterial({ grid, pnanovdbSource });
-const mesh = new THREE.Mesh(grid.proxyGeometry(), material);
-scene.add(mesh);
+scene.add(new THREE.Mesh(vdbProxyGeometry(pool.info(id)), material));
 
-const worldBox = grid.worldBBox();
-const camera = new THREE.PerspectiveCamera(45, 1, 0.01, worldBox.getSize(new THREE.Vector3()).length() * 100);
-camera.position.set(2, 1.5, 2);
-camera.lookAt(worldBox.getCenter(new THREE.Vector3()));
-
+// Every frame: the pool's update first (submitted), then the node, then three.
+pool.flush();
+grids.update(); // rebinds only when a growth replaced pool.buffer
 await renderer.renderAsync(scene, camera);
 ```
 
-`NanoVDBGrid.fromFile(file, i)` wraps grid `i`'s image as a
-`StorageBufferAttribute` + metadata, and derives a `Box3`/proxy
-`BufferGeometry` for it. `NanoVDBVolumeMaterial` assembles the vendored
-`pnanovdb.wgsl` traversal into a TSL `NodeMaterial` fragment shader (fog
-raymarch, sun shadow, per-material live uniforms for density/step/etc. —
-see the material's own doc comment for the full uniform list).
-
-Live uniforms are plain three.js `Uniform`s exposed as properties, e.g.
-`material.densityScale.value = 45`, `material.stepSize.value = 0.4`.
+- **`VDBGridNode(renderer, pool, { types?, profile?, sampler?, isActive?, outside?, helpers?, name? })`**:
+  the module options minus the binding (three assigns it). `types` defaults to
+  the pool's types now; pass every type you will add (or
+  `VDB_ALL_SCALAR_TYPES`) when the pool fills later. TSL helpers:
+  `vdbSample(grids, id, position, { space: 'world' | 'index' })` and
+  `vdbReadValue(grids, id, ijk)`; or call the WGSL API from your own
+  `wgslFn(src, [grids.module])` (demo 01 does both).
+- **`VDBVolumeMaterial(renderer, grids, gridId, params)`**: needs a node with
+  profile `sample` or `march` and `helpers: ['rayClipSupport']`. The march is
+  one `wgslFn` over the public API: world ray to index space through the pool
+  record (`pool.setTransform` instances work), clipped to the trilinear
+  support box, fixed-step density with `vdbSample`, Henyey-Greenstein sun with
+  a shadow march, ambient, and a per-fragment sample budget. Every tunable is
+  a live uniform (`material.densityScale.value = 45`, `material.stepSize.value`,
+  `maxSteps`, `sunDirection`, `sunColor`, `sunIntensity`, `anisotropy`,
+  `shadowSteps`, `shadowDensity`, `ambient`, `jitter`); `gridId` is a `uint`
+  uniform when given as a number, so `material.gridId.value = other` switches
+  grids without a rebuild. Caps (`maxStepsCap`, `shadowStepsCap`,
+  `sampleBudgetCap`) are compiled in.
+- **`vdbProxyGeometry(pool.info(id), { pad? })`**: the world box to put the
+  material on (add the mesh with an identity transform). `pad: 1` also covers
+  the min-side half voxel of the trilinear support.
+- **`getDevice(renderer)`, `getGPUTexture(renderer, texture)`**: the raw
+  WebGPU handles, as in `@pmndrs/upscaler` and `@pmndrs/denoiser`.
+- `createVolumeRenderer` remains as a convenience bootstrap (it creates the
+  device itself, with limits for one grid); `NanoVDBGrid` remains as a CPU
+  metadata wrapper for the compute utilities below.
+- **Deprecated:** `NanoVDBVolumeMaterial` (v1: one grid as its own storage
+  attribute, vendored library with a rewritten buffer global) is kept only
+  until demo 06 moves to `VDBVolumeMaterial`. `NanoVDBSequence` is gone (use
+  `VDBSequence`); `assembleVolumeWgsl`/`rewriteBufferGlobal` are no longer exported.
 
 ### Compute utilities
 
-Standalone GPU compute passes over a `NanoVDBGrid` — each takes the
+v1 API, being ported onto the pool (K2.3 part B). Standalone GPU compute passes over a `NanoVDBGrid` — each takes the
 `GPUDevice` (from `createVolumeRenderer`) and the same vendored
 `pnanovdbSource` text the material uses:
 
@@ -282,49 +307,52 @@ doing per-fragment sparse traversal (see
 [`examples/src/demos/04-atlas-fallback`](../../examples/src/demos/04-atlas-fallback),
 which cross-checks both against a CPU `readValue` pass).
 
-### Sequences: `NanoVDBSequence`
+### Sequences: `VDBSequence`
 
-`NanoVDBSequence` plays a list of per-frame `.nvdb` URLs through a single
-material via an in-place `rebindGrid()` call — no material rebuild, no
-shader recompile, every frame:
+`VDBSequence` plays per-frame `.nvdb` URLs into ONE pool grid with
+`pool.replace(id, frame)`: no material rebuild, no shader recompile, and with
+the capacity reserved, no buffer move either:
 
 ```ts
-import { NanoVDBSequence } from "@pmndrs/vdb/three";
+import { VDBSequence } from "@pmndrs/vdb/three";
 
-const material = new NanoVDBVolumeMaterial({
-  grid: firstFrameGrid,
-  pnanovdbSource,
-  maxGridBytes: 8 * 1024 * 1024, // headroom: the largest frame in the sequence
-});
+// Reserve room for the largest frame: every replace then writes in place
+// (no pool.version change, no VDBGridNode rebind, no new bind group).
+const id = pool.add(firstFrame, { capacity: largestFrameBytes });
+const material = new VDBVolumeMaterial(renderer, grids, id);
 
-const sequence = new NanoVDBSequence({
+const sequence = new VDBSequence({
   urls: (i) => `/fixtures/embergen/pack/frame_${i}.nvdb`,
   frameCount: 48,
   fps: 24,
 });
-sequence.start({ rebindGrid: (grid) => material.rebindGrid(grid) });
+await sequence.preload();
+sequence.start({ pool, id });
 // each animation frame:
-sequence.update(performance.now());
+sequence.update(performance.now()); // may pool.replace(id, frame)
+pool.flush();                       // or pool.update(encoder) in your encoder, submitted before three renders
+grids.update();
+await renderer.renderAsync(scene, camera);
 ```
 
-`maxGridBytes` pre-sizes the material's storage buffer so later frames
-(which may be a different byte size than the first) can rebind into the
-same GPU buffer without reallocating — set it to the largest frame's byte
-length up front, or rebinding a bigger grid throws with the exact value to
-use. The sequence never blocks the render loop waiting on a fetch: if a
-frame isn't decoded yet when its time comes, it holds the last frame,
-counts a stall, and keeps going (see `sequence.stats`).
+A frame larger than the reserved capacity still plays: the pool moves it and
+may grow, which is why `grids.update()` runs after the pool's update every
+frame. The sequence never blocks the render loop: if a frame isn't decoded
+when its time comes, it holds the last frame, counts a stall, and keeps going
+(`sequence.stats`: `frame`, `decodedAhead`, `stalls`, `swaps`, `replaceMs`).
 
-### Why device-first (D4)
+Frame arrays are held by reference: the pool keeps an image until the update
+that writes it, and until `pool.settled()` resolves while a growth is
+unconfirmed. The player never writes into them; a custom `loader` that
+recycles frame buffers must not reuse one before `await pool.settled()` after
+the update that wrote it.
 
-Every entry point that needs a `GPUDevice` — `createVolumeRenderer`, and
-by extension the whole material/compute surface — requests the adapter
-and creates the device **itself** (with `requiredLimits` sized to the
-grid) and hands it to `WebGPURenderer` at construction, rather than
-letting the renderer create its own device with default limits and
-finding out later a grid doesn't fit. See
-[decision D4](../../docs/DECISIONS.md#d4--targets-and-device-creation).
+### Device ownership (D8)
 
+The host creates the `GPUDevice` (with `VDBGridPool.requiredLimits(adapter)`)
+and passes it to `WebGPURenderer({ device })`; the pool and every other pmndrs
+tool take `getDevice(renderer)`. A renderer built without `{ device }` owns
+its device and destroys it, with the pool's buffer, in `renderer.dispose()`.
 
 ## Third-party code
 

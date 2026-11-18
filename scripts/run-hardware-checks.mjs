@@ -27,7 +27,7 @@ const checks = [
     name: "demo-02-direct-presentation",
     path:
       "/src/demos/02-cloud/index.html" +
-      "?test=1&fixture=primitive&presentation=direct&swizzle=off&keepAlive=off",
+      "?test=1&fixture=primitive&presentation=direct",
     state: "__DEMO02__",
     timeout: 180_000,
     validate: exactStateValidator({
@@ -35,8 +35,6 @@ const checks = [
       gridType: "Fp8",
       adapter: EXPECTED_ADAPTER,
       presentation: "direct",
-      swizzleShim: false,
-      keepAliveShim: false,
       resolution: "640x480",
       stepSize: 0.45,
       shadowSteps: 16,
@@ -98,7 +96,7 @@ const checks = [
     path:
       "/src/demos/05-embergen-sequence/index.html" +
       `?manifest=${encodeURIComponent(EMBERGEN_MANIFEST)}` +
-      "&presentation=direct&swizzle=off&keepAlive=off&validate=cycle",
+      "&presentation=direct&validate=cycle",
     state: "__DEMO05__",
     timeout: 600_000,
     validate: (state) => {
@@ -108,17 +106,16 @@ const checks = [
         cyclesCompleted: 1,
         finalFrame: 0,
         stalls: 0,
+        nodeRebinds: 0,
         presentation: "direct",
-        swizzleShim: false,
-        keepAliveShim: false,
       })(state);
       if (!(state?.frameCount > 1)) errors.push(`frameCount must be > 1, got ${state?.frameCount}`);
       if (state?.framesValidated !== state?.frameCount)
         errors.push(`framesValidated ${state?.framesValidated} != frameCount ${state?.frameCount}`);
       if (state?.framesPlayed !== state?.frameCount + 1)
         errors.push(`framesPlayed ${state?.framesPlayed} != frameCount + 1`);
-      if (state?.rebinds !== state?.frameCount + 1)
-        errors.push(`rebinds ${state?.rebinds} != frameCount + 1`);
+      if (state?.swaps !== state?.frameCount + 1)
+        errors.push(`swaps ${state?.swaps} != frameCount + 1`);
       return errors;
     },
   },
@@ -130,8 +127,7 @@ if (INCLUDE_PERF)
     path:
       "/src/demos/02-cloud/index.html" +
       `?perf=1&fixture=wdas&presentation=direct&stepSize=${PERF_STEP_SIZE}` +
-      `&shadowSteps=${PERF_SHADOW_STEPS}&sampleBudgetCap=${PERF_SAMPLE_BUDGET}` +
-      "&swizzle=off&keepAlive=off",
+      `&shadowSteps=${PERF_SHADOW_STEPS}&sampleBudgetCap=${PERF_SAMPLE_BUDGET}`,
     state: "__DEMO02__",
     timeout: 600_000,
     validate: exactStateValidator({
@@ -139,8 +135,6 @@ if (INCLUDE_PERF)
       gridType: "Fp8",
       adapter: EXPECTED_ADAPTER,
       presentation: "direct",
-      swizzleShim: false,
-      keepAliveShim: false,
       resolution: "1920x1080",
       stepSize: Number(PERF_STEP_SIZE),
       shadowSteps: Number(PERF_SHADOW_STEPS),

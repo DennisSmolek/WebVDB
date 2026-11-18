@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as three from "../../src/three/index.js";
 import { NanoVDBGrid, computeRequiredLimits, createVolumeRenderer, nextPow2 } from "../../src/three/index.js";
 
 /**
@@ -9,6 +10,15 @@ import { NanoVDBGrid, computeRequiredLimits, createVolumeRenderer, nextPow2 } fr
  */
 
 describe("@pmndrs/vdb/three public API surface", () => {
+  it("exports the K2 adapter and drops the v1 binding trick (K2.3)", () => {
+    for (const name of ["getDevice", "getGPUTexture", "VDBGridNode", "vdbSample", "vdbReadValue", "VDBVolumeMaterial", "vdbProxyGeometry", "VDBSequence"]) {
+      expect(typeof (three as Record<string, unknown>)[name], name).toBe("function");
+    }
+    for (const name of ["NanoVDBSequence", "assembleVolumeWgsl", "rewriteBufferGlobal", "samplerForGridType", "assertHasBufferGlobal", "DEFAULT_BUFFER_NAME"]) {
+      expect(name in three, name).toBe(false);
+    }
+  });
+
   it("exports NanoVDBGrid, createVolumeRenderer, and the limits helpers", () => {
     expect(typeof NanoVDBGrid).toBe("function");
     expect(typeof createVolumeRenderer).toBe("function");

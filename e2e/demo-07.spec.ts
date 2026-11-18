@@ -4,13 +4,16 @@ import { expect, test } from "@playwright/test";
  * Demo 07 — builder: the other half of the Phase 5/8 demo gate ("dense ->
  * TS-build -> render round-trip", docs/PLAN.md). Everything is generated
  * in-page (no external fixture): a deterministic 96^3 dense field ->
- * `buildFromDense` -> `writeNvdb` -> re-parse via `NanoVDBFile` -> render,
+ * `buildFromDense` -> `writeNvdb` -> re-parse via `NanoVDBFile` -> `VDBGridPool`
+ * -> `VDBVolumeMaterial` render,
  * with the round-trip proven in-page (`window.__DEMO07__`) before the
  * screenshot is taken.
  *
- * SwiftShader compiles the full pnanovdb library shader slowly (~10-20s
- * cold) on top of the dense-build + quantize-free verification pass, so
- * timeouts are generous.
+ * `presentation=readback` because headless SwiftShader can't present a WebGPU
+ * canvas (DIVERGES V7); the demo's default is direct canvas presentation.
+ *
+ * SwiftShader compiles the shader slowly (~10-20s cold) on top of the
+ * dense-build + quantize-free verification pass, so timeouts are generous.
  */
 const DEMO_URL = "/src/demos/07-builder/index.html";
 
@@ -26,7 +29,7 @@ test.describe("demo 07 — builder", () => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
 
-    await page.goto(`${DEMO_URL}?test=1`);
+    await page.goto(`${DEMO_URL}?test=1&presentation=readback`);
     await page.waitForFunction(() => window.__DEMO07__ !== undefined, undefined, { timeout: 100_000 });
 
     const state = await page.evaluate(() => window.__DEMO07__);

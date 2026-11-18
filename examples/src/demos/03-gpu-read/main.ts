@@ -6,10 +6,11 @@
  * read top to bottom and come away understanding how NanoVDB volumes get
  * from disk to a GPU shader and back. Everything you need is in this one
  * file; there is no framework underneath it, on purpose — this is raw
- * WebGPU (`navigator.gpu` directly), not three.js/TSL. Demos 01 and 02 show
- * the TSL binding (`wgslFn` + a `ptr<storage, …>` parameter) if that's what
- * you're after; here we skip that layer so there is one fewer thing between
- * you and the bytes.
+ * WebGPU (`navigator.gpu` directly), not three.js/TSL, and the traversal is
+ * hand-written, so there is nothing between you and the bytes. For real use,
+ * don't copy it: the library generates a complete, tested module. Raw WebGPU:
+ * `VDBGridPool` + `vdbModuleWgsl` (demo 08). three.js: `VDBGridNode` with
+ * `vdbReadValue`/`vdbSample` (demos 01 and 02).
  *
  * The five sections below are the five things you need to know:
  *
@@ -156,10 +157,9 @@ function log(text: string, cls = ""): void {
 //
 // This is the whole algorithm, hand-written, restricted on purpose to FLOAT
 // grids (the fixture used below is one). It is a direct transliteration of
-// the audited reference in `examples/src/demos/01-hello-nvdb/traversal.ts`
-// and the vendored, generated module `packages/vdb/vendor/
-// pnanovdb.wgsl` (imported as `@pmndrs/vdb/pnanovdb.wgsl?raw` in demos
-// 01/02), restricted here to one grid type and stripped of caching, HDDA
+// the CPU reference descent (`packages/vdb/src/tools/cpu/read-value.ts`) and
+// the vendored module `packages/vdb/vendor/pnanovdb.wgsl` (which the core's
+// generator builds on), restricted here to one grid type and stripped of caching, HDDA
 // raymarching, trilinear sampling and quantized (Fp4/8/16/FpN) decoding —
 // none of which a first read needs. For the real thing, import the vendored
 // module; this copy exists so you can read one function and see the whole
@@ -430,7 +430,7 @@ async function run(): Promise<void> {
   // --- Device-first bootstrap: request our own adapter/device so we can ask
   // for a large-enough maxStorageBufferBindingSize before creating buffers
   // (the default 128 MiB limit is already plenty for this fixture, but real
-  // grids can be bigger — see demo 01 for the "raise the limit" version).
+  // grids can be bigger — see demos 01/08 for `VDBGridPool.requiredLimits(adapter)`).
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) {
     const msg = "No WebGPU adapter (headless without SwiftShader?).";

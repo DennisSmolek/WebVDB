@@ -10,8 +10,10 @@
  *     -> `writeNvdb([image])` (a real `.nvdb` file, in memory)
  *     -> `NanoVDBFile.fromArrayBuffer` (re-parse — the SAME loader demo 02/06
  *        use for real files, proving this isn't a special-cased shortcut)
- *     -> `NanoVDBGrid` -> `NanoVDBVolumeMaterial` render (demo 02's
- *        offscreen-RT + shims path).
+ *     -> `VDBGridPool` grid -> `VDBGridNode` -> `VDBVolumeMaterial` render.
+ *        Regenerating replaces the same pool grid (`pool.replace`) and keeps
+ *        the material; the node compiles Float and Fp8, so the quantize toggle
+ *        needs no shader rebuild.
  *
  * ## Verifying the round trip in-page
  *
@@ -34,20 +36,19 @@
  *       representation through this entire pipeline, so exact equality (not
  *       a tolerance) is the correct bar.
  *
- * Presentation is demo 02's recipe verbatim: offscreen `RenderTarget` ->
- * `readRenderTargetPixelsAsync` -> 2D-canvas blit (canvas *presentation*
- * drops the Dawn instance under this sandbox's SwiftShader — see
- * docs/handoffs/PHASE-3.md), plus the same r185–r187 swizzle-string shim and
- * adapter keep-alive shim.
+ * Presentation as demo 02: direct canvas by default; `?presentation=readback`
+ * (offscreen `RenderTarget` -> `readRenderTargetPixelsAsync` -> 2D canvas) for
+ * the e2e spec, since headless SwiftShader can't present a WebGPU canvas
+ * (DIVERGES V7).
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VDBGridPool } from "@pmndrs/vdb";
 import { NanoVDBFile, readValue } from "@pmndrs/vdb/tools";
-import pnanovdbSource from "@pmndrs/vdb/pnanovdb.wgsl?raw";
-import { NanoVDBGrid, NanoVDBVolumeMaterial, createVolumeRenderer } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBVolumeMaterial, createVolumeRenderer, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
 import { buildFromDenseDetailed, quantize, writeNvdb } from "@pmndrs/vdb/tools";
-import type { BuiltGrid } from "@pmndrs/vdb/tools";
+import type { BuiltGrid, GridMetadata } from "@pmndrs/vdb/tools";
 
 interface Demo07State {
   ready: boolean;
@@ -60,42 +61,6 @@ declare global {
   interface Window {
     __DEMO07__?: Demo07State;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Compatibility shims (identical to demo 02/04/06 — see their module headers).
-// ---------------------------------------------------------------------------
-
-function installSwizzleCompatShim(): void {
-  if (typeof GPUTexture === "undefined") return;
-  const proto = GPUTexture.prototype as unknown as {
-    createView: (d?: GPUTextureViewDescriptor) => GPUTextureView;
-    __swizzleShim?: boolean;
-  };
-  if (proto.__swizzleShim) return;
-  const orig = proto.createView;
-  proto.createView = function (this: GPUTexture, descriptor?: GPUTextureViewDescriptor): GPUTextureView {
-    if (descriptor && typeof (descriptor as { swizzle?: unknown }).swizzle === "string") {
-      const { swizzle: _drop, ...rest } = descriptor as GPUTextureViewDescriptor & { swizzle?: unknown };
-      return orig.call(this, rest);
-    }
-    return orig.call(this, descriptor);
-  };
-  proto.__swizzleShim = true;
-}
-
-const _pinnedAdapters: unknown[] = [];
-function installAdapterKeepAliveShim(): void {
-  if (typeof navigator === "undefined" || !navigator.gpu) return;
-  const gpu = navigator.gpu as GPU & { __keepAliveShim?: boolean };
-  if (gpu.__keepAliveShim) return;
-  const orig = gpu.requestAdapter.bind(gpu);
-  gpu.requestAdapter = async (options?: GPURequestAdapterOptions): Promise<GPUAdapter | null> => {
-    const adapter = await orig(options);
-    if (adapter) _pinnedAdapters.push(adapter);
-    return adapter;
-  };
-  gpu.__keepAliveShim = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +138,8 @@ interface BuiltPipeline {
   built: BuiltGrid;
   values: Float32Array;
   fileBuffer: ArrayBuffer;
-  reparsedGrid: NanoVDBGrid;
+  /** The re-parsed file's grid 0: image + metadata. */
+  reparsed: { image: Uint32Array; metadata: GridMetadata };
 }
 
 function runPipeline(seed: number, quantizeToFp8: boolean): BuiltPipeline {
@@ -184,13 +150,13 @@ function runPipeline(seed: number, quantizeToFp8: boolean): BuiltPipeline {
   });
   const image = quantizeToFp8 ? quantize(built.image, "fp8") : built.image;
   const fileBuffer = writeNvdb([image]);
-  const reparsedGrid = NanoVDBGrid.fromFile(NanoVDBFile.fromArrayBuffer(fileBuffer), 0);
-  return { built, values, fileBuffer, reparsedGrid };
+  const file = NanoVDBFile.fromArrayBuffer(fileBuffer);
+  return { built, values, fileBuffer, reparsed: { image: file.gridImage(0), metadata: file.grids[0]! } };
 }
 
 /** Compares the re-parsed file's metadata against what `buildFromDenseDetailed` itself computed. */
-function checkRoundTrip(built: BuiltGrid, reparsedGrid: NanoVDBGrid): boolean {
-  const m = reparsedGrid.metadata;
+function checkRoundTrip(built: BuiltGrid, reparsed: BuiltPipeline["reparsed"]): boolean {
+  const m = reparsed.metadata;
   if (m.voxelCount !== built.voxelCount) return false;
   for (let a = 0; a < 3; a++) {
     if (m.indexBBox.min[a] !== built.indexBBox.min[a]) return false;
@@ -204,12 +170,12 @@ function checkRoundTrip(built: BuiltGrid, reparsedGrid: NanoVDBGrid): boolean {
 
 /** 20 CPU probes on the re-parsed image must match the source dense values exactly. */
 function checkProbes(
-  reparsedGrid: NanoVDBGrid,
+  reparsed: BuiltPipeline["reparsed"],
   probes: ReadonlyArray<{ ijk: [number, number, number]; value: number }>,
 ): boolean {
   if (probes.length === 0) return false;
   for (const p of probes) {
-    const r = readValue(reparsedGrid.image, p.ijk);
+    const r = readValue(reparsed.image, p.ijk);
     if (!r.active || r.value !== p.value) return false;
   }
   return true;
@@ -221,6 +187,7 @@ function checkProbes(
 
 const params = new URLSearchParams(location.search);
 const TEST_MODE = params.get("test") === "1";
+const PRESENTATION = params.get("presentation") === "readback" ? "readback" : "direct";
 
 const appEl = document.querySelector<HTMLDivElement>("#app")!;
 const panelEl = document.querySelector<HTMLDivElement>("#panel")!;
@@ -242,35 +209,40 @@ function fail(message: string): void {
 // ---------------------------------------------------------------------------
 
 let renderer: WebGPURenderer;
-let device: GPUDevice;
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let controls: OrbitControls;
 let display: HTMLCanvasElement;
-let ctx2d: CanvasRenderingContext2D;
+let ctx2d: CanvasRenderingContext2D | null = null;
 let rt: THREE.RenderTarget;
 let flip = new Uint8ClampedArray(0);
 let vw = 0;
 let vh = 0;
 
+/** One pool, one grid id, one node and one material, reused by every rebuild. */
+let pool: VDBGridPool;
+let grids: VDBGridNode;
+let gridId: number | undefined;
+let material: VDBVolumeMaterial | undefined;
 let currentMesh: THREE.Mesh | undefined;
-let currentMeshMaterial: NanoVDBVolumeMaterial | undefined;
 let currentFileBuffer: ArrayBuffer | undefined;
 let downloadUrl: string | undefined;
 
 async function initRenderer(): Promise<void> {
-  ({ renderer, device } = await createVolumeRenderer({}));
+  const directCanvas = PRESENTATION === "direct" ? document.createElement("canvas") : undefined;
+  ({ renderer } = await createVolumeRenderer(directCanvas ? { canvas: directCanvas } : {}));
+  pool = await VDBGridPool.create(getDevice(renderer), { label: "demo 07 pool" });
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x14101f);
   camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
 
-  display = document.createElement("canvas");
+  display = directCanvas ?? document.createElement("canvas");
   display.id = "view";
   display.style.width = "100%";
   display.style.height = "100%";
   display.style.display = "block";
   appEl.appendChild(display);
-  ctx2d = display.getContext("2d")!;
+  if (PRESENTATION === "readback") ctx2d = display.getContext("2d")!;
 
   controls = new OrbitControls(camera, display);
   controls.enableDamping = !TEST_MODE;
@@ -282,10 +254,13 @@ async function initRenderer(): Promise<void> {
 function setViewport(w: number, h: number): void {
   vw = Math.max(1, w);
   vh = Math.max(1, h);
-  display.width = vw;
-  display.height = vh;
-  rt.setSize(vw, vh);
-  flip = new Uint8ClampedArray(vw * vh * 4);
+  if (PRESENTATION === "direct") renderer.setSize(vw, vh, false);
+  else {
+    display.width = vw;
+    display.height = vh;
+    rt.setSize(vw, vh);
+    flip = new Uint8ClampedArray(vw * vh * 4);
+  }
   camera.aspect = vw / vh;
   camera.updateProjectionMatrix();
 }
@@ -302,16 +277,25 @@ function placeCamera(center: THREE.Vector3, diag: number): void {
 }
 
 async function presentFrame(): Promise<void> {
+  // Rebind if the last pool update grew the buffer (a larger rebuild can).
+  grids.update();
+  if (PRESENTATION === "direct") {
+    renderer.setRenderTarget(null);
+    await renderer.renderAsync(scene, camera);
+    return;
+  }
   renderer.setRenderTarget(rt);
   await renderer.renderAsync(scene, camera);
   const pixels = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as Uint8Array;
   renderer.setRenderTarget(null);
-  const stride = vw * 4;
+  // Bottom-up rows, padded to WebGPU's 256-byte row alignment (see demo 02).
+  const packedStride = vw * 4;
+  const sourceStride = vh > 1 ? (pixels.byteLength - packedStride) / (vh - 1) : packedStride;
   for (let y = 0; y < vh; y++) {
-    const src = (vh - 1 - y) * stride;
-    flip.set(pixels.subarray(src, src + stride), y * stride);
+    const src = (vh - 1 - y) * sourceStride;
+    flip.set(pixels.subarray(src, src + packedStride), y * packedStride);
   }
-  ctx2d.putImageData(new ImageData(flip, vw, vh), 0, 0);
+  ctx2d!.putImageData(new ImageData(flip, vw, vh), 0, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +308,7 @@ async function rebuildAndRender(opts: { seed: number; quantizeToFp8: boolean; ve
   statsEl.textContent = "building…";
   errEl.textContent = "";
 
-  const { built, values, fileBuffer, reparsedGrid } = runPipeline(opts.seed, opts.quantizeToFp8);
+  const { built, values, fileBuffer, reparsed } = runPipeline(opts.seed, opts.quantizeToFp8);
   currentFileBuffer = fileBuffer;
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
   downloadUrl = URL.createObjectURL(new Blob([fileBuffer], { type: "application/octet-stream" }));
@@ -332,26 +316,35 @@ async function rebuildAndRender(opts: { seed: number; quantizeToFp8: boolean; ve
   let roundTripOk: boolean | undefined;
   let probesOk: boolean | undefined;
   if (opts.verify) {
-    roundTripOk = checkRoundTrip(built, reparsedGrid);
+    roundTripOk = checkRoundTrip(built, reparsed);
     const probes = pickProbes(values, DIM, 20);
-    probesOk = checkProbes(reparsedGrid, probes);
+    probesOk = checkProbes(reparsed, probes);
     verifyEl.innerHTML =
       `<div class="${roundTripOk ? "ok" : "bad"}">round trip: ${roundTripOk ? "OK" : "MISMATCH"}</div>` +
       `<div class="${probesOk ? "ok" : "bad"}">${probes.length} probes: ${probesOk ? "OK" : "MISMATCH"}</div>`;
   }
 
-  if (currentMesh) {
-    scene.remove(currentMesh);
-    currentMesh.geometry.dispose();
-    currentMeshMaterial?.dispose();
+  // First build adds the grid; later ones replace it in place (or move it, and
+  // the pool may grow: presentFrame's grids.update() rebinds then).
+  if (gridId === undefined) gridId = pool.add(reparsed.image, { label: "builder" });
+  else pool.replace(gridId, reparsed.image);
+  pool.flush();
+  await pool.settled();
+  if (!material) {
+    // Both types the quantize toggle produces, so a toggle needs no shader rebuild.
+    grids = new VDBGridNode(renderer, pool, { types: ["float", "fp8"], helpers: ["rayClipSupport"] });
+    material = new VDBVolumeMaterial(renderer, grids, gridId, { jitter: !TEST_MODE });
   }
-  const material = new NanoVDBVolumeMaterial({ grid: reparsedGrid, pnanovdbSource, jitter: !TEST_MODE });
-  const mesh = new THREE.Mesh(reparsedGrid.proxyGeometry(), material);
-  scene.add(mesh);
-  currentMesh = mesh;
-  currentMeshMaterial = material;
+  const info = pool.info(gridId);
+  if (currentMesh) {
+    currentMesh.geometry.dispose();
+    currentMesh.geometry = vdbProxyGeometry(info);
+  } else {
+    currentMesh = new THREE.Mesh(vdbProxyGeometry(info), material);
+    scene.add(currentMesh);
+  }
 
-  const worldBox = reparsedGrid.worldBBox();
+  const worldBox = new THREE.Box3(new THREE.Vector3(...info.worldBBox.min), new THREE.Vector3(...info.worldBBox.max));
   const center = worldBox.getCenter(new THREE.Vector3());
   const size = worldBox.getSize(new THREE.Vector3());
   const diag = Math.max(size.length(), 1e-3);
@@ -433,8 +426,6 @@ async function run(): Promise<void> {
     fail("WebGPU unavailable (navigator.gpu undefined) — needs a secure context + adapter.");
     return;
   }
-  installSwizzleCompatShim();
-  installAdapterKeepAliveShim();
   await initRenderer();
 
   if (TEST_MODE) {

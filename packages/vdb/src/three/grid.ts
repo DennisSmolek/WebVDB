@@ -1,16 +1,12 @@
 /**
- * `NanoVDBGrid` — wraps one NanoVDB grid image (SPEC §3.1): creates the
- * `StorageBufferAttribute` GPU consumers bind, and exposes the metadata a
- * material needs to set up index-space raymarching (world bbox, index bbox,
- * the index<->world affine transform, and a bbox-fitted proxy box).
- *
- * This module owns none of the WGSL/TSL binding wiring itself (that's
- * `createVolumeRenderer` + the Phase 4 `NanoVDBVolumeMaterial`) — it is the
- * CPU-side "grid, GPU-ready" object the rest of the layer is built on.
+ * `NanoVDBGrid` — wraps one NanoVDB grid image with its file metadata (SPEC
+ * §3.1): world bbox, index bbox, the index<->world affine and a bbox-fitted
+ * proxy box. CPU-side only. Since K2.3 the GPU binding is the pool's
+ * (`VDBGridPool` + `VDBGridNode`); the v1 `storageAttribute` is gone, and
+ * `pool.info(id)` + `vdbProxyGeometry` cover the same metadata for pooled grids.
  */
 
 import * as THREE from "three";
-import { StorageBufferAttribute } from "three/webgpu";
 import type { GridMetadata, NanoVDBFile } from "../tools/index.js";
 
 /**
@@ -42,8 +38,6 @@ export class NanoVDBGrid {
   readonly metadata: GridMetadata;
   readonly gridTypeId: number;
 
-  private _storageAttribute: StorageBufferAttribute | undefined;
-
   constructor(opts: NanoVDBGridOptions) {
     this.image = opts.image;
     this.metadata = opts.metadata;
@@ -71,18 +65,6 @@ export class NanoVDBGrid {
   /** Byte length of the grid image (matches `metadata.gridByteSize` for a well-formed file). */
   get byteLength(): number {
     return this.image.byteLength;
-  }
-
-  /**
-   * The GPU-bindable storage buffer for this grid's image, lazily created
-   * and cached — same pattern as demo 01's spike: `itemSize` 1, bound with
-   * `'uint'` TSL semantics (`storage(attr, "uint", image.length)`), never
-   * `'uint'`-typed by the attribute itself (three has no per-attribute GPU
-   * type; the semantic lives at the TSL `storage()` call site).
-   */
-  get storageAttribute(): StorageBufferAttribute {
-    this._storageAttribute ??= new StorageBufferAttribute(this.image, 1);
-    return this._storageAttribute;
   }
 
   /** World-space bounding box (SPEC §3.1 "world bbox -> `Box3`"). */

@@ -62,7 +62,8 @@ From v1; details in docs/handoffs/.
   zeroed; wrap pipeline creation in `pushErrorScope('validation')`.
 - `active` is a reserved WGSL word, and so is `set`.
 - Back-ticks inside WGSL comments break the enclosing JS template literal.
-- three r185 storage buffers are fixed-size GPUBuffers: rebind in place, or pre-size with `maxGridBytes`.
+- three's storage attributes are fixed-size GPUBuffers (r185–r187). The K2 adapter sidesteps it: `VDBGridNode`
+  binds the pool's own buffer and rebinds after a growth (`grids.update()` after the pool's update).
 - three r185 `NodeMaterial` lighting is skipped when the scene has no light.
 - NanoVDB `worldBBox.max` is one voxel beyond `indexToWorld(indexBBox.max)`.
 - Native fog grids can store root background ≠ near-field inactive tile values (3 vs 0 on the sphere fixture).
@@ -89,3 +90,10 @@ From v1; details in docs/handoffs/.
   snapshot) don't move when one is added. A new API function that every module needs is a snapshot change.
 - A WebGPU canvas context fails on headless SwiftShader ("A valid external Instance reference no longer
   exists"). Raw-WebGPU demos need a readback presentation for e2e (demo 08 `?presentation=readback`).
+- `VDBVolumeMaterial` needs a `VDBGridNode` made with `helpers: ['rayClipSupport']` (and profile `sample`+). The
+  helper is opt-in so module bytes don't move; the material throws `VDB_BAD_OPTION` naming the fix.
+- Clipping a march to the trilinear support box (`vdbRayClipSupport`) moves the ray entry, and a fixed-step
+  lattice anchored there resamples the whole volume (pixels move everywhere, ~20 px on demo 02 pose 1).
+  `VDBVolumeMaterial` anchors the lattice at the voxel-box entry (`vdbRayClip`) and steps back over the shell.
+- `pool.replace` holds the frame array by reference until the update that writes it, and until `settled()`
+  while a growth is unconfirmed. A sequence loader that recycles frame buffers must wait for `settled()`.

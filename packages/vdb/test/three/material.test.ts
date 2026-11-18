@@ -1,353 +1,209 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
-import { NodeMaterial, StorageBufferAttribute } from "three/webgpu";
-import { NanoVDBFile } from "../../src/tools/index.js";
-import type { GridMetadata } from "../../src/tools/index.js";
-import { NanoVDBGrid } from "../../src/three/grid.js";
-import { NanoVDBVolumeMaterial } from "../../src/three/material.js";
-import {
-  assembleVolumeWgsl,
-  rewriteBufferGlobal,
-  samplerForGridType,
-  GRID_TYPE_FLOAT,
-  GRID_TYPE_FP8,
-  GRID_TYPE_FPN,
-  DEFAULT_SAMPLE_BUDGET_CAP,
-} from "../../src/three/wgsl.js";
-
 /**
- * Node-safe `NanoVDBVolumeMaterial` unit tests. No GPU in Vitest, so this
- * exercises the parts that don't need a device: the pure WGSL-assembly
- * (`assembleVolumeWgsl` and friends) and CPU-side material construction
- * (uniform surface, sampler selection). The end-to-end GPU render is the job
- * of `e2e/demo-02.spec.ts`. Fixtures are git-ignored, so the fixture-backed
- * blocks skip cleanly when absent (same pattern as `grid.test.ts`).
+ * `VDBVolumeMaterial` and `vdbProxyGeometry` (K2.3) in Node: construction on a
+ * `VDBGridNode` over a stand-in renderer, the march entry's text (public `vdb*`
+ * API only, no v1 binding trick), option validation, and the proxy box. The
+ * shader itself runs on a GPU in e2e/demo-02, demo-05 and demo-07.
  */
 
-const wgslUrl = new URL("../../vendor/pnanovdb.wgsl", import.meta.url);
-const fixturesDir = new URL("../../../../fixtures/primitives/", import.meta.url);
+import { describe, expect, it } from "vitest";
+import * as THREE from "three";
+import { NodeMaterial } from "three/webgpu";
+import { VDB_GPU_LAYOUT_VERSION, VDBError, VDBGridPool } from "../../src/core/index.js";
+import {
+  VDBGridNode,
+  VDBVolumeMaterial,
+  VDB_VOLUME_MAX_STEPS_CAP,
+  VDB_VOLUME_SAMPLE_BUDGET_CAP,
+  VDB_VOLUME_SHADOW_STEPS_CAP,
+  vdbProxyGeometry,
+} from "../../src/three/index.js";
+import { FakeDevice } from "../core/fake-gpu.js";
+import { makeImage } from "../core/synthetic-image.js";
 
-const wgslPresent = existsSync(wgslUrl);
-const fixturesPresent = ["sphere_fog_float.nvdb", "sphere_fog_fp8.nvdb", "sphere_fog_fpn.nvdb"].every((name) =>
-  existsSync(new URL(name, fixturesDir)),
-);
+const scope = globalThis as unknown as Record<string, unknown>;
+scope.GPUBufferUsage ??= { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 };
+scope.GPUShaderStage ??= { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
 
-async function loadSource(): Promise<string> {
-  return readFile(wgslUrl, "utf8");
+/** The renderer surface VDBGridNode and the material read (see grid-node.test.ts for three's own paths). */
+function fakeRenderer(device: object = {}) {
+  const data = new WeakMap<object, Record<string, unknown>>();
+  const backend = {
+    isWebGPUBackend: true,
+    device,
+    get(object: object) {
+      let entry = data.get(object);
+      if (!entry) data.set(object, (entry = {}));
+      return entry;
+    },
+    destroyAttribute() {},
+  };
+  return { backend, _attributes: { has: () => false } };
 }
 
-async function loadGrid(name: string): Promise<NanoVDBGrid> {
-  const buf = await readFile(new URL(`${name}.nvdb`, fixturesDir));
-  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  return NanoVDBGrid.fromFile(NanoVDBFile.fromArrayBuffer(ab), 0);
+function fakePool(device: object, types: string[] = ["float"]) {
+  return {
+    device: device as GPUDevice,
+    buffer: { label: "pool" } as unknown as GPUBuffer,
+    version: 1,
+    layoutVersion: VDB_GPU_LAYOUT_VERSION,
+    types: new Set(types) as ReadonlySet<never>,
+  };
 }
 
-describe("samplerForGridType", () => {
-  it("selects the per-type trilinear sampler", () => {
-    expect(samplerForGridType(GRID_TYPE_FLOAT)).toBe("pnanovdb_sample_trilinear_float");
-    expect(samplerForGridType(GRID_TYPE_FP8)).toBe("pnanovdb_sample_trilinear_fp8");
-    expect(samplerForGridType(GRID_TYPE_FPN)).toBe("pnanovdb_sample_trilinear_fpn");
-  });
+const shared = fakeRenderer();
 
-  it("throws for an unsupported grid type id", () => {
-    expect(() => samplerForGridType(7)).toThrow(/no trilinear sampler/i);
-  });
-});
+/** A node on the shared stand-in renderer (one device for every node). */
+function setup(options: object = { helpers: ["rayClipSupport"] }) {
+  const grids = new VDBGridNode(shared, fakePool(shared.backend.device), options as never);
+  return { renderer: shared, grids };
+}
 
-describe("rewriteBufferGlobal", () => {
-  const src = [
-    "// NOTE: declare nanovdb_buffer somewhere",
-    "fn pnanovdb_buf_read_uint32(buf: pnanovdb_buf_t, byte_offset: u32) -> u32 {",
-    "    let data = nanovdb_buffer[(buf.byte_offset / 4u) + (byte_offset / 4u)];",
-    "    return data;",
-    "}",
-  ].join("\n");
+const code = (fn: () => unknown): string | undefined => {
+  try {
+    fn();
+  } catch (e) {
+    return e instanceof VDBError ? e.code : `not a VDBError: ${String(e)}`;
+  }
+  return undefined;
+};
 
-  it("rewrites the module-global to the TSL struct member access", () => {
-    const out = rewriteBufferGlobal(src, "nvdbGrid");
-    expect(out).toContain("nvdbGrid.value[(buf.byte_offset / 4u)");
-    // No bare buffer-index access to the old identifier remains.
-    expect(out).not.toMatch(/\bnanovdb_buffer\[/);
-  });
-
-  it("does not touch unrelated identifiers (whole-word only)", () => {
-    const out = rewriteBufferGlobal("let nanovdb_buffer_size = 1u;", "nvdbGrid");
-    expect(out).toContain("nanovdb_buffer_size");
-  });
-
-  // Rewrite-site count guard (verification finding 4): rewriteBufferGlobal
-  // assumes the vendored source has exactly ONE live read site (plus the
-  // header comment) for `nanovdb_buffer` — that's the whole B+C strategy in
-  // wgsl.ts's module header. If a future vendor bump changes how many times
-  // that identifier appears (e.g. a second buffer global, or the comment
-  // rewritten away), the rewrite strategy needs re-review rather than
-  // silently under- or over-rewriting. Pin the exact count against the REAL
-  // vendored file so a vendor bump that changes it fails loudly here instead
-  // of surfacing as a mystery WGSL bug later.
-  it.skipIf(!wgslPresent)("the real vendored source has exactly 2 occurrences of nanovdb_buffer", async () => {
-    const src = await loadSource();
-    const occurrences = src.match(/\bnanovdb_buffer\b/g) ?? [];
-    expect(occurrences.length).toBe(2);
-  });
-});
-
-describe.skipIf(!wgslPresent)("assembleVolumeWgsl", () => {
-  it("emits an entry function that calls the selected sampler", async () => {
-    const src = await loadSource();
-    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FP8 });
-    expect(a.entryName).toBe("nvdb_volume_march");
-    expect(a.samplerFn).toBe("pnanovdb_sample_trilinear_fp8");
-    expect(a.entrySource).toContain(`fn ${a.entryName}(`);
-    expect(a.entrySource).toContain("pnanovdb_sample_trilinear_fp8(buf, &acc,");
-    expect(a.entrySource).toContain("pnanovdb_hdda_ray_clip(");
-    expect(a.entrySource).toContain("nvdbx_hg_phase(");
-    // Entry is the SOLE function (WGSLNodeFunction parses the first fn).
-    expect(a.entrySource.match(/\bfn\s+\w+\s*\(/g)?.length).toBe(1);
-  });
-
-  it("rewrites the library buffer-global and appends helpers", async () => {
-    const src = await loadSource();
-    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, bufferName: "nvdbGrid" });
-    expect(a.librarySource).toContain("nvdbGrid.value[");
-    expect(a.librarySource).not.toMatch(/\bnanovdb_buffer\[/);
-    expect(a.librarySource).toContain("fn nvdbx_hg_phase(");
-    expect(a.librarySource).toContain("fn nvdbx_hash12(");
-  });
-
-  it("honors compile-time step caps", async () => {
-    const src = await loadSource();
-    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: 256, shadowStepsCap: 32 });
-    expect(a.entrySource).toContain("clamp(max_steps, 1.0, 256.0)");
-    expect(a.entrySource).toContain("clamp(shadow_steps, 0.0, 32.0)");
-  });
-
-  // Finding 1: unbounded maxSteps x shadowSteps product. max_steps/shadow_steps
-  // are independently-clamped LIVE uniforms, so a user can drive ~65k trilinear
-  // taps/fragment at the caps (TDR risk on real hardware). The generated WGSL
-  // must enforce its own per-fragment total-sample budget: a compile-time
-  // const plus a counter incremented on every trilinear tap (primary + shadow),
-  // breaking the shadow loop first and then the main loop once exhausted.
-  it("emits a per-fragment sample-budget const and counter that gates both loops", async () => {
-    const src = await loadSource();
-    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT });
-
-    // The default budget is baked in as a compile-time literal.
-    expect(a.entrySource).toContain(`nvdbx_sample_budget : i32 = ${DEFAULT_SAMPLE_BUDGET_CAP}`);
-    // A counter variable is declared and incremented at least twice (once per
-    // primary tap, once per shadow tap).
-    expect(a.entrySource).toContain("var nvdbx_sample_count : i32 = 0");
-    const increments = a.entrySource.match(/nvdbx_sample_count = nvdbx_sample_count \+ 1/g) ?? [];
-    expect(increments.length).toBe(2);
-    // Both the main march loop and the shadow loop check the budget.
-    const budgetChecks = a.entrySource.match(/nvdbx_sample_count >= nvdbx_sample_budget/g) ?? [];
-    expect(budgetChecks.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("honors a custom sampleBudgetCap", async () => {
-    const src = await loadSource();
-    const a = assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, sampleBudgetCap: 4096 });
-    expect(a.entrySource).toContain("nvdbx_sample_budget : i32 = 4096");
-    expect(a.entrySource).not.toContain(`nvdbx_sample_budget : i32 = ${DEFAULT_SAMPLE_BUDGET_CAP}`);
-  });
-
-  // Finding 3: input validation. An empty/wrong pnanovdbSource should fail
-  // loudly at construction time, not as an opaque WGSL compile error later.
-  it("throws if pnanovdbSource has no nanovdb_buffer read site to rewrite", () => {
-    expect(() => assembleVolumeWgsl("", { gridTypeId: GRID_TYPE_FLOAT })).toThrow(/nanovdb_buffer/);
-    expect(() =>
-      assembleVolumeWgsl("fn totally_unrelated() -> u32 { return 0u; }", { gridTypeId: GRID_TYPE_FLOAT }),
-    ).toThrow(/nanovdb_buffer/);
-  });
-
-  it("range-checks the numeric caps (integers >= 1)", async () => {
-    const src = await loadSource();
-    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: 0 })).toThrow(
-      /maxStepsCap/,
-    );
-    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: -5 })).toThrow(
-      /maxStepsCap/,
-    );
-    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, maxStepsCap: 1.5 })).toThrow(
-      /maxStepsCap/,
-    );
-    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, shadowStepsCap: 0 })).toThrow(
-      /shadowStepsCap/,
-    );
-    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, sampleBudgetCap: 0 })).toThrow(
-      /sampleBudgetCap/,
-    );
-    expect(() => assembleVolumeWgsl(src, { gridTypeId: GRID_TYPE_FLOAT, sampleBudgetCap: -1 })).toThrow(
-      /sampleBudgetCap/,
-    );
-  });
-});
-
-describe.skipIf(!wgslPresent || !fixturesPresent)("NanoVDBVolumeMaterial (fixture-backed)", () => {
-  it("constructs a transparent, depth-write-off BackSide NodeMaterial", async () => {
-    const src = await loadSource();
-    const grid = await loadGrid("sphere_fog_fp8");
-    const mat = new NanoVDBVolumeMaterial({ grid, pnanovdbSource: src });
-
+describe("VDBVolumeMaterial (K2.3)", () => {
+  it("constructs a transparent, depth-write-off, premultiplied BackSide NodeMaterial", () => {
+    const { renderer, grids } = setup();
+    const mat = new VDBVolumeMaterial(renderer, grids, 3);
     expect(mat).toBeInstanceOf(NodeMaterial);
-    expect(mat.isNanoVDBVolumeMaterial).toBe(true);
+    expect(mat.isVDBVolumeMaterial).toBe(true);
     expect(mat.transparent).toBe(true);
     expect(mat.depthWrite).toBe(false);
+    expect(mat.depthTest).toBe(true);
+    expect(mat.side).toBe(THREE.BackSide);
     expect(mat.premultipliedAlpha).toBe(true);
+    expect(mat.toneMapped).toBe(false);
     expect(mat.fragmentNode).toBeTruthy();
+    expect(mat.grids).toBe(grids);
+    // A number id becomes a live uint uniform.
+    expect(mat.gridId.value).toBe(3);
+    expect(mat.gridId.nodeType).toBe("uint");
   });
 
-  it("exposes the SPEC §3.2 uniform surface with defaults", async () => {
-    const src = await loadSource();
-    const grid = await loadGrid("sphere_fog_fp8");
-    const mat = new NanoVDBVolumeMaterial({ grid, pnanovdbSource: src });
-
+  it("exposes the v1 uniform surface with v1's defaults; overrides flow through", () => {
+    const { renderer, grids } = setup();
+    const mat = new VDBVolumeMaterial(renderer, grids, 0);
     expect(mat.densityScale.value).toBe(40);
     expect(mat.stepSize.value).toBe(0.75);
     expect(mat.maxSteps.value).toBe(512);
     expect(mat.anisotropy.value).toBe(0.3);
     expect(mat.shadowSteps.value).toBe(12);
+    expect(mat.shadowDensity.value).toBe(1);
     expect(mat.ambient.value).toBe(0.15);
     expect(mat.sunIntensity.value).toBe(3);
     expect(mat.jitter.value).toBe(1);
-    // Overrides flow through.
-    const mat2 = new NanoVDBVolumeMaterial({ grid, pnanovdbSource: src, densityScale: 10, jitter: false });
+    expect(mat.sunDirection.value.length()).toBeCloseTo(1, 12);
+    const mat2 = new VDBVolumeMaterial(renderer, grids, 0, { densityScale: 10, jitter: false, sunDirection: new THREE.Vector3(0, 2, 0) });
     expect(mat2.densityScale.value).toBe(10);
     expect(mat2.jitter.value).toBe(0);
+    expect(mat2.sunDirection.value.toArray()).toEqual([0, 1, 0]);
   });
 
-  it("selects the sampler from the grid's type id", async () => {
-    const src = await loadSource();
-    const fp8 = new NanoVDBVolumeMaterial({ grid: await loadGrid("sphere_fog_fp8"), pnanovdbSource: src });
-    const fpn = new NanoVDBVolumeMaterial({ grid: await loadGrid("sphere_fog_fpn"), pnanovdbSource: src });
-    const float = new NanoVDBVolumeMaterial({ grid: await loadGrid("sphere_fog_float"), pnanovdbSource: src });
-    expect(fp8.samplerFn).toBe("pnanovdb_sample_trilinear_fp8");
-    expect(fpn.samplerFn).toBe("pnanovdb_sample_trilinear_fpn");
-    expect(float.samplerFn).toBe("pnanovdb_sample_trilinear_float");
+  it("marches with the public vdb* API only: no storage pointer, arrayLength or vendored names", () => {
+    const { renderer, grids } = setup();
+    const src = new VDBVolumeMaterial(renderer, grids, 0).entrySource;
+    expect(src.match(/\bfn\s+\w+\s*\(/g)).toEqual(["fn vdbThreeVolumeMarch("]); // wgslFn parses the first fn
+    for (const call of ["vdbWorldToIndex(", "vdbWorldToIndexDir(", "vdbRayClipSupport(", "vdbRayClip(", "vdbAccessorInit(", "vdbSample(&acc,", "vdbSample(&sacc,"]) {
+      expect(src).toContain(call);
+    }
+    expect(src).not.toMatch(/ptr<storage|arrayLength|pnanovdb_|nanovdb_buffer|vdb_/);
+    expect(src).toContain(`clamp(max_steps, 1.0, ${VDB_VOLUME_MAX_STEPS_CAP}.0)`);
+    expect(src).toContain(`clamp(shadow_steps, 0.0, ${VDB_VOLUME_SHADOW_STEPS_CAP}.0)`);
+    expect(src).toContain(`let budget = ${VDB_VOLUME_SAMPLE_BUDGET_CAP};`);
+    // Every sample counts against the budget, and both loops stop on it.
+    expect(src.match(/samples\+\+/g)).toHaveLength(2);
+    expect(src.match(/samples >= budget/g)).toHaveLength(2);
   });
 
-  it("requires pnanovdbSource", async () => {
-    const grid = await loadGrid("sphere_fog_fp8");
-    // @ts-expect-error deliberately omitting the required source
-    expect(() => new NanoVDBVolumeMaterial({ grid })).toThrow(/pnanovdbSource/);
+  it("compiles custom caps in", () => {
+    const { renderer, grids } = setup();
+    const src = new VDBVolumeMaterial(renderer, grids, 0, { maxStepsCap: 256, shadowStepsCap: 32, sampleBudgetCap: 4096 }).entrySource;
+    expect(src).toContain("clamp(max_steps, 1.0, 256.0)");
+    expect(src).toContain("clamp(shadow_steps, 0.0, 32.0)");
+    expect(src).toContain("let budget = 4096;");
+  });
+
+  it("validates the node, the id and the caps", () => {
+    const { renderer, grids } = setup();
+    expect(code(() => new VDBVolumeMaterial(renderer, {} as never, 0))).toBe("VDB_BAD_OPTION");
+    // The node must compile vdbSample and the support clip.
+    const noHelper = setup({}).grids;
+    expect(() => new VDBVolumeMaterial(renderer, noHelper, 0)).toThrow(/helpers: \['rayClipSupport'\]/);
+    expect(code(() => new VDBVolumeMaterial(renderer, setup({ profile: "read", helpers: [] }).grids, 0))).toBe("VDB_BAD_OPTION");
+    expect(() => new VDBVolumeMaterial(renderer, setup({ profile: "read" }).grids, 0)).toThrow(/profile 'sample' or 'march'/);
+    expect(code(() => new VDBVolumeMaterial(renderer, setup({ profile: "march", helpers: ["rayClipSupport", "hddaCellEnd"] }).grids, 0))).toBeUndefined();
+    // Another renderer's device.
+    expect(code(() => new VDBVolumeMaterial(fakeRenderer({}), grids, 0))).toBe("VDB_BAD_OPTION");
+    expect(code(() => new VDBVolumeMaterial({ backend: { isWebGPUBackend: true, device: null } } as never, grids, 0))).toBe("VDB_UNSUPPORTED_DEVICE");
+    for (const id of [-1, 1.5, Number.NaN, "0", null]) {
+      expect(code(() => new VDBVolumeMaterial(renderer, grids, id as never))).toBe("VDB_BAD_OPTION");
+    }
+    for (const caps of [{ maxStepsCap: 0 }, { shadowStepsCap: 1.5 }, { sampleBudgetCap: -1 }]) {
+      expect(code(() => new VDBVolumeMaterial(renderer, grids, 0, caps))).toBe("VDB_BAD_OPTION");
+    }
+  });
+
+  it("takes a uint node as the id, unchanged", () => {
+    const { renderer, grids } = setup();
+    const node = { isNode: true, tag: "my id" };
+    expect(new VDBVolumeMaterial(renderer, grids, node).gridId).toBe(node);
   });
 });
 
-/**
- * Grid-rebind API (the Phase 7 flag from docs/handoffs/PHASE-3.md). Pure CPU:
- * `rebindGrid` copies the new image into the bound storage attribute and bumps
- * its version — no device needed, so these run without fixtures (only the real
- * vendored WGSL, for material construction). Synthetic grids are hand-built so
- * we can vary size/type freely; content is irrelevant to the rebind mechanics.
- */
-function fakeGrid(words: number, gridType = "Float", fill = 1): NanoVDBGrid {
-  const image = new Uint32Array(words);
-  for (let i = 0; i < words; i++) image[i] = fill + i;
-  const metadata: GridMetadata = {
-    name: "fake",
-    gridType,
-    gridClass: "FogVolume",
-    worldBBox: { min: [0, 0, 0], max: [1, 1, 1] },
-    indexBBox: { min: [0, 0, 0], max: [1, 1, 1] },
-    voxelSize: [1, 1, 1],
-    voxelCount: 0,
-    gridByteSize: words * 4,
+describe("VDBGridNode helpers option (K2.3)", () => {
+  it("passes helpers to the module, normalized as a sorted set", () => {
+    const { grids } = setup({ profile: "march", helpers: ["rayClipSupport", "cellBoundTrilinear", "rayClipSupport"] });
+    expect(grids.options.helpers).toEqual(["cellBoundTrilinear", "rayClipSupport"]);
+    const mod = grids.module as unknown as { moduleFor(ref: string): string };
+    const text = mod.moduleFor("vdbPool.value");
+    expect(text).toContain("fn vdbRayClipSupport(");
+    expect(text).toContain("fn vdbCellBoundTrilinear(");
+    expect(text).not.toContain("fn vdbHddaCellEnd(");
+    // Without helpers the option is absent (and the module has none).
+    expect("helpers" in setup({}).grids.options).toBe(false);
+    // One-shot iterables survive validation; bad helpers are the generator's VDB_BAD_OPTION.
+    expect(setup({ helpers: new Set(["rayClipSupport"]).values() }).grids.options.helpers).toEqual(["rayClipSupport"]);
+    expect(code(() => setup({ helpers: ["nope"] }))).toBe("VDB_BAD_OPTION");
+    expect(code(() => setup({ helpers: "rayClipSupport" }))).toBe("VDB_BAD_OPTION");
+    expect(code(() => setup({ profile: "sample", helpers: ["hddaCellEnd"] }))).toBe("VDB_BAD_OPTION");
+  });
+});
+
+describe("vdbProxyGeometry (K2.3)", () => {
+  const boxOf = (g: THREE.BufferGeometry) => {
+    g.computeBoundingBox();
+    return g.boundingBox!;
   };
-  return new NanoVDBGrid({ image, metadata });
-}
 
-/** The material's bound backing array (private seam, reached only in tests). */
-function boundArray(mat: NanoVDBVolumeMaterial): Uint32Array {
-  return (mat as unknown as { _gridAttribute: StorageBufferAttribute })._gridAttribute.array as Uint32Array;
-}
-
-describe.skipIf(!wgslPresent)("NanoVDBVolumeMaterial.rebindGrid", () => {
-  it("same-size rebind copies the new image and bumps the attribute version", async () => {
-    const src = await loadSource();
-    const a = fakeGrid(64, "Float", 100);
-    const boundAttr = a.storageAttribute; // the instance the material will bind (default path)
-    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src });
-    expect(mat.grid).toBe(a);
-    expect(mat.capacityBytes).toBe(64 * 4);
-    const versionBefore = boundAttr.version;
-
-    const b = fakeGrid(64, "Float", 500);
-    mat.rebindGrid(b);
-
-    expect(mat.grid).toBe(b);
-    expect(Array.from(boundArray(mat))).toEqual(Array.from(b.image));
-    expect(boundAttr.version).toBeGreaterThan(versionBefore);
+  it("pad 0 is pool.info(id).worldBBox; pad 1 adds the trilinear support shell", async () => {
+    const device = new FakeDevice();
+    const pool = await VDBGridPool.create(device.asGPU());
+    const id = pool.add(makeImage({ bytes: 4096, voxelSize: 0.5, translation: [1, 2, 3], bboxMin: [-4, 0, 2], bboxMax: [7, 3, 9] }));
+    const info = pool.info(id);
+    const box = boxOf(vdbProxyGeometry(info));
+    for (let a = 0; a < 3; a++) {
+      expect(box.min.getComponent(a)).toBeCloseTo(info.worldBBox.min[a]!, 6);
+      expect(box.max.getComponent(a)).toBeCloseTo(info.worldBBox.max[a]!, 6);
+    }
+    const padded = boxOf(vdbProxyGeometry(info, { pad: 1 }));
+    for (let a = 0; a < 3; a++) {
+      expect(padded.min.getComponent(a)).toBeCloseTo(info.worldBBox.min[a]! - 0.5, 6);
+      expect(padded.max.getComponent(a)).toBeCloseTo(info.worldBBox.max[a]! + 0.5, 6);
+    }
+    expect(code(() => vdbProxyGeometry(info, { pad: -1 }))).toBe("VDB_BAD_OPTION");
   });
 
-  it("rebinds a SMALLER grid in place (fits under the initial capacity)", async () => {
-    const src = await loadSource();
-    const a = fakeGrid(64, "Float");
-    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src });
-    const smaller = fakeGrid(32, "Float", 900);
-    expect(() => mat.rebindGrid(smaller)).not.toThrow();
-    expect(mat.grid).toBe(smaller);
-    // The first 32 words hold the new image; the tail is stale-but-inert.
-    expect(Array.from(boundArray(mat).subarray(0, 32))).toEqual(Array.from(smaller.image));
-  });
-
-  it("throws when the new grid exceeds capacity, pointing at maxGridBytes", async () => {
-    const src = await loadSource();
-    const a = fakeGrid(16, "Float");
-    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src });
-    const bigger = fakeGrid(20, "Float");
-    expect(() => mat.rebindGrid(bigger)).toThrow(/capacity/i);
-    expect(() => mat.rebindGrid(bigger)).toThrow(/maxGridBytes/);
-    // The bound grid is unchanged after a failed rebind.
-    expect(mat.grid).toBe(a);
-  });
-
-  it("maxGridBytes pre-sizes a padded buffer so a bigger grid rebinds in place", async () => {
-    const src = await loadSource();
-    const a = fakeGrid(16, "Float", 10);
-    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src, maxGridBytes: 64 * 4 });
-    expect(mat.capacityBytes).toBe(64 * 4);
-    // Constructor copied frame 0 into the padded backing.
-    expect(Array.from(boundArray(mat).subarray(0, 16))).toEqual(Array.from(a.image));
-
-    const bigger = fakeGrid(48, "Float", 700);
-    expect(() => mat.rebindGrid(bigger)).not.toThrow();
-    expect(mat.grid).toBe(bigger);
-    expect(Array.from(boundArray(mat).subarray(0, 48))).toEqual(Array.from(bigger.image));
-  });
-
-  it("rounds maxGridBytes up to a whole u32 and never shrinks below the grid", async () => {
-    const src = await loadSource();
-    const a = fakeGrid(16, "Float");
-    // 65 bytes -> 17 words, but the grid already needs 16; capacity = max(16,17) = 17.
-    const mat = new NanoVDBVolumeMaterial({ grid: a, pnanovdbSource: src, maxGridBytes: 65 });
-    expect(mat.capacityBytes).toBe(17 * 4);
-    // A maxGridBytes smaller than the grid is ignored (capacity stays at the grid size).
-    const mat2 = new NanoVDBVolumeMaterial({ grid: fakeGrid(32, "Float"), pnanovdbSource: src, maxGridBytes: 8 });
-    expect(mat2.capacityBytes).toBe(32 * 4);
-  });
-
-  it("refuses a grid-type change (the sampler is baked at construction)", async () => {
-    const src = await loadSource();
-    const floatGrid = fakeGrid(64, "Float");
-    const mat = new NanoVDBVolumeMaterial({ grid: floatGrid, pnanovdbSource: src });
-    const fp8Grid = fakeGrid(64, "Fp8");
-    expect(() => mat.rebindGrid(fp8Grid)).toThrow(/grid type changed/i);
-    expect(mat.grid).toBe(floatGrid);
-  });
-});
-
-describe("unsupported grid types are gated upstream by NanoVDBGrid", () => {
-  it("NanoVDBGrid throws before a material is ever built", () => {
-    const bogus = {
-      name: "bogus",
-      gridType: "Double",
-      gridClass: "Unknown",
-      worldBBox: { min: [0, 0, 0], max: [1, 1, 1] },
-      indexBBox: { min: [0, 0, 0], max: [1, 1, 1] },
-      voxelSize: [1, 1, 1],
-      voxelCount: 0,
-      gridByteSize: 0,
-    } as const;
-    expect(() => new NanoVDBGrid({ image: new Uint32Array(0), metadata: bogus })).toThrow(/unsupported/i);
+  it("bounds a rotated instance by its transformed corners", () => {
+    // 90° about z: index (x, y, z) -> world (-y, x, z).
+    const info = { indexBBox: { min: [0, 0, 0], max: [3, 1, 0] }, indexToWorld: [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0] };
+    const box = boxOf(vdbProxyGeometry(info));
+    expect(box.min.toArray()).toEqual([-2, 0, 0]);
+    expect(box.max.toArray()).toEqual([0, 4, 1]);
   });
 });

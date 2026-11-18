@@ -1,46 +1,54 @@
 import { describe, expect, it, vi } from "vitest";
-import { NanoVDBSequence } from "../../src/three/sequence.js";
-import type { FrameLoader, SequenceTarget } from "../../src/three/sequence.js";
-import type { NanoVDBGrid } from "../../src/three/grid.js";
+import { VDBSequence } from "../../src/three/sequence.js";
+import type { VDBFrameLoader, VDBSequenceTarget } from "../../src/three/sequence.js";
 
 /**
- * Node-safe `NanoVDBSequence` tests: the prefetch ring + frame-time scheduler +
+ * Node-safe `VDBSequence` tests: the prefetch ring + frame-time scheduler +
  * stall policy, exercised with a mocked `loader`, a fake clock, and a stub
- * `SequenceTarget` — no browser, no GPU. This is the ground-truth for the
- * playback logic; the end-to-end GPU proof (real rebind changing pixels) is
- * `e2e/demo-05.spec.ts`.
+ * pool whose `replace(id, image)` records what it got — no browser, no GPU.
+ * The end-to-end GPU proof (in-place `pool.replace` changing pixels, no pool
+ * version change) is `e2e/demo-05.spec.ts`.
  */
 
-/** A tagged stand-in for a decoded grid — the sequence only forwards it to `rebindGrid`. */
-function grid(tag: number): NanoVDBGrid {
-  return { tag } as unknown as NanoVDBGrid;
+/** A tagged stand-in for a decoded frame image: word 0 is the frame index. */
+function grid(tag: number): Uint32Array {
+  return new Uint32Array([tag]);
 }
 
-/** A stub render target recording the grids rebound into it. */
-function makeTarget(): SequenceTarget & { calls: number[] } {
+/** A stub `{ pool, id }` target recording the frames replaced into it. */
+function makeTarget(id = 7): VDBSequenceTarget & { calls: number[]; ids: number[]; images: Uint32Array[] } {
   const calls: number[] = [];
+  const ids: number[] = [];
+  const images: Uint32Array[] = [];
   return {
     calls,
-    rebindGrid(g: NanoVDBGrid): void {
-      calls.push((g as unknown as { tag: number }).tag);
+    ids,
+    images,
+    id,
+    pool: {
+      replace(gridId: number, image: Uint32Array): void {
+        ids.push(gridId);
+        images.push(image);
+        calls.push(image[0]!);
+      },
     },
   };
 }
 
 /** Loader that resolves each frame immediately to `grid(i)`. */
-function immediateLoader(spy?: (i: number) => void): FrameLoader {
-  return (_url: string, i: number): Promise<NanoVDBGrid> => {
+function immediateLoader(spy?: (i: number) => void): VDBFrameLoader {
+  return (_url: string, i: number): Promise<Uint32Array> => {
     spy?.(i);
     return Promise.resolve(grid(i));
   };
 }
 
 /** Loader whose per-frame resolution you drive by hand (for stall tests). */
-function deferredLoader(): { loader: FrameLoader; resolve: (i: number) => void; reject: (i: number, e: unknown) => void } {
-  const resolvers = new Map<number, (g: NanoVDBGrid) => void>();
+function deferredLoader(): { loader: VDBFrameLoader; resolve: (i: number) => void; reject: (i: number, e: unknown) => void } {
+  const resolvers = new Map<number, (g: Uint32Array) => void>();
   const rejectors = new Map<number, (e: unknown) => void>();
-  const loader: FrameLoader = (_url, i) =>
-    new Promise<NanoVDBGrid>((res, rej) => {
+  const loader: VDBFrameLoader = (_url, i) =>
+    new Promise<Uint32Array>((res, rej) => {
       resolvers.set(i, res);
       rejectors.set(i, rej);
     });
@@ -57,9 +65,9 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 // A source url list for N frames.
 const urls = (n: number): string[] => Array.from({ length: n }, (_, i) => `frame-${i}.nvdb`);
 
-describe("NanoVDBSequence — construction", () => {
+describe("VDBSequence — construction", () => {
   it("defaults frameCount to urls.length for an array", () => {
-    const seq = new NanoVDBSequence({ urls: urls(5), loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(5), loader: immediateLoader() });
     expect(seq.frameCount).toBe(5);
     expect(seq.fps).toBe(24);
     expect(seq.prefetch).toBe(3);
@@ -67,39 +75,39 @@ describe("NanoVDBSequence — construction", () => {
   });
 
   it("requires an explicit frameCount when urls is a function", () => {
-    expect(() => new NanoVDBSequence({ urls: (i) => `f${i}`, loader: immediateLoader() })).toThrow(/frameCount/);
-    const seq = new NanoVDBSequence({ urls: (i) => `f${i}`, frameCount: 8, loader: immediateLoader() });
+    expect(() => new VDBSequence({ urls: (i) => `f${i}`, loader: immediateLoader() })).toThrow(/frameCount/);
+    const seq = new VDBSequence({ urls: (i) => `f${i}`, frameCount: 8, loader: immediateLoader() });
     expect(seq.frameCount).toBe(8);
   });
 
   it("rejects a non-positive fps", () => {
-    expect(() => new NanoVDBSequence({ urls: urls(3), fps: 0, loader: immediateLoader() })).toThrow(/fps/);
+    expect(() => new VDBSequence({ urls: urls(3), fps: 0, loader: immediateLoader() })).toThrow(/fps/);
   });
 });
 
-describe("NanoVDBSequence — prefetch ring", () => {
+describe("VDBSequence — prefetch ring", () => {
   it("preload decodes exactly the first N frames", async () => {
     const seen: number[] = [];
-    const seq = new NanoVDBSequence({ urls: urls(10), prefetch: 2, loader: immediateLoader((i) => seen.push(i)) });
+    const seq = new VDBSequence({ urls: urls(10), prefetch: 2, loader: immediateLoader((i) => seen.push(i)) });
     await seq.preload(3);
     expect(seen.sort((a, b) => a - b)).toEqual([0, 1, 2]);
   });
 
-  it("start binds frame 0 and reports decodedAhead within the prefetch window", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(10), prefetch: 3, loader: immediateLoader() });
+  it("start replaces with frame 0 and reports decodedAhead within the prefetch window", async () => {
+    const seq = new VDBSequence({ urls: urls(10), prefetch: 3, loader: immediateLoader() });
     await seq.preload(4); // frames 0..3
     const target = makeTarget();
     seq.start(target, 0);
     expect(target.calls).toEqual([0]);
     expect(seq.stats.frame).toBe(0);
-    expect(seq.stats.rebinds).toBe(1);
+    expect(seq.stats.swaps).toBe(1);
     // frames 1,2,3 sit ahead, ready.
     expect(seq.stats.decodedAhead).toBe(3);
   });
 
   it("evicts decoded frames that fall outside the forward window", async () => {
     let decodes = 0;
-    const seq = new NanoVDBSequence({ urls: urls(6), prefetch: 1, loop: false, loader: immediateLoader(() => decodes++) });
+    const seq = new VDBSequence({ urls: urls(6), prefetch: 1, loop: false, loader: immediateLoader(() => decodes++) });
     // Warm 0..3, but prefetch is only 1, so start(0) keeps {0,1} and evicts 2,3.
     await seq.preload(4);
     expect(decodes).toBe(4);
@@ -111,11 +119,11 @@ describe("NanoVDBSequence — prefetch ring", () => {
   });
 });
 
-describe("NanoVDBSequence — scheduler", () => {
+describe("VDBSequence — scheduler", () => {
   it("advances one frame per frame-duration and fires onFrame per new frame", async () => {
     const shown: number[] = [];
     // fps 10 => 100ms/frame exactly (no FP drift).
-    const seq = new NanoVDBSequence({
+    const seq = new VDBSequence({
       urls: urls(4),
       fps: 10,
       prefetch: 4,
@@ -134,8 +142,8 @@ describe("NanoVDBSequence — scheduler", () => {
     expect(seq.stats.stalls).toBe(0);
   });
 
-  it("does not re-bind within the same frame's time slice", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
+  it("does not replace again within the same frame's time slice", async () => {
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
@@ -143,11 +151,11 @@ describe("NanoVDBSequence — scheduler", () => {
     seq.update(60);
     seq.update(99);
     expect(target.calls).toEqual([0]);
-    expect(seq.stats.rebinds).toBe(1);
+    expect(seq.stats.swaps).toBe(1);
   });
 
   it("clamps at the last frame when loop is false", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loop: false, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loop: false, loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
@@ -156,7 +164,7 @@ describe("NanoVDBSequence — scheduler", () => {
   });
 
   it("wraps around when loop is true", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loop: true, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loop: true, loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
@@ -165,7 +173,7 @@ describe("NanoVDBSequence — scheduler", () => {
   });
 
   it("resume continues from the paused frame without resetting", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(6), fps: 10, prefetch: 6, loop: false, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(6), fps: 10, prefetch: 6, loop: false, loader: immediateLoader() });
     await seq.preload(6);
     const target = makeTarget();
     seq.start(target, 0);
@@ -180,11 +188,11 @@ describe("NanoVDBSequence — scheduler", () => {
     expect(seq.stats.frame).toBe(3);
     // Stats were not reset by resume. Frame 1 was dropped (0 -> 2 jump), so
     // three distinct frames were bound: 0, 2, 3.
-    expect(seq.stats.rebinds).toBe(3);
+    expect(seq.stats.swaps).toBe(3);
   });
 
   it("ignores update() before start() / after stop()", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
     await seq.preload(4);
     expect(seq.update(100)).toBe(-1); // not playing yet
     const target = makeTarget();
@@ -198,10 +206,10 @@ describe("NanoVDBSequence — scheduler", () => {
   });
 });
 
-describe("NanoVDBSequence — stall policy (never block)", () => {
+describe("VDBSequence — stall policy (never block)", () => {
   it("holds the last frame and counts a stall when the due frame is not decoded", async () => {
     const { loader, resolve } = deferredLoader();
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 1, loop: false, loader });
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 1, loop: false, loader });
 
     // Warm frames 0 and 1 only.
     const pl = seq.preload(2);
@@ -232,7 +240,7 @@ describe("NanoVDBSequence — stall policy (never block)", () => {
   it("surfaces a decode failure via onError and treats that frame as a stall", async () => {
     const { loader, resolve, reject } = deferredLoader();
     const errors: number[] = [];
-    const seq = new NanoVDBSequence({
+    const seq = new VDBSequence({
       urls: urls(3),
       fps: 10,
       prefetch: 1,
@@ -255,9 +263,9 @@ describe("NanoVDBSequence — stall policy (never block)", () => {
   });
 });
 
-describe("NanoVDBSequence — seek", () => {
+describe("VDBSequence — seek", () => {
   it("jumps to a frame and re-anchors the clock there", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(8), fps: 10, prefetch: 8, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(8), fps: 10, prefetch: 8, loader: immediateLoader() });
     await seq.preload(8);
     const target = makeTarget();
     seq.start(target, 0);
@@ -269,7 +277,7 @@ describe("NanoVDBSequence — seek", () => {
   });
 
   it("wraps a seek index into range", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
@@ -278,44 +286,66 @@ describe("NanoVDBSequence — seek", () => {
   });
 });
 
-describe("NanoVDBSequence — stats", () => {
-  it("reports uploadMs as a finite number and counts rebinds", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
+describe("VDBSequence — stats", () => {
+  it("reports replaceMs as a finite number and counts swaps", async () => {
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
     seq.update(100);
     seq.update(200);
-    expect(Number.isFinite(seq.stats.uploadMs)).toBe(true);
-    expect(seq.stats.uploadMs).toBeGreaterThanOrEqual(0);
-    expect(seq.stats.rebinds).toBe(3); // frames 0,1,2
+    expect(Number.isFinite(seq.stats.replaceMs)).toBe(true);
+    expect(seq.stats.replaceMs).toBeGreaterThanOrEqual(0);
+    expect(seq.stats.swaps).toBe(3); // frames 0,1,2
   });
 
   it("dispose clears the ring", async () => {
-    const seq = new NanoVDBSequence({ urls: urls(4), prefetch: 4, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(4), prefetch: 4, loader: immediateLoader() });
     await seq.preload(4);
     seq.dispose();
     expect(seq.stats.decodedAhead).toBe(0);
     expect(seq.isPlaying).toBe(false);
   });
 
-  it("uses a real, monotonically increasing clock for uploadMs when now() advances", async () => {
+  it("uses a real, monotonically increasing clock for replaceMs when now() advances", async () => {
     let t = 0;
-    const seq = new NanoVDBSequence({ urls: urls(2), fps: 10, prefetch: 2, loader: immediateLoader(), now: () => (t += 1) });
+    const seq = new VDBSequence({ urls: urls(2), fps: 10, prefetch: 2, loader: immediateLoader(), now: () => (t += 1) });
     await seq.preload(2);
     const target = makeTarget();
-    // now() ticks on every read, so the two reads around rebindGrid differ.
+    // now() ticks on every read, so the two reads around pool.replace differ.
     seq.start(target, 0);
-    expect(seq.stats.uploadMs).toBeGreaterThan(0);
+    expect(seq.stats.replaceMs).toBeGreaterThan(0);
   });
 });
 
-describe("NanoVDBSequence — default loader wiring", () => {
+describe("VDBSequence — default loader wiring", () => {
   it("passes the resolved url and index to the loader", async () => {
     const loader = vi.fn(immediateLoader());
-    const seq = new NanoVDBSequence({ urls: (i) => `custom/${i}.nvdb`, frameCount: 3, prefetch: 3, loader });
+    const seq = new VDBSequence({ urls: (i) => `custom/${i}.nvdb`, frameCount: 3, prefetch: 3, loader });
     await seq.preload(2);
     expect(loader).toHaveBeenCalledWith("custom/0.nvdb", 0);
     expect(loader).toHaveBeenCalledWith("custom/1.nvdb", 1);
+  });
+});
+
+describe("VDBSequence — the pool target", () => {
+  it("replaces the target id with the decoded image itself (no copy, never written)", async () => {
+    const frames = [grid(0), grid(1)];
+    const seq = new VDBSequence({ urls: urls(2), fps: 10, prefetch: 2, loader: (_u, i) => Promise.resolve(frames[i]!) });
+    await seq.preload(2);
+    const target = makeTarget(3);
+    seq.start(target, 0);
+    seq.update(100);
+    expect(target.ids).toEqual([3, 3]);
+    expect(target.images[0]).toBe(frames[0]); // held by reference: a recycling loader must wait for pool.settled()
+    expect(target.images[1]).toBe(frames[1]);
+    expect(Array.from(frames[0]!)).toEqual([0]);
+  });
+
+  it("rejects a target that is not { pool, id }", () => {
+    const seq = new VDBSequence({ urls: urls(2), loader: immediateLoader() });
+    expect(() => seq.start({ replace() {} } as never, 0)).toThrow(/\{ pool, id \}/);
+    expect(() => seq.start({ pool: { replace() {} }, id: -1 }, 0)).toThrow(/grid id/);
+    expect(() => seq.start({ pool: {} as never, id: 0 }, 0)).toThrow(/replace/);
   });
 });

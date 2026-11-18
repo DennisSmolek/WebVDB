@@ -54,7 +54,7 @@ import { CodeNode, REVISION, StorageBufferAttribute, type Node, type NodeBuilder
 import { storage, uint, wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
 import { checkModule, vdbModuleWgsl } from "../core/wgsl/generate.js";
-import type { VDBModuleOptions, VDBModuleProfile } from "../core/wgsl/types.js";
+import type { VDBModuleHelper, VDBModuleOptions, VDBModuleProfile } from "../core/wgsl/types.js";
 import type { VDBGridTypeName } from "../core/types.js";
 import { webgpuBackendOf, type ThreeRendererLike } from "./device.js";
 
@@ -77,6 +77,12 @@ export interface VDBGridNodeOptions {
   readonly sampler?: VDBModuleOptions["sampler"];
   readonly isActive?: VDBModuleOptions["isActive"];
   readonly outside?: VDBModuleOptions["outside"];
+  /**
+   * Opt-in WGSL helpers for the module (`'rayClipSupport'`, and with `march`
+   * `'cellBoundTrilinear'`, `'hddaCellEnd'`). `VDBVolumeMaterial` needs
+   * `'rayClipSupport'`. Default none.
+   */
+  readonly helpers?: Iterable<VDBModuleHelper> | undefined;
   /** Name of the storage binding three emits. Default `'vdbPool'`. */
   readonly name?: string | undefined;
 }
@@ -176,9 +182,13 @@ const threeInternals = {
 };
 
 /** Module options after validation, without the binding. */
-type ModuleOptions = Omit<VDBModuleOptions, "slot" | "buffer"> & { readonly types: readonly VDBGridTypeName[]; readonly profile: VDBModuleProfile };
+type ModuleOptions = Omit<VDBModuleOptions, "slot" | "buffer" | "helpers"> & {
+  readonly types: readonly VDBGridTypeName[];
+  readonly profile: VDBModuleProfile;
+  readonly helpers?: readonly VDBModuleHelper[];
+};
 
-const OPTION_KEYS = new Set(["types", "profile", "sampler", "isActive", "outside", "name"]);
+const OPTION_KEYS = new Set(["types", "profile", "sampler", "isActive", "outside", "helpers", "name"]);
 
 function bad(message: string): VDBError {
   return new VDBError("VDB_BAD_OPTION", `VDBGridNode: ${message}`);
@@ -298,6 +308,11 @@ export class VDBGridNode {
       sampler: options.sampler,
       isActive: options.isActive,
       outside: options.outside,
+      // Materialize once (a one-shot iterable would be empty after validation); non-iterables reach the validator as is.
+      helpers:
+        options.helpers != null && typeof options.helpers !== "string" && typeof options.helpers[Symbol.iterator] === "function"
+          ? [...options.helpers]
+          : options.helpers,
     };
     // Validates every option (VDB_BAD_OPTION), the name as a WGSL identifier included.
     vdbModuleWgsl(raw);
@@ -312,6 +327,7 @@ export class VDBGridNode {
       ...(raw.sampler !== undefined ? { sampler: raw.sampler } : {}),
       ...(raw.isActive !== undefined ? { isActive: raw.isActive } : {}),
       ...(raw.outside !== undefined ? { outside: raw.outside } : {}),
+      ...(raw.helpers !== undefined ? { helpers: Object.freeze([...new Set(raw.helpers)].sort()) as readonly VDBModuleHelper[] } : {}),
     });
 
     this.bound = pool.buffer;

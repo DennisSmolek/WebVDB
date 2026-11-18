@@ -50,9 +50,9 @@ Spec: [docs/design/K1-core.md](docs/design/K1-core.md) (§8 has the acceptance p
 | K2.0 | Move the repo to three r187 (D23) | T2 | ✅ | No code changes needed; e2e unchanged. Peer range `>=0.187.0 <0.188.0`. |
 | K2.1 | `getDevice(renderer)` and `getGPUTexture`, matching upscaler and denoiser so all tools share one device | T2 | ✅ | `three/device.ts`; see docs/handoffs/K2.md. |
 | K2.2 | `VDBGridNode` (`.module`, `.update()`) and the `vdbSample()` TSL helper | T3 | ✅ | `three/grid-node.ts` + `vdbReadValue`; e2e `three-grid-node.spec.ts` (bit-exact vs f32 twins on SwiftShader, growth rebind, survives `renderer.dispose()`). v1 material still on the old trick until K2.3; K2.3 plan in docs/handoffs/K2.md. |
-| K2.3 | Port the v1 volume material, `gridStats`, `valueTransform`, `decodeToAtlas` and the sequence player | T2 | ⬜ | |
-| K2.4 | Port demos 01–07 and keep their goldens | T2 | ⬜ | Re-baseline only with a DIVERGES entry. |
-| K2.5 | Drop the sandbox-only workarounds from the default path (DIVERGES V7/V8) | T2 | ⬜ | R9 showed hardware passes without them; keep them only if CI's SwiftShader still needs them, behind a flag. |
+| K2.3 | Port the v1 volume material, `gridStats`, `valueTransform`, `decodeToAtlas` and the sequence player | T2 | 🟨 | Part A ✅: `VDBVolumeMaterial` (+ `vdbProxyGeometry`), `VDBSequence` on `pool.replace`, `VDBGridNode` `helpers` option, `storageAttribute` gone, `wgsl.ts` a 2-symbol shim (docs/handoffs/K2.md "K2.3 part A"). Part B: compute tools. After B merges: delete `three/legacy-material.ts` (v1 `NanoVDBVolumeMaterial`, kept for demo 06) and `three/wgsl.ts` if `compute.ts` no longer imports it. |
+| K2.4 | Port demos 01–07 and keep their goldens | T2 | 🟨 | Part A ✅: 01, 02, 05, 07 ported; 03 kept as the hand-written raw-WebGPU teaching demo (comments point at the core). No snapshot changed. Part B: 04, 06. |
+| K2.5 | Drop the sandbox-only workarounds from the default path (DIVERGES V7/V8) | T2 | 🟨 | Part A ✅ for 02/05/07: direct canvas by default, `?presentation=readback` opt-in for e2e, swizzle/keep-alive shims deleted. Demos 04/06 (V8, shims) are part B's. `pnpm hardware:smoke` not rerun (needs hardware Chrome); its 02/05 checks were updated. |
 
 ## K3 — Renderer: port and extend
 
