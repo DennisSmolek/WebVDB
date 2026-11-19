@@ -32,6 +32,8 @@ export interface FrameVolumeLike extends Object3D {
   readonly proxy: Object3D;
   readonly volumes: readonly FrameVolumeRecord[];
   readonly mipmaps: boolean;
+  /** Re-reads the source (its uniforms and, for a sparse source's box, `volumes[].matrix`) if it changed. */
+  syncSource?(): void;
 }
 
 export interface FrameVolumeEntry<V extends FrameVolumeLike = FrameVolumeLike> {
@@ -178,6 +180,9 @@ export class FrameVolumeCollector<V extends FrameVolumeLike = FrameVolumeLike> {
       if (!frameVolume.isVDBFrameVolume || !frameVolume.proxy.layers.test(this.camera!.layers)) {
         return;
       }
+
+      // G16a: a source that follows its grid's image may move the volume's box; re-read it before placing the box
+      frameVolume.syncSource?.();
 
       const { volumes } = frameVolume;
 

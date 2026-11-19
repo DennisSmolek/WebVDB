@@ -11,23 +11,25 @@
  * `smoke.vdb` (openvdb.org, CC BY-SA 4.0) baked in the page as demo 09. Sky: `fixtures/gallery/sky-midday-HDR.jpg`
  * when present, else a procedural sky. Public API only.
  *
- * The froxel renderer's sparse source maps its unit box onto the grid's index box when it is made, and the
- * `VDBGridNode` decodes the grid types the pool holds when it is made, so each swap makes a new node, source and
- * `VDBFrameVolume` over the same pool id (the frame renderer integrates in world space, so a preview needs no
- * `voxelRatio` density scale, unlike `VDBVolumeMaterial`).
+ * One `VDBGridNode`, sparse source and `VDBFrameVolume` per stream, made at the first grid (G16a): the node decodes
+ * every grid type of the family (`event.types`: smoke and the WDAS cloud both have an FpN preview and an Fp8 full
+ * grid), and the source is made with `followImage`, so after the swap it re-reads the full grid's boxes, rebuilds its
+ * pyramid and the volume moves its box, with no new shader. The frame renderer integrates in world space, so a
+ * preview needs no `voxelRatio` density scale, unlike `VDBVolumeMaterial`.
  *
  * Query (plus the shell's `presentation`, `panel`, `still`, `gallery`): `?asset=wdas|smoke`, `?speed=<KiB/s>`
  * (0: unthrottled), `?quality=low|medium|high`, `?temporal=0|1`, `?mode=direct` (no stream: the full grid added
  * directly, the reference the e2e compares the streamed result with), `?test=1` (with `presentation=readback`: still, unthrottled
- * 1 KiB chunks, the stream held until each grid's frame is read back). `window.__DEMO16__` is the e2e state.
+ * 1 KiB chunks, the stream held until each grid's frame is read back, the shader and pipeline builds counted per
+ * grid). `window.__DEMO16__` is the e2e state.
  *
  * Frame times are submit-to-done wall times on this page: provisional (D25), not a benchmark.
  */
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { VDBGridPool } from "@pmndrs/vdb";
+import { VDBGridPool, type VDBGridTypeName } from "@pmndrs/vdb";
 import { NvdbFile, parseVdb, vdbBakeCoarseFirst, type NvdbGridMetadata } from "@pmndrs/vdb/tools";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, getDevice, vdbSparseSource, vdbStreamCoarseFirst, type VDBCoarseFirstEvent, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, getDevice, vdbSparseSource, vdbStreamCoarseFirst, type VDBCoarseFirstEvent, type VDBThreeSparseSource } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import { GalleryShell, KiB, MiB, PRESENTATION as SHELL_PRESENTATION, Presenter, QUALITY, autoOrbit, initialQuality, loadHdrSky, params, probe, proceduralSky, type Quality, type Snapshot } from "../12-explosion/shell.js";
 
@@ -47,6 +49,8 @@ interface PhaseRecord {
   voxelRatio: number;
   /** The first settled frame with this grid (readback only). */
   snapshot: Snapshot | null;
+  /** `?test=1`: shader modules and pipelines the device created from the grid's arrival to its snapshot. */
+  builds: number;
 }
 
 interface Demo16State {
@@ -275,7 +279,8 @@ async function run(): Promise<void> {
           shell.status.textContent = "baking smoke.vdb coarse-first in the page…";
           const vdb = parseVdb(await (await fetch(SMOKE_VDB)).arrayBuffer());
           await sleep(30);
-          return vdbBakeCoarseFirst(vdb, { previewResolution: 48 });
+          // As the WDAS bake: an FpN preview, an Fp8 full grid (the swap changes the grid type).
+          return vdbBakeCoarseFirst(vdb, { previewResolution: 48, fullQuantize: "fp8" });
         });
         shell.status.textContent = "";
         return { response: await blobResponse(bytes), total: bytes.length, note: "smoke.vdb, baked in the page" };
@@ -308,6 +313,18 @@ async function run(): Promise<void> {
     if (info.reason !== "destroyed") shell.fail(`WebGPU device lost: ${info.message}`);
   });
   state.adapter = created.adapterName || "unreported adapter";
+  // `?test=1`: count shader modules and pipelines (a swap must build none).
+  let builds = 0;
+  if (TEST) {
+    const d = device as unknown as Record<string, (...args: unknown[]) => unknown>;
+    for (const name of ["createShaderModule", "createRenderPipeline", "createRenderPipelineAsync", "createComputePipeline", "createComputePipelineAsync"]) {
+      const original = d[name]!.bind(device);
+      d[name] = (...args: unknown[]) => {
+        builds++;
+        return original(...args);
+      };
+    }
+  }
   if (PRESENTATION === "direct") {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.9;
@@ -379,10 +396,10 @@ async function run(): Promise<void> {
     if (volume) volume.shadowSteps = q.shadowSteps;
   }
 
-  // --- one run: a pool, the stream, a node + source + volume per grid shown ---------------------------------
+  // --- one run: a pool, the stream, one node + source + volume made at the first grid --------------------------
   interface Shown {
     grids: VDBGridNode;
-    source: VDBThreeVolumeSource;
+    source: VDBThreeSparseSource;
     volume: VDBFrameVolume;
     id: number;
   }
@@ -408,16 +425,17 @@ async function run(): Promise<void> {
     state.frames++;
   };
 
-  /** Show the grid now in pool id `id`: a new node (the pool's types now), source and volume; the old ones go. */
-  function showGrid(p: VDBGridPool, id: number, image: Uint32Array): void {
-    const grids = new VDBGridNode(renderer, p, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"] });
-    const source = vdbSparseSource(grids, { density: id }, { lod: "coarse-pyramid", images: { density: image } });
+  /**
+   * Show pool id `id`: one node (decoding `types`, every grid type the id will hold), a source that follows the id's
+   * image (`followImage`: a later swap re-reads its boxes) and a volume, kept for the rest of the run.
+   */
+  function showGrid(p: VDBGridPool, id: number, image: Uint32Array, types?: VDBGridTypeName[]): void {
+    const grids = new VDBGridNode(renderer, p, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"], types });
+    const source = vdbSparseSource(grids, { density: id }, { lod: "coarse-pyramid", images: { density: image }, followImage: true });
     const volume = new VDBFrameVolume(source, { frameRenderer, extinction: 100, angstromExponent: 0, normalizeDensity: true });
     applySettings(volume);
     holder.add(volume);
-    const old = shown;
     shown = { grids, source, volume, id };
-    if (old) disposeShown(old);
   }
   function disposeShown(s: Shown): void {
     holder.remove(s.volume);
@@ -476,7 +494,7 @@ async function run(): Promise<void> {
       p.flush();
       await p.settled();
       await serial(async () => {
-        showGrid(p, id, image);
+        showGrid(p, id, image); // the pool's types (the full grid's only)
         await present();
         await present();
       });
@@ -518,16 +536,41 @@ async function run(): Promise<void> {
       tl.markers.push({ t: arrived, bytes, kind: phase });
       held = serial(async () => {
         if (gen !== generation) return;
-        // The new grid is in the pool's staging: write it, then build the node, source and volume for it.
+        const buildsBefore = builds;
+        // The new grid is in the pool's staging: write it.
         p.flush();
         await p.settled();
         if (!e.final) versionAfterPreview = p.version;
-        if (e.action === "add") place(e.grid.metadata.worldBBox);
-        showGrid(p, e.id, e.grid.image);
-        await present(); // compiles
+        if (e.action === "add") {
+          // The first grid: the node (every type of the family), the following source and the volume.
+          place(e.grid.metadata.worldBBox);
+          showGrid(p, e.id, e.grid.image, e.types);
+        } else if (shown) {
+          // A swap: the source re-reads the boxes at the next frame by itself. Rebind after a growth (none here: the
+          // full size is reserved), and read the new density mean back first so the first frame is normalized by it.
+          shown.grids.update();
+          await shown.source.refreshStats();
+        }
+        await present(); // the first frame (compiles at the first grid)
         await present(); // a settled frame
+        // `?test=1`: let the first grid's lazy passes (the environment lights' readback) finish compiling before the swap.
+        for (let i = 0; TEST && !e.final && i < 8; i++) {
+          const before = builds;
+          await present();
+          if (builds === before) break;
+        }
         const info = p.info(e.id);
-        state.phases.push({ phase, grid: e.grid.metadata.name, gridType: e.grid.metadata.gridType, transferBytes: bytes, seconds: arrived, imageBytes: info.imageBytes, voxelRatio: e.voxelRatio, snapshot: presenter.capture() });
+        state.phases.push({
+          phase,
+          grid: e.grid.metadata.name,
+          gridType: e.grid.metadata.gridType,
+          transferBytes: bytes,
+          seconds: arrived,
+          imageBytes: info.imageBytes,
+          voxelRatio: e.voxelRatio,
+          snapshot: presenter.capture(),
+          builds: builds - buildsBefore,
+        });
         if (e.final) {
           setPhase("full", `FULL RESOLUTION · ${e.grid.metadata.gridType}, ${MiB(info.imageBytes)} · in at ${MiB(bytes)}, ${arrived.toFixed(1)} s`);
           shell.flash("full", "full-resolution grid swapped in");

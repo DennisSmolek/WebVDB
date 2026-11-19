@@ -218,10 +218,13 @@ From v1; details in docs/handoffs/.
   tone maps on screen must apply the same curve on the CPU (the gallery shell does ACES) or readback images look flat.
 - Demo 13 gives each large grid its own `VDBGridPool`: four level sets (6–81 MB images, 212 MB in all) in one pool would
   pass WebGPU's default `maxStorageBufferBindingSize` (128 MiB); a material reads one pool's `VDBGridNode` anyway.
-- Coarse-first into the froxel renderer (gallery demo 16): `vdbSparseSource` fixes its index box and world box when made,
-  and a `VDBGridNode` compiles the pool's grid types at construction (a FpN preview then an Fp8 full grid reads 0). After
-  each `vdbStreamCoarseFirst` swap make a new node, source and `VDBFrameVolume` over the same id, before the next render
-  (the old source would read the new grid through the preview's box). No `voxelRatio` scale: froxels integrate in world space.
+- Coarse-first into the froxel renderer (gallery demo 16, G16a): `vdbSparseSource` fixes its boxes when made unless made
+  with `followImage: true`, and a `VDBGridNode` compiles the pool's types now unless given `types` (an FpN preview then an
+  Fp8 full grid reads 0). At the first `vdbStreamCoarseFirst` event make one node with `types: event.types` and a source
+  with `followImage`; after a swap only `pool.flush()` + `grids.update()` (await `source.refreshStats()` if the first frame
+  must have the new density mean: it is read back). The layout is re-read only once the new image is resident. No
+  `voxelRatio` scale: froxels integrate in world space. Count builds by wrapping the device's `create*Pipeline*` /
+  `createShaderModule` (demo 16 `?test=1`); settle the first grid's lazy passes first.
 - `wvdbDenseToNvdb` gives the NanoVDB grid one voxel size (the x side's): a `.wvdb` level with non-cubic voxels (any
   default `vdbToWvdb` bake, whose sides round independently) reads back shifted in world space, so `vdbResampleError`
   against it is too high (smoke 128: 45% instead of 42%; a 128³ box: 92%). Bake with a cubic box (demo 15 `cubicBox`).

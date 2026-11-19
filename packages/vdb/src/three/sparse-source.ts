@@ -39,6 +39,13 @@
  * HDDA: `skipEmpty` lets a march jump samples that are provably 0 (`VDBFrameVolume` `hdda`, default
  * off since D30 / D31: it slowed the shadow march on Apple GPUs; the image is the same either way).
  *
+ * Following the image (`followImage`, G16a): the index boxes, world box and pyramid are fixed when the source is
+ * made unless it follows the grids' images. Then a `pool.replace` that changes a channel grid's box (a coarse-first
+ * swap: the preview, then the full grid in the same id) is re-read from `pool.info` once the new image is resident:
+ * new box uniforms, a new GPU pyramid of the new size (its textures swapped into the same texture nodes), the LOD
+ * range as a uniform, and a new `version`, which a `VDBFrameVolume` follows with its box. No shader is rebuilt, and the
+ * pyramid kernels of every type the `VDBGridNode` decodes are compiled up front.
+ *
  * Mask, albedo and emission grids (optional, scalar; albedo may be three grids for RGB) are read at
  * level 0 only. One VDB module per shader: every grid goes through the one `VDBGridNode`.
  */
@@ -48,7 +55,7 @@ import * as TSL from "three/tsl";
 import { code, wgslFn } from "three/tsl";
 import { VDBError } from "../core/errors.js";
 import type { VDBVolumeChannels } from "../core/source/types.js";
-import { vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
+import { vdbCreateBoxPyramid, warmBoxPyramidPipelines, type VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
 import { vdbBoxPyramid } from "../tools/frame/sparse.js";
 import { vdbBoxPyramidLayout } from "../tools/frame/pyramid-layout.js";
 import { getGPUTexture, webgpuBackendOf } from "./device.js";
@@ -138,11 +145,21 @@ export interface VDBSparseSourceOptions {
    * start from the cached lower node, 10–25% off the source passes; alone it changes little).
    */
   cacheAccessor?: boolean;
+  /**
+   * G16a: follow the grids' images. When a channel grid's `imageRevision` moves (a `pool.replace`, e.g. a
+   * `vdbStreamCoarseFirst` swap from the preview to the full grid) and every channel grid is resident again, the
+   * source re-reads its index boxes, world box and transform from `pool.info`, rebuilds the coarse pyramid at the
+   * new size and bumps `version` (a `VDBFrameVolume` whose box is the source's follows it). Boxes, sizes and LOD
+   * levels are uniforms in this mode, so nothing recompiles; give the `VDBGridNode` every grid type the images will
+   * have (`types`, e.g. `VDBCoarseFirstEvent.types`). Default false: the boxes are fixed when the source is made.
+   * Not with `indexBox`, `auxIndexBoxes`, `bbox` or `pyramidBuild: 'cpu'`.
+   */
+  followImage?: boolean;
 }
 
 /** What the source needs from a pool: `info` and the ids' grids (a `VDBGridPool`). */
 interface PoolInfoLike {
-  info(id: number): { indexBBox: { min: Vec3; max: Vec3 }; indexToWorld: Float64Array; hasStats: boolean; capacity: number; type: string };
+  info(id: number): { indexBBox: { min: Vec3; max: Vec3 }; indexToWorld: Float64Array; hasStats: boolean; capacity: number; type: string; imageRevision?: number; resident?: boolean };
 }
 
 /** The coarse pyramid of a `'coarse-pyramid'` sparse source. */
@@ -180,6 +197,10 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   readonly fastTrilinear: boolean;
   /** K3.2d: one accessor per invocation across samples (see the option). */
   readonly cacheAccessor: boolean;
+  /** G16a: the boxes follow the grids' images (see the option). */
+  readonly followImage: boolean;
+  /** G16a: times the boxes (and the pyramid, if its size changed) were re-read after an image change. */
+  readonly layoutUpdates: number;
   /**
    * GPU bytes: the grids' pool capacity, the pyramid textures (r16f) and the GPU build's scratch
    * buffers (kept for rebuilds; 0 on the CPU path).
@@ -226,6 +247,9 @@ export interface VDBSparseVolumeUniforms extends VDBVolumeUniforms {
 }
 
 const bad = (message: string) => new VDBError("VDB_BAD_OPTION", `vdbSparseSource: ${message}`);
+
+/** G16a: the pyramid texture nodes of a following source's uniforms (their textures change with the layout). */
+const pyramidTextures = new WeakMap<object, { map: VDBTslNode; mip: VDBTslNode }>();
 
 /** The non-zero density stats of an image (all leaf voxels, active or not, and active tiles). */
 function imageStats(image: Uint32Array, clamp01: boolean): { meanNonZero: number; max: number; activeVoxels: number } {
@@ -391,19 +415,30 @@ class SparseSource implements VDBThreeSparseSource {
   readonly lod: VDBSparseLod;
   readonly normalize: "none" | "clamp01";
   readonly channels: VDBVolumeChannels;
-  readonly indexBox: VDBIndexBox;
-  readonly auxBoxes: Record<"mask" | "albedo" | "emission", VDBIndexBox | null>;
-  readonly texels: [number, number, number];
-  readonly lodLevels: number;
+  // G16a: the layout fields below are re-read after an image change when `followImage` is on.
+  indexBox: VDBIndexBox;
+  auxBoxes: Record<"mask" | "albedo" | "emission", VDBIndexBox | null>;
+  texels: [number, number, number];
+  lodLevels: number;
   stats: { meanNonZero: number; max: number; activeVoxels: number };
   statsUpdates = 0;
-  readonly boxToSource: Float32Array;
-  readonly bbox: [Vec3, Vec3];
-  readonly pyramid: VDBSparsePyramid | null;
-  readonly gpuBytes: { pool: number; pyramid: number; pyramidScratch: number };
+  boxToSource: Float32Array;
+  bbox: [Vec3, Vec3];
+  pyramid: VDBSparsePyramid | null;
+  gpuBytes: { pool: number; pyramid: number; pyramidScratch: number };
   readonly fastTrilinear: boolean;
   readonly cacheAccessor: boolean;
+  readonly followImage: boolean;
   pyramidBuilds = 0;
+  layoutUpdates = 0;
+  /** G16a: the newest channel imageRevision the layout describes, the pool revision last checked, the uniforms to re-apply. */
+  private layoutRevision = -1;
+  private layoutPoolRevision = -1;
+  private readonly layoutListeners = new Set<() => void>();
+  /** G16a: `pyramidMax` as given (the pyramid is re-laid out with it). */
+  private readonly pyramidMaxOption: { pyramidMax?: number };
+  /** G16a: the atlas node's texture when the layout has no atlas (a 1³ zero texture of its own). */
+  private emptyAtlas: THREE.Data3DTexture | null = null;
   private poolRevisionSeen = -1;
   private readonly poolIds: number[];
   private versionSeen = { poolRevision: -1, value: 0 };
@@ -438,6 +473,15 @@ class SparseSource implements VDBThreeSparseSource {
     if (fastTrilinear && grids.options.sampler === "nearest") throw bad("fastTrilinear needs the VDBGridNode's sampler 'trilinear'.");
     this.fastTrilinear = fastTrilinear;
     this.cacheAccessor = o.cacheAccessor ?? true;
+    const followImage = o.followImage ?? false;
+    if (typeof followImage !== "boolean") throw bad("followImage must be a boolean.");
+    if (followImage) {
+      const fixed = (["indexBox", "auxIndexBoxes", "bbox"] as const).filter((k) => o[k] !== undefined);
+      if (fixed.length) throw bad(`followImage re-reads every box from the pool; drop ${fixed.join(", ")} (fixed boxes).`);
+      if (lod === "coarse-pyramid" && o.pyramidBuild === "cpu") throw bad("followImage rebuilds the pyramid from the pool on the GPU; use pyramidBuild 'gpu' (the default).");
+    }
+    this.followImage = followImage;
+    this.pyramidMaxOption = o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {};
     const density = info(ids.density);
     if (lod === "node-average" && !density.hasStats) throw bad("lod 'node-average' reads node statistics; this grid has none (rebuild it with stats).");
     this.grids = grids;
@@ -493,38 +537,132 @@ class SparseSource implements VDBThreeSparseSource {
         }
         const initTexture = (renderer as { initTexture?: (t: THREE.Texture) => void }).initTexture;
         if (typeof initTexture !== "function") throw bad("pyramidBuild 'gpu' needs renderer.initTexture (three r187 WebGPURenderer).");
-        const layout = vdbBoxPyramidLayout(this.texels, pyramidMax);
-        const map = halfTexture(null, layout.dimensions);
-        const mip = layout.atlas ? halfTexture(null, layout.atlas.dimensions) : null;
-        map.name = "vdbSparseSource pyramid base";
-        if (mip) mip.name = "vdbSparseSource pyramid atlas";
-        for (const t of [map, mip]) if (t) initTexture.call(renderer, t);
-        const gpu = vdbCreateBoxPyramid(device, grids.pool as never, ids.density, {
-          indexBox: b,
-          ...pyramidMax,
-          targets: { base: getGPUTexture(renderer as never, map), atlas: mip ? getGPUTexture(renderer as never, mip) : null },
-          label: "vdbSparseSource pyramid",
-        });
-        pyramid = {
-          build,
-          level: layout.level,
-          dimensions: [...layout.dimensions],
-          atlas: layout.atlas ? { dimensions: [...layout.atlas.dimensions], levels: layout.atlas.levels.length } : null,
-          lodLevels: layout.lodLevels,
-          map,
-          mip,
-          gpu,
-        };
+        // G16a: a following source compiles the pyramid kernels of every type the node decodes now, so a swap to
+        // another grid type creates no pipeline.
+        if (followImage) warmBoxPyramidPipelines(device, grids.options.types);
+        pyramid = this.gpuPyramid(b, ids.density);
       }
     }
     this.pyramid = pyramid;
     this.lodLevels = lod === "none" ? 0 : lod === "node-average" ? 7 : pyramid!.lodLevels;
     const poolIds = new Set([ids.density, ids.mask, ids.emission, ...(Array.isArray(ids.albedo) ? ids.albedo : [ids.albedo])].filter((v): v is number => v !== undefined));
     this.poolIds = [...poolIds];
-    const atlasTexels = pyramid?.atlas ? pyramid.atlas.dimensions[0] * pyramid.atlas.dimensions[1] * pyramid.atlas.dimensions[2] : 0;
-    const pyramidBytes = pyramid ? 2 * (pyramid.dimensions[0] * pyramid.dimensions[1] * pyramid.dimensions[2] + atlasTexels) : 0;
-    this.gpuBytes = { pool: [...poolIds].reduce((s, id) => s + info(id).capacity, 0), pyramid: pyramidBytes, pyramidScratch: pyramid?.gpu?.gpuBytes.scratch ?? 0 };
+    this.gpuBytes = this.measure();
+    this.layoutRevision = this.poolIds.reduce((r, id) => Math.max(r, info(id).imageRevision ?? 0), 0);
     this.refreshPyramid();
+  }
+
+  /** GPU bytes of the channel grids' pool ranges and the pyramid (see the interface). */
+  private measure(): { pool: number; pyramid: number; pyramidScratch: number } {
+    const pool = this.grids.pool as unknown as PoolInfoLike;
+    const p = this.pyramid;
+    const atlasTexels = p?.atlas ? p.atlas.dimensions[0] * p.atlas.dimensions[1] * p.atlas.dimensions[2] : 0;
+    const pyramidBytes = p ? 2 * (p.dimensions[0] * p.dimensions[1] * p.dimensions[2] + atlasTexels) : 0;
+    return { pool: this.poolIds.reduce((s, id) => s + pool.info(id).capacity, 0), pyramid: pyramidBytes, pyramidScratch: p?.gpu?.gpuBytes.scratch ?? 0 };
+  }
+
+  /** The GPU pyramid of `box` (K3.2a): three textures the core's `vdbCreateBoxPyramid` writes into. */
+  private gpuPyramid(box: VDBIndexBox, densityId: number): VDBSparsePyramid {
+    const renderer = this.grids.renderer as unknown as { initTexture(t: THREE.Texture): void };
+    const device = webgpuBackendOf(renderer, "vdbSparseSource").device;
+    const texels = [0, 1, 2].map((a) => box.max[a]! - box.min[a]! + 1);
+    const layout = vdbBoxPyramidLayout(texels, this.pyramidMaxOption);
+    const map = halfTexture(null, layout.dimensions);
+    const mip = layout.atlas ? halfTexture(null, layout.atlas.dimensions) : null;
+    map.name = "vdbSparseSource pyramid base";
+    if (mip) mip.name = "vdbSparseSource pyramid atlas";
+    for (const t of [map, mip]) if (t) renderer.initTexture(t);
+    const gpu = vdbCreateBoxPyramid(device, this.grids.pool as never, densityId, {
+      indexBox: box,
+      ...this.pyramidMaxOption,
+      targets: { base: getGPUTexture(renderer as never, map), atlas: mip ? getGPUTexture(renderer as never, mip) : null },
+      label: "vdbSparseSource pyramid",
+    });
+    return {
+      build: "gpu",
+      level: layout.level,
+      dimensions: [...layout.dimensions],
+      atlas: layout.atlas ? { dimensions: [...layout.atlas.dimensions], levels: layout.atlas.levels.length } : null,
+      lodLevels: layout.lodLevels,
+      map,
+      mip,
+      gpu,
+    };
+  }
+
+  /** G16a: the atlas texture a following source's shaders bind: the pyramid's, else a 1³ zero texture (never read). */
+  atlasTexture(): THREE.Data3DTexture {
+    if (this.pyramid?.mip) return this.pyramid.mip;
+    if (!this.emptyAtlas) {
+      this.emptyAtlas = halfTexture(new Float32Array(1), [1, 1, 1]);
+      this.emptyAtlas.name = "vdbSparseSource empty atlas";
+    }
+    return this.emptyAtlas;
+  }
+
+  /**
+   * G16a (`followImage`): re-reads the layout when a channel grid's image changed and every channel grid is resident
+   * again (the update that writes the new image has run: the GPU must not read it through the old boxes, nor the
+   * old image through the new ones). Cheap when the pool's revision did not move; called from `version` (a
+   * `VDBFrameVolume` asks once per frame, before it places its box) and from the render updates.
+   */
+  syncLayout(): boolean {
+    if (!this.followImage) return false;
+    const pool = this.grids.pool as unknown as { revision?: number } & PoolInfoLike;
+    if (typeof pool.revision !== "number" || pool.revision === this.layoutPoolRevision) return false;
+    let revision = 0;
+    let resident = true;
+    for (const id of this.poolIds) {
+      let i: ReturnType<PoolInfoLike["info"]>;
+      try {
+        i = pool.info(id);
+      } catch {
+        return false; // a removed grid: keep the last layout
+      }
+      revision = Math.max(revision, i.imageRevision ?? 0);
+      if (i.resident === false) resident = false;
+    }
+    if (revision === this.layoutRevision) {
+      this.layoutPoolRevision = pool.revision;
+      return false;
+    }
+    if (!resident) return false; // look again once the update has written it
+    this.relayout();
+    this.layoutRevision = revision;
+    this.layoutPoolRevision = pool.revision;
+    return true;
+  }
+
+  private relayout(): void {
+    const pool = this.grids.pool as unknown as PoolInfoLike;
+    const ids = this.ids;
+    const density = pool.info(ids.density);
+    const b: VDBIndexBox = { min: [...density.indexBBox.min], max: [...density.indexBBox.max] };
+    const old = this.indexBox;
+    const moved = b.min.some((v, a) => v !== old.min[a]) || b.max.some((v, a) => v !== old.max[a]);
+    this.indexBox = b;
+    this.texels = [b.max[0] - b.min[0] + 1, b.max[1] - b.min[1] + 1, b.max[2] - b.min[2] + 1];
+    const [sx, sy, sz] = this.texels;
+    this.boxToSource = new Float32Array([sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, b.min[0] - 0.5 + 0.5 * sx, b.min[1] - 0.5 + 0.5 * sy, b.min[2] - 0.5 + 0.5 * sz, 1]);
+    this.bbox = worldBox(b, density.indexToWorld);
+    const auxBox = (id: number | undefined): VDBIndexBox | null => (id === undefined ? null : { min: [...pool.info(id).indexBBox.min] as Vec3, max: [...pool.info(id).indexBBox.max] as Vec3 });
+    this.auxBoxes = { mask: auxBox(ids.mask), albedo: auxBox(Array.isArray(ids.albedo) ? ids.albedo[0] : (ids.albedo as number | undefined)), emission: auxBox(ids.emission) };
+    // A new box needs a pyramid of its size (and box min); the same box rebuilds in place (refreshPyramid).
+    const previous = this.pyramid;
+    if (moved && previous?.gpu) {
+      this.pyramid = this.gpuPyramid(b, ids.density);
+      this.lodLevels = this.pyramid.lodLevels;
+      this.poolRevisionSeen = -1;
+    }
+    this.gpuBytes = this.measure();
+    this.layoutUpdates++;
+    for (const apply of this.layoutListeners) apply();
+    // After the uniforms point at the new textures: the old ones go (three destroys them after submitted work).
+    if (previous !== this.pyramid && previous) {
+      previous.gpu?.destroy();
+      previous.map.dispose();
+      previous.mip?.dispose();
+    }
   }
 
   /**
@@ -533,6 +671,12 @@ class SparseSource implements VDBThreeSparseSource {
    * again. Read through the pool's `revision` first (cheap when nothing changed).
    */
   get version(): number {
+    // G16a: a following source's version is the image revision its layout describes (it moves once the new image is
+    // resident and the boxes were re-read), so a VDBFrameVolume re-reads its box and the uniforms then.
+    if (this.followImage) {
+      this.syncLayout();
+      return this.layoutRevision;
+    }
     const pool = this.grids.pool as unknown as { revision?: number; info(id: number): { imageRevision?: number } };
     if (typeof pool.revision !== "number") return 0;
     if (pool.revision !== this.versionSeen.poolRevision) {
@@ -550,6 +694,7 @@ class SparseSource implements VDBThreeSparseSource {
   }
 
   refreshPyramid(): boolean {
+    this.syncLayout();
     const gpu = this.pyramid?.gpu;
     if (!gpu) return false;
     // Cheap test first: the pool's revision moves on any change; the grid's imageRevision tells whether this one did.
@@ -650,6 +795,7 @@ class SparseSource implements VDBThreeSparseSource {
     // back). K5.9a: the new mean is applied once, when the readback lands; the render update never writes the
     // value, so a value set per draw (VDBFrameVolume's densityScale, through setVolumeUniforms) stays as set.
     const densityScaleU = uniform(vdbDensityScaleOf(this, densityScale, normalize)).onRenderUpdate(() => {
+      this.syncLayout();
       void this.refreshStats();
       return undefined;
     });
@@ -657,6 +803,9 @@ class SparseSource implements VDBThreeSparseSource {
       densityScaleU.value = vdbDensityScaleOf(this, densityScale, normalize);
     });
     const pyr = this.pyramid;
+    // G16a: a following source samples its pyramid through texture nodes made here (one pair per uniforms), so a new
+    // layout swaps their textures; the atlas node always exists (a 1³ texture when the layout has none).
+    const textures = this.followImage && pyr ? { map: texture3D(pyr.map), mip: texture3D(this.atlasTexture()) } : null;
     const u: VDBSparseVolumeUniforms = {
       worldScale: uniform(p.worldScale ?? 1.0),
       gridTexels: uniform(new THREE.Vector3(...this.texels)),
@@ -684,8 +833,37 @@ class SparseSource implements VDBThreeSparseSource {
         if (o.densityScale !== undefined) densityScale = o.densityScale;
         if (o.normalizeDensity !== undefined) normalize = o.normalizeDensity;
         densityScaleU.value = vdbDensityScaleOf(this, densityScale, normalize);
+        if (this.followImage) applyLayout();
       },
     };
+    // G16a: the layout as uniform values (and texture swaps), applied again after every re-read.
+    const setBox = (b: { min: VDBTslNode; size: VDBTslNode } | null, bx: VDBIndexBox | null) => {
+      if (!b || !bx) return;
+      b.min.value.set(...bx.min);
+      b.size.value.set(bx.max[0] - bx.min[0] + 1, bx.max[1] - bx.min[1] + 1, bx.max[2] - bx.min[2] + 1);
+    };
+    const applyLayout = () => {
+      u.gridTexels.value.set(...this.texels);
+      setBox(u.boxes.density, this.indexBox);
+      setBox(u.boxes.mask, this.auxBoxes.mask);
+      setBox(u.boxes.albedo, this.auxBoxes.albedo);
+      setBox(u.boxes.emission, this.auxBoxes.emission);
+      levels.value = this.lodLevels;
+      const p = this.pyramid;
+      if (!p) return;
+      u.pyramidLevel.value = p.level;
+      u.pyramidLevels.value = p.atlas?.levels ?? 0;
+      u.pyramidTexels.value.set(...p.dimensions);
+      u.pyramidAtlasSize.value.set(...(p.atlas?.dimensions ?? [1, 1, 1]));
+      if (textures) {
+        textures.map.value = p.map;
+        textures.mip.value = this.atlasTexture();
+      }
+    };
+    if (this.followImage) {
+      this.layoutListeners.add(applyLayout);
+      if (textures) pyramidTextures.set(u, textures);
+    }
     return u;
   }
 
@@ -696,6 +874,9 @@ class SparseSource implements VDBThreeSparseSource {
     const useMipmaps = o.useMipmaps ?? this.lodLevels > 0;
     const gridUv = vdbGridUv(u);
     const clamp01 = this.normalize === "clamp01";
+    // G16a: a following source's LOD range is a uniform (it changes with the layout); otherwise a constant.
+    const lodMax = this.followImage ? u.mipLevels.density : float(this.lodLevels);
+    const followTextures = this.followImage ? pyramidTextures.get(u) : undefined;
 
     // uvw → sample index space, clamped to the voxels (his clamp-to-edge).
     const samplePos = (box: { min: VDBTslNode; size: VDBTslNode }, uvw: VDBTslNode) =>
@@ -706,13 +887,14 @@ class SparseSource implements VDBThreeSparseSource {
     const densityAt = (uvw: VDBTslNode, lodIn: VDBTslNode): VDBTslNode => {
       const p = samplePos(u.boxes.density!, uvw).toVar();
       if (!useMipmaps || lod === "none") return level0(ids.density, p);
-      const l = clamp(lodIn, 0.0, float(this.lodLevels)).toVar();
+      const l = clamp(lodIn, 0.0, lodMax).toVar();
       if (lod === "node-average") return this.nodeLodFn()(uint(ids.density), p, l);
       const r = float(0.0).toVar();
       // coarse-pyramid
       const pyr = this.pyramid!;
-      const pyrMap = texture3D(pyr.map);
-      const pyrMip = pyr.mip ? texture3D(pyr.mip) : null;
+      if (this.followImage && !followTextures) throw bad("createNodes needs this source's uniforms (vdbVolumeUniforms(source)).");
+      const pyrMap = followTextures ? followTextures.map : texture3D(pyr.map);
+      const pyrMip = followTextures ? followTextures.mip : pyr.mip ? texture3D(pyr.mip) : null;
       const { sampleMipmapped } = vdbMipSampler(u.pyramidTexels, u.pyramidAtlasSize);
       const coarse = (rel: VDBTslNode) => (pyrMip ? sampleMipmapped(pyrMap, pyrMip, u.pyramidLevels, uvw, rel).r : pyrMap.sample(uvw).level(float(0.0)).r);
       // K3.2d: one level-0 call site (each inlines the whole tree walk), shared by the two branches below.
@@ -770,7 +952,7 @@ class SparseSource implements VDBThreeSparseSource {
     // up to level 2. Wrapping or an offset moves samples off the ray's cells: no skipping then.
     const skipEmpty = (origin: VDBTslNode, direction: VDBTslNode, t0: VDBTslNode, t1: VDBTslNode, lodIn: VDBTslNode) => {
       const box = u.boxes.density!;
-      const l = useMipmaps && lod !== "none" ? clamp(lodIn, 0.0, float(this.lodLevels)) : float(0.0);
+      const l = useMipmaps && lod !== "none" ? clamp(lodIn, 0.0, lodMax) : float(0.0);
       const dilate = int(0).toVar();
       // Cost rule (K3.2 A/B): a walk visits 8³ cells at 8 node lookups each, so it only pays while samples are at
       // most one cell apart (the march's lod ≤ 3, i.e. steps ≤ 8 voxels); sparser marches sample everything.
@@ -812,6 +994,8 @@ class SparseSource implements VDBThreeSparseSource {
     this.pyramid?.gpu?.destroy();
     this.pyramid?.map.dispose();
     this.pyramid?.mip?.dispose();
+    this.emptyAtlas?.dispose();
+    this.layoutListeners.clear();
   }
 }
 
