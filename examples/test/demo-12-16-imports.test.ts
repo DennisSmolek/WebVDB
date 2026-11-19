@@ -53,7 +53,7 @@ for (const [name, entry] of [
     const { files, bare } = demoGraph(path.join(repo, entry));
 
     it("stays inside the demos folder and uses the gallery shell", () => {
-      expect(files).toContain("examples/src/demos/12-explosion/shell.ts");
+      expect(files).toContain("examples/src/demos/showcase-shell.ts");
       expect(files.filter((f) => !f.startsWith("examples/src/demos/"))).toEqual([]);
     });
 

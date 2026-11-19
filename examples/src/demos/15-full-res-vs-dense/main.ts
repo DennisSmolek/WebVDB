@@ -34,7 +34,7 @@ import {
   type VDBThreeSparseSource,
 } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
-import { GALLERY_DIR, GalleryShell, PRESENTATION, Presenter, autoOrbit, formatBytes, params, probe, qualityParam, type FrameSnapshot, type Quality } from "../gallery-shell.js";
+import { GALLERY_DIR, mountShowcase, PRESENTATION, Presenter, autoOrbit, formatBytes, params, probe, qualityParam, type FrameSnapshot, type Quality } from "../showcase-shell.js";
 import { ASSETS, type AssetId, type ErrorStat, type WorkerRequest, type WorkerResponse } from "./protocol.js";
 
 // --- State the e2e spec reads ------------------------------------------------------------------------------
@@ -80,16 +80,16 @@ const RESOLUTIONS = [64, 128, 200] as const;
 const state: Demo15State = { ready: false, frames: 0, loading: true, uncaptured: [], presentation: PRESENTATION };
 window.__DEMO15__ = state;
 
-const shell = new GalleryShell({
+const shell = mountShowcase({
   number: "15",
   title: "Full-res vs 128³",
   blurb:
     "The same volume twice. Left: our sparse NanoVDB grid at full resolution, every voxel of the source. Right: a dense .wvdb bake at 128 on the longest side, his default: far smaller because it throws the detail away. The cards give the price of each; drag the divider or zoom in to see it.",
 });
-shell.onError = (m) => {
+shell.onFail((m) => {
   state.error = m;
   state.loading = false;
-};
+});
 
 const HDR_URL = `${GALLERY_DIR}sky-midday-HDR.jpg`;
 const QUALITY: Record<Quality, { width: number; height: number; depth: number; subSteps: number; shadowSteps: number; shadowResolution: number; pixelRatio: number }> = {
