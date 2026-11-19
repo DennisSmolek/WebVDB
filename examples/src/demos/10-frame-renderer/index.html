@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>WebVDB · 10 froxel renderer</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #0b1020; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #panel {
+        position: fixed; top: 0; left: 0; margin: 0.75rem; padding: 0.7rem 0.85rem;
+        width: 19rem; max-width: calc(100vw - 1.5rem); max-height: calc(100vh - 1.5rem); overflow-y: auto;
+        background: rgba(12, 16, 32, 0.78); color: #e6ebff; border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(6px);
+        font-size: 0.78rem; line-height: 1.35;
+      }
+      #panel h1 { font-size: 0.95rem; margin: 0 0 0.2rem; }
+      #panel a { color: #9db4ff; }
+      #panel h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; margin: 0.7rem 0 0.25rem; font-weight: 600; }
+      #stats { font-variant-numeric: tabular-nums; opacity: 0.85; margin: 0.35rem 0 0.2rem; white-space: pre-line; }
+      #missing { margin: 0.4rem 0 0; padding: 0.4rem 0.5rem; border-radius: 6px; background: rgba(255, 190, 90, 0.12); color: #ffd69b; white-space: pre-line; }
+      #missing:empty { display: none; }
+      .ctl { display: grid; grid-template-columns: 6.6rem 1fr 2.6rem; align-items: center; gap: 0.35rem; margin: 0.16rem 0; }
+      .ctl.wide { grid-template-columns: 6.6rem 1fr; }
+      .ctl label { opacity: 0.85; }
+      .ctl output { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.9; }
+      .ctl.disabled { opacity: 0.4; }
+      .ctl[hidden] { display: none; }
+      select, input[type="range"] { width: 100%; }
+      select { font: inherit; padding: 0.1rem 0.2rem; }
+      #err { color: #ff9b9b; white-space: pre-wrap; margin-top: 0.5rem; }
+      #err:empty { display: none; }
+      #status { opacity: 0.75; font-style: italic; }
+      #status:empty { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="panel" data-testid="panel">
+      <h1>10 · froxel renderer</h1>
+      <div><a href="/">&larr; all demos</a> · <code>VDBFrameVolume</code> over dense and sparse sources</div>
+      <div id="stats" data-testid="stats">booting…</div>
+      <div id="status" data-testid="status"></div>
+      <div id="controls"></div>
+      <div id="missing" data-testid="missing"></div>
+      <div id="err" data-testid="error"></div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
