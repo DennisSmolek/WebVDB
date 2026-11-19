@@ -277,6 +277,30 @@ describe("B. writeNvdb parses via NvdbFile", () => {
     const parsed = NvdbFile.fromArrayBuffer(file);
     expect(parsed.grids[0]!.worldBBox.min[2]).toBeCloseTo(built.indexBBox.min[2] * 0.5 + 30, 5);
   });
+
+  it("per-axis voxelSize [x, y, z]: anisotropic Map, worldBBox and default worldOrigin per axis (G15a)", () => {
+    const c = randomCase();
+    const vs: [number, number, number] = [0.5, 1.25, 2];
+    const origin: [number, number, number] = [3, -2, 5];
+    const built = vdbBuildFromDenseDetailed(c.values, c.dims, { voxelSize: vs, origin });
+    expect(built.voxelSizeXYZ).toEqual(vs);
+    expect(built.voxelSize).toBe(0.5);
+    // Default worldOrigin = origin * voxelSize per axis, so the Map is world = vs * ijk (no translation).
+    for (let a = 0; a < 3; a++) {
+      expect(built.worldBBox.min[a]).toBeCloseTo(built.indexBBox.min[a]! * vs[a]!, 9);
+      expect(built.worldBBox.max[a]).toBeCloseTo((built.indexBBox.max[a]! + 1) * vs[a]!, 9);
+    }
+    const parsed = NvdbFile.fromArrayBuffer(writeNvdb([built.image])).grids[0]!;
+    expect(parsed.voxelSize).toEqual(vs);
+    for (let a = 0; a < 3; a++) expect(parsed.worldBBox.min[a]).toBeCloseTo(built.worldBBox.min[a]!, 9);
+    // The tree is index-space: everything after GridData (672 bytes) equals a uniform build of the same array.
+    expect(bytesEqual(built.image.subarray(672 / 4), vdbBuildFromDense(c.values, c.dims, { origin }).subarray(672 / 4))).toBe(true);
+    // A number is the same as [n, n, n].
+    expect(bytesEqual(vdbBuildFromDense(c.values, c.dims, { voxelSize: 0.5 }), vdbBuildFromDense(c.values, c.dims, { voxelSize: [0.5, 0.5, 0.5] }))).toBe(true);
+    for (const bad of [0, -1, Number.NaN, [1, 0, 1], [1, 2] as unknown as [number, number, number]]) {
+      expect(() => vdbBuildFromDense(c.values, c.dims, { voxelSize: bad as number })).toThrow(/voxelSize must be positive and finite/);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

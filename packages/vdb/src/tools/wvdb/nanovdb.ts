@@ -9,9 +9,12 @@
  * grid's stats are the mean of the non-zero texels, his `getDensityStats` rule up to the f32 sum).
  *
  * The unit box of the volume maps to the index box `[0, dims − 1]` (pass it as the sparse source's
- * `indexBox`: the built grid's own bbox is the active voxels' only). The Map is a uniform scale by
- * the x voxel size of the `.wvdb` box with the first voxel centre at `bbox.min + voxel / 2`: only
- * informative, since the froxel renderer places volumes by their box, not the grid's Map.
+ * `indexBox`: the built grid's own bbox is the active voxels' only). The Map scales each axis by that
+ * axis's voxel size in the `.wvdb` box (`(bbox.max − bbox.min) / dims`: a bake rounds each side's
+ * texel count on its own, so voxels are generally not cubic) with the first voxel centre at
+ * `bbox.min + voxel / 2`, where the dense texture puts it. CPU tools (`vdbResampleError`, a
+ * world-space sample through the Map) then compare the grid with its source in world space; the
+ * froxel renderer places volumes by their box, not the grid's Map. Without a box the Map is the identity.
  */
 
 import { VDBToolsError } from "../errors.js";
@@ -55,12 +58,16 @@ export function wvdbDenseToNvdb(volume: WvdbDenseVolume, o: WvdbDenseToNvdbOptio
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) values[(x * h + y) * d + z] = tex.data[x + (y + z * h) * w]! / 255;
   const bbox = volume.bbox;
-  const voxelSize = bbox ? (bbox[1][0] - bbox[0][0]) / w : 1;
+  // Per axis (G15a): a bake rounds each side's texel count on its own, so the voxels are not cubic.
+  const voxelSize = [w, h, d].map((n, a) => {
+    const v = bbox ? (bbox[1][a]! - bbox[0][a]!) / n : 1;
+    return v > 0 && Number.isFinite(v) ? v : 1;
+  }) as [number, number, number];
   const worldOrigin: [number, number, number] = bbox
-    ? [bbox[0][0] + voxelSize / 2, bbox[0][1] + (bbox[1][1] - bbox[0][1]) / h / 2, bbox[0][2] + (bbox[1][2] - bbox[0][2]) / d / 2]
+    ? [bbox[0][0] + voxelSize[0] / 2, bbox[0][1] + voxelSize[1] / 2, bbox[0][2] + voxelSize[2] / 2]
     : [0, 0, 0];
   const built = vdbBuildFromDenseDetailed(values, [w, h, d], {
-    voxelSize: voxelSize > 0 ? voxelSize : 1,
+    voxelSize,
     worldOrigin,
     background: 0,
     gridName: o.gridName ?? volume.gridNames[channel] ?? channel,

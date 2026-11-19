@@ -5,8 +5,9 @@
  * size. Requests run in order: the page asks for `load`, `bake`, then `measure`, so a bake shows before the numbers.
  * Public tools API only.
  *
- * The dense bake uses cubic voxels: the box grows by under one voxel per axis so that every axis has the same voxel
- * size (`wvdbDenseToNvdb` reads a dense level back with one voxel size), and the page renders that same bake.
+ * The dense bake is his default: the grid's box, `resolution` voxels on the longest side, the other sides rounded on
+ * their own (so voxels are not quite cubic; `wvdbDenseToNvdb` reads each axis back with its own voxel size), and the
+ * page renders that same bake.
  */
 import {
   NvdbFile,
@@ -22,7 +23,6 @@ import {
   wvdbSourceFromNvdb,
   wvdbSourceFromVdbGrid,
   type VdbFile,
-  type WvdbBox,
 } from "@pmndrs/vdb/tools";
 
 import { ASSETS, type AssetId, type WorkerRequest, type WorkerResponse } from "./protocol.js";
@@ -34,7 +34,6 @@ interface Loaded {
   image: Uint32Array;
   /** The sparse side's file (an .nvdb). */
   fileBytes: Uint8Array;
-  box: WvdbBox;
   /** What the errors are measured against, once `measure` has looked for it. */
   reference: { grid: VdbFile | Uint32Array; name: string } | null;
   sparseMeasured: boolean;
@@ -74,15 +73,13 @@ async function load(asset: AssetId): Promise<Loaded> {
     const grid = file.grids.find((g) => g.valueType === "float");
     if (!grid) throw new Error("smoke.vdb has no float grid");
     const image = buildFromVdb(grid);
-    const box = wvdbSourceFromVdbGrid(grid).bbox;
-    if (!box) throw new Error("smoke.vdb: empty grid");
+    if (!wvdbSourceFromVdbGrid(grid).bbox) throw new Error("smoke.vdb: empty grid");
     // The sparse side ships the NanoVDB grid as an .nvdb file.
-    a = { bakeFrom: { kind: "vdb", file }, image, fileBytes: new Uint8Array(writeNvdb([image])), box, reference: null, sparseMeasured: false, bakes: new Map() };
+    a = { bakeFrom: { kind: "vdb", file }, image, fileBytes: new Uint8Array(writeNvdb([image])), reference: null, sparseMeasured: false, bakes: new Map() };
   } else {
     const image = NvdbFile.fromArrayBuffer(bytes).gridImage(0);
-    const box = wvdbSourceFromNvdb(image).bbox;
-    if (!box) throw new Error("WDAS: empty grid");
-    a = { bakeFrom: { kind: "nvdb", image }, image, fileBytes: new Uint8Array(bytes), box, reference: null, sparseMeasured: false, bakes: new Map() };
+    if (!wvdbSourceFromNvdb(image).bbox) throw new Error("WDAS: empty grid");
+    a = { bakeFrom: { kind: "nvdb", image }, image, fileBytes: new Uint8Array(bytes), reference: null, sparseMeasured: false, bakes: new Map() };
   }
   assets.set(asset, a);
   const meta = NvdbFile.fromArrayBuffer(a.fileBytes.slice().buffer).grids[0]!;
@@ -97,33 +94,17 @@ async function load(asset: AssetId): Promise<Loaded> {
   return a;
 }
 
-/**
- * A box that holds `box` with cubic voxels, `resolution` on the longest side. The other sides round up (his
- * `getFinestDimensions` rounds to nearest, with non-cubic voxels): rounding down would shrink the box and clip the
- * volume's edge.
- */
-function cubicBox(box: WvdbBox, resolution: number): { bbox: WvdbBox; dimensions: [number, number, number] } {
-  const size = [0, 1, 2].map((k) => box[1][k]! - box[0][k]!);
-  const voxel = Math.max(...size) / resolution;
-  const dimensions = size.map((s) => Math.max(1, Math.ceil(s / voxel - 1e-9))) as [number, number, number];
-  const c = [0, 1, 2].map((k) => (box[0][k]! + box[1][k]!) / 2);
-  return {
-    bbox: [c.map((x, k) => x - (dimensions[k]! * voxel) / 2), c.map((x, k) => x + (dimensions[k]! * voxel) / 2)] as WvdbBox,
-    dimensions,
-  };
-}
-
 async function bake(asset: AssetId, resolution: number): Promise<void> {
   const a = await load(asset);
   let bytes = a.bakes.get(resolution);
-  const options = { ...cubicBox(a.box, resolution), fileName: fileName(ASSETS[asset].url) };
+  const options = { resolution, fileName: fileName(ASSETS[asset].url) };
   if (!bytes) {
     post({ type: "status", text: `baking a ${resolution} .wvdb (his bake: point sampling, 8-bit)…` });
     bytes = (a.bakeFrom.kind === "vdb" ? vdbToWvdb(a.bakeFrom.file, options) : nvdbToWvdb(a.bakeFrom.image, options)).bytes;
     a.bakes.set(resolution, bytes);
   }
   const wvdb = bytes.slice();
-  post({ type: "baked", asset, resolution, wvdb, dims: options.dimensions }, [wvdb.buffer]);
+  post({ type: "baked", asset, resolution, wvdb }, [wvdb.buffer]);
   post({ type: "status", text: "" });
 }
 

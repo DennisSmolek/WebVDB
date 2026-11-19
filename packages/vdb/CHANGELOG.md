@@ -34,7 +34,8 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
 - `parseVdb`: OpenVDB `.vdb` files including Blosc and zlib compression, active tiles, vector grids, point grids
   and half-float storage.
 - Build and quantize: `vdbBuildFromDense`, `buildFromVdb`, `vdbBuildFromLeavesDetailed`, `vdbQuantize` to Fp4, Fp8,
-  Fp16 and FpN; `vdbResampleGrid`, `vdbCollapseGrid`, `vdbTransform`, `vdbInspect`.
+  Fp16 and FpN; `vdbResampleGrid`, `vdbCollapseGrid`, `vdbTransform`, `vdbInspect`. `vdbBuildFromDense` and
+  `vdbBuildFromLeavesDetailed` take `voxelSize` as a number or `[x, y, z]` (an anisotropic, diagonal Map; G15a).
 - `.nvdb`: `NvdbFile` (NONE and ZIP codecs), `NvdbStreamReader` / `readNvdbStream` (emits each grid as it
   completes), `writeNvdb` (with the ZIP codec), and coarse-first baking with `vdbBakeCoarseFirst`.
 - `.wvdb` (mjurczyk/openvdb spec): `readWvdb`, `writeWvdb`, `WvdbStreamReader`, `bakeWvdb`, and converters
@@ -85,6 +86,10 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
 
 ### Fixed
 
+- `wvdbDenseToNvdb` gave the grid one voxel size (the x side's), so a `.wvdb` level with non-cubic voxels (any
+  default bake: each side's texel count rounds on its own) read back shifted and stretched in world space. Each axis
+  now gets its own voxel size; smoke.vdb's default 128 bake measures 42.3% with `vdbResampleError` (was 45.4%; a
+  `dimensions: [128, 128, 128]` bake 37.4%, was 92.4%) (G15a).
 - `VDBFrameVolume.densityScale` had no effect on a sparse source: the density uniform's per-render stats refresh
   overwrote the per-draw value. A new mean from a replaced image is now applied once, when its readback lands (K5.9a).
 - Mesh shadows with `multipleScattering: 'neural'` and temporal/jitter in `'frame'` lighting failed WGSL validation

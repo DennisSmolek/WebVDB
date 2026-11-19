@@ -29,7 +29,7 @@ export type WorkerResponse =
       fileName: string;
       fileBytes: number;
     }
-  | { type: "baked"; asset: AssetId; resolution: number; wvdb: Uint8Array; dims: [number, number, number] }
+  | { type: "baked"; asset: AssetId; resolution: number; wvdb: Uint8Array }
   | { type: "sparse-stats"; asset: AssetId; fileGz: number; error: ErrorStat }
   | { type: "dense-stats"; asset: AssetId; resolution: number; error: ErrorStat }
   | { type: "status"; text: string }
