@@ -31,7 +31,8 @@ Owner action: fill in **Source** and **Licence**, then set **Status** to `ok` (c
 Already handled elsewhere (not part of this review):
 
 - `ground_explosion/` — JangaFX EmberGen, CC0, with LICENSE.txt (`fixtures/k3/`, fetched locally).
-- `smoke.vdb`, `sphere.vdb`, `cube.vdb`, `utahteapot.vdb`, `bunny_cloud.vdb`, `venusstatue.vdb`, `sphere_points.vdb` —
+- `smoke.vdb`, `sphere.vdb`, `cube.vdb`, `utahteapot.vdb`, `bunny_cloud.vdb`, `venusstatue.vdb`, `sphere_points.vdb` (and, for gallery
+  demos 13–14, `bunny.vdb`, `icosahedron.vdb`, `waterfall_points.vdb`) —
   openvdb.org samples, CC BY-SA 4.0, fetched by `pnpm fixtures:vdb-samples` (not committed; Stanford-bunny derivatives
   excluded from CI).
 - Their `.wvdb` bakes are his derivatives of those samples (same licence as the source).
