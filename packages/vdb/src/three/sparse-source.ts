@@ -151,8 +151,9 @@ export interface VDBSparseSourceOptions {
    * source re-reads its index boxes, world box and transform from `pool.info`, rebuilds the coarse pyramid at the
    * new size and bumps `version` (a `VDBFrameVolume` whose box is the source's follows it). Boxes, sizes and LOD
    * levels are uniforms in this mode, so nothing recompiles; give the `VDBGridNode` every grid type the images will
-   * have (`types`, e.g. `VDBCoarseFirstEvent.types`). Default false: the boxes are fixed when the source is made.
-   * Not with `indexBox`, `auxIndexBoxes`, `bbox` or `pyramidBuild: 'cpu'`.
+   * have (`types`, e.g. `VDBCoarseFirstEvent.types`): a new image of a type the node does not compile throws
+   * `VDB_TYPE_NOT_COMPILED` when the source re-reads it (it would read 0). Default false: the boxes are fixed when the
+   * source is made. Not with `indexBox`, `auxIndexBoxes`, `bbox` or `pyramidBuild: 'cpu'`.
    */
   followImage?: boolean;
 }
@@ -485,6 +486,11 @@ class SparseSource implements VDBThreeSparseSource {
     const density = info(ids.density);
     if (lod === "node-average" && !density.hasStats) throw bad("lod 'node-average' reads node statistics; this grid has none (rebuild it with stats).");
     this.grids = grids;
+    const channelIds = [ids.density, ids.mask, ids.emission, ...(Array.isArray(ids.albedo) ? ids.albedo : [ids.albedo])].filter((v): v is number => v !== undefined);
+    this.checkTypes(
+      channelIds.map((id) => ({ id, type: info(id).type })),
+      "a channel grid",
+    );
     this.ids = Object.freeze({ ...ids, ...(Array.isArray(ids.albedo) ? { albedo: [...ids.albedo] as unknown as [number, number, number] } : {}) });
     this.lod = lod;
     this.normalize = normalize;
@@ -545,8 +551,7 @@ class SparseSource implements VDBThreeSparseSource {
     }
     this.pyramid = pyramid;
     this.lodLevels = lod === "none" ? 0 : lod === "node-average" ? 7 : pyramid!.lodLevels;
-    const poolIds = new Set([ids.density, ids.mask, ids.emission, ...(Array.isArray(ids.albedo) ? ids.albedo : [ids.albedo])].filter((v): v is number => v !== undefined));
-    this.poolIds = [...poolIds];
+    this.poolIds = [...new Set(channelIds)];
     this.gpuBytes = this.measure();
     this.layoutRevision = this.poolIds.reduce((r, id) => Math.max(r, info(id).imageRevision ?? 0), 0);
     this.refreshPyramid();
@@ -612,6 +617,7 @@ class SparseSource implements VDBThreeSparseSource {
     if (typeof pool.revision !== "number" || pool.revision === this.layoutPoolRevision) return false;
     let revision = 0;
     let resident = true;
+    const infos: { id: number; type: string }[] = [];
     for (const id of this.poolIds) {
       let i: ReturnType<PoolInfoLike["info"]>;
       try {
@@ -621,16 +627,37 @@ class SparseSource implements VDBThreeSparseSource {
       }
       revision = Math.max(revision, i.imageRevision ?? 0);
       if (i.resident === false) resident = false;
+      infos.push({ id, type: i.type });
     }
     if (revision === this.layoutRevision) {
       this.layoutPoolRevision = pool.revision;
       return false;
     }
     if (!resident) return false; // look again once the update has written it
+    // A new image of a type the module does not decode would read 0 through the new boxes, silently: say so instead
+    // (every call until the source is remade over a node that compiles it).
+    this.checkTypes(infos, "a channel grid's new image");
     this.relayout();
     this.layoutRevision = revision;
     this.layoutPoolRevision = pool.revision;
     return true;
+  }
+
+  /**
+   * Throws `VDB_TYPE_NOT_COMPILED` when a channel grid's type is not among the `VDBGridNode`'s compiled `types` (those
+   * grids read 0). A node stand-in without `options.types` is not checked.
+   */
+  private checkTypes(infos: readonly { id: number; type: string }[], what: string): void {
+    const compiled = (this.grids.options as { types?: readonly string[] }).types;
+    if (!compiled) return;
+    const missing = infos.filter((i) => !compiled.includes(i.type));
+    if (missing.length === 0) return;
+    throw new VDBError(
+      "VDB_TYPE_NOT_COMPILED",
+      `vdbSparseSource: ${what} is ${missing.map((m) => `grid ${m.id}: ${m.type}`).join(", ")}, but the VDBGridNode compiles only ` +
+        `${compiled.join(", ")}; it would read 0. Make the VDBGridNode with types that include every type the images will have ` +
+        `(a coarse-first stream lists them in VDBCoarseFirstEvent.types: types: event.types), then make the source over it.`,
+    );
   }
 
   private relayout(): void {
@@ -657,11 +684,18 @@ class SparseSource implements VDBThreeSparseSource {
     this.gpuBytes = this.measure();
     this.layoutUpdates++;
     for (const apply of this.layoutListeners) apply();
-    // After the uniforms point at the new textures: the old ones go (three destroys them after submitted work).
+    // After the uniforms point at the new textures, the old ones go, but not yet: three r187's texture.dispose()
+    // destroys the GPUTexture at once, and a pass this render already recorded (not submitted yet) may bind them.
+    // Renders submit in the task that records them, so wait past this task, then for the queue's submitted work.
     if (previous !== this.pyramid && previous) {
-      previous.gpu?.destroy();
-      previous.map.dispose();
-      previous.mip?.dispose();
+      const retire = (): void => {
+        previous.gpu?.destroy();
+        previous.map.dispose();
+        previous.mip?.dispose();
+      };
+      const device = (this.grids.pool as { device?: GPUDevice }).device;
+      if (device?.queue) setTimeout(() => void device.queue.onSubmittedWorkDone().then(retire, retire), 0);
+      else retire();
     }
   }
 
@@ -799,9 +833,10 @@ class SparseSource implements VDBThreeSparseSource {
       void this.refreshStats();
       return undefined;
     });
-    this.statsListeners.add(() => {
+    const applyStats = (): void => {
       densityScaleU.value = vdbDensityScaleOf(this, densityScale, normalize);
-    });
+    };
+    this.statsListeners.add(applyStats);
     const pyr = this.pyramid;
     // G16a: a following source samples its pyramid through texture nodes made here (one pair per uniforms), so a new
     // layout swaps their textures; the atlas node always exists (a 1³ texture when the layout has none).
@@ -834,6 +869,11 @@ class SparseSource implements VDBThreeSparseSource {
         if (o.normalizeDensity !== undefined) normalize = o.normalizeDensity;
         densityScaleU.value = vdbDensityScaleOf(this, densityScale, normalize);
         if (this.followImage) applyLayout();
+      },
+      dispose: () => {
+        this.statsListeners.delete(applyStats);
+        this.layoutListeners.delete(applyLayout);
+        pyramidTextures.delete(u);
       },
     };
     // G16a: the layout as uniform values (and texture swaps), applied again after every re-read.
@@ -996,6 +1036,7 @@ class SparseSource implements VDBThreeSparseSource {
     this.pyramid?.mip?.dispose();
     this.emptyAtlas?.dispose();
     this.layoutListeners.clear();
+    this.statsListeners.clear();
   }
 }
 

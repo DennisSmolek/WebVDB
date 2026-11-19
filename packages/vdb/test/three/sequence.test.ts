@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { VDBError } from "../../src/core/errors.js";
 import { VDBSequence } from "../../src/three/sequence.js";
-import type { VDBFrameLoader, VDBSequenceTarget } from "../../src/three/sequence.js";
+import type { VDBFrameLoader, VDBSequenceLoopMode, VDBSequenceTarget } from "../../src/three/sequence.js";
 
 /**
  * Node-safe `VDBSequence` tests: the prefetch ring + frame-time scheduler +
@@ -72,7 +72,7 @@ describe("VDBSequence — construction", () => {
     expect(seq.frameCount).toBe(5);
     expect(seq.fps).toBe(24);
     expect(seq.prefetch).toBe(3);
-    expect(seq.loop).toBe(true);
+    expect(seq.loopMode).toBe("repeat");
   });
 
   it("requires an explicit frameCount when urls is a function", () => {
@@ -108,7 +108,7 @@ describe("VDBSequence — prefetch ring", () => {
 
   it("evicts decoded frames that fall outside the forward window", async () => {
     let decodes = 0;
-    const seq = new VDBSequence({ urls: urls(6), prefetch: 1, loop: false, loader: immediateLoader(() => decodes++) });
+    const seq = new VDBSequence({ urls: urls(6), prefetch: 1, loopMode: "once", loader: immediateLoader(() => decodes++) });
     // Warm 0..3, but prefetch is only 1, so start(0) keeps {0,1} and evicts 2,3.
     await seq.preload(4);
     expect(decodes).toBe(4);
@@ -128,7 +128,7 @@ describe("VDBSequence — scheduler", () => {
       urls: urls(4),
       fps: 10,
       prefetch: 4,
-      loop: false,
+      loopMode: "once",
       loader: immediateLoader(),
       onFrame: (s) => shown.push(s.frame),
     });
@@ -155,8 +155,8 @@ describe("VDBSequence — scheduler", () => {
     expect(seq.stats.swaps).toBe(1);
   });
 
-  it("clamps at the last frame when loop is false", async () => {
-    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loop: false, loader: immediateLoader() });
+  it("holds the last frame with loopMode once", async () => {
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loopMode: "once", loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
@@ -164,8 +164,8 @@ describe("VDBSequence — scheduler", () => {
     expect(seq.stats.frame).toBe(3);
   });
 
-  it("wraps around when loop is true", async () => {
-    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loop: true, loader: immediateLoader() });
+  it("wraps around with loopMode repeat", async () => {
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 4, loopMode: "repeat", loader: immediateLoader() });
     await seq.preload(4);
     const target = makeTarget();
     seq.start(target, 0);
@@ -174,7 +174,7 @@ describe("VDBSequence — scheduler", () => {
   });
 
   it("resume continues from the paused frame without resetting", async () => {
-    const seq = new VDBSequence({ urls: urls(6), fps: 10, prefetch: 6, loop: false, loader: immediateLoader() });
+    const seq = new VDBSequence({ urls: urls(6), fps: 10, prefetch: 6, loopMode: "once", loader: immediateLoader() });
     await seq.preload(6);
     const target = makeTarget();
     seq.start(target, 0);
@@ -210,7 +210,7 @@ describe("VDBSequence — scheduler", () => {
 describe("VDBSequence — stall policy (never block)", () => {
   it("holds the last frame and counts a stall when the due frame is not decoded", async () => {
     const { loader, resolve } = deferredLoader();
-    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 1, loop: false, loader });
+    const seq = new VDBSequence({ urls: urls(4), fps: 10, prefetch: 1, loopMode: "once", loader });
 
     // Warm frames 0 and 1 only.
     const pl = seq.preload(2);
@@ -245,7 +245,7 @@ describe("VDBSequence — stall policy (never block)", () => {
       urls: urls(3),
       fps: 10,
       prefetch: 1,
-      loop: false,
+      loopMode: "once",
       loader,
       onError: (_e, i) => errors.push(i),
     });
@@ -439,12 +439,11 @@ describe("VDBSequence — failed frames and disposal (K2 review)", () => {
 
 describe("VDBSequence — frame range and loop mode", () => {
   /** A started sequence at fps 10 (100 ms/frame); returns the frame shown at each of `steps` consecutive frame times. */
-  async function play(opts: { n: number; range?: [number, number]; loopMode?: "repeat" | "pingpong"; loop?: boolean }, steps: number) {
+  async function play(opts: { n: number; range?: [number, number]; loopMode?: VDBSequenceLoopMode }, steps: number) {
     const seq = new VDBSequence({
       urls: urls(opts.n),
       fps: 10,
       prefetch: 2,
-      ...(opts.loop === undefined ? {} : { loop: opts.loop }),
       ...(opts.range ? { range: opts.range } : {}),
       ...(opts.loopMode ? { loopMode: opts.loopMode } : {}),
       loader: immediateLoader(),
@@ -487,9 +486,100 @@ describe("VDBSequence — frame range and loop mode", () => {
     expect(one.target.calls).toEqual([2]);
   });
 
-  it("loop: false holds at the range end whatever the mode", async () => {
-    expect((await play({ n: 10, range: [1, 3], loop: false }, 6)).shown).toEqual([1, 2, 3, 3, 3, 3]);
-    expect((await play({ n: 10, range: [1, 3], loop: false, loopMode: "pingpong" }, 6)).shown).toEqual([1, 2, 3, 3, 3, 3]);
+  it("once holds at the range end", async () => {
+    expect((await play({ n: 10, range: [1, 3], loopMode: "once" }, 6)).shown).toEqual([1, 2, 3, 3, 3, 3]);
+  });
+
+  it("setLoopMode('once') mid-play holds at the range end; back to 'repeat' plays on", async () => {
+    const { seq } = await play({ n: 10, range: [2, 5] }, 3); // shown 2, 3, 4 (t = 200)
+    seq.setLoopMode("once", 250);
+    const shown: number[] = [];
+    for (const t of [350, 450, 550, 950]) {
+      await tick();
+      shown.push(seq.update(t));
+    }
+    expect(shown).toEqual([5, 5, 5, 5]);
+    seq.setLoopMode("repeat", 1000);
+    for (const t of [1100, 1200]) {
+      await tick();
+      shown.push(seq.update(t));
+    }
+    expect(shown).toEqual([5, 5, 5, 5, 2, 3]);
+    expect(seq.stats.stalls).toBe(0);
+  });
+
+  it("stop / resume on the backward leg of a ping-pong keeps going backward (no stall at the turn)", async () => {
+    // RV finding 1: range [2,5] shows 2,3,4,5,4; paused on the way back, it used to turn forward to 5 (evicted:
+    // the ring was filled backward), stall and drop the frame.
+    const { seq } = await play({ n: 10, range: [2, 5], loopMode: "pingpong" }, 5);
+    expect(seq.stats.frame).toBe(4);
+    const stalls = seq.stats.stalls;
+    seq.stop();
+    seq.resume(400);
+    const shown: number[] = [];
+    for (const t of [500, 600, 700, 800]) {
+      await tick();
+      shown.push(seq.update(t));
+    }
+    expect(shown).toEqual([3, 2, 3, 4]);
+    expect(seq.stats.stalls).toBe(stalls);
+  });
+
+  it("seek and setRange keep a ping-pong's direction", async () => {
+    const { seq } = await play({ n: 10, range: [2, 6], loopMode: "pingpong" }, 6); // 2,3,4,5,6,5 (backward)
+    expect(seq.stats.frame).toBe(5);
+    seq.seek(4, 500);
+    const shown: number[] = [seq.stats.frame];
+    for (const t of [600, 700, 800]) {
+      await tick();
+      shown.push(seq.update(t));
+    }
+    expect(shown).toEqual([4, 3, 2, 3]);
+    await tick();
+    expect(seq.update(900)).toBe(4); // forward now
+    seq.setRange([1, 8], 900);
+    await tick();
+    expect(seq.update(1000)).toBe(5); // still forward
+    for (const t of [1100, 1200, 1300]) {
+      await tick();
+      seq.update(t); // 6, 7, 8
+    }
+    await tick();
+    expect(seq.update(1400)).toBe(7); // turned at 8
+    seq.setRange([1, 7], 1400);
+    await tick();
+    expect(seq.update(1500)).toBe(6); // still backward
+    expect(seq.stats.stalls).toBe(0);
+  });
+
+  it("a clock-due frame still decoding at stop() does not land while stopped; a seek (before or after the stop) does", async () => {
+    const { loader, resolve } = deferredLoader();
+    const seq = new VDBSequence({ urls: urls(6), fps: 10, prefetch: 0, loader });
+    const pl = seq.preload(1);
+    resolve(0);
+    await pl;
+    const target = makeTarget();
+    seq.start(target, 0);
+    seq.update(100); // frame 1 is due, still decoding: stall
+    expect(seq.stats.frame).toBe(0);
+    seq.stop();
+    resolve(1);
+    await tick();
+    expect(seq.stats.frame).toBe(0);
+    expect(target.calls).toEqual([0]);
+    seq.seek(3, 200);
+    resolve(3);
+    await tick();
+    expect(seq.stats.frame).toBe(3);
+    expect(target.calls).toEqual([0, 3]);
+    // A seek while playing, then stop (demo 12's paused start): the asked-for frame still lands.
+    seq.resume(300);
+    seq.seek(5, 300);
+    seq.stop();
+    resolve(5);
+    await tick();
+    expect(seq.stats.frame).toBe(5);
+    expect(target.calls).toEqual([0, 3, 5]);
   });
 
   it("prefetch follows the playback order and never leaves the range", async () => {

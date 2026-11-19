@@ -16,7 +16,7 @@ export async function sequence(pool: VDBGridPool, largestFrameBytes: number, fir
         frameCount: 120,
         fps: 24,
         prefetch: 4, // frames decoded ahead
-        loop: true,
+        loopMode: 'repeat', // or 'pingpong', or 'once' (hold the last frame)
         // The default loader fetches and parses a .nvdb; override it to load from anywhere.
         loader: async (url) => (await NvdbFile.fromURL(url)).gridImage(0),
         onError: (error, index) => console.warn('frame', index, error),

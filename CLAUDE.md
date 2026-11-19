@@ -216,6 +216,18 @@ From v1; details in docs/archive/handoffs/.
   `needsUpdate = true` for a few frames after a change. three r187 WebGPU also drops `PCFSoftShadowMap` (warns, uses PCF).
 - Rendering to a `RenderTarget` (readback presentation) skips three's tone mapping and output transform; a page that
   tone maps on screen must apply the same curve on the CPU (the one gallery shell, `examples/src/demos/showcase-shell.ts`, does ACES in `Presenter.readTarget` when `renderer.toneMapping` is ACESFilmic: set it in every demo, readback too) or readback images look flat.
+- three r187 `texture.dispose()` destroys the `GPUTexture` at once (no deferral): a texture swapped out mid-render may
+  still be bound by a pass recorded in that render. Retire it after `setTimeout(0)` + `queue.onSubmittedWorkDone()`
+  (the sparse source's `relayout`).
+- `vdbVolumeUniforms(sparseSource)` registers listeners on the source: call `uniforms.dispose()` when done
+  (`VDBFrameVolume.dispose()` does), or they live as long as the source.
+- `VDBSequence` ping-pong state is the clock anchor plus its direction (`startDir`); `_dir` is the direction at the
+  SHOWN frame (a stalled target does not change it). Re-anchoring code must pass both, or a pause on the backward leg
+  resumes forward. `stop()` drops only a clock-due pending frame: demo 12 does `seek(30)` then `stop()` for its paused
+  start and needs that frame to land.
+- A dense `.wvdb` frame with another box bumps the dense source's `version`, and a `VDBFrameVolume` without a `bbox`
+  prop moves its box to it (his WVDB sequences: each frame its own box). The explosion frames share one box, so the
+  K3 captures don't see it.
 - Demo 13 gives each large grid its own `VDBGridPool`: four level sets (6–81 MB images, 212 MB in all) in one pool would
   pass WebGPU's default `maxStorageBufferBindingSize` (128 MiB); a material reads one pool's `VDBGridNode` anyway.
 - Coarse-first into the froxel renderer (gallery demo 16, G16a): `vdbSparseSource` fixes its boxes when made unless made

@@ -373,6 +373,7 @@ const sequence = new VDBSequence({
   urls: (i) => `/fixtures/embergen/pack/frame_${i}.nvdb`,
   frameCount: 48,
   fps: 24,
+  loopMode: "repeat", // or "pingpong", or "once" (hold the last frame); setLoopMode() changes it while playing
 });
 await sequence.preload();
 sequence.start({ pool, id });

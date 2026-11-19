@@ -392,7 +392,7 @@ async function runInteractive(frames: SyntheticFrames, sourceLabel: string): Pro
     frameCount: FRAME_COUNT,
     fps: FPS,
     prefetch: 3,
-    loop: true,
+    loopMode: "repeat",
     loader,
   });
 
@@ -471,7 +471,7 @@ async function runTest(frames: SyntheticFrames): Promise<void> {
     urls: frames.blobUrls,
     fps: FPS,
     prefetch: BLOB_FRAMES,
-    loop: false,
+    loopMode: "once",
   });
 
   try {
@@ -637,7 +637,7 @@ async function runEmberGen(manifest: EmberGenManifest): Promise<void> {
     urls: manifest.urls,
     fps: manifest.fps,
     prefetch: VALIDATE_CYCLE ? manifest.urls.length : 4,
-    loop: true,
+    loopMode: "repeat",
     loader: (_url, index) => Promise.resolve(images[index]!),
     onFrame: (stats) => observedFrames.push(stats.frame),
     onError: (error, index) => fail(`EmberGen frame ${index} failed: ${String(error)}`),

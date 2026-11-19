@@ -249,9 +249,11 @@ async function run(): Promise<void> {
   shell.status("loading the explosion…");
   const frames = ((await (await fetch(`${EXPLOSION_DIR}frames.json`)).json()) as { frames: string[] }).frames;
   state.frameCount = frames.length;
-  // The fire burns out near frame 95; the last ~105 frames are smoke only. Loop the fire part (`?loop=pingpong` turns back instead of wrapping).
+  // The fire burns out near frame 95; the last ~105 frames are smoke only. Loop the fire part (`?loop=pingpong` turns
+  // back instead of wrapping, `?loop=once` holds the last frame).
   const range: [number, number] = [0, Math.min(FIRE_LAST_FRAME, frames.length - 1)];
-  const loopMode = params.get("loop") === "pingpong" ? "pingpong" : "repeat";
+  const loopParam = params.get("loop");
+  const loopMode = loopParam === "pingpong" || loopParam === "once" ? loopParam : "repeat";
   const start = Math.min(Math.max(range[0], Number(params.get("frame") ?? 30)), range[1]);
   const bytes = new Map<number, Promise<ArrayBuffer>>();
   const fetchFrame = (i: number): Promise<ArrayBuffer> => {

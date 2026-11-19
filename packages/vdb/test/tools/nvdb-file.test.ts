@@ -166,7 +166,7 @@ describe.skipIf(!fixturesPresent)("NvdbFile — primitive fixtures", () => {
 });
 
 describe("NvdbFile — error handling", () => {
-  it("rejects a ZIP grid whose declared size no deflate stream could produce, before allocating it", async () => {
+  it.skipIf(!fixturesPresent)("rejects a ZIP grid whose declared size no deflate stream could produce, before allocating it", async () => {
     const { buffer: noneBuffer } = await loadFixture("box_fog_float");
     const zip = rewriteAsZip(noneBuffer);
     // FileMetaData.gridSize (u64 at +0) and .fileSize (+8) declare far more than the payload can inflate to.
@@ -222,14 +222,14 @@ describe("NvdbFile — error handling", () => {
     expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/truncated buffer/);
   });
 
-  it("throws for a buffer truncated mid grid-data", async () => {
+  it.skipIf(!fixturesPresent)("throws for a buffer truncated mid grid-data", async () => {
     if (!fixturesPresent) return;
     const { buffer } = await loadFixture("box_fog_float");
     const truncated = buffer.slice(0, buffer.byteLength - 1000);
     expect(() => NvdbFile.fromArrayBuffer(truncated)).toThrowError(/truncated buffer/);
   });
 
-  it("gridImage/isGridImageZeroCopy reject an out-of-range index", async () => {
+  it.skipIf(!fixturesPresent)("gridImage/isGridImageZeroCopy reject an out-of-range index", async () => {
     if (!fixturesPresent) return;
     const { buffer } = await loadFixture("box_fog_float");
     const file = NvdbFile.fromArrayBuffer(buffer);
@@ -240,7 +240,7 @@ describe("NvdbFile — error handling", () => {
   // --- Finding 1: FileMetaData.gridSize must agree with the grid image's own
   // internal GridData.mGridSize (u64 at grid-image byte offset 32) ---------
 
-  it("throws when FileMetaData.gridSize is smaller than the grid's internal mGridSize (truncation/corruption)", async () => {
+  it.skipIf(!fixturesPresent)("throws when FileMetaData.gridSize is smaller than the grid's internal mGridSize (truncation/corruption)", async () => {
     if (!fixturesPresent) return;
     const { buffer } = await loadFixture("box_fog_float");
     const patched = buffer.slice(0);
@@ -256,7 +256,7 @@ describe("NvdbFile — error handling", () => {
     );
   });
 
-  it("throws when FileMetaData.gridSize is larger than the grid's internal mGridSize", async () => {
+  it.skipIf(!fixturesPresent)("throws when FileMetaData.gridSize is larger than the grid's internal mGridSize", async () => {
     if (!fixturesPresent) return;
     const { buffer } = await loadFixture("box_fog_float");
     const patched = buffer.slice(0);
