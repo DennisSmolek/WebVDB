@@ -202,4 +202,7 @@ From v1; details in docs/handoffs/.
 - Every tools error on bad input is a `VDBToolsError` with a `code` (D32). `NvdbFormatError` is no longer a
   `VdbFormatError`: catch `VDBToolsError` (or check `code`) to cover every format.
 - His examples page renders with `new WebGPURenderer({ antialias: !isPhone })` (4× MSAA) inside three's half-float frame-buffer pass: parity harnesses render his scenes with 4 samples too, or mesh edges differ by a pixel.
+- A sparse source's density uniform re-applies the scale last given to `sourceUniforms.update` on every render (K3.2e
+  stats refresh), so `VDBFrameVolume.densityScale` changes do nothing on a sparse source until `volume.updateSource()`
+  (TASKS K5.9a). Measure a control's effect on sparse and dense before trusting it.
 - His sequences normalise density by the mean of ALL frames (`FrameVolume.getDensityScale`), not the shown frame's; his time-driven sequence must be paused at a known frame (`pause()`, `frame = N`) for captures.
