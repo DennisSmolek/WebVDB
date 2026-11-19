@@ -1,0 +1,78 @@
+name: Pages
+
+# Builds the docs (pmndrs/docs) and, later, the examples site into one GitHub Pages artifact.
+# RELEASING.md section 3. The build mirrors the reusable workflow
+# pmndrs/docs/.github/workflows/build.yml@v4 (same npx command and env) but runs it directly,
+# because a repo gets one Pages site and the examples site (RELEASING section 4) goes into the
+# same artifact under out/examples/.
+#
+# OWNER: Settings -> Pages -> Source: GitHub Actions (the deploy job fails until it is set).
+# Manual only until then, so pushes to main don't fail. After setting the source, add:
+#   push:
+#     branches: [main]
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_PATH: /vdb
+    steps:
+      # Full history and tags for the version label in the sidebar footer (git describe).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Docs site (pmndrs/docs)
+        run: npx -y @pmndrs/docs@4 build docs/site out --format website
+        env:
+          NEXT_PUBLIC_LIBNAME: vdb
+          BASE_PATH: ${{ env.BASE_PATH }}
+          HOME_REDIRECT: /getting-started/introduction
+          MDX_BASEURL: https://github.com/${{ github.repository }}/raw/${{ github.ref_name }}/docs/site
+          SOURCECODE_BASEURL: https://github.com/${{ github.repository }}/tree/${{ github.ref_name }}
+          EDIT_BASEURL: https://github.com/${{ github.repository }}/edit/${{ github.ref_name }}/docs/site
+          NEXT_PUBLIC_URL: https://pmndrs.github.io/vdb
+          # TODO(owner): pick the docs header icon (emoji) and logo (path or URL); the emoji is a placeholder.
+          ICON: "🧊"
+          LOGO: ""
+          GITHUB: https://github.com/pmndrs/vdb
+          DISCORD: ""
+          CONTRIBUTORS_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check llms-full.txt was emitted
+        run: test -s out/llms-full.txt && test -s out/llms.txt
+
+      # RELEASING section 4: build the examples with Vite base /vdb/examples/ and copy the dist into
+      # out/examples/. Skipped until that task lands; replace `if: false` with the real steps.
+      - name: examples site (RELEASING section 4)
+        if: false
+        run: echo "TODO build examples and copy into out/examples/"
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

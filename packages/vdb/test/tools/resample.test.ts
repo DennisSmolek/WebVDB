@@ -17,6 +17,10 @@ import {
   sampleWvdbDense,
   treeNodes,
   writeNvdb,
+  readWvdb,
+  vdbToWvdb,
+  wvdbDenseToNvdb,
+  wvdbDenseVolume,
   wvdbSourceFromVdbGrid,
   type VdbGrid,
 } from "../../src/tools/internal.js";
@@ -324,5 +328,17 @@ describe.skipIf(!smokeVdb)("smoke.vdb", () => {
     // The metric itself: full-resolution FpN is ~1.2% (comparison report).
     const full = vdbQuantize(buildFromVdb(grid), "fpn");
     expect(vdbResampleError(grid, full).percent).toBeCloseTo(1.2, 1);
+  });
+
+  it("his default 128 .wvdb bake (non-cubic voxels), read back by wvdbDenseToNvdb: 42.3% (G15a; 45.4% with one voxel size)", () => {
+    const bytes = readFileSync(smokeVdb!);
+    const file = parseVdb(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    const dense = wvdbDenseVolume(readWvdb(vdbToWvdb(file, { resolution: 128, lods: 1 }).bytes), { mipmaps: false });
+    expect(dense.dimensions).toEqual([64, 128, 64]);
+    const grid = wvdbDenseToNvdb(dense);
+    expect(new Set(grid.voxelSizeXYZ).size).toBe(3);
+    const err = vdbResampleError(file, grid.image, { stride: 7 });
+    expect(err.count).toBeGreaterThan(140_000);
+    expect(err.percent).toBeCloseTo(42.3, 1);
   });
 });

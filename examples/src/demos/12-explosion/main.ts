@@ -18,7 +18,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { readWvdb, wvdbDenseVolume, type WvdbDenseVolume } from "@pmndrs/vdb/tools";
 import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBSequence, vdbDenseTextures, vdbFrameBlackbodyEmission } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
-import { GalleryShell, MiB, PRESENTATION, Presenter, QUALITY, STILL, autoOrbit, horizonColor, initialQuality, loadHdrSky, params, probe, proceduralSky, type Quality, type Snapshot } from "./shell.js";
+import { MiB, PRESENTATION, Presenter, QUALITY, STILL, autoOrbit, initialQuality, mountShowcase, params, probe, type Quality, type Snapshot } from "../showcase-shell.js";
+import { horizonColor, loadHdrSky, proceduralSky } from "../gallery-sky.js";
 
 interface Demo12State {
   ready: boolean;
@@ -56,6 +57,9 @@ const SKIES = {
 type SkyId = keyof typeof SKIES;
 const CAR_URL = `${GALLERY}car.glb`;
 const GROUND = -50;
+/** The last frame with flames (EmberGen's ground explosion: 0 flame voxels from frame 100 on); the loop plays 0..this. */
+const FIRE_LAST_FRAME = 95;
+
 /** Longest side of the explosion box, in scene units (his frame.js `explosionSize`). */
 const SIZE = 100;
 /**
@@ -68,7 +72,7 @@ const EMISSION_DEFAULT = 2.5;
 const FOG_NEAR = 260;
 const FOG_FAR = 1300;
 
-const shell = new GalleryShell({
+const shell = mountShowcase({ strip: "row",
   number: "12",
   title: "Explosion",
   blurb:
@@ -103,7 +107,7 @@ async function run(): Promise<void> {
   if (!nightOk) state.missing.push("sky-night-HDR.jpg");
   if (!duskOk) state.missing.push("sky-dusk-HDR.jpg");
   if (!carOk) state.missing.push("car.glb");
-  if (state.missing.length) shell.note.textContent = `Gallery assets not found, using fallbacks: ${state.missing.join(", ")} (fixtures/gallery/, docs/assets-licensing.md).`;
+  if (state.missing.length) shell.note(`Gallery assets not found, using fallbacks: ${state.missing.join(", ")} (fixtures/gallery/, docs/assets-licensing.md).`);
   const skyAvailable: SkyId[] = [...(nightOk ? (["night"] as const) : []), ...(duskOk ? (["dusk"] as const) : []), "procedural"];
   const skyParam = params.get("sky") as SkyId | null;
 
@@ -129,11 +133,9 @@ async function run(): Promise<void> {
     if (info.reason !== "destroyed") shell.fail(`WebGPU device lost: ${info.message}`);
   });
   state.adapter = created.adapterName || "unreported adapter";
-  if (PRESENTATION === "direct") {
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
-  }
-  const presenter = new Presenter(renderer, device, directCanvas, shell.app);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  const presenter = new Presenter(shell.app, renderer, directCanvas, device);
   const frameRenderer = new VDBFrameRenderer();
 
   // --- stage ----------------------------------------------------------------------------------------------
@@ -166,7 +168,7 @@ async function run(): Promise<void> {
       for (const m of [mesh.material].flat()) if (!receivers.includes(m)) receivers.push(m);
     });
 
-  shell.status.textContent = carOk ? "loading car.glb…" : "";
+  shell.status(carOk ? "loading car.glb…" : "");
   if (carOk) {
     const gltf = await new GLTFLoader().loadAsync(CAR_URL);
     const car = gltf.scene;
@@ -224,10 +226,10 @@ async function run(): Promise<void> {
     const def = SKIES[controls.sky];
     let tex = skyTextures.get(controls.sky);
     if (!tex) {
-      shell.status.textContent = def.url ? `loading the ${def.label} sky…` : "";
+      shell.status(def.url ? `loading the ${def.label} sky…` : "");
       tex = def.url ? await loadHdrSky(def.url) : proceduralSky({ zenith: "#02040b", horizon: "#1d2a40", ground: "#07080b" });
       skyTextures.set(controls.sky, tex);
-      shell.status.textContent = "";
+      shell.status("");
     }
     scene.background = tex;
     scene.environment = tex;
@@ -242,10 +244,13 @@ async function run(): Promise<void> {
   }
 
   // --- the explosion: one dense source, frames swapped in place ---------------------------------------------
-  shell.status.textContent = "loading the explosion…";
+  shell.status("loading the explosion…");
   const frames = ((await (await fetch(`${EXPLOSION_DIR}frames.json`)).json()) as { frames: string[] }).frames;
   state.frameCount = frames.length;
-  const start = Math.min(Math.max(0, Number(params.get("frame") ?? 30)), frames.length - 1);
+  // The fire burns out near frame 95; the last ~105 frames are smoke only. Loop the fire part (`?loop=pingpong` turns back instead of wrapping).
+  const range: [number, number] = [0, Math.min(FIRE_LAST_FRAME, frames.length - 1)];
+  const loopMode = params.get("loop") === "pingpong" ? "pingpong" : "repeat";
+  const start = Math.min(Math.max(range[0], Number(params.get("frame") ?? 30)), range[1]);
   const bytes = new Map<number, Promise<ArrayBuffer>>();
   const fetchFrame = (i: number): Promise<ArrayBuffer> => {
     let p = bytes.get(i);
@@ -290,6 +295,8 @@ async function run(): Promise<void> {
     urls: frames.map((f) => EXPLOSION_DIR + f),
     fps: EXPLOSION_FPS,
     prefetch: 8,
+    range,
+    loopMode,
     loader: async (_url, index) => explosionFrame(await fetchFrame(index)),
     onError: (err, index) => console.warn(`demo 12: explosion frame ${index}: ${String(err)}`),
   });
@@ -308,13 +315,13 @@ async function run(): Promise<void> {
   orbit.maxDistance = 700;
   orbit.update();
   autoOrbit(orbit, 0.3);
-  const resize = () => presenter.resize(camera, QUALITY[controls.quality].pixelRatio);
+  const resize = () => presenter.resize(QUALITY[controls.quality].pixelRatio, camera);
   resize();
   window.addEventListener("resize", resize);
 
   // --- controls ---------------------------------------------------------------------------------------------
   const playButton = shell.button("play", controls.playing ? "❚❚ pause" : "▶ play", () => setPlaying(!controls.playing));
-  const frameRow = shell.range("frame", "frame", 0, frames.length - 1, 1, start, (v) => {
+  const frameRow = shell.range("frame", "frame", range[0], range[1], 1, start, (v) => {
     setPlaying(false);
     player.seek(v);
   });
@@ -382,7 +389,7 @@ async function run(): Promise<void> {
   // --- loop -------------------------------------------------------------------------------------------------
   await applySky();
   apply();
-  shell.status.textContent = "";
+  shell.status("");
   state.loading = false;
 
   let busy = false;
@@ -413,9 +420,10 @@ async function run(): Promise<void> {
           if (shown >= 0 && document.activeElement !== frameRow.input) frameRow.set(shown);
           const dims = source.volume.dimensions;
           const texBytes = dims[0] * dims[1] * dims[2] * (source.volume.emission ? 2 : 1);
-          shell.stats.textContent =
+          shell.stats(
             `${state.adapter} · ${presenter.width}×${presenter.height} px · ${frameMs.toFixed(1)} ms/frame (provisional, D25)\n` +
-            `dense ${dims.join("×")} r8 density${source.volume.emission ? " + flames" : ""}, ${MiB(texBytes)} on the GPU · frame ${Math.max(0, shown)} / ${frames.length}`;
+            `dense ${dims.join("×")} r8 density${source.volume.emission ? " + flames" : ""}, ${MiB(texBytes)} on the GPU · frame ${Math.max(0, shown)} / ${frames.length}`,
+          );
         }
       })
       .catch((err: unknown) => shell.fail(err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)))

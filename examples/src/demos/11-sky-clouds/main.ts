@@ -30,7 +30,7 @@ import {
   type VDBThreeVolumeSource,
 } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
-import { GALLERY_DIR, GalleryShell, PRESENTATION, Presenter, autoOrbit, fetchBytes, formatBytes, params, probe, qualityParam, type FrameSnapshot, type Quality } from "../gallery-shell.js";
+import { GALLERY_DIR, mountShowcase, PRESENTATION, Presenter, autoOrbit, fetchBytes, formatBytes, params, probe, qualityParam, type FrameSnapshot, type Quality } from "../showcase-shell.js";
 import { TIMES, hdrSunAzimuth, proceduralSky, sunColor, sunDirection, type TimeOfDay } from "./sky.js";
 
 // --- State the e2e spec reads ------------------------------------------------------------------------------
@@ -60,16 +60,16 @@ declare global {
 const state: Demo11State = { ready: false, frames: 0, loading: true, uncaptured: [], presentation: PRESENTATION };
 window.__DEMO11__ = state;
 
-const shell = new GalleryShell({
+const shell = mountShowcase({
   number: "11",
   title: "Sky clouds",
   blurb:
     "The WDAS cloud at full resolution — 24 M voxels straight from the sparse NanoVDB pool, no resampling — leads three JangaFX clouds under an HDR sky. Sparse means the wisps and hard edges stay sharp at any distance.",
 });
-shell.onError = (m) => {
+shell.onFail((m) => {
   state.error = m;
   state.loading = false;
-};
+});
 
 const WDAS_URL = "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb";
 const CLOUD_PACK = ["cloud_02", "cloud_05", "cloud_07"].map((n) => `${GALLERY_DIR}CloudPackVDB_wvdb/${n}_variant_0000.wvdb`);

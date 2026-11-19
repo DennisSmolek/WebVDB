@@ -56,11 +56,15 @@ const frame = (now: number) => {
 | `urls` | An array, or a function of the frame index |
 | `frameCount`, `fps` | Length and playback rate |
 | `prefetch` | Frames decoded ahead of the playhead |
-| `loop` | Wrap at the end |
+| `loop` | Wrap at the end of the range (default true; `false` holds on the last frame) |
+| `range` | `[start, end]`, inclusive: play only these frames (default all of them) |
+| `loopMode` | `'repeat'` (wrap, default) or `'pingpong'` (forward then backward; each end frame is shown once per turn). Needs `loop` |
 | `loader` | `(url, index) => Promise<TFrame>` (a grid image by default); the default fetches and parses a `.nvdb`; required for a `{ source }` target |
 | `now` | The clock, default `performance.now`; pass your own to step deterministically |
 | `onFrame`, `onError` | Stats after each swap, and per-frame load failures |
 
 `stats` reports `frame`, `decodedAhead`, `stalls` (a swap that had to wait for a decode), `replaceMs`, `swaps` and
 `failed`. Control it with `start(target, now?)`, `stop()`, `resume()`, `seek(index)`, `preload(count?)` and
-`dispose()`. A `seek` while stopped shows the frame once it is decoded.
+`dispose()`. A `seek` while stopped shows the frame once it is decoded; a seek is wrapped into the clip, then clamped into
+the range. `setRange([start, end])` and `setLoopMode(mode)` change them while playing (playback continues from the shown
+frame, clamped into the new range); `range` and `loopMode` read them back. A bad range or mode throws `VDB_BAD_OPTION`.

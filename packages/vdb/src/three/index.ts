@@ -38,7 +38,9 @@ export {
 export type { VDBVolumeMaterialParameters, VDBProxyGridInfo, VDBUintUniform } from "./material.js";
 export { VDBSequence } from "./sequence.js";
 export type {
+  VDBSequenceLoopMode,
   VDBSequenceOptions,
+  VDBSequenceRange,
   VDBSequenceStats,
   VDBSequenceTarget,
   VDBSequencePoolLike,
