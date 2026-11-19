@@ -28,7 +28,8 @@ Both are supported by `@pmndrs/vdb/tools`, for different jobs (D14).
 ## Between them
 
 - `.wvdb` to `.nvdb`: `wvdbDenseToNvdb(wvdbDenseVolume(file))` converts a LOD voxel for voxel into a Float grid
-  (texel `k` becomes `k / 255`, zero texels inactive). It also returns `sparseSourceOptions` (the texture index box, the
+  (texel `k` becomes `k / 255`, zero texels inactive), each axis with its own voxel size (a bake rounds each side's
+  texel count on its own), so the grid sits where the `.wvdb` box puts it. It also returns `sparseSourceOptions` (the texture index box, the
   dense stats and the box), to spread into the `vdbSparseSource` options so the sparse copy lines up with the dense
   source.
 - `.nvdb` to `.wvdb`: `nvdbToWvdb(image, options)`. It samples over the bbox, point-sampled by default like his CLI

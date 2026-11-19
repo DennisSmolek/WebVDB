@@ -34,8 +34,10 @@ type VDBPointsOptions
 type VDBProxyGridInfo
 type VDBSampleOptions
 value VDBSequence
+type VDBSequenceLoopMode
 type VDBSequenceOptions
 type VDBSequencePoolLike
+type VDBSequenceRange
 type VDBSequenceStats
 type VDBSequenceTarget
 type VDBSparseLod

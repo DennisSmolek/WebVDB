@@ -12,8 +12,11 @@ take. Everything on this page returns one, or a `VDBBuiltGrid` that carries one 
 
 - `buildFromVdb(grid, options?)` streams a parsed `.vdb` grid into the serializer, with no dense array. Float and
   Vec3f grids are supported. `buildFromVdbDetailed` returns the `VDBBuiltGrid`.
-- `vdbBuildFromDense(values, dims, options?)` builds a Float grid from a dense array (x fastest). Options: `origin`,
-  `voxelSize`, `worldOrigin`, `background`, `activeThreshold`, `gridName`, `gridClass`, `collapse`.
+- `vdbBuildFromDense(values, dims, options?)` builds a Float grid from a dense array, x-major
+  (`(x·ny + y)·nz + z`, z fastest; a texture's x-fastest data needs a transpose). Options: `origin`, `voxelSize` (a
+  number, or `[x, y, z]` for anisotropic voxels: a diagonal Map, as `vdbResampleGrid` writes), `worldOrigin`,
+  `background`, `activeThreshold`, `gridName`, `gridClass`, `collapse`. `VDBBuiltGrid.voxelSize` is the x side;
+  `voxelSizeXYZ` has all three.
 - `vdbBuildFromLeavesDetailed(leaves, codec, options?)` is the general entry: your leaves and a `VDBLeafCodec`
   (`VDB_FLOAT_LEAF_CODEC`, `VDB_FP4_LEAF_CODEC`, `VDB_FP8_LEAF_CODEC`, `VDB_FP16_LEAF_CODEC`, `VDB_VEC3F_LEAF_CODEC`, or `vdbMakeFpNLeafCodec`).
 
@@ -22,12 +25,12 @@ take. Everything on this page returns one, or a `VDBBuiltGrid` that carries one 
 import { vdbBuildFromDense, vdbInspect, writeNvdb } from '@pmndrs/vdb/tools';
 
 const dims: [number, number, number] = [64, 64, 64];
-const values = new Float32Array(dims[0] * dims[1] * dims[2]); // x fastest
+const values = new Float32Array(dims[0] * dims[1] * dims[2]); // x-major: z fastest
 for (let z = 0; z < dims[2]; z++)
     for (let y = 0; y < dims[1]; y++)
         for (let x = 0; x < dims[0]; x++) {
             const d = Math.hypot(x - 32, y - 32, z - 32);
-            values[x + dims[0] * (y + dims[1] * z)] = Math.max(0, 1 - d / 24);
+            values[(x * dims[1] + y) * dims[2] + z] = Math.max(0, 1 - d / 24);
         }
 
 // Zero voxels become inactive background; the rest go into a sparse 5-4-3 tree.

@@ -15,7 +15,12 @@ import {
   wvdbDenseToNvdb,
   wvdbDenseVolume,
   wvdbMipAtlas,
+  nvdbToWvdb,
+  vdbResampleError,
+  vdbResampleGrid,
+  vdbTransform,
 } from "../../src/tools/internal.js";
+import { GRID_OFF_MAP, MAP_OFF_INVMATD, MAP_OFF_MATD, MAP_OFF_VECD } from "../../src/tools/nanovdb/bytes.js";
 import { fixture } from "./wvdb-helpers.js";
 
 // K3.2: the CPU half of the sparse volume source (LOD strategies) and the twins of its WGSL.
@@ -56,6 +61,95 @@ describe("wvdbDenseToNvdb: the dense texels as a NanoVDB FLOAT grid", () => {
     }
     expect(nonZero).toBeGreaterThan(1000);
     expect(grid.voxelCount).toBe(dense.activeTexels);
+  });
+
+  // G15a: a default bake rounds each side's texel count on its own, so its voxels are not cubic. The grid must give
+  // each axis its own voxel size, or it reads back shifted and stretched in world space.
+  describe("a non-cubic bake reads back in place (per-axis voxel size, G15a)", () => {
+    // A smooth fog source in [0, 1] (no clamp in the 8-bit bake) on a 40 x 24 x 18 box, voxel 0.5, off the origin.
+    const src = (() => {
+      const dims: V3 = [80, 48, 36];
+      const values = new Float32Array(dims[0] * dims[1] * dims[2]);
+      for (let x = 0; x < dims[0]; x++)
+        for (let y = 0; y < dims[1]; y++)
+          for (let z = 0; z < dims[2]; z++) {
+            const r = Math.hypot((x - 38) / 34, (y - 23) / 20, (z - 17) / 15);
+            values[(x * dims[1] + y) * dims[2] + z] = r < 1 ? 0.9 * (1 - r * r) * (0.75 + 0.25 * Math.sin(x * 0.3 + y * 0.2)) : 0;
+          }
+      return vdbBuildFromDenseDetailed(values, dims, { voxelSize: 0.5, worldOrigin: [-7, 3, 11] });
+    })();
+    const bake = nvdbToWvdb(src.image, { resolution: 32, lods: 1 });
+    const dense = wvdbDenseVolume(readWvdb(bake.bytes), { mipmaps: false });
+    const grid = wvdbDenseToNvdb(dense);
+    const [w, h, d] = dense.dimensions;
+    const box = dense.bbox!;
+    const size = [0, 1, 2].map((a) => box[1][a]! - box[0][a]!);
+    const voxel = [0, 1, 2].map((a) => size[a]! / dense.dimensions[a]!);
+    /** The image's Map (double precision): index → world is `mat · ijk + vec`. */
+    const mapOf = (image: Uint32Array) => {
+      const v = new DataView(image.buffer, image.byteOffset, image.byteLength);
+      const f64 = (off: number, n: number) => Array.from({ length: n }, (_, i) => v.getFloat64(GRID_OFF_MAP + off + i * 8, true));
+      return { mat: f64(MAP_OFF_MATD, 9), inv: f64(MAP_OFF_INVMATD, 9), vec: f64(MAP_OFF_VECD, 3) };
+    };
+
+    it("the bake is non-cubic, and each axis gets its own voxel size", () => {
+      expect(Math.max(w, h, d)).toBe(32);
+      expect(Math.max(...voxel) - Math.min(...voxel)).toBeGreaterThan(0.01);
+      for (let a = 0; a < 3; a++) expect(grid.voxelSizeXYZ[a]).toBeCloseTo(voxel[a]!, 12);
+      expect(grid.voxelSize).toBe(grid.voxelSizeXYZ[0]);
+      const { mat, vec } = mapOf(grid.image);
+      expect(mat).toEqual([voxel[0], 0, 0, 0, voxel[1], 0, 0, 0, voxel[2]].map((x) => expect.closeTo(x!, 12)));
+      // Voxel i's centre is the texel centre: box.min + (i + ½) · voxel.
+      for (let a = 0; a < 3; a++) expect(vec[a]).toBeCloseTo(box[0][a]! + voxel[a]! / 2, 12);
+      // The world box runs from the first texel's centre to one voxel past the last's (NanoVDB's convention).
+      for (let a = 0; a < 3; a++) {
+        expect(grid.worldBBox.min[a]).toBeCloseTo(vec[a]! + grid.indexBBox.min[a]! * voxel[a]!, 9);
+        expect(grid.worldBBox.max[a]).toBeCloseTo(vec[a]! + (grid.indexBBox.max[a]! + 1) * voxel[a]!, 9);
+      }
+    });
+
+    it("lands on the same lattice as vdbResampleGrid's 'point' resample of that box", () => {
+      const r = vdbResampleGrid(src.image, { filter: "point", dimensions: dense.dimensions, bbox: box });
+      const ours = mapOf(grid.image);
+      const theirs = mapOf(r.image);
+      for (let i = 0; i < 9; i++) expect(ours.mat[i]).toBeCloseTo(theirs.mat[i]!, 12);
+      for (let i = 0; i < 3; i++) expect(ours.vec[i]).toBeCloseTo(theirs.vec[i]!, 12);
+    });
+
+    it("a world-space sample through the Map equals the texture's trilinear sample at that point", () => {
+      const tex = dense.density.data;
+      const texel = (x: number, y: number, z: number) => tex[x + (y + z * h) * w]! / 255;
+      const { inv, vec } = mapOf(grid.image);
+      const rnd = lcg(15);
+      let nonZero = 0;
+      for (let n = 0; n < 2000; n++) {
+        // Points inside the box, away from the clamped outer half texel.
+        const p = [0, 1, 2].map((a) => box[0][a]! + voxel[a]! * (0.5 + rnd() * (dense.dimensions[a]! - 1)));
+        // Independent of the grid: texel coordinates from the .wvdb box alone (texel centres at i + ½).
+        const u = [0, 1, 2].map((a) => ((p[a]! - box[0][a]!) / size[a]!) * dense.dimensions[a]! - 0.5);
+        const i0 = u.map((c, a) => Math.min(Math.floor(c), dense.dimensions[a]! - 2));
+        const f = u.map((c, a) => c - i0[a]!);
+        let expected = 0;
+        for (let k = 0; k < 8; k++) {
+          const dx = k & 1, dy = (k >> 1) & 1, dz = k >> 2;
+          const wgt = (dx ? f[0]! : 1 - f[0]!) * (dy ? f[1]! : 1 - f[1]!) * (dz ? f[2]! : 1 - f[2]!);
+          expected += wgt * texel(i0[0]! + dx, i0[1]! + dy, i0[2]! + dz);
+        }
+        const ijk = [0, 1, 2].map((a) => (p[a]! - vec[a]!) * inv[a * 4]!) as V3;
+        const got = vdbSampleTrilinear(grid.image, ijk);
+        expect(got).toBeCloseTo(expected, 5);
+        if (expected > 0.05) nonZero++;
+      }
+      expect(nonZero).toBeGreaterThan(300);
+    });
+
+    it("vdbResampleError against the source is the bake's own error, not a misplacement", () => {
+      const placed = vdbResampleError(src.image, grid.image, { stride: 3 }).percent;
+      // The same voxels with one voxel size (the x side's, the pre-G15a Map) for all three axes.
+      const xOnly = vdbTransform(grid.image, { voxelSize: voxel[0]!, worldOrigin: [box[0][0]! + voxel[0]! / 2, box[0][1]! + voxel[0]! / 2, box[0][2]! + voxel[0]! / 2] });
+      const misplaced = vdbResampleError(src.image, xOnly, { stride: 3 }).percent;
+      expect(placed).toBeLessThan(misplaced / 2);
+    });
   });
 });
 

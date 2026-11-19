@@ -57,6 +57,9 @@ const SKIES = {
 type SkyId = keyof typeof SKIES;
 const CAR_URL = `${GALLERY}car.glb`;
 const GROUND = -50;
+/** The last frame with flames (EmberGen's ground explosion: 0 flame voxels from frame 100 on); the loop plays 0..this. */
+const FIRE_LAST_FRAME = 95;
+
 /** Longest side of the explosion box, in scene units (his frame.js `explosionSize`). */
 const SIZE = 100;
 /**
@@ -244,7 +247,10 @@ async function run(): Promise<void> {
   shell.status("loading the explosion…");
   const frames = ((await (await fetch(`${EXPLOSION_DIR}frames.json`)).json()) as { frames: string[] }).frames;
   state.frameCount = frames.length;
-  const start = Math.min(Math.max(0, Number(params.get("frame") ?? 30)), frames.length - 1);
+  // The fire burns out near frame 95; the last ~105 frames are smoke only. Loop the fire part (`?loop=pingpong` turns back instead of wrapping).
+  const range: [number, number] = [0, Math.min(FIRE_LAST_FRAME, frames.length - 1)];
+  const loopMode = params.get("loop") === "pingpong" ? "pingpong" : "repeat";
+  const start = Math.min(Math.max(range[0], Number(params.get("frame") ?? 30)), range[1]);
   const bytes = new Map<number, Promise<ArrayBuffer>>();
   const fetchFrame = (i: number): Promise<ArrayBuffer> => {
     let p = bytes.get(i);
@@ -289,6 +295,8 @@ async function run(): Promise<void> {
     urls: frames.map((f) => EXPLOSION_DIR + f),
     fps: EXPLOSION_FPS,
     prefetch: 8,
+    range,
+    loopMode,
     loader: async (_url, index) => explosionFrame(await fetchFrame(index)),
     onError: (err, index) => console.warn(`demo 12: explosion frame ${index}: ${String(err)}`),
   });
@@ -313,7 +321,7 @@ async function run(): Promise<void> {
 
   // --- controls ---------------------------------------------------------------------------------------------
   const playButton = shell.button("play", controls.playing ? "❚❚ pause" : "▶ play", () => setPlaying(!controls.playing));
-  const frameRow = shell.range("frame", "frame", 0, frames.length - 1, 1, start, (v) => {
+  const frameRow = shell.range("frame", "frame", range[0], range[1], 1, start, (v) => {
     setPlaying(false);
     player.seek(v);
   });

@@ -63,10 +63,10 @@ test.describe("demo 12 — gallery: explosion", () => {
       expect(Math.max(...first.mean), detail()).toBeGreaterThan(4);
 
       // Scrubbing swaps another frame into the same source: the image changes.
-      await page.locator("#ctl-frame").fill("120");
-      const later = await settleOn(page, 120);
+      await page.locator("#ctl-frame").fill("70");
+      const later = await settleOn(page, 70);
       const d = thumbDiff(first, later);
-      console.log(`demo 12 (gallery ${gallery ? "on" : "off"}): frame 30 -> 120 thumb diff ${d.toFixed(2)}`);
+      console.log(`demo 12 (gallery ${gallery ? "on" : "off"}): frame 30 -> 70 thumb diff ${d.toFixed(2)}`);
       expect(d, detail()).toBeGreaterThan(1);
 
       const after = (await page.evaluate(() => window.__DEMO12__))!;
