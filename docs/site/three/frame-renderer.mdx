@@ -46,7 +46,10 @@ volume.position.copy(volume.bbox.getCenter(volume.position)).negate();
 ```
 
 The sparse source needs a `VDBGridNode` with profile `'march'`, plus the helpers its paths use. Optional `mask`,
-`albedo` (one grid, or three for RGB) and `emission` grids are scalar and read at level 0.
+`albedo` (one grid, or three for RGB) and `emission` grids are scalar and read at level 0. Its boxes are fixed when it
+is made; with `followImage: true` it re-reads them (and rebuilds its pyramid) after a `pool.replace` that changes the
+grid's box, and the volume's box follows, with no shader rebuild: the coarse-first swap in
+[Compute and streaming](/three/compute-and-streaming).
 
 {/* snippet: frame-sparse */}
 ```ts
