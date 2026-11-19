@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Demo 05 — embergen-sequence: the Phase 7 gate (docs/PLAN.md, SPEC §3.5).
+ * Demo 05 — embergen-sequence: the Phase 7 gate (docs/archive/v1/PLAN.md, SPEC §3.5).
  *
  * Everything is generated in-page (no external fixture): synthetic animated fog
  * frames authored with `@pmndrs/vdb/tools.vdbBuildFromDense`, written to `.nvdb`, and

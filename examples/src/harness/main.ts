@@ -1,11 +1,11 @@
 /**
- * GPU parity harness — the Phase 2 gate (docs/PLAN.md): replay thousands of
+ * GPU parity harness — the Phase 2 gate (docs/archive/v1/PLAN.md): replay thousands of
  * deterministic voxel probes and trilinear samples across all nine fixtures
  * through the extended vendored WGSL module (`@pmndrs/vdb/pnanovdb.wgsl`),
  * comparing against the CPU reference (`@pmndrs/vdb/tools`'s own `readValue`/
  * `vdbSampleTrilinear` — Phase 1-proven `packages/vdb/src/tools/cpu/*`
  * descent, package-exported since Phase 5's dedup, see
- * docs/handoffs/PHASE-5.md's "Known debts").
+ * docs/archive/handoffs/PHASE-5.md's "Known debts").
  *
  * Architecture (deliberately raw WebGPU, no three.js/TSL — see the T2 brief):
  * the TSL binding pattern was already proven by demo 01; this harness's job
@@ -211,7 +211,7 @@ async function fetchFixtures(): Promise<FixtureFile[]> {
 // ---------------------------------------------------------------------------
 // Bind group layouts (explicit — NOT 'auto' — so group(0) can be reused
 // across both pipelines; auto-derived layouts are opaque per-pipeline and
-// not meant to be shared, see docs/handoffs — group(0) holds nanovdb_buffer +
+// not meant to be shared, see docs/archive/handoffs — group(0) holds nanovdb_buffer +
 // harness_grid_type, common to both entry points).
 // ---------------------------------------------------------------------------
 
@@ -249,7 +249,7 @@ function createGroup2Layout(device: GPUDevice): GPUBindGroupLayout {
 
 async function run(): Promise<void> {
   root!.textContent = "";
-  log("GPU Parity Harness — Phase 2 gate (docs/PLAN.md)", "h");
+  log("GPU Parity Harness — Phase 2 gate (docs/archive/v1/PLAN.md)", "h");
 
   if (!navigator.gpu) {
     const msg = "WebGPU unavailable (navigator.gpu undefined) — needs a secure context + adapter.";

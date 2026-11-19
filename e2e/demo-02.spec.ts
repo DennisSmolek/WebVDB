@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Demo 02 — cloud: the Phase 3 golden-image gate (SPEC §5/§6, docs/PLAN.md).
+ * Demo 02 — cloud: the Phase 3 golden-image gate (SPEC §5/§6, docs/archive/v1/PLAN.md).
  *
  * Loads the baked Fp8 fog-sphere fixture into a `VDBGridPool`, fragment-raymarches it with
  * `VDBVolumeMaterial` (through a `VDBGridNode`) in deterministic test mode (fixed pose + params,

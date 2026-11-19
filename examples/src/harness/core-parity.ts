@@ -1,5 +1,5 @@
 /**
- * K1.6 core parity harness (docs/design/K1-core.md §7): the K1 regression gate.
+ * K1.6 core parity harness (docs/dev/design/K1-core.md §7): the K1 regression gate.
  *
  * One `VDBGridPool` (started at 4 KiB with `maxGrids: 2`, so the buffer and the
  * table both grow) holds the nine primitive fixtures, two synthetic grids (`sphere_fog_fp4` / `sphere_fog_fp16`, the sphere

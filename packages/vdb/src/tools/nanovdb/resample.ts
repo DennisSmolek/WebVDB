@@ -775,7 +775,7 @@ function filterLeaf(
 }
 
 // ---------------------------------------------------------------------------
-// Error metric (research/INDEX comparison)
+// Error metric (docs/dev/research/INDEX comparison)
 // ---------------------------------------------------------------------------
 
 export interface VDBResampleErrorOptions {
@@ -797,7 +797,7 @@ export interface VDBResampleErrorResult {
 }
 
 /**
- * The error metric of the mjurczyk comparison (research/INDEX): mean absolute
+ * The error metric of the mjurczyk comparison (docs/dev/research/INDEX): mean absolute
  * difference over every `stride`-th active source voxel, as a percentage of the
  * mean source value there. The target (any NanoVDB FLOAT/Fp8/FpN image with an
  * axis-aligned Map) is read back with `vdbSampleTrilinear` at each source voxel

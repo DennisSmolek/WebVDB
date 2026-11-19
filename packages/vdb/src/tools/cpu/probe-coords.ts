@@ -1,6 +1,6 @@
 /**
  * Deterministic pseudo-random probe-coordinate generation for the Phase 2 GPU
- * test harness (docs/PLAN.md). The whole point of this module is
+ * test harness (docs/archive/v1/PLAN.md). The whole point of this module is
  * cross-language reproducibility: the same `seed` must produce the exact
  * same coordinate sequence here, in a future WGSL/compute-shader host, and
  * in any other language that implements the same generator — so both the

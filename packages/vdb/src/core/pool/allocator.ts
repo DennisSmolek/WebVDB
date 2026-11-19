@@ -1,6 +1,6 @@
 /**
  * First-fit range allocator in 32-byte units over `[start, end)` of the pool
- * (docs/design/K1-core.md §1.3–1.4). It only does bookkeeping; moving data is the
+ * (docs/dev/design/K1-core.md §1.3–1.4). It only does bookkeeping; moving data is the
  * pool's job (growth and compaction in `update`).
  */
 

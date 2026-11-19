@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// K2.2 gate (docs/design/K1-core.md §6): VDBGridNode + vdbReadValue / vdbSample
+// K2.2 gate (docs/dev/design/K1-core.md §6): VDBGridNode + vdbReadValue / vdbSample
 // in a three r187 TSL compute shader, against the tools CPU twins; pool growth
 // rebinds without a new shader; renderer.dispose() leaves the pool's buffer alone.
 // The page is examples/src/harness/three-grid-node.ts.

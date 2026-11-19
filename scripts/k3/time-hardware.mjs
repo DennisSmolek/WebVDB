@@ -14,7 +14,7 @@
 // Per-pass GPU ms come from three's render-pass timestamps (`timestamp-query`; Chrome is started with
 // --enable-webgpu-developer-features so they are not quantized to 100 µs); without the feature only the
 // queue-synchronised frame time (render, then queue.onSubmittedWorkDone(): v1's hardware gate,
-// docs/handoffs/PHASE-3.md) is reported. Medians of --frames after --warmup. D25: results are provisional
+// docs/archive/handoffs/PHASE-3.md) is reported. Medians of --frames after --warmup. D25: results are provisional
 // unless --quiet; the machine's load average and the busiest processes are recorded either way.
 
 import { spawn, execSync } from "node:child_process";

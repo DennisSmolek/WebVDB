@@ -1,4 +1,4 @@
-/** Public `.vdb` parser types (docs/SPEC.md §4, docs/PLAN.md Phase 5). */
+/** Public `.vdb` parser types (docs/archive/v1/SPEC.md §4, docs/archive/v1/PLAN.md Phase 5). */
 
 export interface VdbFile {
   fileVersion: number;

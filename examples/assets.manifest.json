@@ -1,5 +1,5 @@
 {
-  "$comment": "The fixture files the hosted examples site ships (RELEASING.md section 4). Derived by grepping examples/src/demos for fixtureUrl(...); scripts/examples-assets.mjs copies exactly these into <build>/fixtures/ and fails if one is missing. A group with licensingRows ships only when every named row in docs/assets-licensing.md is `ok`. examples/attribution.html is generated from this file.",
+  "$comment": "The fixture files the hosted examples site ships (RELEASING.md section 4). Derived by grepping examples/src/demos for fixtureUrl(...); scripts/examples-assets.mjs copies exactly these into <build>/fixtures/ and fails if one is missing. A group with licensingRows ships only when every named row in docs/dev/assets-licensing.md is `ok`. examples/attribution.html is generated from this file.",
   "version": 1,
   "limits": { "maxFileMB": 95, "maxTotalMB": 900 },
   "release": {

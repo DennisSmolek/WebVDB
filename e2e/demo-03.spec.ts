@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 // Demo 03 — gpu-read: the educational "read a NanoVDB volume on the GPU"
-// example (docs/PLAN.md Phase 3, docs/SPEC.md §5 row 03). A tiny raw-WebGPU
+// example (docs/archive/v1/PLAN.md Phase 3, docs/archive/v1/SPEC.md §5 row 03). A tiny raw-WebGPU
 // compute pass reads 8 voxels via a hand-written WGSL traversal and must
 // reproduce the native sidecar's value + active flag for every one of them.
 //

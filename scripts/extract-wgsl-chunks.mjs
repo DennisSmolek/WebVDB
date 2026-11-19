@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regenerates packages/vdb/src/core/wgsl/pnanovdb.chunks.generated.ts from the
 // unmodified vendored packages/vdb/vendor/pnanovdb.wgsl (K1.4a; design note
-// docs/design/K1-core.md §3.3). Run after any deliberate vendored edit.
+// docs/dev/design/K1-core.md §3.3). Run after any deliberate vendored edit.
 
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";

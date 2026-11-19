@@ -1,15 +1,15 @@
 # Phases
 
 `@pmndrs/vdb` plan v2, set 2026-11-18 and revised the same day (D17–D19). It replaces v1 phases 0–9
-([docs/PLAN.md](docs/PLAN.md), frozen by D15). v1 delivered the parts these phases rearrange: the loader, the
+([docs/archive/v1/PLAN.md](../archive/v1/PLAN.md), frozen by D15). v1 delivered the parts these phases rearrange: the loader, the
 audited WGSL fork, the CPU oracle, the three.js material, the compute tools, the TS parser and serializer, and the
-sequence player (see [docs/handoffs/](docs/handoffs/)). Its on-device gates closed on 2026-07-12
-([docs/ON-DEVICE.md](docs/ON-DEVICE.md)).
+sequence player (see [docs/archive/handoffs/](../archive/handoffs/)). Its on-device gates closed on 2026-07-12
+([docs/archive/v1/ON-DEVICE.md](../archive/v1/ON-DEVICE.md)).
 
 **First consumer:** the owner's cloud system. **After our release:** the pmndrs pathtracer (D19).
 
 Status: ⬜ not started · 🟨 in progress · ✅ done. Each phase ends at a machine-checkable **exit gate** plus a
-handoff in `docs/handoffs/K<n>.md`. Task IDs (`K1.3`, `R2`) live in [TASKS.md](TASKS.md).
+handoff in `docs/archive/handoffs/K<n>.md`. Task IDs (`K1.3`, `R2`) live in [TASKS.md](TASKS.md).
 
 ```
 K0 re-foundation ──► K1 core ──► K2 three adapter ──► K3 renderer ──► K5 release 0.1 ──► after 0.1:
@@ -20,7 +20,7 @@ Research: R1 (renderer port plan) runs during K1/K2 and feeds K3.
 
 ## K0 — Re-foundation ✅
 
-Done 2026-11-18 ([docs/handoffs/K0.md](docs/handoffs/K0.md)), except the repo move to `pmndrs/vdb` (K0.7, owner). Licence applied: MIT (D13).
+Done 2026-11-18 ([docs/archive/handoffs/K0.md](../archive/handoffs/K0.md)), except the repo move to `pmndrs/vdb` (K0.7, owner). Licence applied: MIT (D13).
 
 Rename to `@pmndrs/vdb` (D17) and reshape the repo into core plus adapters (D8). **No behaviour changes:** this
 phase moves code, it does not rewrite it.
@@ -45,7 +45,7 @@ consumer and all three subpaths import from `dist/`.
 
 ## K1 — Engine-free WebGPU core ✅
 
-Done 2026-11-18 ([docs/handoffs/K1.md](docs/handoffs/K1.md), K1-4a, K1-6, K1-7): pool, generator (`read`/`sample`/`march`),
+Done 2026-11-18 ([docs/archive/handoffs/K1.md](../archive/handoffs/K1.md), K1-4a, K1-6, K1-7): pool, generator (`read`/`sample`/`march`),
 size snapshot, GPU parity gate (verified fresh-eyes), raw-WebGPU example. Compile-time column deferred (D25);
 K1.7a API polish and K1.8 lean reader open.
 
@@ -59,7 +59,7 @@ Everything a WebGPU host needs to hold and read sparse grids, with no engine (D8
   - `sample`: plus world-to-index and trilinear
   - `march`: plus HDDA and stats
   - `majorant`: a majorant DDA for delta tracking — **deferred to after 0.1** (D22); the record keeps its
-    fields. Design: [docs/design/K1-core.md](docs/design/K1-core.md) §5
+    fields. Design: [docs/dev/design/K1-core.md](./design/K1-core.md) §5
 - A WGSL size table per profile and grid-type set, measured as bytes and as compile time on one reference
   device, and guarded in CI.
 - The GPU parity harness moves onto the module generator. A raw-WebGPU example with no engine is the reference
@@ -74,7 +74,7 @@ the optional K1.8); and the raw-WebGPU example renders the smoke.
 
 ## K2 — three.js adapter, v1 parity ✅
 
-Done 2026-11-18 ([docs/handoffs/K2.md](docs/handoffs/K2.md), K2-0, K2-3B): three r187; `getDevice`, `VDBGridNode`,
+Done 2026-11-18 ([docs/archive/handoffs/K2.md](../archive/handoffs/K2.md), K2-0, K2-3B): three r187; `getDevice`, `VDBGridNode`,
 `vdbSample`/`vdbReadValue`; `VDBVolumeMaterial`, `VDBSequence`, compute on the core; demos 01–07 on the new
 adapter with goldens unchanged; v1 binding trick and sandbox workarounds removed (V7, V8 closed).
 
@@ -106,7 +106,7 @@ Compete on rendering (D18). Bring mjurczyk's renderer (three-openvdb, MIT) in as
 renderer, re-based on the sparse core, and lift its engine-independent parts into shared foundations that every
 adapter uses.
 
-- **Port plan:** [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) (done). His renderer is
+- **Port plan:** [docs/dev/research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md) (done). His renderer is
   a froxel pipeline written in TSL; density is read in one place (`createVolumeNodes()`), by four materials.
 - **Volume source interface:** the renderer reads density through one interface with two sources: the sparse
   `VDBGridPool` (ours) and dense `.wvdb` levels (his format, D14). Users of his renderer keep their assets.
@@ -175,8 +175,8 @@ promotion into a K phase.
 
 | ID | Item | Status | Feeds |
 |---|---|---|---|
-| R1 | Port plan for mjurczyk's renderer | ✅ 2026-11-18: [research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md), pinned at `75e7345` (v0.26.0) | K3 |
-| R2 | WDAS perf on hardware | ✅ 2026-07-12: 103.96 fps at 1080p with `stepSize=4`, `shadowSteps=4`; table in `docs/handoffs/PHASE-3.md` | K3 gate |
+| R1 | Port plan for mjurczyk's renderer | ✅ 2026-11-18: [docs/dev/research/notes/R1-renderer-port.md](research/notes/R1-renderer-port.md), pinned at `75e7345` (v0.26.0) | K3 |
+| R2 | WDAS perf on hardware | ✅ 2026-07-12: 103.96 fps at 1080p with `stepSize=4`, `shadowSteps=4`; table in `docs/archive/handoffs/PHASE-3.md` | K3 gate |
 | R3 | `nanovdb_convert` parity on a native machine | ✅ 2026-07-12: strict FLOAT/FP8 parity on all four pinned sources (`pnpm parity:native`) | K4 |
 | R4 | The companion service and its browser successors (D6; v1 phases 6b and 9) | ⬜ | later |
 | R5 | WASM escalation: not triggered (D3). Keep watch only. | — | — |

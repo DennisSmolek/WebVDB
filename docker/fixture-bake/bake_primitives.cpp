@@ -1,4 +1,4 @@
-// Bakes the Phase 0 primitive fixtures (docs/PLAN.md): fog-volume
+// Bakes the Phase 0 primitive fixtures (docs/archive/v1/PLAN.md): fog-volume
 // sphere/torus/box in Float, Fp8, and FpN, each written as a Codec::NONE
 // .nvdb plus a JSON sidecar of sampled ground-truth values and tree stats.
 // The traversal test suite (Phase 2) replays the sidecar samples against

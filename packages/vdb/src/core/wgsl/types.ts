@@ -89,7 +89,7 @@ export interface VDBBufferModuleOptions extends VDBModuleCommonOptions {
 }
 
 /**
- * Options of `vdbModuleWgsl` (docs/design/K1-core.md §3.1): exactly one of
+ * Options of `vdbModuleWgsl` (docs/dev/design/K1-core.md §3.1): exactly one of
  * `slot` / `buffer`. Annotate a host's options as `VDBSlotModuleOptions` to
  * read `options.slot` without a non-null assertion.
  */

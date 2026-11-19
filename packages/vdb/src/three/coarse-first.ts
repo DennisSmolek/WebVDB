@@ -1,6 +1,6 @@
 /**
  * `vdbStreamCoarseFirst` (K4.16): stream a coarse-first `.nvdb`
- * (`vdbBakeCoarseFirst`, docs/design/K4-5-coarse-first.md option a) into one
+ * (`vdbBakeCoarseFirst`, docs/dev/design/K4-5-coarse-first.md option a) into one
  * pool id. The preview is added as soon as its bytes are in, with the full
  * grid's size reserved, and each finer grid replaces it in place:
  *

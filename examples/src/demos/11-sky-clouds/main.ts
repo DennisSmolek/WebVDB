@@ -4,7 +4,7 @@
  * `VDBFrameRenderer` (neural multiple scattering, temporal; 'volume' lighting by default, see `controls.lighting`), under an HDR sky with a time-of-day
  * selector and a sun whose colour follows its elevation. Public API only (`@pmndrs/vdb`, `/tools`, `/three`).
  *
- * Gallery assets (git-ignored `fixtures/gallery/`, licences in docs/assets-licensing.md): `sky-{midday,dusk,cloudy}-HDR.jpg`
+ * Gallery assets (git-ignored `fixtures/gallery/`, licences in docs/dev/assets-licensing.md): `sky-{midday,dusk,cloudy}-HDR.jpg`
  * and `CloudPackVDB_wvdb/cloud_0{2,5,7}_variant_0000.wvdb`. Without them the page draws a procedural sky and the WDAS
  * cloud alone, and says what is missing. The WDAS grid is a fixture (`pnpm fixtures:wdas`, then Fp8, fixtures/README.md).
  *

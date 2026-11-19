@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 /**
  * Demo 07 — builder: the other half of the Phase 5/8 demo gate ("dense ->
- * TS-build -> render round-trip", docs/PLAN.md). Everything is generated
+ * TS-build -> render round-trip", docs/archive/v1/PLAN.md). Everything is generated
  * in-page (no external fixture): a deterministic 96^3 dense field ->
  * `vdbBuildFromDense` -> `writeNvdb` -> re-parse via `NvdbFile` -> `VDBGridPool`
  * -> `VDBVolumeMaterial` render,

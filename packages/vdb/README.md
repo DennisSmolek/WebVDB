@@ -98,7 +98,7 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 ### The vendoring story
 
 The WGSL module is not written from scratch: per
-[decision D2](https://github.com/pmndrs/vdb/blob/main/docs/DECISIONS.md#d2--gpu-traversal-base), it's
+[decision D2](https://github.com/pmndrs/vdb/blob/main/docs/archive/v1/DECISIONS.md#d2--gpu-traversal-base), it's
 **vendored as a pinned, audited fork** of
 [emcfarlane/webgpu-nanovdb](https://github.com/emcfarlane/webgpu-nanovdb)'s
 `pnanovdb.wgsl` — Apache-2.0, NOTICE preserved, every local change logged
@@ -113,7 +113,7 @@ The CPU half: parse `.vdb` containers, build
 NanoVDB grid images (from a dense array or straight from a parsed `.vdb`),
 quantize to Fp4/Fp8/Fp16/FpN, apply affine transforms, inspect memory layout, and
 write `.nvdb` files — all **pure TypeScript, no WASM** (the one runtime dependency is
-`fflate` for zlib; [decision D3](https://github.com/pmndrs/vdb/blob/main/docs/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)).
+`fflate` for zlib; [decision D3](https://github.com/pmndrs/vdb/blob/main/docs/archive/v1/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)).
 WASM stays an optional escalation rung, adopted only on demonstrated need
 — nothing in this package requires it.
 
@@ -174,7 +174,7 @@ the NanoVDB `Map`.
 | `vdbBuildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `vdbQuantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
 | `vdbQuantize` / `vdbQuantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
-| `vdbTransform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](https://github.com/pmndrs/vdb/blob/main/docs/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
+| `vdbTransform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](https://github.com/pmndrs/vdb/blob/main/docs/archive/v1/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
 | `vdbInspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
 | `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2, `io::Segment` layout; `{ codec: 'zip' }` for NanoVDB's ZIP codec) |
 | `vdbBakeCoarseFirst` | Coarse-first `.nvdb`: a small preview grid (`<name>.lod48`, box, FpN) then the full grid, ZIP by default |
@@ -198,7 +198,7 @@ Every function above is validated byte/value-wise against real
 openvdb.org samples + primitives). The one anchor that needs a native
 machine to close out (this package's numbers already match at every
 tested coordinate) is tracked in
-[`docs/handoffs/PHASE-5.md`](https://github.com/pmndrs/vdb/blob/main/docs/handoffs/PHASE-5.md)
+[`docs/archive/handoffs/PHASE-5.md`](https://github.com/pmndrs/vdb/blob/main/docs/archive/handoffs/PHASE-5.md)
 — see that doc for the full parity checklist and known semantic edge
 cases (root background vs. near-field tile fill, active-tile compression,
 CRC).
@@ -338,7 +338,7 @@ for the atlas fallback path through a stock `Data3DTexture`.
 ### Coarse-first loading: `vdbStreamCoarseFirst`
 
 A file baked with `vdbBakeCoarseFirst` (`@pmndrs/vdb/tools`) holds a ~12 KiB preview grid before the full grid
-(docs/design/K4-5-coarse-first.md). `vdbStreamCoarseFirst` reads the response body as it arrives, adds the
+([design note](https://github.com/pmndrs/vdb/blob/main/docs/dev/design/K4-5-coarse-first.md)). `vdbStreamCoarseFirst` reads the response body as it arrives, adds the
 preview to the pool with the full grid's size reserved, and replaces it in place when the full grid is in:
 
 ```ts

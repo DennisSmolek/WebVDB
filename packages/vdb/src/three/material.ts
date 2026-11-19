@@ -1,6 +1,6 @@
 /**
  * `VDBVolumeMaterial`: the fragment raymarch of one grid in a `VDBGridPool`,
- * through a `VDBGridNode` (task K2.3, docs/handoffs/K2.md). It replaces v1's
+ * through a `VDBGridNode` (task K2.3, docs/archive/handoffs/K2.md). It replaces v1's
  * `NanoVDBVolumeMaterial`, which bound one grid image as its own storage
  * attribute and rewrote the vendored library's buffer global.
  *

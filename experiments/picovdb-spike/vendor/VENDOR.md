@@ -2,9 +2,9 @@
 
 **Evaluation spike, not a shipping dependency.** These files are vendored
 under `experiments/picovdb-spike/` only, to produce evidence for a pending
-owner decision (proposed D7, see [`docs/spikes/PICOVDB.md`](../../../docs/spikes/PICOVDB.md)).
+owner decision (proposed D7, see [`docs/archive/spikes/PICOVDB.md`](../../../docs/archive/spikes/PICOVDB.md)).
 Nothing under `packages/` imports them. If the owner adopts PicoVDB, the
-vendoring moves into a package and follows [D2](../../../docs/DECISIONS.md):
+vendoring moves into a package and follows [D2](../../../docs/archive/v1/DECISIONS.md):
 pinned commit, NOTICE preserved, our fixes applied in-tree with a diff log.
 We would be prepared to diverge permanently, and would upstream fixes if the
 author engages.

@@ -24,7 +24,7 @@ export type {
 /** The pool's GPU layout version, for `vdbCheckModule({ layoutVersion })`. */
 export { VDB_GPU_LAYOUT_VERSION } from "./pool/layout.js";
 export type { VDBVec3 } from "./pool/layout.js";
-// K1.4a: WGSL module generator (docs/design/K1-core.md §3).
+// K1.4a: WGSL module generator (docs/dev/design/K1-core.md §3).
 export { vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from "./wgsl/generate.js";
 export type {
   VDBBufferModuleOptions,

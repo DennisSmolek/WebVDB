@@ -11,7 +11,7 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // resolution-48 previews (box / point / trilinear; the active cell box and the same lattice shifted by half a preview
 // voxel) from two camera poses, each preview with densityScale x voxelRatio (K4.16). This spec compares every preview
 // frame to the full-resolution frame of the same pose (PSNR, % pixels > 8/255, scripts/k3/metrics.mjs) and writes the
-// JSON table (test output dir, and docs/handoffs/K4-19.json when WEBVDB_WRITE_K419=1).
+// JSON table (test output dir, and docs/archive/handoffs/K4-19.json when WEBVDB_WRITE_K419=1).
 const PAGE_URL = "/src/harness/preview-filter.html";
 // WEBVDB_K419_VOLUMES=smoke,wdas,explosion,fire adds the high-frequency samples (exploration; the committed table is smoke + wdas).
 const VOLUMES = (process.env.WEBVDB_K419_VOLUMES ?? "smoke,wdas").split(",");
@@ -147,7 +147,7 @@ test("K4.19 preview filter A/B: box vs point vs trilinear previews against the f
 
   const table = { adapter: r.adapter, width: r.width, height: r.height, resolution: r.resolution, rows, summary };
   writeFileSync(testInfo.outputPath("preview-filter.json"), JSON.stringify(table, null, 2));
-  if (process.env.WEBVDB_WRITE_K419) writeFileSync(path.join("docs", "handoffs", "K4-19.json"), JSON.stringify(table, null, 2));
+  if (process.env.WEBVDB_WRITE_K419) writeFileSync(path.join("docs", "archive", "handoffs", "K4-19.json"), JSON.stringify(table, null, 2));
   console.log(`[preview-filter] ${r.adapter}, ${r.width}x${r.height}, preview resolution ${r.resolution}`);
   console.table(rows);
   console.table(summary);

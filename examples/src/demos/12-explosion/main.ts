@@ -109,7 +109,7 @@ async function run(): Promise<void> {
   if (!nightOk) state.missing.push("sky-night-HDR.jpg");
   if (!duskOk) state.missing.push("sky-dusk-HDR.jpg");
   if (!carOk) state.missing.push("car.glb");
-  if (state.missing.length) shell.note(`Gallery assets not found, using fallbacks: ${state.missing.join(", ")} (fixtures/gallery/, docs/assets-licensing.md).`);
+  if (state.missing.length) shell.note(`Gallery assets not found, using fallbacks: ${state.missing.join(", ")} (fixtures/gallery/, docs/dev/assets-licensing.md).`);
   const skyAvailable: SkyId[] = [...(nightOk ? (["night"] as const) : []), ...(duskOk ? (["dusk"] as const) : []), "procedural"];
   const skyParam = params.get("sky") as SkyId | null;
 

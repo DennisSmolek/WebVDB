@@ -20,7 +20,7 @@
  * export.
  */
 
-// K2.1/K2.2: the adapter over the engine-free core (docs/design/K1-core.md §6). `getDevice` and
+// K2.1/K2.2: the adapter over the engine-free core (docs/dev/design/K1-core.md §6). `getDevice` and
 // `getGPUTexture` keep the helper names the other pmndrs tools use (D32).
 export { getDevice, getGPUTexture } from "./device.js";
 export type { VDBThreeBackendLike, VDBThreeRendererLike } from "./device.js";

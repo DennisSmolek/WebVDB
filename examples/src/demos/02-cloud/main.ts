@@ -1,5 +1,5 @@
 /**
- * Demo 02 — cloud: the WebVDB main goal (SPEC §5, docs/PLAN.md Phase 3), on
+ * Demo 02 — cloud: the WebVDB main goal (SPEC §5, docs/archive/v1/PLAN.md Phase 3), on
  * the K2 three adapter.
  *
  * Fragment-raymarches a NanoVDB fog volume: the grid goes into a

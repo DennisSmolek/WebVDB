@@ -1,4 +1,4 @@
-# Reproducible fixture-bake environment (docs/PLAN.md Phase 0).
+# Reproducible fixture-bake environment (docs/archive/v1/PLAN.md Phase 0).
 # Builds native OpenVDB + NanoVDB tools at the SAME pinned commit as the
 # vendored PNanoVDB.h, plus the primitive bake program. Per D6 this image
 # is also the seed of the interim companion service (convert/export/

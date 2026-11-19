@@ -1,6 +1,6 @@
 # @pmndrs/vdb spec (draft)
 
-Status: draft, 2026-11-18. It replaces the v1 spec ([docs/SPEC.md](../docs/SPEC.md)) for new work. Names
+Status: draft, 2026-11-18. It replaces the v1 spec ([docs/SPEC.md](../v1/SPEC.md)) for new work. Names
 marked *(sketch)* are proposals for K1/K2 design tasks to settle; this text is a starting point, not a contract.
 
 ## 1. What it is

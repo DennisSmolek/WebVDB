@@ -1,5 +1,5 @@
 /**
- * CPU twins (D11) of the `march` WGSL profile (docs/design/K1-core.md §3.2,
+ * CPU twins (D11) of the `march` WGSL profile (docs/dev/design/K1-core.md §3.2,
  * task K1.4b): the vendored HDDA (`vdbHddaInit/Update/Step`), the node size at
  * a voxel (`vdbGetDim`), node statistics (the fork's
  * `{root,upper,lower,leaf}_get_{min,max,ave,stddev}_float`, with the K1.4b Fp

@@ -1,5 +1,5 @@
 /**
- * f64 affine composition for grid records (docs/design/K1-core.md §1.6).
+ * f64 affine composition for grid records (docs/dev/design/K1-core.md §1.6).
  * Affines here are 3x4 row-major: row r is `[m_r0, m_r1, m_r2, t_r]`, so
  * `out_r = m_r0 x + m_r1 y + m_r2 z + t_r`. The record stores them rounded to f32.
  * Negated translations are written `0 - x` so a zero stays +0 (stable record bits).

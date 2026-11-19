@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Demo 04 — atlas-fallback: the Phase 4 gate (SPEC §3.3/§5, docs/PLAN.md).
+ * Demo 04 — atlas-fallback: the Phase 4 gate (SPEC §3.3/§5, docs/archive/v1/PLAN.md).
  *
  * Loads `sphere_fog_fp8.nvdb` (atlas texture path) and `box_fog_float.nvdb`
  * (gridStats/valueTransform verification path), asserts

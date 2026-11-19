@@ -1,6 +1,6 @@
 /**
  * `VDBGridPool`: many NanoVDB grids in one `GPUBuffer` behind a grid table
- * (docs/design/K1-core.md §1, §4; D8, D10).
+ * (docs/dev/design/K1-core.md §1, §4; D8, D10).
  *
  * Model: CPU calls (`add`, `replace`, `remove`, `setTransform`, `setMajorant`)
  * stage changes and return at once; `update(encoder)` applies them. Growth and
@@ -8,7 +8,7 @@
  * that were resident before that update; `version` bumps then (and when a
  * failed growth rolls back to the previous buffer).
  *
- * Lifecycle (docs/handoffs/K1.md, "K1.3 pool lifecycle"):
+ * Lifecycle (docs/archive/handoffs/K1.md, "K1.3 pool lifecycle"):
  * - A request that could never fit under the byte limit throws `VDB_POOL_LIMIT`
  *   at staging, with the pool unchanged.
  * - Growth allocates inside `out-of-memory` and `validation` error scopes. The

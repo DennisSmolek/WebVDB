@@ -14,7 +14,7 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // is bit-identical to the K3.2 one (fresh accessor + vdbSample per sample); every LOD strategy
 // renders deterministically without validation errors; the sparse WGSL helpers match their CPU twins.
 // The report-only runs (smoke.vdb, WDAS, his bunny, flicker per LOD strategy, timings) are opt-in:
-// K3_SPARSE_REPORT=1 (see docs/handoffs/K3-2.md).
+// K3_SPARSE_REPORT=1 (see docs/archive/handoffs/K3-2.md).
 const PAGE_URL = "/src/harness/k3-sparse.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OURS = path.join(repoRoot, "artifacts", "k3", "ours");

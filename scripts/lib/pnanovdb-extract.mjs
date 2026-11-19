@@ -2,7 +2,7 @@
 // grid-type ids, and the per-grid-type stride/offset constants table that
 // upstream validates with pnanovdb_validate_strides.h. Phase 2's WGSL
 // baked-const codegen consumes the JSON so shader constants are provably
-// in sync with the C header (docs/PLAN.md Phase 0/2).
+// in sync with the C header (docs/archive/v1/PLAN.md Phase 0/2).
 
 /** Integer #defines: `#define PNANOVDB_X 123` / `0x...UL`. Hex values stay strings (may exceed 2^53). */
 function parseDefines(text) {

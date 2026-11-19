@@ -50,7 +50,7 @@ async function run(page: Page, query: string, timeout = 400_000): Promise<Result
 /**
  * Within 1 f16 ulp everywhere. (No bit-exact share is required: SwiftShader is bit-exact on > 99.9% of texels, but
  * on Apple Metal ~21% of the Fp8 sphere's texels sit 1 ulp off: its Fp8 values land on f16 steps, and a contracted
- * f32 multiply-add a hair below one truncates to the step under it. K3.2c hardware run, docs/handoffs/K3-2a.md.)
+ * f32 multiply-add a hair below one truncates to the step under it. K3.2c hardware run, docs/archive/handoffs/K3-2a.md.)
  */
 function expectParity(c: Compare | null, what: string): void {
   expect(c, what).not.toBeNull();

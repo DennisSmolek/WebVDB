@@ -1,6 +1,6 @@
 /**
  * Demo 06 — explorer: drag-drop a `.vdb` OR `.nvdb` and inspect it (Phase 5/8
- * demo gate half 1, docs/PLAN.md — "drag-drop a .vdb and render it").
+ * demo gate half 1, docs/archive/v1/PLAN.md — "drag-drop a .vdb and render it").
  *
  * Pipeline (SPEC §4/§3.3):
  *   - `.vdb` -> `parseVdb` (pure-TS OpenVDB container reader) -> `buildFromVdb`

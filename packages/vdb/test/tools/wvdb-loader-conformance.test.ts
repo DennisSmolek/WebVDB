@@ -18,7 +18,7 @@ import { bytesEqual, fixture } from "./wvdb-helpers.js";
  * consistent in files our writer produces. The decode below follows his
  * functions (his byte reads, his loops), not our reader, and its float output
  * is compared with readWvdb. A real load in his WVDBLoader on the owner's
- * machine is still needed (docs/handoffs/K4-3.md).
+ * machine is still needed (docs/archive/handoffs/K4-3.md).
  */
 
 interface HisChunk {

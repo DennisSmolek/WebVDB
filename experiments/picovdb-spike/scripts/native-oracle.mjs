@@ -8,7 +8,7 @@
 //
 // Requires a native build of upstream at the pinned commit:
 //   PICOVDB_NATIVE=/path/to/zig-out/bin/picovdb node experiments/picovdb-spike/scripts/native-oracle.mjs
-// (see docs/spikes/PICOVDB.md "Reproduction" for building it with Zig 0.16
+// (see docs/archive/spikes/PICOVDB.md "Reproduction" for building it with Zig 0.16
 // from the PyPI `ziglang` wheel when ziglang.org is unreachable).
 
 import { createHash } from "node:crypto";

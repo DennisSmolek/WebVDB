@@ -102,7 +102,7 @@ function main() {
   const refDir = opt.reference ?? "fixtures/k3-reference/75e7345";
   const step7 = existsSync(refDir) ? readdirSync(refDir).filter((f) => /^step7-.*\.png$/.test(f) && !f.endsWith(".asis.png")) : [];
   if (step7.length === 0) {
-    console.log(`compare-step7: SKIPPED, no step7-*.png captures in ${refDir} yet (run the Step 7 capture, see docs/handoffs/K3-7.md).`);
+    console.log(`compare-step7: SKIPPED, no step7-*.png captures in ${refDir} yet (run the Step 7 capture, see docs/archive/handoffs/K3-7.md).`);
     return 0;
   }
   if (!existsSync(oursDir)) {

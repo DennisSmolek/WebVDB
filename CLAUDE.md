@@ -8,16 +8,16 @@ mjurczyk's three-openvdb and re-based on the sparse core (D18). The repo is stil
 ## Read first, write last
 
 Read these before starting:
-- [PHASES.md](PHASES.md): the plan, phases and exit gates.
-- [TASKS.md](TASKS.md): what's open and who owns it.
-- [DECISIONS.md](DECISIONS.md): what's settled; don't re-litigate.
-- [DIVERGES.md](DIVERGES.md): where we split from a source, and why.
-- Background: [spec/SPEC-draft.md](spec/SPEC-draft.md), [research/INDEX.md](research/INDEX.md), and the v1
-  history in [docs/handoffs/](docs/handoffs/).
+- [PHASES.md](./docs/dev/PHASES.md): the plan, phases and exit gates.
+- [TASKS.md](./docs/dev/TASKS.md): what's open and who owns it.
+- [DECISIONS.md](./docs/dev/DECISIONS.md): what's settled; don't re-litigate.
+- [DIVERGES.md](./docs/dev/DIVERGES.md): where we split from a source, and why.
+- Background: [docs/archive/spec/SPEC-draft.md](./docs/archive/spec/SPEC-draft.md), [docs/dev/research/INDEX.md](./docs/dev/research/INDEX.md), and the v1
+  history in [docs/archive/handoffs/](./docs/archive/handoffs/).
 
-When you finish, update TASKS.md (mark done, add follow-ups) and add anything that would have saved you time to
+When you finish, update docs/dev/TASKS.md (mark done, add follow-ups) and add anything that would have saved you time to
 **Traps** below. Record every departure from a source (`PNanoVDB.h`, NanoVDB, OpenVDB, mjurczyk/openvdb, a paper)
-in DIVERGES.md with the reason.
+in docs/dev/DIVERGES.md with the reason.
 
 ## Working rules
 
@@ -55,7 +55,7 @@ and what not to touch.
 
 ## Traps
 
-From v1; details in docs/handoffs/.
+From v1; details in docs/archive/handoffs/.
 - WebGPU in headless Chromium needs a secure context: serve over `http://localhost`, never `about:blank`.
   SwiftShader flags are in `playwright.config.ts`.
 - `bindGroupLayouts` is positional. A skipped `@group` index silently invalidates the dispatch and leaves outputs

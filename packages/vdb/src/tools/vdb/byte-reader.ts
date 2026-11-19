@@ -2,7 +2,7 @@
  * byte-reader.ts — a seekable little-endian cursor over a `.vdb` buffer.
  *
  * All primitive VDB stream fields (per the `OpenVDBReader`/`vdb-rs` format
- * facts, docs/handoffs and DECISIONS.md D3) are little-endian; strings are a
+ * facts, docs/archive/handoffs and docs/archive/v1/DECISIONS.md D3) are little-endian; strings are a
  * u32 length prefix + raw ASCII bytes (no terminator).
  */
 

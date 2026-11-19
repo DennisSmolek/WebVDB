@@ -3,7 +3,7 @@
  * NanoVDB grid at full resolution (from the pool, `vdbSparseSource`), on the right a dense `.wvdb` bake of it at his
  * default resolution (128 on the longest side; 64 and 200 on the control), the format trade-off made visible. Each
  * side lists its resolution, GPU bytes, file size and the mean error against the source (`vdbResampleError`, the
- * comparison report's metric, research/INDEX), measured in a worker. Public API only.
+ * comparison report's metric, docs/dev/research/INDEX), measured in a worker. Public API only.
  *
  * Each side renders with its own `VDBFrameRenderer` ('volume' lighting by default, see `controls.lighting`; neural
  * scattering, temporal) into its own

@@ -4,8 +4,8 @@ Status: proposed, 2026-11-18 (task K1.2; inputs for K1.1 and K1.4). Owner confir
 Code is named by its post-K0 home (`core/`, `tools/`, `three/` under `packages/vdb/src/`). Current paths are
 cited only where this note was measured from them.
 
-Read with: [PHASES.md](../../PHASES.md) K1, [DECISIONS.md](../../DECISIONS.md) D2, D8, D10, D11, D17–D20,
-[spec/SPEC-draft.md](../../spec/SPEC-draft.md) §2–3. Precedents: `@pmndrs/bvh` (`traceModuleWgsl`, `traceSlot`,
+Read with: [PHASES.md](../PHASES.md) K1, [DECISIONS.md](../DECISIONS.md) D2, D8, D10, D11, D17–D20,
+[docs/archive/spec/SPEC-draft.md](../../archive/spec/SPEC-draft.md) §2–3. Precedents: `@pmndrs/bvh` (`traceModuleWgsl`, `traceSlot`,
 `GPU_LAYOUT_VERSION`, `GrowableStorage`, `src/three/trace-nodes.ts`), `@pmndrs/downsampler` (`requiredLimits`,
 "checked, never destroyed"), the pathtracer's `docs/design/volumes.md`, and the cloud system's
 `work/specs/P8-hero-vdb.md`.
@@ -502,7 +502,7 @@ Order: K1.3a → (K1.3b ∥ K1.4a) → K1.4b → K1.5 ∥ K1.6 → K1.7. K1.8 ca
 5. **Trilinear cost.** The cloud system measured the 8-tap accessor trilinear at 2.2–2.7× a hardware fetch.
    *Recommendation:* a same-leaf fast path in `vdbSample` (decode 8 taps from one leaf when they share it, about
    2/3 of interior samples) as a K3 perf item behind the existing parity rows, not a K1 change.
-   *Settled by K3.2d* ([docs/handoffs/K3-2d.md](../handoffs/K3-2d.md)): the same-leaf path was measured and lost
+   *Settled by K3.2d* ([docs/archive/handoffs/K3-2d.md](../../archive/handoffs/K3-2d.md)): the same-leaf path was measured and lost
    (10–25% slower on the Apple GPU: the 1/3 of lanes that fall back make most SIMD groups run both paths). What
    shipped is the opt-in helper `fastTrilinear` (`vdbSampleFast`): every lane reads its 8 taps as lower-node child
    lookups from the cached lower node, bit-identical to `vdbSample`, 1.5–2× faster sparse source passes. `vdbSample`

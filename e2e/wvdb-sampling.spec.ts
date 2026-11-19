@@ -10,7 +10,7 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // examples/src/harness/wvdb-sampling.ts: it bakes each volume in memory, renders every bake through the K3.0 dense
 // source (emission-absorption march) and compares it with (a) the same march over the full-resolution sparse grid
 // ("ea", like-for-like) and (b) VDBVolumeMaterial on the pool ("vvm", a different renderer: ranking only).
-// WEBVDB_WRITE_K421=1 writes docs/handoffs/K4-21.json. WEBVDB_K421_VOLUMES / WEBVDB_K421_RES change the sets.
+// WEBVDB_WRITE_K421=1 writes docs/archive/handoffs/K4-21.json. WEBVDB_K421_VOLUMES / WEBVDB_K421_RES change the sets.
 const PAGE_URL = "/src/harness/wvdb-sampling.html";
 const VOLUMES = (process.env.WEBVDB_K421_VOLUMES ?? "smoke,bunny_cloud,wdas").split(",");
 const RES = process.env.WEBVDB_K421_RES ?? "128,64";
@@ -156,7 +156,7 @@ test("K4.21 .wvdb bake sampling A/B: nearest vs box against the full-resolution 
 
   const table = { adapter: r.adapter, width: r.width, height: r.height, steps: r.steps, extinction: r.extinction, rows, summary };
   writeFileSync(testInfo.outputPath("wvdb-sampling.json"), JSON.stringify(table, null, 2));
-  if (process.env.WEBVDB_WRITE_K421) writeFileSync(path.join("docs", "handoffs", `K4-21${EXT === "20" ? "" : `-ext${EXT}`}.json`), JSON.stringify(table, null, 2));
+  if (process.env.WEBVDB_WRITE_K421) writeFileSync(path.join("docs", "archive", "handoffs", `K4-21${EXT === "20" ? "" : `-ext${EXT}`}.json`), JSON.stringify(table, null, 2));
   console.log(`[wvdb-sampling] ${r.adapter}, ${r.width}x${r.height}, ${r.steps} steps, extinction ${r.extinction}`);
   console.table(summary);
 

@@ -1,6 +1,6 @@
 /**
  * `VDBSequence`: manifest-driven animated-volume playback on a `VDBGridPool`
- * (task K2.3; v1's `NanoVDBSequence`, docs/SPEC §3.5). Decodes per-frame grid
+ * (task K2.3; v1's `NanoVDBSequence`, docs/archive/v1/SPEC.md §3.5). Decodes per-frame grid
  * images ahead of time into a bounded prefetch ring and swaps the shown one
  * into ONE pool id with `pool.replace(id, image)`.
  *

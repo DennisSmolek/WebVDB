@@ -1,6 +1,6 @@
 /**
  * K4.16 / K4.18 browser gate: coarse-first `.nvdb` delivery
- * (docs/design/K4-5-coarse-first.md, option a).
+ * (docs/dev/design/K4-5-coarse-first.md, option a).
  *
  * 1. Bakes `smoke.vdb` in the page with `vdbBakeCoarseFirst` (`[density.lod48,
  *    density]`, box, FpN, codec ZIP), and the same two images with codec NONE.

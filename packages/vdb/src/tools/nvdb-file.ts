@@ -1,6 +1,6 @@
 /**
- * `.nvdb` loader — Phase 1 (docs/PLAN.md), implementing the `NvdbFile`
- * contract from docs/SPEC.md §2.2: parse a `.nvdb` file (or a raw NanoVDB
+ * `.nvdb` loader — Phase 1 (docs/archive/v1/PLAN.md), implementing the `NvdbFile`
+ * contract from docs/archive/v1/SPEC.md §2.2: parse a `.nvdb` file (or a raw NanoVDB
  * grid buffer) into GPU-ready grid images — "a valid NanoVDB grid image in
  * a flat u32 buffer" (SPEC §1).
  *

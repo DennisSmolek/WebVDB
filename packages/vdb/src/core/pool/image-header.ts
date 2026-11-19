@@ -1,6 +1,6 @@
 /**
  * Reads the few NanoVDB `GridData` / `TreeData` / `RootData` fields a pool record
- * needs, by byte offset (docs/design/K1-core.md §1.4). The core never imports
+ * needs, by byte offset (docs/dev/design/K1-core.md §1.4). The core never imports
  * `tools` (D20), so the offsets are restated here; `test/core/image-header.test.ts`
  * cross-checks every one against `tools`' constants and `vendor/stride-tables.json`
  * (ABI 32.9.1, PNanoVDB.h).

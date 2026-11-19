@@ -81,7 +81,7 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      # The PicoVDB evaluation spike (docs/spikes/PICOVDB.md, decision D16) is no
+      # The PicoVDB evaluation spike (docs/archive/spikes/PICOVDB.md, decision D16) is no
       # longer run in CI: its byte-for-byte goldens were recorded against the
       # vdb-samples revision before the 2026-07 re-pin, and re-recording needs the
       # native picovdb tools. Run it locally with

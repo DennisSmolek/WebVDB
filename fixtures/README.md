@@ -35,7 +35,7 @@ when they do not match the pinned revision.
 ## Baking `.nvdb` + sidecars
 
 The traversal test suite consumes `.nvdb` files plus JSON sidecars of
-sampled ground-truth values (docs/SPEC.md §6):
+sampled ground-truth values (docs/archive/v1/SPEC.md §6):
 
 ```sh
 pnpm fixtures:bake

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// K1.3b acceptance (docs/design/K1-core.md §8): nine fixtures in a VDBGridPool
+// K1.3b acceptance (docs/dev/design/K1-core.md §8): nine fixtures in a VDBGridPool
 // started at 4 KiB, read back on a real device; every image range must be
 // byte-identical to its file and every record must point at it.
 const PAGE_URL = "/src/harness/pool.html";

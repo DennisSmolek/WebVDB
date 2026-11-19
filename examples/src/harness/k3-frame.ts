@@ -12,7 +12,7 @@
  *   volume placement, phase and light; or, when `?manifest=<url>` (default
  *   `/fixtures/k3-reference/75e7345/manifest.json`) has the scenario, the captured camera and volume
  *   matrices. 1280x720, his froxel defaults (512x512x24, 32 sub-steps). `parityExpected` says whether
- *   the Step 1 port can match his capture (see docs/handoffs/K3-1.md: environment and 'frame' lighting).
+ *   the Step 1 port can match his capture (see docs/archive/handoffs/K3-1.md: environment and 'frame' lighting).
  *
  * Pipeline: scene → linear HalfFloat RenderTarget (as his canvas frame-buffer target: 4x MSAA for his scenes, his
  * `antialias: true`; none for ours, `?msaa=`) → resolve →

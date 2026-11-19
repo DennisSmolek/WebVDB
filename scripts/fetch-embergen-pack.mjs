@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fetch JangaFX's free EmberGen VDB animation packs — our animated-sequence
-// test corpus (docs/FEASIBILITY.md §8). JangaFX distributes these free packs
+// test corpus (docs/archive/v1/FEASIBILITY.md §8). JangaFX distributes these free packs
 // from their site; check the page for current license terms.
 //
 // The direct asset URLs aren't stable, so this script scrapes the download

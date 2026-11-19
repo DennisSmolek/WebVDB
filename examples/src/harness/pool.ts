@@ -1,5 +1,5 @@
 /**
- * K1.3b browser check (docs/design/K1-core.md §8): the nine primitive fixtures
+ * K1.3b browser check (docs/dev/design/K1-core.md §8): the nine primitive fixtures
  * go into one VDBGridPool started at 4 KiB, so it grows several times on a real
  * device; then the whole buffer is read back and every image range must be
  * byte-identical to its file, with header and records pointing at it.

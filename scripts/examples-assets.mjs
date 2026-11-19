@@ -9,7 +9,7 @@
 //   ... --verify-dir examples/dist                                    also fail if that whole dir is >= the cap
 //
 // The set is examples/assets.manifest.json: explicit file lists (derived from the demos' fixtureUrl() calls).
-// A group with `licensingRows` ships only when every named row of docs/assets-licensing.md is `ok`; otherwise
+// A group with `licensingRows` ships only when every named row of docs/dev/assets-licensing.md is `ok`; otherwise
 // it is skipped and the demos fall back to their procedural skies and props, as with `?gallery=0`.
 // Fails when a listed file is missing, a file is >= maxFileMB, or the set (or --verify-dir) is >= maxTotalMB.
 
@@ -36,14 +36,14 @@ import { fileURLToPath } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const MANIFEST_PATH = path.join(repo, "examples/assets.manifest.json");
-const LICENSING_PATHS = [path.join(repo, "docs/dev/assets-licensing.md"), path.join(repo, "docs/assets-licensing.md")];
+const LICENSING_PATHS = [path.join(repo, "docs/dev/assets-licensing.md")];
 const MB = 1024 * 1024;
 
 export function readManifest(file = MANIFEST_PATH) {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
-/** `{ "sky-midday-HDR.jpg": "pending", ... }` from the table rows of docs/assets-licensing.md (first backticked token, last cell). */
+/** `{ "sky-midday-HDR.jpg": "pending", ... }` from the table rows of docs/dev/assets-licensing.md (first backticked token, last cell). */
 export function parseLicensingTable(markdown) {
   const rows = {};
   for (const line of markdown.split("\n")) {
@@ -68,7 +68,7 @@ export function shippedGroups(manifest, licensing) {
   for (const g of manifest.groups) {
     const rows = g.licensingRows ?? [];
     const notOk = rows.filter((r) => licensing[r] !== "ok");
-    if (notOk.length) skipped.push({ group: g, why: `docs/assets-licensing.md: ${notOk.map((r) => `${r} is ${licensing[r] ?? "missing"}`).join(", ")}` });
+    if (notOk.length) skipped.push({ group: g, why: `docs/dev/assets-licensing.md: ${notOk.map((r) => `${r} is ${licensing[r] ?? "missing"}`).join(", ")}` });
     else shipped.push(g);
   }
   return { shipped, skipped };
