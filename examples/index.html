@@ -31,11 +31,17 @@
       <li>10 · <a href="/src/demos/10-frame-renderer/index.html">frame-renderer</a> — the froxel renderer (K3), interactive: clouds, smoke, an emissive explosion, a level set and points, with live lighting, scattering, phase, spectral, shadow and quality controls</li>
     </ol>
     <h2>Gallery</h2>
+    <p>
+      Showcase pages over sparse, full-resolution NanoVDB. Some use the git-ignored <code>fixtures/gallery/</code>
+      assets (HDR skies, the JangaFX cloud pack) and fall back without them.
+    </p>
     <ul id="gallery-list">
-      <li>12 · <a href="/src/demos/12-explosion/index.html">explosion</a> — an EmberGen explosion sequence in one dense source, lighting the ground and props with its flames</li>
+      <li>11 · <a href="/src/demos/11-sky-clouds/index.html">Sky clouds</a> — the WDAS cloud at full resolution leads three JangaFX clouds under an HDR sky; time of day and sun elevation</li>
+      <li>12 · <a href="/src/demos/12-explosion/index.html">Explosion</a> — an EmberGen explosion sequence in one dense source, lighting the ground and props with its flames</li>
       <li>13 · <a href="/src/demos/13-level-sets/index.html">Level sets</a> — a sculpture gallery of OpenVDB level sets traced at full resolution on the sparse tree, HDR-lit, with shadows</li>
       <li>14 · <a href="/src/demos/14-points/index.html">Points</a> — the 9.5 M-point waterfall decoded by our parser in a worker, coloured by Cd or speed</li>
-      <li>16 · <a href="/src/demos/16-streaming/index.html">streaming</a> — coarse-first <code>.nvdb</code> into the froxel renderer: a 14 KiB preview, then the full grid in place</li>
+      <li>15 · <a href="/src/demos/15-full-res-vs-dense/index.html">Full-res vs 128³</a> — one volume split by a divider: sparse full resolution against a dense <code>.wvdb</code> bake, with GPU bytes, file size and error per side</li>
+      <li>16 · <a href="/src/demos/16-streaming/index.html">Streaming</a> — coarse-first <code>.nvdb</code> into the froxel renderer: a 14 KiB preview, then the full grid in place</li>
     </ul>
     <div id="webgpu-report" data-testid="webgpu-report">Checking WebGPU…</div>
     <script type="module" src="/src/main.ts"></script>
