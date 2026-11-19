@@ -26,7 +26,7 @@ Owner action: fill in **Source** and **Licence**, then set **Status** to `ok` (c
 | `airbus.glb` | 1.3 MB | unknown | | | pending |
 | `depth-testing.glb` | 924 KB | unknown (possibly his own test scene) | | | pending |
 | `boat_points.wvdb` | 17 MB | unknown point simulation | | | pending |
-| `CloudPackVDB_wvdb/` | 1.0 MB | JangaFX cloud pack (has LICENSE.txt in the folder) | JangaFX | see folder LICENSE.txt | check |
+| `CloudPackVDB_wvdb/` | 1.0 MB | JangaFX cloud pack | JangaFX (EmberGen), LICENSE.txt in the folder | CC0 1.0 | ok |
 
 Already handled elsewhere (not part of this review):
 
