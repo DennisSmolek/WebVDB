@@ -31,7 +31,9 @@ and the docs site); the on-device gates passed. Open work is in [TASKS.md](./TAS
 - [`packages/vdb`](./packages/vdb): the published package (`src/core`, `src/tools`, `src/three`, `vendor/`)
 - [`docs/site`](./docs/site): the pmndrs/docs MDX pages (snippets compiled by `pnpm docs:check`)
 - [`examples`](./examples): the Vite demo site (ten demos; the cloud, sequence, explorer, builder and the froxel
-  renderer showcase, demo 10, are the place to start)
+  renderer showcase, demo 10, are the place to start), plus a gallery of showcase pages:
+  - 11 · Sky clouds: the WDAS cloud at full resolution and three JangaFX clouds under an HDR sky
+  - 15 · Full-res vs 128³: sparse full resolution against a dense `.wvdb` bake, split by a divider
 - [`DECISIONS.md`](./DECISIONS.md) (settled choices, D1 onward), [`DIVERGES.md`](./DIVERGES.md) (where we differ
   from a source), [`THIRD_PARTY.md`](./THIRD_PARTY.md) (licences)
 
