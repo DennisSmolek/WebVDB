@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Gallery demo 16 — coarse-first streaming into the froxel renderer. smoke.vdb is baked coarse-first in the page,
@@ -27,15 +28,6 @@ test.setTimeout(600_000);
 /** Mean absolute difference of the 96 × 54 grey thumbnails: a preview's lost detail averages out at 32 × 18. */
 const fineDiff = (a: Snapshot, b: Snapshot): number => a.fine.reduce((s, v, i) => s + Math.abs(v - b.fine[i]!), 0) / a.fine.length;
 const thumbSpread = (s: Snapshot): number => Math.max(...s.thumb) - Math.min(...s.thumb);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 async function openDone(page: Page, query: string): Promise<NonNullable<Window["__DEMO16__"]>> {
   await page.goto(`${DEMO}?${query}`);

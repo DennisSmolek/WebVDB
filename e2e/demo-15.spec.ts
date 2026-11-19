@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Gallery demo 15 — full resolution vs 128³. Structural (no golden): with and without the gallery assets (`?gallery=0`),
@@ -20,15 +21,6 @@ interface Snapshot {
 test.use({ viewport: { width: 480, height: 320 } });
 // Two full renders per frame on SwiftShader (one a 24 M-voxel or 1 M-voxel sparse grid): slow, more so beside other workers.
 test.setTimeout(540_000);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 async function open(page: Page, query: string): Promise<NonNullable<Window["__DEMO15__"]>> {
   await page.goto(`${DEMO}?${BASE_QUERY}&${query}`);

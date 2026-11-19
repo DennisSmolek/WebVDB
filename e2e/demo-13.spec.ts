@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Demo 13 — the level-set sculpture gallery. One small piece (the icosahedron, 1 MB) keeps SwiftShader runtime low:
@@ -19,15 +20,6 @@ interface Snapshot {
 
 test.use({ viewport: { width: 480, height: 320 } });
 test.setTimeout(360_000);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 async function open(page: Page, query: string): Promise<NonNullable<Window["__DEMO13__"]>> {
   await page.goto(`${DEMO}?${BASE}&${query}`);

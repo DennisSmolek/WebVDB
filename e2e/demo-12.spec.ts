@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Gallery demo 12 — the EmberGen explosion as a sequence in one dense source, with the emission light on the ground
@@ -21,15 +22,6 @@ test.setTimeout(300_000);
 
 const thumbDiff = (a: Snapshot, b: Snapshot): number => a.thumb.reduce((s, v, i) => s + Math.abs(v - b.thumb[i]!), 0) / a.thumb.length;
 const thumbSpread = (s: Snapshot): number => Math.max(...s.thumb) - Math.min(...s.thumb);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 /** Wait until the sequence shows `frame` and `n` more frames were drawn, then summarize the last one. */
 async function settleOn(page: Page, frame: number, n = 3): Promise<Snapshot> {

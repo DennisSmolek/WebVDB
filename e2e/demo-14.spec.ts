@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Demo 14 — point grids. The light `sphere_points.vdb` (9,802 points) keeps the runtime low; the 9.5 M-point
@@ -18,15 +19,6 @@ interface Snapshot {
 
 test.use({ viewport: { width: 480, height: 320 } });
 test.setTimeout(240_000);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 async function settle(page: Page, n = 3): Promise<Snapshot> {
   const from = await page.evaluate(() => window.__DEMO14__!.frames);

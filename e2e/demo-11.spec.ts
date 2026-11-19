@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Gallery demo 11 — sky clouds. Structural (no golden): with and without the git-ignored `fixtures/gallery/`
@@ -19,15 +20,6 @@ interface Snapshot {
 test.use({ viewport: { width: 480, height: 320 } });
 // Four volumes (one 24 M-voxel sparse grid) compile and march slowly on SwiftShader, more so beside other workers.
 test.setTimeout(540_000);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 async function open(page: Page, query: string): Promise<NonNullable<Window["__DEMO11__"]>> {
   await page.goto(`${DEMO}?${BASE_QUERY}&${query}`);

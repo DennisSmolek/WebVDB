@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { collectErrors } from "./console-errors";
 
 /**
  * Demo 10 — the froxel renderer showcase. Too many settings for a golden: each available scene must load
@@ -21,15 +22,6 @@ interface Snapshot {
 
 test.use({ viewport: { width: 480, height: 320 } });
 test.setTimeout(300_000);
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 async function open(page: Page, query: string): Promise<NonNullable<Window["__DEMO10__"]>> {
   await page.goto(`${DEMO}?${BASE_QUERY}&${query}`);
