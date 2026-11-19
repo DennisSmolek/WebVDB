@@ -20,7 +20,7 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { UltraHDRLoader } from "three/addons/loaders/UltraHDRLoader.js";
 import { vdbFrameMediumNames } from "@pmndrs/vdb/tools";
-import { VDBFrameRenderer, vdbFrameMedium, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBSparseLod } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBSparseLod } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import { Panel, type SelectOption } from "./panel.js";
 import { GROUND_LEVEL, SCENES, probeScene, type LoadedScene, type SceneContext, type SceneDef, type SourceKind } from "./scenes.js";
@@ -338,16 +338,7 @@ async function run(): Promise<void> {
   froxel(
     panel.select("medium", "medium", mediumOptions, controls.medium, (v) => {
       controls.medium = v;
-      const m = vdbFrameMedium(v);
-      if (m) {
-        // A measured medium turns spectral on and sets the phase (his GUI's 'Medium' field).
-        controls.spectral = true;
-        controls.phase = m.phase;
-        controls.phaseG = m.phaseG;
-        spectralRow.set(true);
-        phaseRow.set(m.phase);
-        phaseGRow.set(m.phaseG);
-      }
+      applyMedium();
       apply();
     }),
   );
@@ -434,18 +425,23 @@ async function run(): Promise<void> {
   }
 
   /**
-   * The volume's density scale (the panel's, times a sequence's per-frame factor). A sparse source's density
-   * uniform keeps the scale it was last given through `sourceUniforms.update` (its per-render stats refresh
-   * re-applies that value after the frame renderer's per-draw one), so a change also goes through
-   * `volume.updateSource()`; without it `densityScale` has no effect on a sparse source.
+   * A measured medium in one call (`volume.setMedium`, his GUI's 'Medium' field): the volume's albedo and extinction
+   * spectrum, the renderer's phase, spectral on. 'none' restores the volume's own colour. The panel follows.
    */
-  function setDensity(scene: LoadedScene): void {
-    const volume = scene.volume;
+  function applyMedium(): void {
+    const volume = loaded?.volume;
     if (!volume) return;
-    const value = controls.density * scene.densityFactor();
-    if (volume.densityScale === value) return;
-    volume.densityScale = value;
-    if (volume.source.kind === "sparse") volume.updateSource();
+    const props = volume.setMedium(controls.medium === "none" ? null : controls.medium);
+    if (props) {
+      controls.spectral = true;
+      controls.phase = props.phase;
+      controls.phaseG = props.phaseG;
+      spectralRow.set(true);
+      phaseRow.set(props.phase);
+      phaseGRow.set(props.phaseG);
+    } else {
+      frameRenderer.settings.phaseGExponent = 0;
+    }
   }
 
   let shadowsOn = false;
@@ -463,25 +459,18 @@ async function run(): Promise<void> {
     s.temporal = controls.temporal;
     s.jitter = controls.temporal;
     s.spectral = controls.spectral;
+    // One place for the phase (K5.9): the renderer's, for both lightings (the medium sets phaseGExponent).
     s.phase = controls.phase;
     s.phaseG = controls.phaseG;
     s.phaseBackG = -0.3;
     s.phaseBackWeight = 0.2;
-    const medium = vdbFrameMedium(controls.medium);
-    s.phaseGExponent = medium?.phaseGExponent ?? 0;
 
     const volume = loaded?.volume;
-    if (volume && loaded) {
-      volume.phase = controls.phase;
-      volume.phaseG = controls.phaseG;
-      volume.phaseGExponent = medium?.phaseGExponent ?? 0;
+    if (volume) {
       volume.shadowSteps = q.shadowSteps;
       volume.hdda = controls.hdda;
-      volume.baseColor.copy(medium?.baseColor ?? loaded.baseColor);
-      if (medium) volume.extinctionScale.copy(medium.extinctionScale);
-      else volume.extinctionScale.set(1, 1, 1);
-      volume.angstromExponent = medium?.angstromExponent ?? 0;
-      setDensity(loaded);
+      // Dense or sparse alike (K5.9a); a sequence normalizes by one mean (`densityMean`, scenes.ts).
+      volume.densityScale = controls.density;
     }
 
     // Sun: azimuth about +y, elevation above the ground.
@@ -530,6 +519,7 @@ async function run(): Promise<void> {
       content.add(loaded.group);
       state.sourceKind = loaded.sourceKind;
       syncRows();
+      applyMedium();
       apply();
       renderedSinceLoad = 0;
     } catch (err) {
@@ -548,6 +538,7 @@ async function run(): Promise<void> {
       await loaded.rebuild(controls.source, controls.lod);
       state.sourceKind = loaded.sourceKind;
       syncRows();
+      applyMedium();
       apply();
       renderedSinceLoad = 0;
     } catch (err) {
@@ -630,7 +621,6 @@ async function run(): Promise<void> {
     busy = true;
     orbit.update();
     loaded.tick?.(now);
-    setDensity(loaded);
     const t0 = performance.now();
     present()
       .then(() => {

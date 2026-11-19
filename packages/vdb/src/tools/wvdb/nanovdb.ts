@@ -29,6 +29,17 @@ export interface WvdbDenseToNvdbOptions {
 export interface WvdbNvdbGrid extends VDBBuiltGrid {
   /** `[0, 0, 0]` to `dims − 1`: the dense texture's voxels (inclusive). */
   readonly textureIndexBox: { min: [number, number, number]; max: [number, number, number] };
+  /**
+   * K5.9: the `vdbSparseSource` options (`@pmndrs/vdb/three`) that line a sparse copy up with the dense source: the
+   * texture's index box, the dense density stats (so `normalizeDensity` divides by the same mean) and the `.wvdb`
+   * box (when it has one). Spread them in: `vdbSparseSource(grids, { density: id }, { ...grid.sparseSourceOptions, lod })`.
+   * For an aux channel (mask, emission) pass `textureIndexBox` as its `auxIndexBoxes` entry instead.
+   */
+  readonly sparseSourceOptions: {
+    readonly indexBox: { min: [number, number, number]; max: [number, number, number] };
+    readonly stats: { meanNonZero: number; max: number; activeVoxels: number };
+    readonly bbox?: [[number, number, number], [number, number, number]];
+  };
 }
 
 /** Converts one scalar channel of a dense `.wvdb` level to a NanoVDB FLOAT grid, voxel for voxel. */
@@ -55,5 +66,11 @@ export function wvdbDenseToNvdb(volume: WvdbDenseVolume, o: WvdbDenseToNvdbOptio
     gridName: o.gridName ?? volume.gridNames[channel] ?? channel,
     gridClass: "FogVolume",
   });
-  return { ...built, textureIndexBox: { min: [0, 0, 0], max: [w - 1, h - 1, d - 1] } };
+  const textureIndexBox = { min: [0, 0, 0] as [number, number, number], max: [w - 1, h - 1, d - 1] as [number, number, number] };
+  const sparseSourceOptions = {
+    indexBox: { min: [...textureIndexBox.min] as [number, number, number], max: [...textureIndexBox.max] as [number, number, number] },
+    stats: { meanNonZero: volume.meanDensity, max: volume.maxDensity, activeVoxels: volume.activeTexels },
+    ...(bbox ? { bbox: [[...bbox[0]], [...bbox[1]]] as [[number, number, number], [number, number, number]] } : {}),
+  };
+  return { ...built, textureIndexBox, sparseSourceOptions };
 }

@@ -135,7 +135,13 @@ export class VDBFrameTransmittanceMaterial extends NodeMaterial {
     const { frameSkyDirection } = lightUniforms;
     const ms = this.frameMultipleScattering;
     const octaves = this.frameScatteringOctaves;
-    const neural = this.neural ? createNeuralNodes(this.neural, gridUniforms, grid, this.frameShadowDensityMap, this.frameNeuralMipMaps, this.frameNeuralMipLayouts) : null;
+    const network = this.neural;
+    // NOTE K5.9b: the network nodes are made in the colorNode body, once per build. neuralLight is a
+    // Fn().setLayout() (one WGSL function) that reads uniforms and textures, and three r187 caches a layout
+    // function's code per backend (NodeBuilder.buildFunctionNode). Made once here, a second build of this
+    // material (e.g. renderer.shadowMap.enabled toggling rebuilds every render object) reused code naming the
+    // first builder's uniforms: "unresolved value 'nodeUniform0'".
+    let neural: ReturnType<typeof createNeuralNodes> | null = null;
 
     const transmittance0 = property("vec4");
     const transmittance1 = property("vec4");
@@ -220,6 +226,7 @@ export class VDBFrameTransmittanceMaterial extends NodeMaterial {
     this.vertexNode = frameFullscreenVertex;
 
     this.colorNode = Fn(() => {
+      neural = network ? createNeuralNodes(network, gridUniforms, grid, this.frameShadowDensityMap, this.frameNeuralMipMaps, this.frameNeuralMipLayouts) : null;
       const fragCoord = frameFragCoord(frameGridAtlasSize).toVar();
       const cell = grid.getGridCell(fragCoord);
       const cascade = cell.cascade.toVar();

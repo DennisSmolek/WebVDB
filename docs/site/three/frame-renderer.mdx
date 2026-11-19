@@ -39,7 +39,10 @@ const volume = new VDBFrameVolume(source, { extinction: 100 }); // the box is th
 scene.add(volume); // renderer.render(scene, camera) draws it, froxels first
 
 volume.scatterColor.set('#ffffff');
-volume.phase = 'dual-lobe';
+// A measured medium in one call: albedo and extinction spectrum on the volume, the phase on the renderer.
+volume.setMedium('fog');
+// volume.bbox is the resolved box (here the file's): place the volume by it.
+volume.position.copy(volume.bbox.getCenter(volume.position)).negate();
 ```
 
 The sparse source needs a `VDBGridNode` with profile `'march'`, plus the helpers its paths use. Optional `mask`,
@@ -82,6 +85,59 @@ When a froxel spans many voxels, a sparse source filters. `lod` picks how:
 `hdda` on a `VDBFrameVolume` skips empty space in the shadow march of a sparse source. The image is the same either
 way, and it is **off by default**: on the Apple GPU it slowed the shadow march in all 12 paired runs (D30). Dense
 sources ignore it.
+
+### Dense sequences and sparse copies
+
+A dense source swaps frames with `source.replace(frame)`; the volume picks up a new size or mip layout by itself
+(no `updateSource()` call). `VDBSequence` plays them: give it a loader that returns `WvdbDenseVolume` frames and start
+it on `{ source }`. A frame that lacks a channel the source has reads that channel's absent value (emission 0, mask
+and albedo 1), so make the source from a frame that has every channel; a channel the source lacks is ignored.
+`normalizeDensity` divides by the source's mean, which changes from frame to frame; set `densityMean` to one value for
+the whole sequence (his sequences use the mean of all frames' non-zero texels).
+
+{/* snippet: frame-sequence */}
+```ts
+import { readWvdb, wvdbDenseVolume, type WvdbDenseVolume } from '@pmndrs/vdb/tools';
+import { VDBFrameVolume, VDBSequence, vdbDenseTextures } from '@pmndrs/vdb/three';
+
+// One dense source for the whole sequence, made from a frame that has every channel.
+const source = vdbDenseTextures(first);
+const volume = new VDBFrameVolume(source, {
+    // One mean for every frame, so the extinction does not pump (his sequences use the mean of all frames).
+    densityMean: first.meanDensity,
+});
+scene.add(volume);
+
+// VDBSequence plays any frame type into a { source }: the volume follows each replace by itself, and a
+// frame without a channel the source has reads its absent value (emission 0, mask and albedo 1).
+const sequence = new VDBSequence<WvdbDenseVolume>({
+    urls,
+    fps: 24,
+    loader: async (url) => wvdbDenseVolume(readWvdb(new Uint8Array(await (await fetch(url)).arrayBuffer()))),
+});
+sequence.start({ source });
+const frame = (now: number) => sequence.update(now); // each rendered frame
+```
+
+A sparse copy of a `.wvdb` level renders the same voxels through the sparse sampler. `wvdbDenseToNvdb` returns the
+options that line it up with the dense source (the texture's index box, the dense stats, the `.wvdb` box):
+
+{/* snippet: frame-sparse-copy */}
+```ts
+import { wvdbDenseToNvdb } from '@pmndrs/vdb/tools';
+import { VDBGridNode, vdbSparseSource } from '@pmndrs/vdb/three';
+
+// The same voxels as a sparse grid, lined up with the dense source in one spread: the texture's index box,
+// the dense mean (normalizeDensity divides by the same value) and the .wvdb box.
+const grid = wvdbDenseToNvdb(dense);
+const id = pool.add(grid.image);
+const grids = new VDBGridNode(renderer, pool, { profile: 'march', helpers: ['cellBoundTrilinear', 'hddaCellEnd'] });
+const source = vdbSparseSource(grids, { density: id }, { ...grid.sparseSourceOptions, lod: 'coarse-pyramid' });
+return new VDBFrameVolume(source);
+```
+
+The source, its kind (dense or sparse) and a sparse source's `lod` are fixed when the source and the volume are made.
+To change them, make a new source and a new `VDBFrameVolume`, and dispose the old ones.
 
 ## Lighting
 
@@ -149,8 +205,11 @@ settings.scatteringOctaveContribution = 0.5;
 settings.scatteringOctavePhase = 0.5;
 
 // Phase functions: 'isotropic', 'henyey-greenstein', 'dual-lobe', 'lorenz-mie' or 'lorenz-mie-rgb'.
-volume.phase = 'henyey-greenstein';
-volume.phaseG = 0.6;
+// The renderer's phase is every volume's ('frame' lighting lights them all in one pass with it).
+settings.phase = 'henyey-greenstein';
+settings.phaseG = 0.6;
+// 'volume' lighting only: one volume's own phase, field by field (null: the renderer's again).
+volume.phaseG = 0.3;
 ```
 
 `multipleScattering` picks how the shadow marches approximate light that scatters more than once:
@@ -163,9 +222,18 @@ volume.phaseG = 0.6;
 | `'octaves'` | Indirect octaves: octave n has extinction a^n, light b^n and phase g c^n (`scatteringOctave*`) |
 | `'neural'` (default) | A small trained network for the scene light slots in `'frame'` lighting, diffusion elsewhere. Its weights are a separate module; set `frameRenderer.neuralNetwork` to another network, or `null` to run `'neural'` as 1D diffusion. |
 
-`volume.phase` is `'isotropic'`, `'henyey-greenstein'`, `'dual-lobe'`, `'lorenz-mie'` or `'lorenz-mie-rgb'`, with
-`phaseG`, `phaseBackG`, `phaseBackWeight` and `phaseGExponent`. `settings.phase` is the one phase for all volumes in
-`'frame'` lighting. Colour is grey by default. Set `settings.spectral` for per-channel extinction (spectral media and the measured presets, `vdbFrameMedium`).
+The phase is `'isotropic'`, `'henyey-greenstein'`, `'dual-lobe'`, `'lorenz-mie'` or `'lorenz-mie-rgb'`, with
+`phaseG`, `phaseBackG`, `phaseBackWeight` and `phaseGExponent`. Set it in one place, `settings.phase*`: it is the phase
+of every volume the renderer draws. `'frame'` lighting lights all volumes in one pass, so it always uses it; in
+`'volume'` lighting a volume's own `phase*` props (null by default) override it, field by field, for that volume
+(`volume.getPhase()` gives the result). His renderer read `settings.phase` in `'frame'` lighting and only the volume's
+in `'volume'` lighting.
+
+Colour is grey by default. Set `settings.spectral` for per-channel extinction. A measured medium (`'cloud'`, `'fog'`,
+`'ice'`, `'soot'`, `'white-smoke'`, `'dark-smoke'`, `'haze'`, `'dust'`) is one call, `volume.setMedium(name)`, as his
+GUI's 'Medium' field: the volume's `baseColor`, `extinctionScale` and `angstromExponent`, the renderer's phase, and
+`settings.spectral` on. `setMedium(null)` restores the volume's own colour; `vdbFrameMedium(name)` returns the props
+without applying them.
 
 ## Quality
 
@@ -196,8 +264,10 @@ in sRGB, as `WebGLRenderer` does.
 `VDBFrameVolume` props keep his names and defaults for the ported subset: `baseColor`, `scatterColor`, `extinction`
 (with `normalizeDensity`, the optical depth of the longest box side at the mean density, default 100), `densityScale`,
 `densityCutoff`, `absorbance`, `opacity`, `emissiveIntensity`, `temperatureRange`, `offset3D`, `wrap3D`, `bbox`,
-`mipmaps`, `shadowSteps`, `lights`, the phase props and `hdda`. After `source.replace()` (a dense LOD swap), call
-`volume.updateSource()`. `dispose()` frees the proxy and the pass materials; the source belongs to you.
+`mipmaps`, `shadowSteps`, `lights`, the phase overrides and `hdda`, plus `densityMean` (the mean `normalizeDensity`
+divides by; default the source's). `densityScale` behaves the same on dense and sparse sources. `volume.bbox` is the
+resolved box (the prop, or the source's), read-only: place the volume by it. A `source.replace()` needs no call
+(`updateSource()` forces a re-read). `dispose()` frees the proxy and the pass materials; the source belongs to you.
 
 `volume.frameRenderer.passHook` takes `begin(pass)` and `end(pass)` callbacks for the passes (`'froxels'`, `'inject'`,
 `'shadowDensity'`, `'gridMips'`, `'transmittance'`, `'environmentGrid'`, `'density'`, `'lighting'`, `'temporal'`) for

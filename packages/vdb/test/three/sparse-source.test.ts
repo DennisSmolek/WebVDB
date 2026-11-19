@@ -80,6 +80,45 @@ describe("vdbSparseSource", () => {
     expect(s.statsUpdates).toBe(0);
   });
 
+  it("K5.9a: the density uniform's render update keeps a per-draw value (densityScale works as on dense); a new mean is applied once, when its readback lands", async () => {
+    // A pool with a revision, a device and a buffer: refreshStats reads the "replaced" image back (a fake map).
+    const halved = wvdbDenseToNvdb({ ...dense, density: { ...dense.density, data: dense.density.data.map((b) => b >> 1) as Uint8Array<ArrayBuffer> } }).image;
+    const pool = {
+      revision: 1,
+      imageRevision: 1,
+      device: {
+        createBuffer: () => ({ mapAsync: async () => undefined, getMappedRange: () => halved.buffer, destroy: () => undefined }),
+        createCommandEncoder: () => ({ copyBufferToBuffer: () => undefined, finish: () => ({}) }),
+        queue: { submit: () => undefined },
+      },
+      buffer: {},
+      info: () => ({ indexBBox: grid.indexBBox, indexToWorld: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), hasStats: true, capacity: 1, type: "float", imageRevision: pool.imageRevision, resident: true, imageOffset: 0, imageBytes: halved.byteLength }),
+    };
+    const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
+    const s = vdbSparseSource(grids, { density: 0 }, { lod: "none", images: { density: grid.image } });
+    const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
+    const u = volume.sourceUniforms.densityScale as unknown as { value: number; update(frame: unknown): void };
+    const mean0 = s.stats.meanNonZero;
+    // The frame renderer writes the volume's scale before each draw (setVolumeUniforms); the render update follows.
+    volume.densityScale = 3;
+    u.value = volume.getDensityScale();
+    u.update({});
+    expect(u.value).toBeCloseTo(3 / mean0, 9);
+    // An image change: the render update starts the readback; the new mean lands once, then per-draw values hold again.
+    pool.revision = 2;
+    pool.imageRevision = 2;
+    u.update({});
+    await s.refreshStats();
+    expect(s.statsUpdates).toBe(1);
+    const mean1 = s.stats.meanNonZero;
+    expect(mean1).toBeLessThan(mean0 * 0.6);
+    expect(u.value).toBeCloseTo(1 / mean1, 6); // uniforms used directly: their own scale (1) over the new mean
+    u.value = volume.getDensityScale();
+    u.update({});
+    expect(u.value).toBeCloseTo(3 / mean1, 6);
+    volume.dispose();
+  });
+
   it("LOD levels: node-average 7; coarse-pyramid L₀ + atlas levels, r16f bytes counted", () => {
     expect(vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "node-average", images: { density: grid.image } }).lodLevels).toBe(7);
     const p = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", pyramidBuild: "cpu", images: { density: grid.image }, indexBox: grid.textureIndexBox, pyramidMax: 32 });

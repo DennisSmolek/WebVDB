@@ -202,7 +202,12 @@ From v1; details in docs/handoffs/.
 - Every tools error on bad input is a `VDBToolsError` with a `code` (D32). `NvdbFormatError` is no longer a
   `VdbFormatError`: catch `VDBToolsError` (or check `code`) to cover every format.
 - His examples page renders with `new WebGPURenderer({ antialias: !isPhone })` (4× MSAA) inside three's half-float frame-buffer pass: parity harnesses render his scenes with 4 samples too, or mesh edges differ by a pixel.
-- A sparse source's density uniform re-applies the scale last given to `sourceUniforms.update` on every render (K3.2e
-  stats refresh), so `VDBFrameVolume.densityScale` changes do nothing on a sparse source until `volume.updateSource()`
-  (TASKS K5.9a). Measure a control's effect on sparse and dense before trusting it.
+- A uniform's `onRenderUpdate` that returns a value overwrites what a per-draw setter wrote (it runs after
+  `onBeforeRender`): K5.9a's sparse density scale did that. Return `undefined` and write the value where it changes.
+  Measure a control's effect on sparse and dense before trusting it.
+- three r187 caches a `Fn().setLayout()` function's code per backend (`NodeBuilder.buildFunctionNode`, a WeakMap keyed
+  by the shader node), across builders. A layout function that reads uniforms or textures, made once and built by a
+  second builder (any rebuild: e.g. `renderer.shadowMap.enabled` toggling rebuilds every render object), emits code
+  naming the first builder's uniforms: "unresolved value 'nodeUniform0'" (K5.9b). Make such functions inside the
+  material's `Fn` body (once per build), or don't give them a layout.
 - His sequences normalise density by the mean of ALL frames (`FrameVolume.getDensityScale`), not the shown frame's; his time-driven sequence must be paused at a known frame (`pause()`, `frame = N`) for captures.

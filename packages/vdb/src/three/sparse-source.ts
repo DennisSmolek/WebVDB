@@ -195,7 +195,7 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
    * K3.2e: if the density grid's image changed since the stats were computed and it is resident, reads it
    * back from the pool (own encoder, submitted) and recomputes the stats (tools' twin of the CPU path);
    * resolves to whether it did. Renders call it themselves (the density scale uniform's render update) and
-   * apply the new mean on the first render after the readback lands; call it after `pool.update` was
+   * apply the new mean to the uniforms when the readback lands (K5.9a: a per-draw value, e.g. `VDBFrameVolume.densityScale`, is never overwritten); call it after `pool.update` was
    * submitted, as `grids.update()`.
    */
   refreshStats(): Promise<boolean>;
@@ -415,6 +415,8 @@ class SparseSource implements VDBThreeSparseSource {
   private statsRevision = -1;
   private statsPoolRevisionSeen = -1;
   private statsReadback: Promise<boolean> | null = null;
+  /** K5.9a: each of this source's uniforms re-applies its density scale with the new mean when a readback lands. */
+  private readonly statsListeners = new Set<() => void>();
 
   constructor(grids: VDBGridNode, ids: VDBSparseSourceGrids, o: VDBSparseSourceOptions) {
     const pool = grids.pool as unknown as Partial<PoolInfoLike>;
@@ -604,6 +606,7 @@ class SparseSource implements VDBThreeSparseSource {
         this.statsRevision = revision;
         this.statsPoolRevisionSeen = seen;
         this.statsUpdates++;
+        for (const apply of this.statsListeners) apply();
         return true;
       })
       .catch(() => false)
@@ -643,10 +646,15 @@ class SparseSource implements VDBThreeSparseSource {
     const boxUniform = (bx: VDBIndexBox | null) =>
       bx ? { min: uniform(new THREE.Vector3(...bx.min)), size: uniform(new THREE.Vector3(bx.max[0] - bx.min[0] + 1, bx.max[1] - bx.min[1] + 1, bx.max[2] - bx.min[2] + 1)) } : null;
     const levels = uniform(this.lodLevels);
-    // K3.2e: the mean follows the density image (refreshStats reads a replaced image back); applied per render.
+    // K3.2e: the mean follows the density image (refreshStats, checked once per render, reads a replaced image
+    // back). K5.9a: the new mean is applied once, when the readback lands; the render update never writes the
+    // value, so a value set per draw (VDBFrameVolume's densityScale, through setVolumeUniforms) stays as set.
     const densityScaleU = uniform(vdbDensityScaleOf(this, densityScale, normalize)).onRenderUpdate(() => {
       void this.refreshStats();
-      return vdbDensityScaleOf(this, densityScale, normalize);
+      return undefined;
+    });
+    this.statsListeners.add(() => {
+      densityScaleU.value = vdbDensityScaleOf(this, densityScale, normalize);
     });
     const pyr = this.pyramid;
     const u: VDBSparseVolumeUniforms = {
