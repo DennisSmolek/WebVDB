@@ -436,3 +436,145 @@ describe("VDBSequence — failed frames and disposal (K2 review)", () => {
     seq.dispose(); // idempotent
   });
 });
+
+describe("VDBSequence — frame range and loop mode", () => {
+  /** A started sequence at fps 10 (100 ms/frame); returns the frame shown at each of `steps` consecutive frame times. */
+  async function play(opts: { n: number; range?: [number, number]; loopMode?: "repeat" | "pingpong"; loop?: boolean }, steps: number) {
+    const seq = new VDBSequence({
+      urls: urls(opts.n),
+      fps: 10,
+      prefetch: 2,
+      ...(opts.loop === undefined ? {} : { loop: opts.loop }),
+      ...(opts.range ? { range: opts.range } : {}),
+      ...(opts.loopMode ? { loopMode: opts.loopMode } : {}),
+      loader: immediateLoader(),
+    });
+    await seq.preload();
+    const target = makeTarget();
+    seq.start(target, 0);
+    const shown = [seq.stats.frame];
+    for (let k = 1; k < steps; k++) {
+      await tick(); // let the ring fill so no frame is dropped to a stall
+      shown.push(seq.update(k * 100));
+    }
+    return { seq, target, shown };
+  }
+
+  it("defaults to every frame, repeating (unchanged behaviour)", async () => {
+    const { seq, shown } = await play({ n: 4 }, 9);
+    expect(seq.range).toEqual([0, 3]);
+    expect(seq.loopMode).toBe("repeat");
+    expect(shown).toEqual([0, 1, 2, 3, 0, 1, 2, 3, 0]);
+  });
+
+  it("plays only the range and wraps inside it", async () => {
+    const { seq, target, shown } = await play({ n: 10, range: [3, 5] }, 8);
+    expect(seq.range).toEqual([3, 5]);
+    expect(shown).toEqual([3, 4, 5, 3, 4, 5, 3, 4]);
+    expect(Math.min(...target.calls)).toBe(3);
+    expect(Math.max(...target.calls)).toBe(5);
+  });
+
+  it("pingpong goes forward then backward without repeating the end frames", async () => {
+    const { shown } = await play({ n: 10, range: [2, 5], loopMode: "pingpong" }, 15);
+    expect(shown).toEqual([2, 3, 4, 5, 4, 3, 2, 3, 4, 5, 4, 3, 2, 3, 4]);
+  });
+
+  it("pingpong over all frames; a one-frame range just holds", async () => {
+    expect((await play({ n: 3, loopMode: "pingpong" }, 7)).shown).toEqual([0, 1, 2, 1, 0, 1, 2]);
+    const one = await play({ n: 5, range: [2, 2], loopMode: "pingpong" }, 4);
+    expect(one.shown).toEqual([2, 2, 2, 2]);
+    expect(one.target.calls).toEqual([2]);
+  });
+
+  it("loop: false holds at the range end whatever the mode", async () => {
+    expect((await play({ n: 10, range: [1, 3], loop: false }, 6)).shown).toEqual([1, 2, 3, 3, 3, 3]);
+    expect((await play({ n: 10, range: [1, 3], loop: false, loopMode: "pingpong" }, 6)).shown).toEqual([1, 2, 3, 3, 3, 3]);
+  });
+
+  it("prefetch follows the playback order and never leaves the range", async () => {
+    const seen: number[] = [];
+    const seq = new VDBSequence({ urls: urls(10), fps: 10, prefetch: 2, range: [2, 4], loopMode: "pingpong", loader: immediateLoader((i) => seen.push(i)) });
+    await seq.preload();
+    seq.start(makeTarget(), 0);
+    await tick();
+    expect([...new Set(seen)].sort((a, b) => a - b)).toEqual([2, 3, 4]);
+    expect(seq.stats.stalls).toBe(0);
+  });
+
+  it("seek wraps into the clip, then clamps into the range, and continues from there", async () => {
+    const seq = new VDBSequence({ urls: urls(10), fps: 10, prefetch: 2, range: [3, 6], loader: immediateLoader() });
+    seq.start(makeTarget(), 0);
+    seq.stop(); // a stopped player shows a seeked frame once it is decoded
+    await tick();
+    seq.seek(9, 0);
+    await tick();
+    expect(seq.stats.frame).toBe(6);
+    seq.seek(-9, 0); // wraps to 1, clamps to 3
+    await tick();
+    expect(seq.stats.frame).toBe(3);
+    seq.seek(5, 0);
+    await tick();
+    seq.resume(0);
+    expect(seq.update(100)).toBe(6);
+    await tick();
+    expect(seq.update(200)).toBe(3);
+  });
+
+  it("setRange and setLoopMode re-anchor at the shown frame, clamped into the new range", async () => {
+    const seq = new VDBSequence({ urls: urls(10), fps: 10, prefetch: 2, loader: immediateLoader() });
+    await seq.preload(10);
+    const target = makeTarget();
+    seq.start(target, 0);
+    await seq.preload(10);
+    seq.stop();
+    seq.seek(8, 0);
+    seq.setRange([2, 4], 0); // 8 is outside: continues from the nearest range frame
+    await tick();
+    seq.resume(0);
+    expect(seq.range).toEqual([2, 4]);
+    expect(seq.stats.frame).toBe(4);
+    expect(seq.update(100)).toBe(2);
+    seq.setLoopMode("pingpong", 100);
+    expect(seq.loopMode).toBe("pingpong");
+    const shown: number[] = [];
+    for (const t of [200, 300, 400]) {
+      await tick();
+      shown.push(seq.update(t));
+    }
+    expect(shown).toEqual([3, 4, 3]);
+  });
+
+  it("setRange works before start; start shows the range start", async () => {
+    const seq = new VDBSequence({ urls: urls(10), prefetch: 1, loader: immediateLoader() });
+    seq.setRange([5, 7], 0);
+    await seq.preload(2);
+    const target = makeTarget();
+    seq.start(target, 0);
+    expect(target.calls).toEqual([5]);
+  });
+
+  it("rejects bad options and setter values with VDB_BAD_OPTION", () => {
+    const code = (fn: () => unknown): string | undefined => {
+      try {
+        fn();
+      } catch (e) {
+        return e instanceof VDBError ? e.code : String(e);
+      }
+      return undefined;
+    };
+    const make = (extra: object = {}) => new VDBSequence({ urls: urls(10), loader: immediateLoader(), ...extra });
+    for (const range of [[-1, 3], [4, 3], [0, 10], [0.5, 3], [0, NaN], [1], "ab"]) {
+      expect(code(() => make({ range })), JSON.stringify(range)).toBe("VDB_BAD_OPTION");
+    }
+    expect(code(() => make({ loopMode: "bounce" }))).toBe("VDB_BAD_OPTION");
+    const seq = make();
+    expect(code(() => seq.setRange([0, 99]))).toBe("VDB_BAD_OPTION");
+    expect(code(() => seq.setLoopMode("bounce" as never))).toBe("VDB_BAD_OPTION");
+    expect(seq.range).toEqual([0, 9]); // a rejected setter changes nothing
+    expect(seq.loopMode).toBe("repeat");
+    seq.dispose();
+    expect(code(() => seq.setRange([0, 1]))).toBe("VDB_DISPOSED");
+    expect(code(() => seq.setLoopMode("pingpong"))).toBe("VDB_DISPOSED");
+  });
+});

@@ -45,3 +45,4 @@ fixtures/gallery
 # Fetched fixture dirs (no trailing slash: worktrees symlink them)
 fixtures/vdb-samples
 fixtures/wdas
+fixtures/generated

@@ -70,6 +70,10 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
 - `VDBSequence<TFrame>` plays any frame type; `start({ source })` swaps dense `.wvdb` frames into a
   `vdbDenseTextures` source. A dense `replace` reads a channel the frame lacks as its absent value (emission 0, mask
   and albedo 1) and ignores a channel the source lacks. A `seek` while stopped shows the frame once decoded.
+- `VDBSequence` frame range and ping-pong: `range: [start, end]` (inclusive; default all frames) limits playback, and
+  `loopMode: 'repeat' | 'pingpong'` (default `'repeat'`) turns around at the range end (each end frame shown once per
+  turn). `setRange()` / `setLoopMode()` change them while playing; the prefetch ring follows the playback order. New
+  types `VDBSequenceRange`, `VDBSequenceLoopMode`.
 - `wvdbDenseToNvdb(...).sparseSourceOptions` (`@pmndrs/vdb/tools`): the index box, dense stats and box that line a
   sparse copy of a `.wvdb` level up with the dense source, spread into `vdbSparseSource`.
 
