@@ -211,3 +211,7 @@ From v1; details in docs/handoffs/.
   naming the first builder's uniforms: "unresolved value 'nodeUniform0'" (K5.9b). Make such functions inside the
   material's `Fn` body (once per build), or don't give them a layout.
 - His sequences normalise density by the mean of ALL frames (`FrameVolume.getDensityScale`), not the shown frame's; his time-driven sequence must be paused at a known frame (`pause()`, `frame = N`) for captures.
+- Coarse-first into the froxel renderer (gallery demo 16): `vdbSparseSource` fixes its index box and world box when made,
+  and a `VDBGridNode` compiles the pool's grid types at construction (a FpN preview then an Fp8 full grid reads 0). After
+  each `vdbStreamCoarseFirst` swap make a new node, source and `VDBFrameVolume` over the same id, before the next render
+  (the old source would read the new grid through the preview's box). No `voxelRatio` scale: froxels integrate in world space.

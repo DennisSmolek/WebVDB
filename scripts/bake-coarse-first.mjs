@@ -8,6 +8,9 @@
  *   pnpm build && node scripts/bake-coarse-first.mjs [in.vdb] [--out out.nvdb] [--codec zip|none] [--resolution 48]
  *
  * Default input: fixtures/vdb-samples/smoke.vdb (`pnpm fixtures:vdb-samples`).
+ * A `.nvdb` input bakes its grid 0 as an image (the full grid kept as encoded,
+ * e.g. Fp8): gallery demo 16 streams
+ * `fixtures/wdas/wdas_cloud_quarter_fp8.nvdb --out fixtures/wdas/wdas_cloud_quarter.coarse.nvdb`.
  * "First paint" is the number of transferred bytes a streaming reader has when
  * `NvdbStreamReader` emits the preview: for the raw transfer it is the event's
  * `bytesReceived`; for a gzip transfer it is the gzip stream offset (fflate's
@@ -61,9 +64,16 @@ function streamOffset(compressed, prefixBytes, step = 64) {
 }
 
 const buf = readFileSync(input);
-const vdb = T.parseVdb(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-const grid = vdb.grids.find((g) => g.valueType === "float");
-console.log(`${path.basename(input)}: grid "${grid.name}"`);
+const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+let grid;
+if (input.endsWith(".nvdb")) {
+  const file = T.NvdbFile.fromArrayBuffer(arrayBuffer);
+  grid = file.gridImage(0);
+  console.log(`${path.basename(input)}: grid "${file.grids[0].name}" (${file.grids[0].gridType})`);
+} else {
+  grid = T.parseVdb(arrayBuffer).grids.find((g) => g.valueType === "float");
+  console.log(`${path.basename(input)}: grid "${grid.name}"`);
+}
 
 const results = {};
 for (const codec of ["none", "zip"]) {

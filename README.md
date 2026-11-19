@@ -31,7 +31,8 @@ and the docs site); the on-device gates passed. Open work is in [TASKS.md](./TAS
 - [`packages/vdb`](./packages/vdb): the published package (`src/core`, `src/tools`, `src/three`, `vendor/`)
 - [`docs/site`](./docs/site): the pmndrs/docs MDX pages (snippets compiled by `pnpm docs:check`)
 - [`examples`](./examples): the Vite demo site (ten demos; the cloud, sequence, explorer, builder and the froxel
-  renderer showcase, demo 10, are the place to start)
+  renderer showcase, demo 10, are the place to start), plus the gallery: 12 explosion (an emissive sequence lighting
+  its surroundings) and 16 streaming (coarse-first `.nvdb` into the froxel renderer)
 - [`DECISIONS.md`](./DECISIONS.md) (settled choices, D1 onward), [`DIVERGES.md`](./DIVERGES.md) (where we differ
   from a source), [`THIRD_PARTY.md`](./THIRD_PARTY.md) (licences)
 
