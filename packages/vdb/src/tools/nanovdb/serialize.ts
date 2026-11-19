@@ -119,9 +119,13 @@ import {
 export interface VDBBuildFromDenseOptions {
   /** Index-space min corner of the dense block. Default [0,0,0]. */
   origin?: [number, number, number];
-  /** Uniform voxel size in world units. Default 1. */
-  voxelSize?: number;
-  /** World-space position of index coord `origin`. Default `origin*voxelSize`. */
+  /**
+   * Voxel size in world units: a number (uniform), or `[x, y, z]` for an
+   * anisotropic, axis-aligned Map (diagonal scale, as `vdbResampleGrid`
+   * writes). Default 1.
+   */
+  voxelSize?: number | [number, number, number];
+  /** World-space position of index coord `origin`. Default `origin * voxelSize` (per axis). */
   worldOrigin?: [number, number, number];
   /** Background (inactive) value. Default 0. */
   background?: number;
@@ -199,12 +203,12 @@ export function vdbBuildFromDenseDetailed(
   }
 
   const origin = opts.origin ?? [0, 0, 0];
-  const voxelSize = opts.voxelSize ?? 1;
+  const voxelSizeXYZ = voxelSizeVec3(opts.voxelSize, "vdbBuildFromDense");
   const background = opts.background ?? 0;
   const gridName = opts.gridName ?? "dense";
   const gridClassId = GRID_CLASS_ID[opts.gridClass ?? "FogVolume"];
   const worldOrigin: [number, number, number] =
-    opts.worldOrigin ?? [origin[0] * voxelSize, origin[1] * voxelSize, origin[2] * voxelSize];
+    opts.worldOrigin ?? [origin[0] * voxelSizeXYZ[0], origin[1] * voxelSizeXYZ[1], origin[2] * voxelSizeXYZ[2]];
 
   const nameBytes = new TextEncoder().encode(gridName);
   if (nameBytes.length + 1 > GRID_NAME_MAX) {
@@ -222,7 +226,6 @@ export function vdbBuildFromDenseDetailed(
     collapse: opts.collapse ?? true,
   });
 
-  const voxelSizeXYZ: [number, number, number] = [voxelSize, voxelSize, voxelSize];
   const image = layoutGrid(tree, codec, {
     gridName,
     nameBytes,
@@ -242,11 +245,21 @@ export function vdbBuildFromDenseDetailed(
     voxelCount: tree.activeVoxelCount,
     indexBBox,
     worldBBox,
-    voxelSize,
+    voxelSize: voxelSizeXYZ[0],
     voxelSizeXYZ,
     nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
     tileCounts: { ...tree.tileCounts },
   };
+}
+
+/** A `voxelSize` option (number or `[x, y, z]`, default 1) as a validated per-axis vector. */
+function voxelSizeVec3(vs: number | readonly number[] | undefined, fn: string): [number, number, number] {
+  const v = vs ?? 1;
+  const xyz: [number, number, number] = typeof v === "number" ? [v, v, v] : [v[0]!, v[1]!, v[2]!];
+  if ((typeof v !== "number" && v.length !== 3) || !xyz.every((c) => Number.isFinite(c) && c > 0)) {
+    throw new VDBToolsError("VDB_BAD_OPTION", `${fn}: voxelSize must be positive and finite (a number or [x, y, z]), got ${JSON.stringify(vs)}`);
+  }
+  return xyz;
 }
 
 export interface VDBBuildFromLeavesOptions {
@@ -290,11 +303,7 @@ export function vdbBuildFromLeavesDetailed(
   codec: VDBLeafCodec,
   opts: VDBBuildFromLeavesOptions = {},
 ): VDBBuiltGrid {
-  const vs = opts.voxelSize ?? 1;
-  const voxelSizeXYZ: [number, number, number] = typeof vs === "number" ? [vs, vs, vs] : [vs[0], vs[1], vs[2]];
-  if (!voxelSizeXYZ.every((v) => Number.isFinite(v) && v > 0)) {
-    throw new VDBToolsError("VDB_BAD_OPTION", `buildFromLeaves: voxelSize must be positive and finite, got ${JSON.stringify(vs)}`);
-  }
+  const voxelSizeXYZ = voxelSizeVec3(opts.voxelSize, "buildFromLeaves");
   const components = codec.components ?? 1;
   const background: TileValue = opts.background ?? (components === 3 ? [0, 0, 0] : 0);
   if ((typeof background === "number") !== (components === 1)) {

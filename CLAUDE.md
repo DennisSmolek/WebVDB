@@ -222,9 +222,10 @@ From v1; details in docs/handoffs/.
   and a `VDBGridNode` compiles the pool's grid types at construction (a FpN preview then an Fp8 full grid reads 0). After
   each `vdbStreamCoarseFirst` swap make a new node, source and `VDBFrameVolume` over the same id, before the next render
   (the old source would read the new grid through the preview's box). No `voxelRatio` scale: froxels integrate in world space.
-- `wvdbDenseToNvdb` gives the NanoVDB grid one voxel size (the x side's): a `.wvdb` level with non-cubic voxels (any
-  default `vdbToWvdb` bake, whose sides round independently) reads back shifted in world space, so `vdbResampleError`
-  against it is too high (smoke 128: 45% instead of 42%; a 128³ box: 92%). Bake with a cubic box (demo 15 `cubicBox`).
+- A default `vdbToWvdb` bake has non-cubic voxels (each side's texel count rounds on its own; `resolution³` dims on a
+  non-cubic box even more so). Since G15a `wvdbDenseToNvdb` gives each axis its own voxel size: read
+  `voxelSizeXYZ`, not `voxelSize` (the x side), and don't assume the Map is a uniform scale. Comparing a bake with its
+  source needs no cubic box (smoke 128: 42.3%).
 - three r187 equirect `backgroundRotation` / `environmentRotation` turn the lookup direction: to put a photo's sun
   (azimuth `a`, from `atan(z, x)`) at azimuth `b`, rotate y by `a − b`, not `b − a` (demo 11).
 - Demo e2e "no errors" checks: use `collectErrors` from `e2e/console-errors.ts`, not a local copy. Pages probe optional,
