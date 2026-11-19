@@ -211,3 +211,15 @@ From v1; details in docs/handoffs/.
   naming the first builder's uniforms: "unresolved value 'nodeUniform0'" (K5.9b). Make such functions inside the
   material's `Fn` body (once per build), or don't give them a layout.
 - His sequences normalise density by the mean of ALL frames (`FrameVolume.getDensityScale`), not the shown frame's; his time-driven sequence must be paused at a known frame (`pause()`, `frame = N`) for captures.
+- `VDBLevelSetMaterial` draws into shadow maps by tracing (an orthographic ray per shadow texel the proxy covers): a 2048² map
+  over four level sets cost demo 13 ~30 ms a frame. For a static scene set `light.shadow.autoUpdate = false` and
+  `needsUpdate = true` for a few frames after a change. three r187 WebGPU also drops `PCFSoftShadowMap` (warns, uses PCF).
+- Rendering to a `RenderTarget` (readback presentation) skips three's tone mapping and output transform; a page that
+  tone maps on screen must apply the same curve on the CPU (the gallery shell does ACES) or readback images look flat.
+- Demo 13 gives each large grid its own `VDBGridPool`: four level sets (6–81 MB images, 212 MB in all) in one pool would
+  pass WebGPU's default `maxStorageBufferBindingSize` (128 MiB); a material reads one pool's `VDBGridNode` anyway.
+- `wvdbDenseToNvdb` gives the NanoVDB grid one voxel size (the x side's): a `.wvdb` level with non-cubic voxels (any
+  default `vdbToWvdb` bake, whose sides round independently) reads back shifted in world space, so `vdbResampleError`
+  against it is too high (smoke 128: 45% instead of 42%; a 128³ box: 92%). Bake with a cubic box (demo 15 `cubicBox`).
+- three r187 equirect `backgroundRotation` / `environmentRotation` turn the lookup direction: to put a photo's sun
+  (azimuth `a`, from `atan(z, x)`) at azimuth `b`, rotate y by `a − b`, not `b − a` (demo 11).

@@ -17,9 +17,9 @@ fixtures/**/*.vdb
 fixtures/**/*.nvdb
 fixtures/**/*.zip
 fixtures/**/*.gz
-fixtures/downloads/
-fixtures/embergen/
-fixtures/parity/
+fixtures/downloads
+fixtures/embergen
+fixtures/parity
 
 # Editor / OS
 .DS_Store
@@ -32,12 +32,12 @@ fixtures/parity/
 .claude/worktrees/
 
 # K3 reference captures of mjurczyk/openvdb (scripts/k3/capture-reference.mjs; owner-run, never committed)
-fixtures/k3-reference/
+fixtures/k3-reference
 # K3.1 parity inputs copied from his clone (bunny_cloud.wvdb, smoke.wvdb: CC BY-SA sources), never committed
-fixtures/k3/
+fixtures/k3
 
 # D33: the exact CIE 1931 2° colour matching functions (CC BY-SA 4.0), test-only (scripts/fetch-cie-cmf.mjs), never committed
-fixtures/cie/
+fixtures/cie
 
 # Gallery assets pending licence review (docs/assets-licensing.md); local only, never committed
-fixtures/gallery/
+fixtures/gallery
