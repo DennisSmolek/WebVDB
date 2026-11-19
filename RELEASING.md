@@ -35,8 +35,9 @@ workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages 
 - [ ] Pages workflow `.github/workflows/pages.yml`, triggered on push to `main` and by hand. It builds the docs
       (`mdx: docs/site`, `libname: vdb`, `home_redirect: /getting-started/introduction`, `github`) and the examples
       (§4) into one Pages artifact, then deploys with `actions/deploy-pages`. It needs its own build job, not the
-      reusable workflow alone: that uploads the docs as the whole site, and a repo gets one Pages site. **[agent]**
-- [ ] Every page builds and renders. Check locally with `npx @pmndrs/docs@4 build docs/site out --format website`
+      reusable workflow alone: that uploads the docs as the whole site, and a repo gets one Pages site. Written, not yet run
+      on GitHub; its examples step is a placeholder (`if: false`) until §4. **[agent]**
+- [x] Every page builds and renders (19 pages, no console errors or broken links, `llms-full.txt` emitted; checked 2026-11-20). Check locally with `npx @pmndrs/docs@4 build docs/site out --format website`
       and click through the nav; fix any component pmndrs/docs doesn't have. **[agent]**
 - [ ] Icon and logo for the docs header (`icon`, `logo` inputs). **[owner]** picks them.
 - [ ] Repo Settings → Pages → Source: **GitHub Actions**. **[owner]**
