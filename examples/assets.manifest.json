@@ -1,0 +1,187 @@
+{
+  "$comment": "The fixture files the hosted examples site ships (RELEASING.md section 4). Derived by grepping examples/src/demos for fixtureUrl(...); scripts/examples-assets.mjs copies exactly these into <build>/fixtures/ and fails if one is missing. A group with licensingRows ships only when every named row in docs/assets-licensing.md is `ok`. examples/attribution.html is generated from this file.",
+  "version": 1,
+  "limits": { "maxFileMB": 95, "maxTotalMB": 900 },
+  "release": {
+    "repo": "pmndrs/vdb",
+    "tag": "examples-assets-v1",
+    "asset": "examples-assets.tar",
+    "sha256": null,
+    "$comment": "Owner: after `node scripts/examples-assets.mjs --pack`, put the printed sha256 here (CI checks the downloaded tarball against it)."
+  },
+  "groups": [
+    {
+      "id": "primitives",
+      "title": "Procedural fog volumes (sphere, box, torus)",
+      "author": "Generated for this project (pnpm fixtures:bake, NanoVDB tools)",
+      "source": "https://github.com/pmndrs/vdb",
+      "licence": "Apache-2.0 (as fixtures/README.md)",
+      "licenceUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+      "modified": null,
+      "usedBy": [1, 2, 3, 4, 6, 8],
+      "files": [
+        "primitives/sphere_fog_float.nvdb",
+        "primitives/sphere_fog_float.sidecar.json",
+        "primitives/sphere_fog_fp8.nvdb",
+        "primitives/box_fog_float.nvdb",
+        "primitives/box_fog_float.sidecar.json",
+        "primitives/torus_fog_fp8.nvdb"
+      ]
+    },
+    {
+      "id": "wdas-cloud",
+      "title": "WDAS cloud (quarter resolution)",
+      "author": "Walt Disney Animation Studios",
+      "source": "https://disneyanimation.com/resources/clouds/",
+      "licence": "CC BY-SA 3.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "modified": "Modified: reduced to quarter resolution and converted from OpenVDB to NanoVDB (Fp8 quantised, plus a coarse preview). The ShareAlike licence applies to these derivatives.",
+      "usedBy": [2, 10, 11, 15, 16],
+      "files": [
+        "wdas/wdas_cloud_quarter_fp8.nvdb",
+        "wdas/wdas_cloud_quarter.coarse.nvdb",
+        "wdas/wdas_cloud_quarter.vdb"
+      ]
+    },
+    {
+      "id": "openvdb-samples",
+      "title": "OpenVDB sample models (smoke, sphere, Utah teapot, icosahedron, sphere points, Venus statue)",
+      "author": "OpenVDB sample-model collection (credits on the download page)",
+      "source": "https://www.openvdb.org/download/",
+      "licence": "CC BY-SA 4.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "modified": "Modified: the .vdb files are served as published (mirrored from the MIT-licensed mjurczyk/openvdb repository); demos resample or re-encode them in the browser only.",
+      "usedBy": [6, 8, 9, 10, 13, 14, 15, 16],
+      "files": [
+        "vdb-samples/smoke.vdb",
+        "vdb-samples/sphere.vdb",
+        "vdb-samples/utahteapot.vdb",
+        "vdb-samples/icosahedron.vdb",
+        "vdb-samples/sphere_points.vdb",
+        "k3/venusstatue.vdb"
+      ]
+    },
+    {
+      "id": "embergen-ground-explosion",
+      "title": "EmberGen ground explosion (200 frames)",
+      "author": "JangaFX Software (created with EmberGen)",
+      "source": "https://jangafx.com/software/embergen/download/free-vdb-animations",
+      "licence": "CC0 1.0",
+      "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "modified": "Converted to the .wvdb dense-frame format.",
+      "usedBy": [10, 12],
+      "files": ["k3/ground_explosion/frames.json", "k3/ground_explosion/LICENSE.txt", "k3/ground_explosion/README.txt"],
+      "globs": [{ "pattern": "k3/ground_explosion/ground_explosion_*.wvdb", "count": 200 }]
+    },
+    {
+      "id": "embergen-fire",
+      "title": "EmberGen Fire_01 (100-frame sequence)",
+      "author": "JangaFX Software (created with EmberGen)",
+      "source": "https://jangafx.com/software/embergen/download/free-vdb-animations",
+      "licence": "CC0 1.0",
+      "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "modified": "Converted from OpenVDB to NanoVDB (Fp8, flames grid).",
+      "usedBy": [5],
+      "files": ["embergen/index.json", "embergen/Fire_01/manifest.json", "embergen/Fire_01/LICENSE.txt", "embergen/Fire_01/README.txt"],
+      "globs": [{ "pattern": "embergen/Fire_01/baked-fp8/*.nvdb", "count": 100 }]
+    },
+    {
+      "id": "jangafx-cloudpack",
+      "title": "JangaFX CloudPack (cloud_02, cloud_05, cloud_07)",
+      "author": "JangaFX Software (created with EmberGen)",
+      "source": "https://jangafx.com/software/embergen/download/free-vdb-animations",
+      "licence": "CC0 1.0",
+      "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "modified": "Converted to the .wvdb dense-frame format.",
+      "usedBy": [11],
+      "licensingRows": ["CloudPackVDB_wvdb/"],
+      "files": [
+        "gallery/CloudPackVDB_wvdb/cloud_02_variant_0000.wvdb",
+        "gallery/CloudPackVDB_wvdb/cloud_05_variant_0000.wvdb",
+        "gallery/CloudPackVDB_wvdb/cloud_07_variant_0000.wvdb",
+        "gallery/CloudPackVDB_wvdb/LICENSE.txt",
+        "gallery/CloudPackVDB_wvdb/README.txt"
+      ]
+    },
+    {
+      "id": "gallery-sky-midday",
+      "title": "HDR sky: midday",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [10, 11, 15, 16],
+      "licensingRows": ["sky-midday-HDR.jpg"],
+      "files": ["gallery/sky-midday-HDR.jpg", "k3/sky-midday-HDR.jpg"]
+    },
+    {
+      "id": "gallery-sky-cloudy",
+      "title": "HDR sky: cloudy",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [11],
+      "licensingRows": ["sky-cloudy-HDR.jpg"],
+      "files": ["gallery/sky-cloudy-HDR.jpg"]
+    },
+    {
+      "id": "gallery-sky-dusk",
+      "title": "HDR sky: dusk",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [11, 12],
+      "licensingRows": ["sky-dusk-HDR.jpg"],
+      "files": ["gallery/sky-dusk-HDR.jpg"]
+    },
+    {
+      "id": "gallery-sky-night",
+      "title": "HDR sky: night",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [12],
+      "licensingRows": ["sky-night-HDR.jpg"],
+      "files": ["gallery/sky-night-HDR.jpg"]
+    },
+    {
+      "id": "gallery-shore",
+      "title": "HDR environment: shore",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [13],
+      "licensingRows": ["shore-HDR.jpg"],
+      "files": ["gallery/shore-HDR.jpg"]
+    },
+    {
+      "id": "gallery-townsquare",
+      "title": "HDR environment: town square",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [13],
+      "licensingRows": ["townsquare-HDR.jpg"],
+      "files": ["gallery/townsquare-HDR.jpg"]
+    },
+    {
+      "id": "gallery-car",
+      "title": "Car model (GLB)",
+      "author": "unknown (review pending)",
+      "source": "",
+      "licence": "pending",
+      "usedBy": [12],
+      "licensingRows": ["car.glb"],
+      "files": ["gallery/car.glb"]
+    }
+  ],
+  "excluded": [
+    { "path": "vdb-samples/waterfall_points.vdb", "reason": "149 MB: owner decision, it never ships (demo 14 offers it only when present, i.e. locally)" },
+    { "path": "vdb-samples/bunny.vdb", "reason": "Stanford bunny derivative: Stanford terms are not CC BY-SA 4.0 (fixtures/ATTRIBUTION.md); demo 13 skips the bunny when absent" },
+    { "path": "vdb-samples/bunny_cloud.vdb", "reason": "Stanford bunny derivative (as above), 73 MB" },
+    { "path": "k3/bunny_cloud.wvdb", "reason": "Stanford bunny derivative (as above); demo 10 hides that scene when absent" },
+    { "path": "gallery/boat_points.wvdb", "reason": "no demo loads it; licence pending" },
+    { "path": "vdb-samples/{cube,explosion,fire}.vdb, wdas/*.sidecar.json, primitives other than the six listed", "reason": "no hosted demo loads them (parity and unit-test fixtures)" },
+    { "path": "embergen/Clouds, embergen/SmallCampfireVDB, embergen/Fire_01/*.vdb sources, *.rar, *.zip", "reason": "raw packs: no demo plays them (demo 05 plays the baked Fire_01 frames)" },
+    { "path": "downloads/, parity/, k3-reference/, generated/", "reason": "raw archives and test corpora" }
+  ]
+}

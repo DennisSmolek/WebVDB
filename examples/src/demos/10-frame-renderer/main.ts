@@ -16,6 +16,8 @@
  * Frame times are submit-to-done wall times of one frame on this page: provisional (D25), not a
  * benchmark.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { UltraHDRLoader } from "three/addons/loaders/UltraHDRLoader.js";
@@ -68,7 +70,7 @@ type Quality = "low" | "medium" | "high";
 const QUALITY_PARAM = params.get("quality");
 const SKY_COLOR = new THREE.Color(0x598eff); // his examples page background
 const SKY_BYTES = [89, 142, 255];
-const HDR_URL = "/fixtures/k3/sky-midday-HDR.jpg";
+const HDR_URL = fixtureUrl("k3/sky-midday-HDR.jpg");
 
 const QUALITY: Record<Quality, { width: number; height: number; depth: number; subSteps: number; shadowSteps: number; shadowResolution: number; emission: number; pixelRatio: number; label: string }> = {
   low: { width: 128, height: 128, depth: 16, subSteps: 8, shadowSteps: 8, shadowResolution: 32, emission: 8, pixelRatio: 1, label: "low (128×128×16)" },

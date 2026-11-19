@@ -1,7 +1,10 @@
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
+// @ts-expect-error plain .mjs without types: the hosted asset set and the attribution rows (RELEASING.md section 4)
+import { renderAttribution } from "../scripts/examples-assets.mjs";
 
 // Repo-root `fixtures/` dir (this config lives in `examples/`).
 const fixturesDir = fileURLToPath(new URL("../fixtures/", import.meta.url));
@@ -43,8 +46,41 @@ function serveFixtures(): Plugin {
   };
 }
 
-export default defineConfig({
-  plugins: [serveFixtures()],
+/** Fills `<!-- ASSET_LIST -->` in attribution.html from examples/assets.manifest.json (dev and build). */
+function attributionPage(): Plugin {
+  return {
+    name: "webvdb-attribution",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html, ctx) {
+        return ctx.filename.endsWith("attribution.html") ? html.replace("<!-- ASSET_LIST -->", () => renderAttribution() as string) : html;
+      },
+    },
+  };
+}
+
+/** Every page of the multi-page build: the gallery home, the attribution page and each demo's index.html. */
+function pages(): Record<string, string> {
+  const root = fileURLToPath(new URL("./", import.meta.url));
+  const input: Record<string, string> = { main: `${root}index.html`, attribution: `${root}attribution.html` };
+  const demos = `${root}src/demos/`;
+  for (const d of readdirSync(demos, { withFileTypes: true })) {
+    if (d.isDirectory() && /^\d\d-/.test(d.name)) input[d.name] = `${demos}${d.name}/index.html`;
+  }
+  return input;
+}
+
+// Hosted: docs at https://pmndrs.github.io/vdb/, examples under /vdb/examples/ (override with VDB_EXAMPLES_BASE).
+// `pnpm dev` and the Playwright dev server keep base "/" and the serveFixtures plugin.
+export default defineConfig(({ command }) => ({
+  base: command === "build" ? (process.env["VDB_EXAMPLES_BASE"] ?? "/vdb/examples/") : "/",
+  plugins: [serveFixtures(), attributionPage()],
+  build: {
+    // Demos use top-level await (webgpu-gate) and module workers.
+    target: "esnext",
+    rollupOptions: { input: pages() },
+  },
+  worker: { format: "es" },
   resolve: {
     alias: [
       // Most specific first: first matching alias wins.
@@ -73,4 +109,4 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
-});
+}));

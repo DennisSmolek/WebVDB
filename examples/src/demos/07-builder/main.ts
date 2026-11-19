@@ -41,6 +41,7 @@
  * the e2e spec, since headless SwiftShader can't present a WebGPU canvas
  * (DIVERGES V7).
  */
+import "../webgpu-gate.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";

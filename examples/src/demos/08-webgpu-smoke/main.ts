@@ -24,6 +24,8 @@
  * `?test=1` pins the camera and renders only on demand.
  * State for e2e/demo-08.spec.ts: `window.__DEMO08__`.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import { VDBGridPool, vdbCheckModule, vdbModuleEntries, vdbModuleWgsl } from "@pmndrs/vdb";
 import type { VDBSlotModuleOptions } from "@pmndrs/vdb";
 import { NvdbFile, buildFromVdb, parseVdb } from "@pmndrs/vdb/tools";
@@ -56,8 +58,8 @@ declare global {
   }
 }
 
-const SMOKE_URL = "/fixtures/vdb-samples/smoke.vdb";
-const SECOND_URL = "/fixtures/primitives/torus_fog_fp8.nvdb";
+const SMOKE_URL = fixtureUrl("vdb-samples/smoke.vdb");
+const SECOND_URL = fixtureUrl("primitives/torus_fog_fp8.nvdb");
 
 const params = new URLSearchParams(location.search);
 const testMode = params.get("test") === "1";

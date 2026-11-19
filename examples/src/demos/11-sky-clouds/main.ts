@@ -14,6 +14,8 @@
  *
  * Frame times are submit-to-done wall times on this page: provisional (D25), not a benchmark.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { UltraHDRLoader } from "three/addons/loaders/UltraHDRLoader.js";
@@ -71,7 +73,7 @@ shell.onFail((m) => {
   state.loading = false;
 });
 
-const WDAS_URL = "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb";
+const WDAS_URL = fixtureUrl("wdas/wdas_cloud_quarter_fp8.nvdb");
 const CLOUD_PACK = ["cloud_02", "cloud_05", "cloud_07"].map((n) => `${GALLERY_DIR}CloudPackVDB_wvdb/${n}_variant_0000.wvdb`);
 const hdrUrl = (name: string) => `${GALLERY_DIR}${name}-HDR.jpg`;
 

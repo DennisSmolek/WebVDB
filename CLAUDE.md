@@ -231,3 +231,7 @@ From v1; details in docs/handoffs/.
 - Demo e2e "no errors" checks: use `collectErrors` from `e2e/console-errors.ts`, not a local copy. Pages probe optional,
   git-ignored fixtures and fall back; Chrome logs each probe as a 404 console error, so a spec that counts every
   console error passes locally (fixtures present) and fails on CI (demos 10, 15, 16 did).
+- Never write a `/fixtures/` literal in a demo: use `fixtureUrl("wdas/x.nvdb")` (`examples/src/demos/assets.ts`; Vite `BASE_URL` + `fixtures/`, or `VITE_VDB_ASSET_BASE`). The hosted site lives under `/vdb/examples/`, so an absolute `/fixtures/...` fetch 404s there. A new fixture a demo loads goes in `examples/assets.manifest.json` too (with source and licence), or the hosted build lacks it; `pnpm examples:build && pnpm examples:smoke` checks.
+- Every demo entry imports `../webgpu-gate.js` first (top-level await: without WebGPU the page shows a card and the demo never runs). Don't add a demo `main.ts` without it; `e2e/no-webgpu.spec.ts` lists the demos.
+- The hosted build sets `HOSTED` (`import.meta.env.PROD`): `ui.note` is silent there, since the notes name local-only fixtures. Test notes in dev.
+- Links in demo HTML are relative (`../../../` for "all demos", `./src/demos/..` on the home page) and the shell's use `HOME_URL`: never `href="/"`.

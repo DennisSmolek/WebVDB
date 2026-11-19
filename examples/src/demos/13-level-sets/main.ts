@@ -8,6 +8,8 @@
  * (the piece in focus), `?load=a,b` (load only these; e2e), `?material=clay|porcelain|bronze|chrome|glass`,
  * `?env=studio|shore|townsquare`, `?normals=1`.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import { GroundedSkybox } from "three/addons/objects/GroundedSkybox.js";
@@ -56,8 +58,8 @@ interface EnvDef {
 }
 const ENVS: Record<EnvId, EnvDef> = {
   studio: { label: "studio (procedural)", sun: [0.62, 0.22], sunIntensity: 2.6, envIntensity: 0.55, exposure: 1.0, shadowRadius: 3 },
-  shore: { label: "shore (HDR)", url: "/fixtures/gallery/shore-HDR.jpg", sun: [0.6, 0.34], sunIntensity: 3.2, envIntensity: 1.0, exposure: 0.85, height: 1.7, shadowRadius: 2 },
-  townsquare: { label: "town square (HDR)", url: "/fixtures/gallery/townsquare-HDR.jpg", sun: [0.55, 0.12], sunIntensity: 0.9, envIntensity: 1.1, exposure: 1.0, height: 1.7, shadowRadius: 8 },
+  shore: { label: "shore (HDR)", url: fixtureUrl("gallery/shore-HDR.jpg"), sun: [0.6, 0.34], sunIntensity: 3.2, envIntensity: 1.0, exposure: 0.85, height: 1.7, shadowRadius: 2 },
+  townsquare: { label: "town square (HDR)", url: fixtureUrl("gallery/townsquare-HDR.jpg"), sun: [0.55, 0.12], sunIntensity: 0.9, envIntensity: 1.1, exposure: 1.0, height: 1.7, shadowRadius: 8 },
 };
 
 /** Direction toward an equirect pixel (three's `equirectUV` convention, u along +x → +z, v up). */

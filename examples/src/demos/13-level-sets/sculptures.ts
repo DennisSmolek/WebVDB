@@ -5,6 +5,7 @@
  * One pool per sculpture keeps every pool under the device's storage-binding limit (the four images are 6–81 MB);
  * a material reads one `VDBGridNode`, so pools never share a shader.
  */
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { buildFromVdb, parseVdb, type VdbFloatGrid } from "@pmndrs/vdb/tools";
@@ -25,10 +26,10 @@ export interface SculptureDef {
 }
 
 export const SCULPTURES: readonly SculptureDef[] = [
-  { id: "icosahedron", label: "Icosahedron", urls: ["/fixtures/vdb-samples/icosahedron.vdb"], mb: 1, size: 0.85, yaw: 0.35 },
-  { id: "teapot", label: "Utah teapot", urls: ["/fixtures/vdb-samples/utahteapot.vdb"], mb: 19, size: 1.15, yaw: -0.5 },
-  { id: "venus", label: "Venus statue", urls: ["/fixtures/k3/venusstatue.vdb", "/fixtures/vdb-samples/venusstatue.vdb"], mb: 27, size: 1.55, yaw: 0 },
-  { id: "bunny", label: "Stanford bunny", urls: ["/fixtures/vdb-samples/bunny.vdb"], mb: 16, size: 1.05, yaw: 0.4 },
+  { id: "icosahedron", label: "Icosahedron", urls: [fixtureUrl("vdb-samples/icosahedron.vdb")], mb: 1, size: 0.85, yaw: 0.35 },
+  { id: "teapot", label: "Utah teapot", urls: [fixtureUrl("vdb-samples/utahteapot.vdb")], mb: 19, size: 1.15, yaw: -0.5 },
+  { id: "venus", label: "Venus statue", urls: [fixtureUrl("k3/venusstatue.vdb"), fixtureUrl("vdb-samples/venusstatue.vdb")], mb: 27, size: 1.55, yaw: 0 },
+  { id: "bunny", label: "Stanford bunny", urls: [fixtureUrl("vdb-samples/bunny.vdb")], mb: 16, size: 1.05, yaw: 0.4 },
 ];
 
 /** First existing URL of a sculpture, or null. */

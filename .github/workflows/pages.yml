@@ -1,6 +1,6 @@
 name: Pages
 
-# Builds the docs (pmndrs/docs) and, later, the examples site into one GitHub Pages artifact.
+# Builds the docs (pmndrs/docs) and the examples site into one GitHub Pages artifact.
 # RELEASING.md section 3. The build mirrors the reusable workflow
 # pmndrs/docs/.github/workflows/build.yml@v4 (same npx command and env) but runs it directly,
 # because a repo gets one Pages site and the examples site (RELEASING section 4) goes into the
@@ -22,6 +22,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     env:
       BASE_PATH: /vdb
     steps:
@@ -54,11 +56,40 @@ jobs:
       - name: Check llms-full.txt was emitted
         run: test -s out/llms-full.txt && test -s out/llms.txt
 
-      # RELEASING section 4: build the examples with Vite base /vdb/examples/ and copy the dist into
-      # out/examples/. Skipped until that task lands; replace `if: false` with the real steps.
-      - name: examples site (RELEASING section 4)
-        if: false
-        run: echo "TODO build examples and copy into out/examples/"
+      # RELEASING section 4: the examples site at /vdb/examples/. The volumes are too big to fetch in CI (WDAS is a
+      # 2.8 GB zip plus a conversion), so a prebuilt tarball comes from a GitHub Release on this repo
+      # (examples-assets-v1, asset examples-assets.tar; the owner uploads it with scripts/examples-assets.mjs --pack,
+      # RELEASING.md section 4). Its sha256 is pinned in examples/assets.manifest.json. A missing or mismatched
+      # tarball fails the job: a broken examples site never deploys.
+      - uses: pnpm/action-setup@v4
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Examples site (Vite, base /vdb/examples/)
+        run: pnpm --filter @webvdb/examples build
+        env:
+          VDB_EXAMPLES_BASE: ${{ env.BASE_PATH }}/examples/
+
+      - name: Examples assets (release tarball)
+        run: |
+          set -euo pipefail
+          tag=$(node -p "require('./examples/assets.manifest.json').release.tag")
+          asset=$(node -p "require('./examples/assets.manifest.json').release.asset")
+          test -n "$(node -p "require('./examples/assets.manifest.json').release.sha256 || ''")" \
+            || { echo "::error::examples/assets.manifest.json release.sha256 is null: the owner has not published the asset tarball (RELEASING.md section 4)"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/examples-assets"
+          gh release download "$tag" --repo "${{ github.repository }}" --pattern "$asset" --dir "$RUNNER_TEMP/examples-assets" \
+            || { echo "::error::release $tag / $asset not found on ${{ github.repository }}: run scripts/examples-assets.mjs --pack and upload it (RELEASING.md section 4)"; exit 1; }
+          node scripts/examples-assets.mjs --from-tar "$RUNNER_TEMP/examples-assets/$asset" --out examples/dist/fixtures --verify-dir examples/dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Copy examples into the Pages artifact
+        run: |
+          mkdir -p out/examples
+          cp -R examples/dist/. out/examples/
+          test -s out/examples/index.html && test -s out/examples/attribution.html && test -d out/examples/fixtures
 
       - uses: actions/upload-pages-artifact@v4
         with:

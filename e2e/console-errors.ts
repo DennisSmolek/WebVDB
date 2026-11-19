@@ -22,7 +22,7 @@ export function collectErrors(page: Page): string[] {
 
 function isFixtureUrl(url: string): boolean {
   try {
-    return new URL(url).pathname.startsWith("/fixtures/");
+    return new URL(url).pathname.includes("/fixtures/");
   } catch {
     return false;
   }

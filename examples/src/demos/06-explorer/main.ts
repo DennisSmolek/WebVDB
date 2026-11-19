@@ -42,6 +42,8 @@
  * renders one settled frame, fills every panel, and publishes
  * `window.__DEMO06__`.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { NvdbFile, vdbReadValueCpu } from "@pmndrs/vdb/tools";
@@ -121,8 +123,8 @@ function installAdapterKeepAliveShim(): void {
 // ---------------------------------------------------------------------------
 
 const SAMPLE_URLS = {
-  vdb: "/fixtures/vdb-samples/sphere.vdb",
-  nvdb: "/fixtures/primitives/sphere_fog_fp8.nvdb",
+  vdb: fixtureUrl("vdb-samples/sphere.vdb"),
+  nvdb: fixtureUrl("primitives/sphere_fog_fp8.nvdb"),
 } as const;
 
 const HISTOGRAM_BINS = 256;
