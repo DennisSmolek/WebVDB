@@ -2,6 +2,8 @@
  * Demo 15: the assets and the messages between the page and its bake worker (`bake-worker.ts`).
  */
 
+import { fixtureUrl } from "../assets.js";
+
 export type AssetId = "wdas" | "smoke";
 
 export type WorkerRequest =
@@ -37,6 +39,6 @@ export type WorkerResponse =
 
 export const ASSETS: Record<AssetId, { label: string; url: string; reference?: string; stride: number }> = {
   // The Fp8 grid as shipped; measured against the 68 MB .vdb when it is there, else against the Fp8 grid itself.
-  wdas: { label: "WDAS cloud (quarter, Fp8)", url: "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb", reference: "/fixtures/wdas/wdas_cloud_quarter.vdb", stride: 31 },
-  smoke: { label: "smoke.vdb", url: "/fixtures/vdb-samples/smoke.vdb", stride: 7 },
+  wdas: { label: "WDAS cloud (quarter, Fp8)", url: fixtureUrl("wdas/wdas_cloud_quarter_fp8.nvdb"), reference: fixtureUrl("wdas/wdas_cloud_quarter.vdb"), stride: 31 },
+  smoke: { label: "smoke.vdb", url: fixtureUrl("vdb-samples/smoke.vdb"), stride: 7 },
 };

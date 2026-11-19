@@ -22,6 +22,8 @@
  * `?presentation=readback` renders to an offscreen target and draws it on a 2D canvas (headless SwiftShader has no
  * compositor, DIVERGES V7); the default draws into the page's WebGPU canvas.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
@@ -70,7 +72,7 @@ const TEST_MODE = params.get("test") === "1";
 const PRESENTATION = params.get("presentation") === "readback" || TEST_MODE ? "readback" : "direct";
 const SPEED_KIB = Math.max(1, Number(params.get("speed") ?? "256"));
 const FILE = params.get("file");
-const SOURCE_VDB = "/fixtures/vdb-samples/smoke.vdb";
+const SOURCE_VDB = fixtureUrl("vdb-samples/smoke.vdb");
 const DENSITY = 4;
 const BACKGROUND = 0x223049;
 /** Interactive: how long each phase stays on screen before the stream may continue, ms. */

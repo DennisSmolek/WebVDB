@@ -36,7 +36,7 @@ workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages 
       (`mdx: docs/site`, `libname: vdb`, `home_redirect: /getting-started/introduction`, `github`) and the examples
       (§4) into one Pages artifact, then deploys with `actions/deploy-pages`. It needs its own build job, not the
       reusable workflow alone: that uploads the docs as the whole site, and a repo gets one Pages site. Written, not yet run
-      on GitHub; its examples step is a placeholder (`if: false`) until §4. **[agent]**
+      on GitHub; its examples steps need the asset release (§4, owner). **[agent]**
 - [x] Every page builds and renders (19 pages, no console errors or broken links, `llms-full.txt` emitted; checked 2026-11-20). Check locally with `npx @pmndrs/docs@4 build docs/site out --format website`
       and click through the nav; fix any component pmndrs/docs doesn't have. **[agent]**
 - [ ] Icon and logo for the docs header (`icon`, `logo` inputs). **[owner]** picks them.
@@ -50,26 +50,47 @@ workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages 
 
 ### 4. Examples site
 
-The examples build ships no fixtures today: in dev, `examples/vite.config.ts` serves the git-ignored `fixtures/`
-from disk. A hosted build needs an asset set.
+The hosted site lives at `https://pmndrs.github.io/vdb/examples/`, in the same Pages artifact as the docs. In dev,
+`examples/vite.config.ts` still serves the git-ignored `fixtures/` from disk at `/fixtures/`; the hosted build gets its
+volumes from an asset set (`examples/assets.manifest.json`, `scripts/examples-assets.mjs`). Demos build every asset URL
+with `fixtureUrl("wdas/x.nvdb")` (`examples/src/demos/assets.ts`): Vite `BASE_URL` + `fixtures/`, or
+`VITE_VDB_ASSET_BASE` to point at object storage later.
 
-- [ ] Production asset pipeline: an asset base URL for the demos, and a script that copies the allowed fixture
-      subset into the build. Fail the build if any file is ≥ 100 MB (the GitHub Pages limit) or the site passes
-      ~900 MB (the limit is 1 GB). **[agent]**
-- [ ] Asset set: everything the demos load **except** `waterfall_points.vdb` (149 MB, too large). Demo 14 hosted
-      opens on a smaller points asset and offers the waterfall only when it is present (local dev). Unused files
-      (zips, `downloads/`, the full EmberGen pack beyond the frames a demo plays) stay out. **[agent]**
-- [ ] Attribution page on the site, built from `fixtures/ATTRIBUTION.md` and `docs/dev/assets-licensing.md`. Every
-      hosted asset is listed with source and licence (openvdb.org samples and the WDAS cloud are CC BY-SA and need
-      it; EmberGen is CC0). **[agent]**
-- [ ] Gallery assets (HDR skies, GLBs, `boat_points.wvdb`): every row in `docs/assets-licensing.md` set to `ok`,
-      or the asset swapped. Until then the hosted gallery uses its procedural fallbacks. **[owner]**
-- [ ] Vite `base` set for the Pages sub-path (docs at `/vdb/`, examples at `/vdb/examples/`); every demo loads from
-      the built site, not only from `pnpm dev`. Check with `vite preview` plus an e2e smoke run against the build.
-      **[agent]**
-- [ ] A clear message on browsers without WebGPU, instead of a blank canvas. **[agent]**
+- [x] Production asset pipeline: an asset base URL for the demos (`fixtureUrl`), and `scripts/examples-assets.mjs`,
+      which copies the manifest's file set into the build and fails if any file is ≥ 95 MB or the examples dir passes
+      900 MB (the Pages limits are 100 MB and 1 GB). `pnpm examples:build` builds and copies; the 0.1 set is
+      327 files, 296.5 MB (298.7 MB site). **[agent]**
+- [x] Asset set: everything the demos load **except** `waterfall_points.vdb` (149 MB, it never ships), the Stanford
+      bunny derivatives and the pending gallery assets. Demo 14 hosted opens on `sphere_points` and describes the model
+      on screen; it offers the waterfall only when present (local dev). Unused files (zips, `downloads/`, raw
+      EmberGen packs, frames no demo plays) stay out. **[agent]**
+- [x] Attribution page `examples/attribution.html`, generated from the manifest at build time (source, author,
+      licence link, "modified" note per asset; WDAS CC BY-SA 3.0, openvdb.org samples CC BY-SA 4.0, EmberGen CC0),
+      linked from the examples home and each showcase caption. **[agent]**
+- [ ] Gallery assets (HDR skies, the car GLB, `boat_points.wvdb`): every row in `docs/assets-licensing.md` set to `ok`,
+      or the asset swapped. The manifest ships a gallery group only when its rows are `ok` (the JangaFX CloudPack
+      already is); until then the hosted gallery uses its procedural skies and props. Also decide the Stanford bunny
+      (Stanford's terms are not CC BY-SA; excluded for now, demos 10 and 13 skip it). **[owner]**
+- [x] Vite `base` for the Pages sub-path (`/vdb/examples/`, `VDB_EXAMPLES_BASE` overrides); every demo loads from the
+      built site. `pnpm examples:build && pnpm examples:smoke` serves the build under `/vdb/examples/` and runs
+      `e2e/examples-site.spec.ts` (home and attribution links, all 16 demos reach their ready state without errors and
+      request nothing outside `/vdb/`, no-WebGPU card). **[agent]**
+- [x] A clear message on browsers without WebGPU, instead of a blank canvas: `examples/src/demos/webgpu-gate.ts`,
+      imported first by every demo (`e2e/no-webgpu.spec.ts`). **[agent]**
+- [ ] Publish the asset tarball (the CI cannot fetch WDAS and friends), then run the workflow by hand. **[owner]**
+      ```sh
+      node scripts/examples-assets.mjs --pack        # needs the local fixtures; writes artifacts/examples-assets/
+      # put the printed sha256 into examples/assets.manifest.json (release.sha256) and commit it
+      gh release create examples-assets-v1 artifacts/examples-assets/examples-assets.tar \
+        --repo pmndrs/vdb --title "Examples assets v1" \
+        --notes "Volumes for the hosted examples (scripts/examples-assets.mjs --pack). Licences: examples/attribution.html."
+      ```
+      `pages.yml` downloads `examples-assets.tar` from that release, checks its sha256 against the manifest and fails
+      (no deploy) when the release, the asset or the checksum is missing. A new set means a new tag
+      (`examples-assets-v2`) and the tag and sha256 in the manifest.
 - [ ] Bandwidth: Pages has a soft 100 GB/month limit and the WDAS demos pull 30–90 MB per visit. Fine for launch;
-      if traffic grows, move the volumes to object storage behind the same asset base URL. **[owner]** decides when.
+      if traffic grows, move the volumes to object storage behind the same asset base URL
+      (`VITE_VDB_ASSET_BASE` at build time). **[owner]** decides when.
 
 ### 5. Licences and credits
 

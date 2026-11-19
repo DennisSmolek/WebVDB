@@ -22,6 +22,8 @@
  * Fixed camera pose (selectable with `?pose=N`), jitter OFF, fixed params —
  * renders exactly one settled frame, then stops. Screenshots are byte-stable.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
@@ -76,12 +78,12 @@ const SAMPLE_BUDGET_CAP = Math.max(1, Number(params.get("sampleBudgetCap") ?? "8
 const POSE_INDEX = Math.max(0, Math.min(TEST_POSES.length - 1, Number(params.get("pose") ?? "0") | 0));
 
 function fixtureCandidates(): string[] {
-  if (FIXTURE === "primitive") return ["/fixtures/primitives/sphere_fog_fp8.nvdb"];
-  if (FIXTURE === "wdas") return ["/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb"];
+  if (FIXTURE === "primitive") return [fixtureUrl("primitives/sphere_fog_fp8.nvdb")];
+  if (FIXTURE === "wdas") return [fixtureUrl("wdas/wdas_cloud_quarter_fp8.nvdb")];
   if (FIXTURE !== "auto") throw new Error(`fixture must be primitive, wdas, or auto (got ${FIXTURE})`);
   return [
-    "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb",
-    "/fixtures/primitives/sphere_fog_fp8.nvdb",
+    fixtureUrl("wdas/wdas_cloud_quarter_fp8.nvdb"),
+    fixtureUrl("primitives/sphere_fog_fp8.nvdb"),
   ];
 }
 

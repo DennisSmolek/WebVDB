@@ -17,6 +17,7 @@
  * `?lighting=volume|frame`.
  * `window.__DEMO15__` is the e2e state; `window.__DEMO15_API__.capture()` summarizes the last read-back frame.
  */
+import "../webgpu-gate.js";
 import * as THREE from "three/webgpu";
 import { select, texture, uniform, uv } from "three/tsl";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";

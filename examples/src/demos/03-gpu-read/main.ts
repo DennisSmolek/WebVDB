@@ -22,6 +22,8 @@
  *   4. How a WGSL function walks the grid's 4-level tree to read one voxel.
  *   5. Wiring it into an actual compute dispatch, and checking the answers.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import { NvdbFile } from "@pmndrs/vdb/tools";
 
 // ---------------------------------------------------------------------------
@@ -51,8 +53,8 @@ declare global {
   }
 }
 
-const FIXTURE_NVDB = "/fixtures/primitives/sphere_fog_float.nvdb";
-const FIXTURE_SIDECAR = "/fixtures/primitives/sphere_fog_float.sidecar.json";
+const FIXTURE_NVDB = fixtureUrl("primitives/sphere_fog_float.nvdb");
+const FIXTURE_SIDECAR = fixtureUrl("primitives/sphere_fog_float.sidecar.json");
 const SAMPLE_COUNT = 8; // "read ~8 voxels" — the first 8 rows of the sidecar
 const VALUE_EPS = 1e-5;
 

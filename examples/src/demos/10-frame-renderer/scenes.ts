@@ -5,6 +5,7 @@
  * Every object is placed as his examples page places it: the longest side 100 units, the box standing
  * on the ground plane at y = -50, centred on the origin.
  */
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import {
@@ -270,7 +271,7 @@ async function froxelScene(ctx: SceneContext, asset: VolumeAsset, kind: SourceKi
 
 // --- The explosion sequence ------------------------------------------------------------------------------
 
-const EXPLOSION_DIR = "/fixtures/k3/ground_explosion/";
+const EXPLOSION_DIR = fixtureUrl("k3/ground_explosion/");
 const EXPLOSION_FPS = 24;
 /**
  * His frame.js explosion: the emission grid "flames" ÷ emissiveScale 6. Early frames have no flames grid: the
@@ -454,7 +455,7 @@ export const SCENES: readonly SceneDef[] = [
     id: "wdas",
     label: "WDAS cloud (quarter, Fp8)",
     kind: "froxel",
-    files: ["/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb"],
+    files: [fixtureUrl("wdas/wdas_cloud_quarter_fp8.nvdb")],
     fetchHint: "pnpm fixtures:wdas, then nanovdb_convert --fp8 (fixtures/README.md)",
     sourceKinds: ["sparse"],
     async load(ctx, _kind, lod) {
@@ -467,7 +468,7 @@ export const SCENES: readonly SceneDef[] = [
     id: "smoke",
     label: "smoke.vdb",
     kind: "froxel",
-    files: ["/fixtures/vdb-samples/smoke.vdb"],
+    files: [fixtureUrl("vdb-samples/smoke.vdb")],
     fetchHint: VDB_SAMPLES_HINT,
     sourceKinds: ["sparse", "dense"],
     async load(ctx, kind, lod) {
@@ -483,7 +484,7 @@ export const SCENES: readonly SceneDef[] = [
     id: "bunny",
     label: "bunny_cloud.wvdb",
     kind: "froxel",
-    files: ["/fixtures/k3/bunny_cloud.wvdb"],
+    files: [fixtureUrl("k3/bunny_cloud.wvdb")],
     fetchHint: `fixtures/k3/bunny_cloud.wvdb: ${HIS_CLONE_HINT}`,
     sourceKinds: ["dense", "sparse"],
     async load(ctx, kind, lod) {
@@ -507,7 +508,7 @@ export const SCENES: readonly SceneDef[] = [
     id: "teapot",
     label: "utahteapot.vdb (level set)",
     kind: "levelset",
-    files: ["/fixtures/vdb-samples/utahteapot.vdb"],
+    files: [fixtureUrl("vdb-samples/utahteapot.vdb")],
     fetchHint: VDB_SAMPLES_HINT,
     sourceKinds: [],
     load(ctx) {
@@ -519,7 +520,7 @@ export const SCENES: readonly SceneDef[] = [
     id: "points",
     label: "sphere_points.vdb (points)",
     kind: "points",
-    files: ["/fixtures/vdb-samples/sphere_points.vdb"],
+    files: [fixtureUrl("vdb-samples/sphere_points.vdb")],
     fetchHint: `fixtures/vdb-samples/sphere_points.vdb: ${HIS_CLONE_HINT}`,
     sourceKinds: [],
     load(ctx) {

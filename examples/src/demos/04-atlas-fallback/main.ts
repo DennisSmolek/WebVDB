@@ -37,6 +37,8 @@
  * `window.__DEMO04__ = { ready, statsOk, transformOk, error? }` is the e2e
  * read channel.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Fn, texture3D, uniform } from "three/tsl";
@@ -85,9 +87,9 @@ interface Sidecar {
   samples: Sample[];
 }
 
-const ATLAS_FIXTURE = "/fixtures/primitives/sphere_fog_fp8.nvdb";
-const STATS_FIXTURE_NVDB = "/fixtures/primitives/box_fog_float.nvdb";
-const STATS_FIXTURE_SIDECAR = "/fixtures/primitives/box_fog_float.sidecar.json";
+const ATLAS_FIXTURE = fixtureUrl("primitives/sphere_fog_fp8.nvdb");
+const STATS_FIXTURE_NVDB = fixtureUrl("primitives/box_fog_float.nvdb");
+const STATS_FIXTURE_SIDECAR = fixtureUrl("primitives/box_fog_float.sidecar.json");
 const ATLAS_MAX_DIM = 96;
 const ATLAS_FILTER = "trilinear";
 const ATLAS_FORMAT = "uint8";

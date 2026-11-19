@@ -8,6 +8,8 @@
  * `?color=cd|velocity|height|uniform`, `?density=10|50|100`, `?size=<multiplier>`, `?glow=1`, `?view=x,y,z` (camera direction).
  * The waterfall is never fetched until it is picked (or asked for with `?model=waterfall`).
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import { VDBPoints, type VDBTslNode } from "@pmndrs/vdb/three";
@@ -18,7 +20,7 @@ const ui = mountShowcase({
   number: "14",
   title: "Points",
   blurb:
-    "OpenVDB point grids decoded by our own parser, off the main thread: all 9.5 million waterfall particles with their colour and velocity attributes, drawn as one instanced sprite.",
+    "OpenVDB point grids decoded by our own parser, off the main thread and drawn as one instanced sprite.",
   stateKey: "__DEMO14__",
 });
 const state = ui.state;
@@ -32,8 +34,8 @@ interface ModelDef {
   size: number;
 }
 const MODELS: ModelDef[] = [
-  { id: "sphere", label: "sphere_points (9.8 K)", url: "/fixtures/vdb-samples/sphere_points.vdb", mb: 0.14, size: 4 },
-  { id: "waterfall", label: "waterfall (9.5 M, 157 MB)", url: "/fixtures/vdb-samples/waterfall_points.vdb", mb: 157, size: 10 },
+  { id: "sphere", label: "sphere_points (9.8 K)", url: fixtureUrl("vdb-samples/sphere_points.vdb"), mb: 0.14, size: 4 },
+  { id: "waterfall", label: "waterfall (9.5 M, 157 MB)", url: fixtureUrl("vdb-samples/waterfall_points.vdb"), mb: 157, size: 10 },
 ];
 
 type ColorMode = "cd" | "velocity" | "height" | "uniform";
@@ -175,6 +177,16 @@ async function run(): Promise<void> {
     state.info.glow = controls.glow;
   }
 
+  /** The caption describes the model on screen, not a fixed one. */
+  function setBlurb(def: ModelDef, data: DecodedPoints): void {
+    const text =
+      def.id === "waterfall"
+        ? `all ${(data.count / 1e6).toFixed(1)} million waterfall particles with their colour and velocity attributes`
+        : `the ${data.count.toLocaleString("en-US")} points of the OpenVDB sphere_points sample${data.attributes.length ? ` with their ${data.attributes.join(", ")} attributes` : ""}`;
+    const p = ui.card.querySelector("p");
+    if (p) p.textContent = `OpenVDB point grids decoded by our own parser, off the main thread and drawn as one instanced sprite: ${text}.`;
+  }
+
   async function loadModel(id: ModelDef["id"]): Promise<void> {
     const def = available.find((m) => m.id === id)!;
     state.ready = false;
@@ -226,6 +238,7 @@ async function run(): Promise<void> {
     camera.lookAt(orbit.target);
     viewer.motion.rebase();
     ui.status("");
+    setBlurb(def, data);
     state.info.count = data.count;
     state.info.attributes = data.attributes;
     state.loading = false;

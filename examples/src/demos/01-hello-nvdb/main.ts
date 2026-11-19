@@ -16,6 +16,8 @@
  *   4. The outputs are read back and compared with the native sidecar
  *      (|Δ| ≤ 1e-5, active flag exact); `window.__DEMO01__` feeds the e2e gate.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { NvdbFile } from "@pmndrs/vdb/tools";
 import { VDBGridNode, getDevice, vdbReadValue } from "@pmndrs/vdb/three";
@@ -63,8 +65,8 @@ declare global {
 }
 
 const VALUE_EPS = 1e-5;
-const FIXTURE_NVDB = "/fixtures/primitives/sphere_fog_float.nvdb";
-const FIXTURE_SIDECAR = "/fixtures/primitives/sphere_fog_float.sidecar.json";
+const FIXTURE_NVDB = fixtureUrl("primitives/sphere_fog_float.nvdb");
+const FIXTURE_SIDECAR = fixtureUrl("primitives/sphere_fog_float.sidecar.json");
 
 // How the grid reaches the shader, echoed into window.__DEMO01__.binding.
 const BINDING_DESCRIPTION =

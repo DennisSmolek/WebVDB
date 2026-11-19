@@ -49,6 +49,8 @@
  * in-place `replace` reached the shader; `versionChanges` and `nodeRebinds`
  * are 0 when the reserved capacity held every frame.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool } from "@pmndrs/vdb";
@@ -138,12 +140,12 @@ async function probeEmberGen(): Promise<EmberGenManifest | null> {
   // Sequence baking writes an index so the browser does not need directory
   // listing support from the fixture server.
   try {
-    const response = await fetch("/fixtures/embergen/index.json");
+    const response = await fetch(fixtureUrl("embergen/index.json"));
     if (response.ok) {
       const index = (await response.json()) as { manifests?: unknown };
       if (Array.isArray(index.manifests)) {
         for (const manifest of index.manifests) {
-          if (typeof manifest === "string") candidates.push(`/fixtures/embergen/${manifest}`);
+          if (typeof manifest === "string") candidates.push(fixtureUrl(`embergen/${manifest}`));
         }
       }
     }
@@ -152,9 +154,9 @@ async function probeEmberGen(): Promise<EmberGenManifest | null> {
   }
 
   candidates.push(
-    "/fixtures/embergen/manifest.json",
-    "/fixtures/embergen/smoke/manifest.json",
-    "/fixtures/embergen/explosion/manifest.json",
+    fixtureUrl("embergen/manifest.json"),
+    fixtureUrl("embergen/smoke/manifest.json"),
+    fixtureUrl("embergen/explosion/manifest.json"),
   );
 
   for (const candidate of [...new Set(candidates)]) {

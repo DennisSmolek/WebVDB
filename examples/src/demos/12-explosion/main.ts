@@ -12,6 +12,8 @@
  *
  * Frame times are submit-to-done wall times on this page: provisional (D25), not a benchmark.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -46,9 +48,9 @@ declare global {
   }
 }
 
-const EXPLOSION_DIR = "/fixtures/k3/ground_explosion/";
+const EXPLOSION_DIR = fixtureUrl("k3/ground_explosion/");
 const EXPLOSION_FPS = 30;
-const GALLERY = "/fixtures/gallery/";
+const GALLERY = fixtureUrl("gallery/");
 const SKIES = {
   night: { url: `${GALLERY}sky-night-HDR.jpg`, label: "night", envIntensity: 0.25, bgIntensity: 0.14, key: 0x9fb4ff, keyIntensity: 0.6 },
   dusk: { url: `${GALLERY}sky-dusk-HDR.jpg`, label: "dusk", envIntensity: 0.3, bgIntensity: 0.4, key: 0xffb070, keyIntensity: 1.2 },

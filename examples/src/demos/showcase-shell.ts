@@ -14,6 +14,7 @@
  * whole `createViewer` (renderer, camera, orbit, loop). Frame times are submit-to-done wall times of one frame on
  * this page: provisional (D25), not a benchmark.
  */
+import { fixtureUrl, HOME_URL, HOSTED } from "./assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createDeviceRenderer } from "./device-renderer.js";
@@ -26,7 +27,7 @@ export const PANEL = params.get("panel") !== "0";
 /** `?gallery=0`: behave as if the git-ignored `fixtures/gallery/` assets were missing. */
 export const GALLERY_ASSETS = params.get("gallery") !== "0";
 export const DEBUG = params.get("debug") === "1";
-export const GALLERY_DIR = "/fixtures/gallery/";
+export const GALLERY_DIR = fixtureUrl("gallery/");
 
 export type Quality = "low" | "medium" | "high";
 export function qualityParam(fallback: Quality): Quality {
@@ -308,7 +309,7 @@ export function mountShowcase(cfg: { number: string; title: string; blurb: strin
   caption.className = "sc-card";
   caption.dataset.testid = "caption";
   caption.innerHTML =
-    `<h1><span class="num">${cfg.number} ·</span> ${cfg.title}</h1><p>${cfg.blurb}</p><a href="/">&larr; all demos</a><div id="sc-extra"></div>` +
+    `<h1><span class="num">${cfg.number} ·</span> ${cfg.title}</h1><p>${cfg.blurb}</p><a href="${HOME_URL}">&larr; all demos</a> · <a href="${HOME_URL}attribution.html">credits</a><div id="sc-extra"></div>` +
     `<div id="sc-status" data-testid="status" hidden><span></span><div id="sc-bar"><div></div></div></div>` +
     `<div id="sc-stats" data-testid="stats">starting WebGPU…</div><div id="sc-note" data-testid="note"></div><div id="sc-error" data-testid="error"></div>`;
   const strip = document.createElement("div");
@@ -352,6 +353,8 @@ export function mountShowcase(cfg: { number: string; title: string; blurb: strin
       (bar.firstElementChild as HTMLDivElement).style.width = progress == null ? "" : `${Math.round(Math.min(1, Math.max(0, progress)) * 100)}%`;
     },
     note: (t: string) => {
+      // Notes name missing local fixtures (gallery assets, WDAS): not for visitors of the hosted site.
+      if (HOSTED) return;
       noteEl.textContent = t;
     },
     fail: (message: unknown) => {

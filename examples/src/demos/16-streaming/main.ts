@@ -25,6 +25,8 @@
  *
  * Frame times are submit-to-done wall times on this page: provisional (D25), not a benchmark.
  */
+import "../webgpu-gate.js";
+import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool, type VDBGridTypeName } from "@pmndrs/vdb";
@@ -90,10 +92,10 @@ const MODE: Mode = params.get("mode") === "direct" ? "direct" : "stream";
 const STILL_MODE = TEST || params.get("still") === "1";
 const SPEEDS = [256, 1024, 2048, 4096, 10240] as const;
 const speedLabel = (k: number) => (k === 0 ? "unthrottled" : k < 1024 ? `${k} KiB/s` : `${k / 1024} MiB/s`);
-const SKY_URL = "/fixtures/gallery/sky-midday-HDR.jpg";
-const WDAS_BAKED = "/fixtures/wdas/wdas_cloud_quarter.coarse.nvdb";
-const WDAS_FP8 = "/fixtures/wdas/wdas_cloud_quarter_fp8.nvdb";
-const SMOKE_VDB = "/fixtures/vdb-samples/smoke.vdb";
+const SKY_URL = fixtureUrl("gallery/sky-midday-HDR.jpg");
+const WDAS_BAKED = fixtureUrl("wdas/wdas_cloud_quarter.coarse.nvdb");
+const WDAS_FP8 = fixtureUrl("wdas/wdas_cloud_quarter_fp8.nvdb");
+const SMOKE_VDB = fixtureUrl("vdb-samples/smoke.vdb");
 /** Longest side of the volume in scene units. */
 const SIZE = 100;
 
