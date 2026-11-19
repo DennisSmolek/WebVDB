@@ -40,7 +40,8 @@ workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages 
 - [x] Every page builds and renders (19 pages, no console errors or broken links, `llms-full.txt` emitted; checked 2026-11-20). Check locally with `npx @pmndrs/docs@4 build docs/site out --format website`
       and click through the nav; fix any component pmndrs/docs doesn't have. **[agent]**
 - [ ] Icon and logo for the docs header (`icon`, `logo` inputs). **[owner]** picks them.
-- [ ] Repo Settings → Pages → Source: **GitHub Actions**. **[owner]**
+- [ ] Repo Settings → Pages → Source: **GitHub Actions**. **[owner]** Then turn on the `push: main` trigger in
+      `pages.yml`; it runs only by hand until then, so pushes to `main` don't fail.
 - [ ] Docs link to the live examples (an `<iframe>` or link per relevant page) and the examples link back.
       **[agent]**
 - [ ] After the first deploy: a PR to `pmndrs/docs` adding `@pmndrs/vdb` to `src/libs.ts` so it lists on

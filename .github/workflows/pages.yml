@@ -7,10 +7,11 @@ name: Pages
 # same artifact under out/examples/.
 #
 # OWNER: Settings -> Pages -> Source: GitHub Actions (the deploy job fails until it is set).
+# Manual only until then, so pushes to main don't fail. After setting the source, add:
+#   push:
+#     branches: [main]
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
