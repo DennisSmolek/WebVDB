@@ -29,7 +29,8 @@ import { VDBGridPool } from "@pmndrs/vdb";
 import { NvdbFile, parseVdb, vdbBakeCoarseFirst, type NvdbGridMetadata } from "@pmndrs/vdb/tools";
 import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, getDevice, vdbSparseSource, vdbStreamCoarseFirst, type VDBCoarseFirstEvent, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
-import { GalleryShell, KiB, MiB, PRESENTATION as SHELL_PRESENTATION, Presenter, QUALITY, autoOrbit, initialQuality, loadHdrSky, params, probe, proceduralSky, type Quality, type Snapshot } from "../12-explosion/shell.js";
+import { KiB, MiB, PRESENTATION as SHELL_PRESENTATION, Presenter, QUALITY, autoOrbit, initialQuality, mountShowcase, params, probe, type Quality, type Snapshot } from "../showcase-shell.js";
+import { loadHdrSky, proceduralSky } from "../gallery-sky.js";
 
 type AssetId = "wdas" | "smoke";
 type Mode = "stream" | "direct";
@@ -92,7 +93,7 @@ const SMOKE_VDB = "/fixtures/vdb-samples/smoke.vdb";
 /** Longest side of the volume in scene units. */
 const SIZE = 100;
 
-const shell = new GalleryShell({
+const shell = mountShowcase({ strip: "row",
   number: "16",
   title: "Streaming",
   blurb:
@@ -257,12 +258,12 @@ async function run(): Promise<void> {
           return { response, total: Number(response.headers.get("content-length") ?? 0), note: "wdas_cloud_quarter.coarse.nvdb (baked at dev time)" };
         }
         const bytes = await bakeOnce("wdas", async () => {
-          shell.status.textContent = "baking the WDAS cloud coarse-first in the page (a few seconds; bake it once with scripts/bake-coarse-first.mjs)…";
+          shell.status("baking the WDAS cloud coarse-first in the page (a few seconds; bake it once with scripts/bake-coarse-first.mjs)…");
           const image = NvdbFile.fromArrayBuffer(await (await fetch(WDAS_FP8)).arrayBuffer()).gridImage(0);
           await sleep(30); // paint the status before the bake blocks
           return vdbBakeCoarseFirst(image, { previewResolution: 48 });
         });
-        shell.status.textContent = "";
+        shell.status("");
         return { response: await blobResponse(bytes), total: bytes.length, note: "wdas_cloud_quarter_fp8.nvdb, baked in the page" };
       },
     };
@@ -272,19 +273,19 @@ async function run(): Promise<void> {
       label: "smoke.vdb",
       async open() {
         const bytes = await bakeOnce("smoke", async () => {
-          shell.status.textContent = "baking smoke.vdb coarse-first in the page…";
+          shell.status("baking smoke.vdb coarse-first in the page…");
           const vdb = parseVdb(await (await fetch(SMOKE_VDB)).arrayBuffer());
           await sleep(30);
           return vdbBakeCoarseFirst(vdb, { previewResolution: 48 });
         });
-        shell.status.textContent = "";
+        shell.status("");
         return { response: await blobResponse(bytes), total: bytes.length, note: "smoke.vdb, baked in the page" };
       },
     };
   } else state.missing.push("smoke.vdb: pnpm fixtures:vdb-samples");
   state.available = Object.keys(ASSETS) as AssetId[];
   if (!skyOk) state.missing.push("sky-midday-HDR.jpg (fixtures/gallery/): procedural sky");
-  if (state.missing.length) shell.note.textContent = `Not found:\n${state.missing.map((m) => `• ${m}`).join("\n")}`;
+  if (state.missing.length) shell.note(`Not found:\n${state.missing.map((m) => `• ${m}`).join("\n")}`);
   if (state.available.length === 0) throw new Error("No streaming asset is present: pnpm fixtures:vdb-samples (smoke.vdb) or pnpm fixtures:wdas.");
 
   const asked = params.get("asset") as AssetId | null;
@@ -308,11 +309,9 @@ async function run(): Promise<void> {
     if (info.reason !== "destroyed") shell.fail(`WebGPU device lost: ${info.message}`);
   });
   state.adapter = created.adapterName || "unreported adapter";
-  if (PRESENTATION === "direct") {
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.9;
-  }
-  const presenter = new Presenter(renderer, device, directCanvas, shell.app);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.9;
+  const presenter = new Presenter(shell.app, renderer, directCanvas, device);
   const frameRenderer = new VDBFrameRenderer();
 
   const scene = new THREE.Scene();
@@ -346,7 +345,7 @@ async function run(): Promise<void> {
   };
   home();
   if (!STILL_MODE) autoOrbit(orbit, 0.4);
-  const resize = () => presenter.resize(camera, QUALITY[controls.quality].pixelRatio);
+  const resize = () => presenter.resize(QUALITY[controls.quality].pixelRatio, camera);
   resize();
   window.addEventListener("resize", resize);
 
@@ -598,10 +597,11 @@ async function run(): Promise<void> {
     if (now - lastStats > 400) {
       lastStats = now;
       const info = pool && shown ? pool.info(shown.id) : null;
-      shell.stats.textContent =
+      shell.stats(
         `${state.adapter} · ${presenter.width}×${presenter.height} px · ${frameMs.toFixed(1)} ms/frame (provisional, D25)\n` +
         (info ? `pool grid ${info.type}, ${MiB(info.imageBytes)} (capacity ${MiB(info.capacity)}) · ` : "") +
-        `${ASSETS[controls.asset]!.label}`;
+        `${ASSETS[controls.asset]!.label}`,
+      );
     }
   };
   requestAnimationFrame(loop);

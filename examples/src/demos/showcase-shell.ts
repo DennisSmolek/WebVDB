@@ -1,19 +1,46 @@
 /**
- * The page shell of gallery demos 13 and 14 (shared design spec of demos 11–16): a full-bleed canvas, a caption card
- * top-left (number · title, one sentence, "← all demos", a dim stats line, a status line with a progress bar, a
- * note for fallbacks), a small control strip bottom-right, gentle auto camera motion that stops on interaction, and
- * the e2e plumbing (readback presentation, a frame summary, a coverage probe).
+ * The one page shell of gallery demos 11-16 (the shared design spec): a full-bleed canvas, a caption card top-left
+ * (number · title, one sentence, "← all demos", a slot for demo widgets, a status line with a progress bar, a dim
+ * stats line, a note for fallbacks, errors), a small control strip bottom-right (selects, ranges, checkboxes,
+ * buttons), a flash and toast for state changes, gentle auto camera motion that stops on interaction, and the e2e
+ * plumbing: the readback presentation (an offscreen HalfFloat target read back to a 2D canvas and tone mapped on
+ * the CPU, as three's own output transform is skipped there), a frame summary, a coverage probe.
  *
- * Query: `?presentation=readback` (an offscreen HalfFloat target read back to a 2D canvas and tone mapped on the CPU,
- * for headless SwiftShader e2e, as demo 10), `?still=1` (no camera motion), `?panel=0` (no UI), `?gallery=0` (don't
- * load the git-ignored `fixtures/gallery/` assets: the procedural fallbacks).
+ * Query (every gallery page): `?presentation=readback` (headless SwiftShader e2e, as demo 10), `?still=1` (no
+ * camera motion), `?panel=0` (no caption or controls), `?gallery=0` (don't load the git-ignored `fixtures/gallery/`
+ * assets: the procedural fallbacks), `?debug=1` (the demo may expose its objects on `window`).
  *
- * Frame times are submit-to-done wall times of one frame on this page: provisional (D25), not a benchmark.
+ * Demos 11, 12, 15 and 16 build their own renderer and use `mountShowcase` + `Presenter`; demos 13 and 14 take the
+ * whole `createViewer` (renderer, camera, orbit, loop). Frame times are submit-to-done wall times of one frame on
+ * this page: provisional (D25), not a benchmark.
  */
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createDeviceRenderer } from "./device-renderer.js";
-import { Panel } from "./10-frame-renderer/panel.js";
+
+export const params = new URLSearchParams(location.search);
+export type Presentation = "direct" | "readback";
+export const PRESENTATION: Presentation = params.get("presentation") === "readback" ? "readback" : "direct";
+export const STILL = params.get("still") === "1";
+export const PANEL = params.get("panel") !== "0";
+/** `?gallery=0`: behave as if the git-ignored `fixtures/gallery/` assets were missing. */
+export const GALLERY_ASSETS = params.get("gallery") !== "0";
+export const DEBUG = params.get("debug") === "1";
+export const GALLERY_DIR = "/fixtures/gallery/";
+
+export type Quality = "low" | "medium" | "high";
+export function qualityParam(fallback: Quality): Quality {
+  const q = params.get("quality");
+  return q === "low" || q === "medium" || q === "high" ? q : fallback;
+}
+/** The froxel quality presets of demos 12 and 16 (demo 10's table; `low` is for the headless e2e). */
+export const QUALITY: Record<Quality, { width: number; height: number; depth: number; subSteps: number; shadowSteps: number; shadowResolution: number; emission: number; pixelRatio: number; label: string }> = {
+  low: { width: 128, height: 128, depth: 16, subSteps: 8, shadowSteps: 8, shadowResolution: 32, emission: 8, pixelRatio: 1, label: "low" },
+  medium: { width: 256, height: 256, depth: 24, subSteps: 16, shadowSteps: 16, shadowResolution: 64, emission: 16, pixelRatio: 1, label: "medium" },
+  high: { width: 512, height: 512, depth: 24, subSteps: 32, shadowSteps: 32, shadowResolution: 64, emission: 32, pixelRatio: Math.min(2, window.devicePixelRatio || 1), label: "high" },
+};
+/** `?quality=`, else medium (low in readback, for the headless e2e). */
+export const initialQuality = (): Quality => qualityParam(PRESENTATION === "readback" ? "low" : "medium");
 
 export interface ShowcaseState {
   ready: boolean;
@@ -22,7 +49,7 @@ export interface ShowcaseState {
   frames: number;
   frameMs?: number;
   adapter?: string;
-  presentation: "direct" | "readback";
+  presentation: Presentation;
   /** Whether the page may load `fixtures/gallery/` assets (`?gallery=0` turns them off). */
   galleryAssets: boolean;
   uncaptured: string[];
@@ -30,30 +57,33 @@ export interface ShowcaseState {
   info: Record<string, unknown>;
 }
 
-export interface ShowcaseSnapshot {
+/** A summary of the last read-back frame (readback presentation), for the e2e. */
+export interface Snapshot {
   width: number;
   height: number;
   mean: [number, number, number];
   /** 32 × 18 grey thumbnail (0–255), row-major, top row first. */
   thumb: number[];
+  /** 96 × 54 grey thumbnail (0–255): finer detail, for changes a 32 × 18 average hides (a preview vs its full grid). */
+  fine: number[];
+  /** max − min of the thumbnail: a flat frame (nothing drawn) has none. */
+  spread: number;
+  /** Pixels farther than 6 (sum of |d|) from `capture(background)` (sRGB bytes); 0 without one. */
+  nonBackground: number;
 }
+export type ShowcaseSnapshot = Snapshot;
+export type FrameSnapshot = Snapshot;
 
 export interface ShowcaseApi {
-  capture(): ShowcaseSnapshot | null;
+  capture(): Snapshot | null;
   /** Readback only: renders once without the demo's content and counts the pixels that change (sum |d| > 12). */
   coverage(): Promise<number>;
 }
 
-export const params = new URLSearchParams(location.search);
-export const PRESENTATION: "direct" | "readback" = params.get("presentation") === "readback" ? "readback" : "direct";
-export const STILL = params.get("still") === "1";
-export const PANEL = params.get("panel") !== "0";
-export const GALLERY_ASSETS = params.get("gallery") !== "0";
-
 const STYLE = /* css */ `
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f14; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f14; color: #e8ecf6; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
 #app { position: fixed; inset: 0; }
 #app canvas { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -61,6 +91,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
   position: fixed; margin: 16px; padding: 12px 14px; color: #e8ecf6; font-size: 13px; line-height: 1.4;
   background: rgba(14, 17, 26, 0.66); border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 10px;
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
 }
 #caption { top: 0; left: 0; width: 360px; max-width: calc(100vw - 32px); }
 #caption h1 { margin: 0 0 4px; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
@@ -85,30 +116,191 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
 #controls .ctl label { opacity: 0.72; }
 #controls .ctl output { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; font-size: 11.5px; }
 #controls .ctl.disabled { opacity: 0.4; }
-#controls .ctl[hidden] { display: none; }
-#controls select { width: 100%; font: inherit; font-size: 12.5px; color: #e8ecf6; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; padding: 3px 6px; }
+#controls select, #controls button { font: inherit; font-size: 12.5px; color: #e8ecf6; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; padding: 3px 6px; }
+#controls select { width: 100%; }
+#controls button { cursor: pointer; padding: 2px 8px; }
+#controls button:hover, #controls select:hover { background: rgba(255, 255, 255, 0.14); }
 #controls select option { background: #1a1e2a; }
 #controls input[type="range"] { width: 100%; accent-color: #a9bcff; }
-#controls input[type="checkbox"] { accent-color: #a9bcff; }
-@media (max-width: 640px) { #caption { width: auto; right: 0; } #controls { width: auto; left: 0; } }
+#controls input[type="checkbox"] { accent-color: #a9bcff; justify-self: start; }
+/* strip "row" (demos 12 and 16): a horizontal strip of many small controls */
+#controls.row { width: auto; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; justify-content: flex-end; padding: 8px 10px; }
+#controls.row .ctl, #controls.row .ctl.wide { display: flex; gap: 6px; margin: 0; white-space: nowrap; }
+#controls.row .ctl input[type="range"] { width: 120px; }
+#controls.row .ctl select { width: auto; }
+#controls.row .ctl output { min-width: 3.2em; }
+#controls.row .ctl.check input { order: -1; }
+#controls .ctl[hidden] { display: none; }
+.sc-card.sc-flash-preview { animation: sc-flash-preview 1.6s ease-out; }
+.sc-card.sc-flash-full { animation: sc-flash-full 1.8s ease-out; }
+@keyframes sc-flash-preview { 0% { box-shadow: 0 0 0 2px #ffd479, 0 0 28px rgba(255, 212, 121, 0.55); border-color: #ffd479; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes sc-flash-full { 0% { box-shadow: 0 0 0 2px #7be3a1, 0 0 32px rgba(123, 227, 161, 0.6); border-color: #7be3a1; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.sc-toast {
+  position: fixed; left: 50%; top: 18px; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px;
+  background: rgba(10, 13, 22, 0.7); border: 1px solid rgba(255, 255, 255, 0.14); font-size: 13.5px; font-weight: 600;
+  letter-spacing: 0.02em; opacity: 0; pointer-events: none; transition: opacity 0.5s ease;
+}
+.sc-toast.show { opacity: 1; transition: opacity 0.15s ease; }
+@media (max-width: 640px) { #caption { width: auto; right: 0; } #controls:not(.row) { width: auto; left: 0; } }
 `;
+
+export interface SelectOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+/** One control row in the strip; the input's id is `ctl-<key>` (the e2e drives it). `set` never fires the callback. */
+export interface Control<T> {
+  readonly el: HTMLDivElement;
+  readonly input: HTMLInputElement | HTMLSelectElement | HTMLButtonElement;
+  set(value: T): void;
+  show(visible: boolean): void;
+  enable(enabled: boolean): void;
+}
+export type SelectControl<T extends string> = Control<T> & { readonly input: HTMLSelectElement; options(next: readonly SelectOption<T>[]): void };
+
+/** The control strip: labelled `<select>`, range, checkbox and button rows. */
+export class Controls {
+  constructor(private readonly root: HTMLElement) {}
+
+  select<T extends string>(key: string, label: string, options: readonly SelectOption<T>[], value: T, onChange: (v: T) => void): SelectControl<T> {
+    const select = document.createElement("select");
+    const fill = (opts: readonly SelectOption<T>[]): void => {
+      select.replaceChildren(
+        ...opts.map((o) => {
+          const el = document.createElement("option");
+          el.value = o.value;
+          el.textContent = o.label;
+          return el;
+        }),
+      );
+    };
+    fill(options);
+    select.value = value;
+    select.addEventListener("change", () => onChange(select.value as T));
+    return {
+      ...this.row(key, label, select, null, true),
+      input: select,
+      set: (v: T) => {
+        select.value = v;
+      },
+      options: (next) => {
+        const current = select.value;
+        fill(next);
+        select.value = next.some((o) => o.value === current) ? current : (next[0]?.value ?? "");
+      },
+    };
+  }
+
+  range(key: string, label: string, min: number, max: number, step: number, value: number, onChange: (v: number) => void, format?: (v: number) => string): Control<number> {
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(value);
+    const out = document.createElement("output");
+    const fmt = format ?? ((v: number) => v.toFixed(step < 1 ? 2 : 0));
+    out.textContent = fmt(value);
+    input.addEventListener("input", () => {
+      out.textContent = fmt(Number(input.value));
+      onChange(Number(input.value));
+    });
+    return {
+      ...this.row(key, label, input, out, false),
+      set: (v: number) => {
+        input.value = String(v);
+        out.textContent = fmt(v);
+      },
+    };
+  }
+
+  checkbox(key: string, label: string, value: boolean, onChange: (v: boolean) => void): Control<boolean> {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = value;
+    input.addEventListener("change", () => onChange(input.checked));
+    const row = this.row(key, label, input, null, true);
+    row.el.classList.add("check");
+    return {
+      ...row,
+      set: (v: boolean) => {
+        input.checked = v;
+      },
+    };
+  }
+
+  /** A button (no label); `set` changes its text. */
+  button(key: string, label: string, onClick: () => void): Control<string> {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", onClick);
+    return { ...this.row(key, null, button, null, true), set: (v: string) => void (button.textContent = v) };
+  }
+
+  private row(key: string, label: string | null, input: HTMLInputElement | HTMLSelectElement | HTMLButtonElement, out: HTMLOutputElement | null, wide: boolean): Omit<Control<never>, "set"> {
+    const el = document.createElement("div");
+    el.className = wide ? "ctl wide" : "ctl";
+    input.id = `ctl-${key}`;
+    if (label) {
+      const lab = document.createElement("label");
+      lab.htmlFor = input.id;
+      lab.textContent = label;
+      el.append(lab);
+    }
+    el.append(input);
+    if (out) el.append(out);
+    this.root.append(el);
+    return {
+      el,
+      input,
+      show: (visible: boolean) => {
+        el.hidden = !visible;
+      },
+      enable: (enabled: boolean) => {
+        input.disabled = !enabled;
+        el.classList.toggle("disabled", !enabled);
+      },
+    };
+  }
+}
+
+export const errorText = (err: unknown): string => (err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err));
 
 export interface ShowcaseUi {
   readonly app: HTMLDivElement;
-  readonly controls: Panel;
+  /** The caption card and the control strip. */
+  readonly card: HTMLDivElement;
+  readonly strip: HTMLDivElement;
+  readonly controls: Controls;
+  /** A slot in the caption between the back link and the status line, for demo widgets (demo 16's byte counter and timeline). */
+  readonly extra: HTMLDivElement;
+  /** The e2e state object (at `window[stateKey]` when the demo asked for one; the gallery demos keep their own). */
   readonly state: ShowcaseState;
+  /** Set by `fail()`; render loops stop drawing. */
+  readonly error: string | undefined;
   stats(text: string): void;
-  /** A status line; `progress` 0–1 fills the bar, `null` makes it indeterminate, `undefined` hides it. */
+  /** A status line; `progress` 0–1 fills the bar, `null` makes it indeterminate, `undefined` hides the bar; `""` hides the line. */
   status(text: string, progress?: number | null): void;
   note(text: string): void;
-  fail(message: string): void;
+  /** Shows the error in the card (even with `?panel=0`), stops the loops and calls the `onFail` handler. */
+  fail(message: unknown): void;
+  onFail(handler: (message: string) => void): void;
+  /** Flashes the caption card (`'preview'` amber, `'full'` green) and shows a short toast at the top centre. */
+  flash(kind: "preview" | "full", toast: string): void;
+  select<T extends string>(key: string, label: string, options: readonly SelectOption<T>[], value: T, onChange: (v: T) => void): SelectControl<T>;
+  range(key: string, label: string, min: number, max: number, step: number, value: number, onChange: (v: number) => void, format?: (v: number) => string): Control<number>;
+  checkbox(key: string, label: string, value: boolean, onChange: (v: boolean) => void): Control<boolean>;
+  button(key: string, label: string, onClick: () => void): Control<string>;
 }
 
-/** Builds the caption card and the control strip, and the e2e state object at `window[stateKey]`. */
-export function mountShowcase(cfg: { number: string; title: string; blurb: string; stateKey: string }): ShowcaseUi {
+/** Builds the caption card and the control strip (and the e2e state at `window[stateKey]`), and hooks page errors. */
+export function mountShowcase(cfg: { number: string; title: string; blurb: string; stateKey?: string; strip?: "column" | "row" }): ShowcaseUi {
   const style = document.createElement("style");
   style.textContent = STYLE;
   document.head.append(style);
+  document.title = `${cfg.number} · ${cfg.title.replace(/<[^>]*>/g, "")} · @pmndrs/vdb`;
   const app = document.createElement("div");
   app.id = "app";
   const caption = document.createElement("div");
@@ -116,12 +308,12 @@ export function mountShowcase(cfg: { number: string; title: string; blurb: strin
   caption.className = "sc-card";
   caption.dataset.testid = "caption";
   caption.innerHTML =
-    `<h1><span class="num">${cfg.number} ·</span> ${cfg.title}</h1><p>${cfg.blurb}</p><a href="/">&larr; all demos</a>` +
+    `<h1><span class="num">${cfg.number} ·</span> ${cfg.title}</h1><p>${cfg.blurb}</p><a href="/">&larr; all demos</a><div id="sc-extra"></div>` +
     `<div id="sc-status" data-testid="status" hidden><span></span><div id="sc-bar"><div></div></div></div>` +
     `<div id="sc-stats" data-testid="stats">starting WebGPU…</div><div id="sc-note" data-testid="note"></div><div id="sc-error" data-testid="error"></div>`;
   const strip = document.createElement("div");
   strip.id = "controls";
-  strip.className = "sc-card";
+  strip.className = cfg.strip === "row" ? "sc-card row" : "sc-card";
   strip.dataset.testid = "controls";
   document.body.append(app, caption, strip);
   if (!PANEL) {
@@ -129,7 +321,7 @@ export function mountShowcase(cfg: { number: string; title: string; blurb: strin
     strip.style.display = "none";
   }
   const state: ShowcaseState = { ready: false, loading: true, frames: 0, presentation: PRESENTATION, galleryAssets: GALLERY_ASSETS, uncaptured: [], info: {} };
-  (window as unknown as Record<string, unknown>)[cfg.stateKey] = state;
+  if (cfg.stateKey) (window as unknown as Record<string, unknown>)[cfg.stateKey] = state;
 
   const statsEl = caption.querySelector<HTMLDivElement>("#sc-stats")!;
   const statusEl = caption.querySelector<HTMLDivElement>("#sc-status")!;
@@ -137,46 +329,88 @@ export function mountShowcase(cfg: { number: string; title: string; blurb: strin
   const bar = caption.querySelector<HTMLDivElement>("#sc-bar")!;
   const noteEl = caption.querySelector<HTMLDivElement>("#sc-note")!;
   const errEl = caption.querySelector<HTMLDivElement>("#sc-error")!;
-  const ui: ShowcaseUi = {
+  const extra = caption.querySelector<HTMLDivElement>("#sc-extra")!;
+  const controls = new Controls(strip);
+  let failed: ((message: string) => void) | null = null;
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  const ui = {
     app,
-    controls: new Panel(strip),
+    card: caption,
+    strip,
+    controls,
+    extra,
     state,
-    stats: (t) => {
+    error: undefined as string | undefined,
+    stats: (t: string) => {
       statsEl.textContent = t;
     },
-    status: (t, progress) => {
+    status: (t: string, progress?: number | null) => {
       statusEl.hidden = t === "";
       statusText.textContent = t;
       bar.hidden = progress === undefined;
       bar.classList.toggle("indeterminate", progress === null);
       (bar.firstElementChild as HTMLDivElement).style.width = progress == null ? "" : `${Math.round(Math.min(1, Math.max(0, progress)) * 100)}%`;
     },
-    note: (t) => {
+    note: (t: string) => {
       noteEl.textContent = t;
     },
-    fail: (message) => {
-      errEl.textContent = message;
-      state.error = message;
+    fail: (message: unknown) => {
+      const text = errorText(message);
+      errEl.textContent = text;
+      ui.error = text;
+      state.error = text;
       state.loading = false;
-      if (!PANEL) caption.style.display = "";
+      caption.style.display = "";
+      ui.status("");
+      failed?.(text);
     },
-  };
-  const errorText = (err: unknown): string => (err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err));
-  window.addEventListener("error", (e) => ui.fail(errorText(e.error ?? e.message)));
-  window.addEventListener("unhandledrejection", (e) => ui.fail(errorText(e.reason)));
+    onFail: (handler: (message: string) => void) => {
+      failed = handler;
+    },
+    flash: (kind: "preview" | "full", toast: string) => {
+      caption.classList.remove("sc-flash-preview", "sc-flash-full");
+      void caption.offsetWidth; // restart the animation
+      caption.classList.add(`sc-flash-${kind}`);
+      if (!PANEL) return;
+      let el = document.querySelector<HTMLDivElement>(".sc-toast");
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "sc-toast";
+        el.dataset.testid = "toast";
+        document.body.append(el);
+      }
+      el.textContent = toast;
+      el.style.color = kind === "full" ? "#7be3a1" : "#ffd479";
+      el.classList.add("show");
+      clearTimeout(toastTimer);
+      const shown = el;
+      toastTimer = setTimeout(() => shown.classList.remove("show"), 2200);
+    },
+    select: controls.select.bind(controls),
+    range: controls.range.bind(controls),
+    checkbox: controls.checkbox.bind(controls),
+    button: controls.button.bind(controls),
+  } satisfies ShowcaseUi;
+  window.addEventListener("error", (e) => ui.fail(e.error ?? e.message));
+  window.addEventListener("unhandledrejection", (e) => ui.fail(e.reason));
   return ui;
 }
 
-export const errorText = (err: unknown): string => (err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err));
-
-/** True when a HEAD request for the URL succeeds. */
+/** True when a HEAD request for the URL succeeds (`?gallery=0` treats every `fixtures/gallery/` URL as missing). */
 export async function probe(url: string): Promise<boolean> {
+  if (!GALLERY_ASSETS && url.includes(GALLERY_DIR)) return false;
   try {
     const r = await fetch(url, { method: "HEAD" });
     return r.ok;
   } catch {
     return false;
   }
+}
+
+export async function fetchBytes(url: string): Promise<ArrayBuffer> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+  return r.arrayBuffer();
 }
 
 /** Fetches a URL with byte progress (`onProgress(received, total)`; total 0 when the server sends no length). */
@@ -205,6 +439,10 @@ export async function fetchWithProgress(url: string, onProgress: (received: numb
 
 export const MiB = (bytes: number): string =>
   bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : `${(bytes / 1048576).toFixed(bytes < 10 * 1048576 ? 2 : 1)} MiB`;
+export const KiB = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KiB`;
+/** MiB above 1 MiB, KiB below (demos 11 and 15). */
+export const formatBytes = (bytes: number): string =>
+  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(bytes < 10 * 1048576 ? 2 : 1)} MiB` : `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
 
 // --- Tone mapping of the read-back frame (three's ACESFilmic, then sRGB), so readback matches direct ------------
 
@@ -229,12 +467,191 @@ const srgbByte = (v: number): number => {
   return Math.round(c * 255);
 };
 
+/**
+ * The page's canvas and viewport in either presentation. `direct`: the renderer's own canvas. `readback`: three
+ * renders into an offscreen linear HalfFloat target with depth (the froxel integrate pass reads the scene depth;
+ * `present()` makes one, `target()` more), `readTarget()` turns one into sRGB bytes (rows top first, padding
+ * dropped; ACES tone mapped with the renderer's exposure when `renderer.toneMapping` is ACESFilmic, since three
+ * skips its output transform when rendering to a target) and `show()` draws bytes on the 2D canvas.
+ */
+export class Presenter {
+  readonly canvas: HTMLCanvasElement;
+  private readonly ctx2d: CanvasRenderingContext2D | null;
+  width = 1;
+  height = 1;
+  pixelRatio = 1;
+  private last: Uint8ClampedArray<ArrayBuffer> | null = null;
+  private readonly targets: THREE.RenderTarget[] = [];
+  private main: THREE.RenderTarget | null = null;
+
+  constructor(
+    readonly app: HTMLElement,
+    readonly renderer: THREE.WebGPURenderer,
+    directCanvas?: HTMLCanvasElement,
+    /** Needed by `present()` in the direct presentation (waits for the submit). */
+    private readonly device?: GPUDevice,
+  ) {
+    this.canvas = directCanvas ?? document.createElement("canvas");
+    this.canvas.id = "view";
+    app.append(this.canvas);
+    this.ctx2d = PRESENTATION === "readback" ? this.canvas.getContext("2d") : null;
+  }
+
+  /** A HalfFloat target with depth, sized with the viewport. */
+  target(): THREE.RenderTarget {
+    const rt = new THREE.RenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+    rt.setSize(this.pixelWidth, this.pixelHeight);
+    this.targets.push(rt);
+    return rt;
+  }
+
+  get pixelWidth(): number {
+    return PRESENTATION === "direct" ? Math.round(this.width * this.pixelRatio) : this.width;
+  }
+
+  get pixelHeight(): number {
+    return PRESENTATION === "direct" ? Math.round(this.height * this.pixelRatio) : this.height;
+  }
+
+  /** Fits the viewport to the page and updates the camera aspect. */
+  resize(pixelRatio: number, camera: THREE.PerspectiveCamera): void {
+    this.width = Math.max(1, this.app.clientWidth || window.innerWidth);
+    this.height = Math.max(1, this.app.clientHeight || window.innerHeight);
+    this.pixelRatio = pixelRatio;
+    if (PRESENTATION === "direct") {
+      this.renderer.setPixelRatio(pixelRatio);
+      this.renderer.setSize(this.width, this.height, false);
+    } else {
+      this.canvas.width = this.width;
+      this.canvas.height = this.height;
+    }
+    for (const rt of this.targets) rt.setSize(this.pixelWidth, this.pixelHeight);
+    camera.aspect = this.width / this.height;
+    camera.updateProjectionMatrix();
+  }
+
+  /** Reads a HalfFloat target back as sRGB RGBA bytes. */
+  async readTarget(rt: THREE.RenderTarget): Promise<Uint8ClampedArray<ArrayBuffer>> {
+    const w = rt.width;
+    const h = rt.height;
+    const raw = (await this.renderer.readRenderTargetPixelsAsync(rt, 0, 0, w, h)) as unknown as Uint16Array;
+    const tight = w * 4;
+    const stride = h > 1 ? (raw.length - tight) / (h - 1) : tight;
+    if (!Number.isInteger(stride) || stride < tight) throw new Error(`readback layout: ${raw.length} halves for ${w}x${h}`);
+    const mapped = this.renderer.toneMapping === THREE.ACESFilmicToneMapping;
+    const exposure = this.renderer.toneMappingExposure;
+    const tone = [0, 0, 0];
+    const out = new Uint8ClampedArray(w * h * 4);
+    const half = THREE.DataUtils.fromHalfFloat;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const s = y * stride + x * 4;
+        const d = (y * w + x) * 4;
+        tone[0] = half(raw[s]!);
+        tone[1] = half(raw[s + 1]!);
+        tone[2] = half(raw[s + 2]!);
+        if (mapped) aces(tone[0], tone[1], tone[2], exposure, tone);
+        out[d] = srgbByte(tone[0]!);
+        out[d + 1] = srgbByte(tone[1]!);
+        out[d + 2] = srgbByte(tone[2]!);
+        out[d + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  /** Draws read-back bytes (the viewport's size) on the 2D canvas and keeps them for `capture()`. */
+  show(bytes: Uint8ClampedArray<ArrayBuffer>): void {
+    this.ctx2d!.putImageData(new ImageData(bytes, this.width, this.height), 0, 0);
+    this.last = bytes;
+  }
+
+  /**
+   * Renders the scene: direct, into the canvas (resolves when the GPU is done); readback, into the page's own
+   * target, read back, shown (unless `show: false`) and returned.
+   */
+  async present(scene: THREE.Scene, camera: THREE.Camera, options: { show?: boolean } = {}): Promise<Uint8ClampedArray<ArrayBuffer> | null> {
+    const { renderer } = this;
+    if (PRESENTATION === "direct") {
+      renderer.setRenderTarget(null);
+      renderer.render(scene, camera);
+      await this.device?.queue.onSubmittedWorkDone();
+      return null;
+    }
+    this.main ??= this.target();
+    renderer.setRenderTarget(this.main);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    const bytes = await this.readTarget(this.main);
+    if (options.show !== false) this.show(bytes);
+    return bytes;
+  }
+
+  /** A summary of the last shown read-back frame, or null. `background` (sRGB bytes) counts the pixels that differ. */
+  capture(background?: readonly [number, number, number]): Snapshot | null {
+    const f = this.last;
+    if (!f) return null;
+    const w = this.width;
+    const h = this.height;
+    const TW = 32;
+    const TH = 18;
+    const FW = 96;
+    const FH = 54;
+    const thumb = new Array<number>(TW * TH).fill(0);
+    const counts = new Array<number>(TW * TH).fill(0);
+    const fine = new Array<number>(FW * FH).fill(0);
+    const fineCounts = new Array<number>(FW * FH).fill(0);
+    const mean: [number, number, number] = [0, 0, 0];
+    let nonBackground = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const r = f[i]!;
+        const g = f[i + 1]!;
+        const b = f[i + 2]!;
+        if (background && Math.abs(r - background[0]) + Math.abs(g - background[1]) + Math.abs(b - background[2]) > 6) nonBackground++;
+        mean[0] += r;
+        mean[1] += g;
+        mean[2] += b;
+        const grey = (r + g + b) / 3;
+        const t = Math.min(TH - 1, Math.floor((y * TH) / h)) * TW + Math.min(TW - 1, Math.floor((x * TW) / w));
+        thumb[t]! += grey;
+        counts[t]!++;
+        const q = Math.min(FH - 1, Math.floor((y * FH) / h)) * FW + Math.min(FW - 1, Math.floor((x * FW) / w));
+        fine[q]! += grey;
+        fineCounts[q]!++;
+      }
+    }
+    const n = w * h;
+    const t = thumb.map((v, i) => v / Math.max(1, counts[i]!));
+    return {
+      width: w,
+      height: h,
+      mean: mean.map((v) => v / n) as [number, number, number],
+      thumb: t,
+      fine: fine.map((v, i) => v / Math.max(1, fineCounts[i]!)),
+      spread: Math.max(...t) - Math.min(...t),
+      nonBackground,
+    };
+  }
+}
+
+/** Slow auto-orbit that stops for good on the first user interaction (never starts with `?still=1` or in readback). Call `update()` every frame. */
+export function autoOrbit(controls: { autoRotate: boolean; autoRotateSpeed: number; addEventListener(type: "start", cb: () => void): void }, speed = 0.35): void {
+  controls.autoRotate = !STILL && PRESENTATION === "direct";
+  controls.autoRotateSpeed = speed;
+  controls.addEventListener("start", () => {
+    controls.autoRotate = false;
+  });
+}
+
 export interface Viewer {
   renderer: THREE.WebGPURenderer;
   device: GPUDevice;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   orbit: OrbitControls;
+  presenter: Presenter;
   /** The demo's own objects: hidden by the coverage probe. */
   content: THREE.Group;
   /** Auto camera motion (sway or orbit around `orbit.target`); off with `?still=1` and after any interaction. */
@@ -245,8 +662,8 @@ export interface Viewer {
 }
 
 /**
- * The device-first renderer (`device-renderer.ts`), the canvas (direct, or a 2D canvas fed by readback), an
- * `OrbitControls` camera with gentle auto motion, and the loop that keeps `ui.state` current.
+ * The device-first renderer (`device-renderer.ts`), the presenter, an `OrbitControls` camera with gentle auto
+ * motion, and the loop that keeps `ui.state` current (demos 13 and 14).
  */
 export async function createViewer(
   ui: ShowcaseUi,
@@ -264,19 +681,15 @@ export async function createViewer(
     if (info.reason !== "destroyed") ui.fail(`WebGPU device lost: ${info.message}`);
   });
   ui.state.adapter = created.adapterName || "unreported adapter";
-  const exposure = options.exposure ?? 1;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = exposure;
+  renderer.toneMappingExposure = options.exposure ?? 1;
 
-  const display = directCanvas ?? document.createElement("canvas");
-  ui.app.append(display);
-  const ctx2d = PRESENTATION === "readback" ? display.getContext("2d") : null;
-
+  const presenter = new Presenter(ui.app, renderer, directCanvas, device);
   const scene = new THREE.Scene();
   const content = new THREE.Group();
   scene.add(content);
   const camera = new THREE.PerspectiveCamera(options.fov ?? 40, 1, options.near ?? 0.05, options.far ?? 500);
-  const orbit = new OrbitControls(camera, display);
+  const orbit = new OrbitControls(camera, presenter.canvas);
   orbit.enableDamping = PRESENTATION === "direct";
   orbit.dampingFactor = 0.08;
 
@@ -309,83 +722,10 @@ export async function createViewer(
     camera.lookAt(orbit.target);
   };
 
-  const rt = new THREE.RenderTarget(2, 2, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
-  let vw = 0;
-  let vh = 0;
-  let lastFrame: Uint8ClampedArray<ArrayBuffer> | null = null;
   const pixelRatio = options.pixelRatio ?? Math.min(2, window.devicePixelRatio || 1);
-  function setViewport(): void {
-    vw = Math.max(1, ui.app.clientWidth || window.innerWidth);
-    vh = Math.max(1, ui.app.clientHeight || window.innerHeight);
-    if (PRESENTATION === "direct") {
-      renderer.setPixelRatio(pixelRatio);
-      renderer.setSize(vw, vh, false);
-    } else {
-      display.width = vw;
-      display.height = vh;
-      rt.setSize(vw, vh);
-    }
-    camera.aspect = vw / vh;
-    camera.updateProjectionMatrix();
-  }
+  const setViewport = (): void => presenter.resize(pixelRatio, camera);
   setViewport();
   window.addEventListener("resize", setViewport);
-
-  const tone = [0, 0, 0];
-  async function present(): Promise<Uint8ClampedArray<ArrayBuffer> | null> {
-    if (PRESENTATION === "direct") {
-      renderer.setRenderTarget(null);
-      renderer.render(scene, camera);
-      await device.queue.onSubmittedWorkDone();
-      return null;
-    }
-    renderer.setRenderTarget(rt);
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(null);
-    const raw = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, vw, vh)) as unknown as Uint16Array;
-    const tight = vw * 4;
-    const stride = vh > 1 ? (raw.length - tight) / (vh - 1) : tight;
-    if (!Number.isInteger(stride) || stride < tight) throw new Error(`readback layout: ${raw.length} halves for ${vw}x${vh}`);
-    const out = new Uint8ClampedArray(vw * vh * 4);
-    const half = THREE.DataUtils.fromHalfFloat;
-    for (let y = 0; y < vh; y++) {
-      for (let x = 0; x < vw; x++) {
-        const s = y * stride + x * 4;
-        const d = (y * vw + x) * 4;
-        aces(half(raw[s]!), half(raw[s + 1]!), half(raw[s + 2]!), renderer.toneMappingExposure, tone);
-        out[d] = srgbByte(tone[0]!);
-        out[d + 1] = srgbByte(tone[1]!);
-        out[d + 2] = srgbByte(tone[2]!);
-        out[d + 3] = 255;
-      }
-    }
-    return out;
-  }
-
-  function capture(): ShowcaseSnapshot | null {
-    if (!lastFrame) return null;
-    const TW = 32;
-    const TH = 18;
-    const thumb = new Array<number>(TW * TH).fill(0);
-    const counts = new Array<number>(TW * TH).fill(0);
-    const mean: [number, number, number] = [0, 0, 0];
-    for (let y = 0; y < vh; y++) {
-      for (let x = 0; x < vw; x++) {
-        const i = (y * vw + x) * 4;
-        const r = lastFrame[i]!;
-        const g = lastFrame[i + 1]!;
-        const b = lastFrame[i + 2]!;
-        mean[0] += r;
-        mean[1] += g;
-        mean[2] += b;
-        const t = Math.min(TH - 1, Math.floor((y * TH) / vh)) * TW + Math.min(TW - 1, Math.floor((x * TW) / vw));
-        thumb[t]! += (r + g + b) / 3;
-        counts[t]!++;
-      }
-    }
-    const n = vw * vh;
-    return { width: vw, height: vh, mean: mean.map((v) => v / n) as [number, number, number], thumb: thumb.map((v, i) => v / Math.max(1, counts[i]!)) };
-  }
 
   let busy = false;
   async function coverage(): Promise<number> {
@@ -393,9 +733,9 @@ export async function createViewer(
     while (busy) await new Promise((r) => setTimeout(r, 5));
     busy = true;
     try {
-      const withContent = await present();
+      const withContent = await presenter.present(scene, camera, { show: false });
       content.visible = false;
-      const without = await present();
+      const without = await presenter.present(scene, camera, { show: false });
       content.visible = true;
       let n = 0;
       for (let i = 0; i < withContent!.length; i += 4) {
@@ -409,7 +749,7 @@ export async function createViewer(
     }
   }
 
-  const api: ShowcaseApi = { capture, coverage };
+  const api: ShowcaseApi = { capture: () => presenter.capture(), coverage };
   let frameMs = 0;
   let lastStats = 0;
 
@@ -424,27 +764,23 @@ export async function createViewer(
         tick?.(now);
       } catch (err) {
         busy = false;
-        ui.fail(errorText(err));
+        ui.fail(err);
         return;
       }
       const t0 = performance.now();
-      present()
-        .then((frame) => {
-          if (frame) {
-            lastFrame = frame;
-            ctx2d!.putImageData(new ImageData(frame, vw, vh), 0, 0);
-          }
+      presenter
+        .present(scene, camera)
+        .then(() => {
           const ms = performance.now() - t0;
           frameMs = frameMs === 0 ? ms : frameMs * 0.9 + ms * 0.1;
           ui.state.frames++;
           ui.state.frameMs = frameMs;
           if (now - lastStats > 400 || ui.state.frames <= 3) {
             lastStats = now;
-            const px = PRESENTATION === "direct" ? `${Math.round(vw * pixelRatio)}×${Math.round(vh * pixelRatio)}` : `${vw}×${vh}`;
-            ui.stats(`${ui.state.adapter} · ${px} · ${frameMs.toFixed(1)} ms/frame (provisional)` + (statsLine ? `\n${statsLine()}` : ""));
+            ui.stats(`${ui.state.adapter} · ${presenter.pixelWidth}×${presenter.pixelHeight} · ${frameMs.toFixed(1)} ms/frame (provisional)` + (statsLine ? `\n${statsLine()}` : ""));
           }
         })
-        .catch((err: unknown) => ui.fail(errorText(err)))
+        .catch((err: unknown) => ui.fail(err))
         .finally(() => {
           busy = false;
         });
@@ -452,5 +788,5 @@ export async function createViewer(
     requestAnimationFrame(loop);
   }
 
-  return { renderer, device, scene, camera, orbit, content, motion, start, api };
+  return { renderer, device, scene, camera, orbit, presenter, content, motion, start, api };
 }

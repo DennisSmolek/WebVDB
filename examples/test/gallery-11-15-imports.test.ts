@@ -46,7 +46,7 @@ function demoGraph(start: string): { files: string[]; bare: string[] } {
 }
 
 describe.each([
-  ["11-sky-clouds", ["examples/src/demos/11-sky-clouds/sky.ts", "examples/src/demos/gallery-shell.ts"]],
+  ["11-sky-clouds", ["examples/src/demos/11-sky-clouds/sky.ts", "examples/src/demos/showcase-shell.ts"]],
   ["15-full-res-vs-dense", ["examples/src/demos/15-full-res-vs-dense/bake-worker.ts", "examples/src/demos/15-full-res-vs-dense/protocol.ts"]],
 ] as const)("demo %s import graph (public API only)", (dir, expected) => {
   const { files, bare } = demoGraph(path.join(repo, `examples/src/demos/${dir}/main.ts`));
