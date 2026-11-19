@@ -25,6 +25,7 @@ import {
   VDBGridNode,
   VDBLevelSetMaterial,
   VDBPoints,
+  VDBSequence,
   getDevice,
   vdbDenseTextures,
   vdbFrameBlackbodyEmission,
@@ -76,8 +77,6 @@ export interface LoadedScene {
   /** The froxel volume (froxel scenes). */
   readonly volume: VDBFrameVolume | null;
   readonly sourceKind: SourceKind | null;
-  /** Default props of the volume that the medium presets override (base colour). */
-  readonly baseColor: THREE.Color;
   /** Rebuild the source (another kind or LOD) and the volume in place. */
   rebuild?(kind: SourceKind, lod: VDBSparseLod): Promise<void>;
   /** Per frame: sequence playback. */
@@ -86,8 +85,6 @@ export interface LoadedScene {
   sequence?: { count: number; index(): number; seek(i: number): Promise<void>; playing: boolean };
   /** One line for the stats: grid size and where it lives. */
   info(): string;
-  /** A per-frame density multiplier on top of the user's density scale (sequences). */
-  densityFactor(): number;
   dispose(): void;
 }
 
@@ -174,15 +171,12 @@ class FroxelScene implements LoadedScene {
   readonly group = new THREE.Group();
   volume: VDBFrameVolume | null = null;
   sourceKind: SourceKind | null = null;
-  readonly baseColor: THREE.Color;
   private made: MadeSource | null = null;
 
   constructor(
     private readonly ctx: SceneContext,
     private readonly asset: VolumeAsset,
-  ) {
-    this.baseColor = new THREE.Color(asset.props?.baseColor ?? 0xffffff);
-  }
+  ) {}
 
   async rebuild(kind: SourceKind, lod: VDBSparseLod): Promise<void> {
     this.ctx.status(`building the ${kind} source…`);
@@ -196,8 +190,7 @@ class FroxelScene implements LoadedScene {
       normalizeDensity: true,
       ...this.asset.props,
     });
-    const b = made.source.kind === "dense" ? made.source.volume.bbox : made.source.bbox;
-    placeOnGround(volume, b ? boxOf(b) : new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)), this.asset.zUp);
+    placeOnGround(volume, volume.bbox, this.asset.zUp);
     if (old) {
       this.group.remove(old);
       old.dispose();
@@ -212,10 +205,6 @@ class FroxelScene implements LoadedScene {
 
   info(): string {
     return this.made?.info ?? "";
-  }
-
-  densityFactor(): number {
-    return 1;
   }
 
   dispose(): void {
@@ -263,14 +252,8 @@ function wvdbAsset(ctx: SceneContext, dense: WvdbDenseVolume, props?: Partial<VD
       if (kind === "dense") return { source: vdbDenseTextures(dense), info: denseInfo(dense) };
       grid ??= wvdbDenseToNvdb(dense);
       sparse ??= await SparsePool.create(ctx.renderer, grid.image, SPARSE_NODE);
-      const source = vdbSparseSource(sparse.grids, { density: sparse.id }, {
-        lod,
-        images: { density: grid.image },
-        indexBox: grid.textureIndexBox,
-        // the dense mean, so both kinds normalize alike and differ only in the sampler
-        stats: { meanNonZero: dense.meanDensity, max: dense.maxDensity, activeVoxels: dense.activeTexels },
-        ...(dense.bbox ? { bbox: dense.bbox as [[number, number, number], [number, number, number]] } : {}),
-      });
+      // The texture's index box, the dense mean and the .wvdb box: both kinds line up and differ only in the sampler.
+      const source = vdbSparseSource(sparse.grids, { density: sparse.id }, { ...grid.sparseSourceOptions, lod, images: { density: grid.image } });
       return { source, info: sparse.info() };
     },
     dispose() {
@@ -289,23 +272,26 @@ async function froxelScene(ctx: SceneContext, asset: VolumeAsset, kind: SourceKi
 
 const EXPLOSION_DIR = "/fixtures/k3/ground_explosion/";
 const EXPLOSION_FPS = 24;
-/** His frame.js explosion: the emission grid "flames" ÷ emissiveScale 6. */
-const explosionDense = (bytes: ArrayBuffer): WvdbDenseVolume => wvdbDenseVolume(readWvdb(new Uint8Array(bytes)), { emission: "flames", scales: { flames: 6.0 } });
+/**
+ * His frame.js explosion: the emission grid "flames" ÷ emissiveScale 6. Early frames have no flames grid: the
+ * dense source's replace reads their emission as 0.
+ */
+const explosionDense = (bytes: ArrayBuffer): WvdbDenseVolume => {
+  const file = readWvdb(new Uint8Array(bytes));
+  const flames = file.grids.some((g) => g.name === "flames");
+  return wvdbDenseVolume(file, { ...(flames ? { emission: "flames" } : {}), scales: { flames: 6.0 } });
+};
 
 class ExplosionScene implements LoadedScene {
   readonly group = new THREE.Group();
   readonly sourceKind = "dense" as const;
-  readonly baseColor = new THREE.Color("#555555");
   readonly volume: VDBFrameVolume;
   readonly sequence: NonNullable<LoadedScene["sequence"]>;
   private readonly light: VDBFrameEmissionLight;
+  /** Frame playback into the dense source (`VDBSequence` with a `{ source }` target, K5.9). */
+  private readonly player: VDBSequence<WvdbDenseVolume>;
   private readonly bytes = new Map<number, Promise<ArrayBuffer>>();
-  private current: number;
-  private shownMean: number;
-  /** His sequences normalise by one mean for all frames; ours: the first frame shown (constant extinction). */
-  private readonly referenceMean: number;
-  private lastSwap = 0;
-  private swapping = false;
+  private readonly start: number;
 
   private constructor(
     private readonly frames: string[],
@@ -316,31 +302,49 @@ class ExplosionScene implements LoadedScene {
     emissionResolution: number,
     frameRenderer: VDBFrameRenderer,
   ) {
-    this.current = start;
-    this.shownMean = first.meanDensity;
-    this.referenceMean = first.meanDensity;
+    this.start = start;
     // His frame.js explosion: base colour #555555, 0–3000 K, emissive intensity 15, 'planck' blackbody colour.
     this.volume = new VDBFrameVolume(source, {
       frameRenderer,
-      baseColor: this.baseColor,
+      baseColor: "#555555",
       extinction: 100,
       angstromExponent: 0,
       normalizeDensity: true,
+      // One mean for every frame (his sequences divide by the mean of all frames; ours: the first frame shown), so
+      // the extinction scale does not pump from frame to frame.
+      densityMean: first.meanDensity,
       temperatureRange: [0, 3000],
       emissiveIntensity: 15,
       emissionColor: vdbFrameBlackbodyEmission("planck", 1.39),
     });
-    placeOnGround(this.volume, boxOf(first.bbox ?? [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]), true);
+    placeOnGround(this.volume, this.volume.bbox, true);
     this.group.add(this.volume);
     // His emission light: the volume's flames light the scene's meshes (intensity 25, probe grid around the emitters).
     this.light = new VDBFrameEmissionLight({ intensity: 25, resolution: emissionResolution, cascades: 1, range: 3, distance: 512, steps: 24 });
     this.group.add(this.light);
-    const self = this;
+    // A frame without the flames channel reads emission 0 (the dense source's replace, K5.9).
+    this.player = new VDBSequence<WvdbDenseVolume>({
+      urls: frames.map((f) => EXPLOSION_DIR + f),
+      fps: EXPLOSION_FPS,
+      prefetch: 6,
+      loader: async (_url, index) => explosionDense(await this.fetchFrame(index)),
+      onError: (err, index) => console.warn(`demo 10: explosion frame ${index}: ${String(err)}`),
+    });
+    this.player.start({ source });
+    this.player.seek(start);
+    if (paused) this.player.stop();
+    const player = this.player;
     this.sequence = {
       count: frames.length,
-      index: () => self.current,
-      seek: (i: number) => self.show(i),
-      playing: !paused,
+      index: () => (player.stats.frame >= 0 ? player.stats.frame : this.start),
+      seek: async (i: number) => player.seek(i),
+      get playing() {
+        return player.isPlaying;
+      },
+      set playing(v: boolean) {
+        if (v) player.resume();
+        else player.stop();
+      },
     };
   }
 
@@ -366,47 +370,16 @@ class ExplosionScene implements LoadedScene {
     return p;
   }
 
-  /** Decode a frame and swap it into the source (same channels and sizes: textures update in place). */
-  async show(i: number): Promise<void> {
-    const index = ((i % this.frames.length) + this.frames.length) % this.frames.length;
-    const dense = explosionDense(await this.fetchFrame(index));
-    try {
-      this.source.replace(dense);
-    } catch (err) {
-      // A frame without the flames channel (or its mips) cannot replace in place: skip it.
-      console.info(`demo 10: explosion frame ${index} skipped: ${(err as Error).message}`);
-      this.current = index;
-      return;
-    }
-    this.volume.updateSource();
-    this.shownMean = dense.meanDensity;
-    this.current = index;
-  }
-
   tick(now: number): void {
-    if (!this.sequence.playing || this.swapping) return;
-    // prefetch a few frames ahead
-    for (let k = 1; k <= 6; k++) void this.fetchFrame((this.current + k) % this.frames.length).catch(() => undefined);
-    if (now - this.lastSwap < 1000 / EXPLOSION_FPS) return;
-    this.lastSwap = now;
-    this.swapping = true;
-    this.show(this.current + 1)
-      .catch((err: unknown) => console.warn(`demo 10: explosion frame: ${String(err)}`))
-      .finally(() => {
-        this.swapping = false;
-      });
-  }
-
-  densityFactor(): number {
-    // normalizeDensity divides by the shown frame's mean; scale back to one mean for the whole sequence
-    return this.shownMean / this.referenceMean;
+    this.player.update(now);
   }
 
   info(): string {
-    return `${denseInfo(this.source.volume)} · frame ${this.current} / ${this.frames.length}`;
+    return `${denseInfo(this.source.volume)} · frame ${this.sequence.index()} / ${this.frames.length}`;
   }
 
   dispose(): void {
+    this.player.dispose();
     this.volume.dispose();
     this.source.dispose();
     this.light.dispose();
@@ -419,16 +392,12 @@ class MeshScene implements LoadedScene {
   readonly group = new THREE.Group();
   readonly volume = null;
   readonly sourceKind = null;
-  readonly baseColor = new THREE.Color(0xffffff);
   constructor(
     private readonly infoText: string,
     private readonly cleanup: () => void,
   ) {}
   info(): string {
     return this.infoText;
-  }
-  densityFactor(): number {
-    return 1;
   }
   dispose(): void {
     this.cleanup();

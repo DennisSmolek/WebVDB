@@ -382,15 +382,16 @@ async function threeCheck(device: GPUDevice): Promise<void> {
   for (let i = 0; i < halfData.length; i++) halfData[i] = halfData[i]! >> 1;
   const next = wvdbDenseToNvdb(half).image;
   const versionBefore = gpuSource.version;
+  const scaleBefore = volume.sourceUniforms.densityScale.value as number;
   pool.replace(id, next);
   pool.flush();
   grids.update();
   const buildsAfterReplace = gpuSource.pyramidBuilds;
   await render();
   const buildsAfterSecondRender = gpuSource.pyramidBuilds;
-  // K3.2e: the render after the replace started a readback of the new image; the next render applies its mean.
+  // K3.2e: the render after the replace started a readback of the new image; its mean reaches the scale (K5.9a: when
+  // the readback lands, and every draw after through VDBFrameVolume.getDensityScale).
   const statsBefore = { ...cpuSource.stats };
-  const scaleBefore = volume.sourceUniforms.densityScale.value as number;
   await gpuSource.refreshStats();
   await render();
   const fresh = vdbSparseSource(grids, { density: id }, { images: { density: next }, indexBox: cloud.indexBox!, lod: "none" });

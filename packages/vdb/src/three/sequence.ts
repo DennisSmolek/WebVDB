@@ -65,20 +65,23 @@ import { VDBError } from "../core/errors.js";
 import { NvdbFile } from "../tools/index.js";
 
 /** The part of a `VDBGridPool` the player uses. */
-export interface VDBSequencePoolLike {
-  replace(id: number, image: Uint32Array): void;
+export interface VDBSequencePoolLike<TFrame = Uint32Array> {
+  replace(id: number, image: TFrame): void;
 }
 
-/** Where frames go: grid `id` of `pool` (added with `capacity` for the largest frame). */
-export interface VDBSequenceTarget {
-  readonly pool: VDBSequencePoolLike;
-  readonly id: number;
-}
+/**
+ * Where frames go: grid `id` of `pool` (added with `capacity` for the largest frame), or (K5.9) a `source` with
+ * `replace(frame)`: a dense `.wvdb` source (`vdbDenseTextures`) playing `WvdbDenseVolume` frames, which a
+ * `VDBFrameVolume` over it follows by itself.
+ */
+export type VDBSequenceTarget<TFrame = Uint32Array> =
+  | { readonly pool: VDBSequencePoolLike<TFrame>; readonly id: number }
+  | { readonly source: { replace(frame: TFrame): void } };
 
-/** Decodes one frame's URL (or index) into a NanoVDB grid image. */
-export type VDBFrameLoader = (url: string, index: number) => Promise<Uint32Array>;
+/** Decodes one frame's URL (or index) into a frame: a NanoVDB grid image by default. */
+export type VDBFrameLoader<TFrame = Uint32Array> = (url: string, index: number) => Promise<TFrame>;
 
-export interface VDBSequenceOptions {
+export interface VDBSequenceOptions<TFrame = Uint32Array> {
   /** Per-frame source URLs: an array, or `(i) => url`. Length/`frameCount` gate playback. */
   urls: string[] | ((index: number) => string);
   /** Total frame count. Defaults to `urls.length` when `urls` is an array (required otherwise). */
@@ -94,7 +97,7 @@ export interface VDBSequenceOptions {
    * The demo passes an in-memory loader (build frames on the fly, no fetch);
    * the URL/fetch path is exercised via a Blob-URL manifest + this default.
    */
-  loader?: VDBFrameLoader;
+  loader?: VDBFrameLoader<TFrame>;
   /** Clock source. Default `performance.now`. Injected as a fake in tests. */
   now?: () => number;
   /** Fired whenever a NEW frame is shown (after its `pool.replace`). */
@@ -138,21 +141,22 @@ async function defaultLoader(url: string): Promise<Uint32Array> {
  *   sequence.start({ pool, id });
  *   // per frame: sequence.update(performance.now()); pool.update(encoder); grids.update(); render
  */
-export class VDBSequence {
+export class VDBSequence<TFrame = Uint32Array> {
   readonly frameCount: number;
   readonly fps: number;
   readonly prefetch: number;
   readonly loop: boolean;
 
   private readonly urlFor: (index: number) => string;
-  private readonly loader: VDBFrameLoader;
+  private readonly loader: VDBFrameLoader<TFrame>;
+  private readonly hasLoader: boolean;
   private readonly now: () => number;
-  private readonly onFrame: VDBSequenceOptions["onFrame"];
-  private readonly onError: VDBSequenceOptions["onError"];
+  private readonly onFrame: VDBSequenceOptions<TFrame>["onFrame"];
+  private readonly onError: VDBSequenceOptions<TFrame>["onError"];
   private readonly frameDurationMs: number;
 
   /** Decoded frame images by frame index. */
-  private readonly ring = new Map<number, Uint32Array>();
+  private readonly ring = new Map<number, TFrame>();
   /** In-flight decode promises by frame index (dedupe + stall detection). */
   private readonly inflight = new Map<number, Promise<void>>();
   /** Frames whose decode failed: not retried until `seek` / `start`. */
@@ -161,7 +165,9 @@ export class VDBSequence {
   private generation = 0;
   private disposed = false;
 
-  private target: VDBSequenceTarget | undefined;
+  private replaceFrame: ((frame: TFrame) => void) | undefined;
+  /** K5.9: a frame shown by `seek` while stopped once its decode lands. */
+  private pendingFrame = -1;
   private playing = false;
   private startNow = 0;
   private startFrame = 0;
@@ -170,7 +176,7 @@ export class VDBSequence {
   private _replaceMs = 0;
   private _swaps = 0;
 
-  constructor(opts: VDBSequenceOptions) {
+  constructor(opts: VDBSequenceOptions<TFrame>) {
     const frameCount = opts.frameCount ?? (Array.isArray(opts.urls) ? opts.urls.length : undefined);
     if (frameCount === undefined || !Number.isInteger(frameCount) || frameCount < 1) {
       throw new VDBError(
@@ -188,7 +194,8 @@ export class VDBSequence {
 
     const urls = opts.urls;
     this.urlFor = typeof urls === "function" ? urls : (i: number): string => urls[i] ?? "";
-    this.loader = opts.loader ?? defaultLoader;
+    this.hasLoader = !!opts.loader;
+    this.loader = opts.loader ?? (defaultLoader as unknown as VDBFrameLoader<TFrame>);
     this.now = opts.now ?? ((): number => performance.now());
     this.onFrame = opts.onFrame;
     this.onError = opts.onError;
@@ -250,7 +257,7 @@ export class VDBSequence {
 
     const generation = this.generation;
     const current = (): boolean => generation === this.generation;
-    let load: Promise<Uint32Array>;
+    let load: Promise<TFrame>;
     try {
       load = Promise.resolve(this.loader(this.urlFor(index), index));
     } catch (err) {
@@ -258,7 +265,9 @@ export class VDBSequence {
     }
     const p = load
       .then((image) => {
-        if (current()) this.ring.set(index, image);
+        if (!current()) return;
+        this.ring.set(index, image);
+        if (index === this.pendingFrame && !this.playing) this.showFrame(index);
       })
       .catch((err) => {
         if (!current()) return;
@@ -309,14 +318,21 @@ export class VDBSequence {
    *
    * @throws VDBError `VDB_DISPOSED` after `dispose()`; `VDB_BAD_OPTION` for a bad target.
    */
-  start(target: VDBSequenceTarget, now: number = this.now()): void {
+  start(target: VDBSequenceTarget<TFrame>, now: number = this.now()): void {
     this.assertLive("start()");
-    if (target === null || typeof target !== "object" || typeof target.pool?.replace !== "function" || !Number.isInteger(target.id) || target.id < 0) {
+    const t = target as { pool?: { replace?: unknown }; id?: unknown; source?: { replace?: unknown } } | null;
+    if (t !== null && typeof t === "object" && !("pool" in t) && typeof t.source?.replace === "function") {
+      if (!this.hasLoader) throw new VDBError("VDB_BAD_OPTION", "VDBSequence.start: a { source } target plays the frames your loader returns; pass a loader (the default decodes .nvdb images).");
+      const source = t.source as { replace(frame: TFrame): void };
+      this.replaceFrame = (frame) => source.replace(frame);
+    } else if (t === null || typeof t !== "object" || typeof t.pool?.replace !== "function" || !Number.isInteger(t.id) || (t.id as number) < 0) {
       throw new VDBError(
         "VDB_BAD_OPTION",
-        "VDBSequence.start: target must be { pool, id } with a VDBGridPool (or an object with replace(id, image)) and a non-negative grid id.");
+        "VDBSequence.start: target must be { pool, id } with a VDBGridPool (or an object with replace(id, image)) and a non-negative grid id, or { source } with replace(frame).");
+    } else {
+      const { pool, id } = target as { pool: VDBSequencePoolLike<TFrame>; id: number };
+      this.replaceFrame = (frame) => pool.replace(id, frame);
     }
-    this.target = target;
     this.playing = true;
     this.startNow = now;
     this.startFrame = 0;
@@ -343,7 +359,7 @@ export class VDBSequence {
    */
   resume(now: number = this.now()): void {
     this.assertLive("resume()");
-    if (!this.target) return;
+    if (!this.replaceFrame) return;
     this.playing = true;
     this.startNow = now;
     this.startFrame = this._frame < 0 ? 0 : this._frame;
@@ -371,7 +387,7 @@ export class VDBSequence {
    * a stall. Never blocks. Returns the frame index currently shown.
    */
   update(now: number): number {
-    if (!this.playing || !this.target) return this._frame;
+    if (!this.playing || !this.replaceFrame) return this._frame;
 
     const elapsed = now - this.startNow;
     const advanced = Math.floor(elapsed / this.frameDurationMs);
@@ -399,18 +415,20 @@ export class VDBSequence {
    * start/seek/update.
    */
   private showFrame(index: number): void {
-    if (!this.target) return;
+    if (!this.replaceFrame) return;
     const image = this.ring.get(index);
-    if (!image) {
-      // Not decoded yet — hold last frame, count a stall, keep decoding.
+    if (image === undefined) {
+      // Not decoded yet: hold the last frame, count a stall, keep decoding (a stopped player shows it when it lands).
       if (this._frame !== index) this._stalls++;
+      this.pendingFrame = index;
       this.ensurePrefetch(index);
       return;
     }
+    this.pendingFrame = -1;
     if (index === this._frame) return;
 
     const t0 = this.now();
-    this.target.pool.replace(this.target.id, image);
+    this.replaceFrame(image);
     this._replaceMs = this.now() - t0;
     this._frame = index;
     this._swaps++;
@@ -428,7 +446,8 @@ export class VDBSequence {
     this.disposed = true;
     this.generation++;
     this.playing = false;
-    this.target = undefined;
+    this.replaceFrame = undefined;
+    this.pendingFrame = -1;
     this.ring.clear();
     this.inflight.clear();
     this.failed.clear();

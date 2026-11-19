@@ -127,7 +127,12 @@ export interface VDBFrameRendererSettings {
   shadowCascades: number;
   /** `'frame'` lighting: half size of the finest cascades around the camera (default 512). */
   shadowDistance: number;
-  /** `'frame'` lighting: one phase for all volumes (his demos set 'dual-lobe'). */
+  /**
+   * The phase of every volume this renderer draws (default 'henyey-greenstein', g 0.8; his demos set 'dual-lobe'), and
+   * of `phaseG` … `phaseGExponent`: `'frame'` lighting lights all volumes with it in one pass; in `'volume'` lighting
+   * a volume's own `phase*` props override it where set (K5.9: one place to set the phase; his 'volume' lighting
+   * read only the volume's).
+   */
   phase: VDBFramePhase;
   phaseG: number;
   phaseBackG: number;
@@ -1101,7 +1106,7 @@ export class VDBFrameRenderer {
       setVolumeUniforms(injectMaterial, frameVolume, volume);
       injectMaterial.frameLights.value = frameVolume.lights;
       injectMaterial.frameShadowSteps.value = frameVolume.shadowSteps;
-      injectMaterial.frameMultipleScattering.value = getFrameMultipleScattering(this.multipleScatteringMode(), frameVolume);
+      injectMaterial.frameMultipleScattering.value = getFrameMultipleScattering(this.multipleScatteringMode(), frameVolume.getPhase());
       getFrameScatteringOctaves(this.settings, injectMaterial.frameScatteringOctaves.value);
       injectMaterial.frameTwoSided.value = getFrameTwoSidedDiffusion(this.settings.multipleScattering);
 
@@ -1992,6 +1997,8 @@ export function setVolumeUniforms(material: { volumeUniforms: FrameVolumeUniform
   const u = material.volumeUniforms;
   const s = material.sourceUniforms;
 
+  // K5.9: a source.replace() (a sequence frame, a resize) reaches the uniforms without volume.updateSource()
+  frameVolume.syncSource();
   u.frameViewToLocal.value.copy(volume.viewToLocal);
   u.frameLocalToView.value.copy(volume.localToView);
   u.frameWorldToLocal.value.copy(volume.worldToLocal);
@@ -2008,8 +2015,11 @@ export function setVolumeUniforms(material: { volumeUniforms: FrameVolumeUniform
   s.temperatureRange.value.copy(frameVolume.temperatureRange);
   s.offset3D.value.copy(frameVolume.offset3D);
   s.wrap3D.value = frameVolume.wrap3D;
-  getFramePhase(frameVolume, u.framePhase.value);
-  getFramePhaseSpectrum(frameVolume, u.framePhaseSpectrum.value);
+  // K5.9: the volume's phase overrides, else the renderer's settings (the 'volume' lighting phase; 'frame' lighting
+  // draws its one phase from the settings in the lighting pass)
+  const phase = frameVolume.getPhase();
+  getFramePhase(phase, u.framePhase.value);
+  getFramePhaseSpectrum(phase, u.framePhaseSpectrum.value);
 }
 
 /** Per three renderer shared instances (`vdbFrameRenderer(renderer)`). */

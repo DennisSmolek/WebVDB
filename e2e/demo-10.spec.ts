@@ -83,6 +83,53 @@ test.describe("demo 10 — froxel renderer showcase", () => {
     });
   }
 
+  // K5.9b: mesh shadows + 'neural' + temporal/jitter in 'frame' lighting built the transmittance material a second
+  // time, and the second WGSL lost the uniforms of the network's layout function (three r187 caches a
+  // `Fn().setLayout()` body per backend, across builders): "unresolved value 'nodeUniform0'", 3 uncaptured errors.
+  test("K5.9b: mesh shadows with neural scattering and temporal on: no validation errors", async ({ page }) => {
+    const errors = collectErrors(page);
+    const state = await open(page, "scene=bunny&sky=none&stage=0&temporal=1");
+    test.skip(!state.available?.includes("bunny"), "fixtures missing for bunny");
+    const detail = () => JSON.stringify({ state, errors }, null, 2);
+    expect(state.error, detail()).toBeUndefined();
+    await page.locator("#ctl-meshShadows").check();
+    await settle(page, 6);
+    await page.locator("#ctl-stage").check();
+    const shot = await settle(page, 6);
+    const after = (await page.evaluate(() => window.__DEMO10__))!;
+    expect(after.uncaptured, detail()).toEqual([]);
+    expect(errors, detail()).toEqual([]);
+    expect(shot.nonBackground, detail()).toBeGreaterThan(2_000);
+  });
+
+  // K5.9a: `VDBFrameVolume.densityScale` did nothing on a sparse source (its density uniform's per-render stats
+  // refresh re-applied the creation-time scale). The bunny's sparse copy normalizes by the dense mean, so with the
+  // same density scale both kinds render alike: a sparse density change must move the image as the dense one does.
+  test("K5.9a: density scale changes the sparse render as it does the dense one", async ({ page }) => {
+    const errors = collectErrors(page);
+    const state = await open(page, "scene=bunny&sky=none&stage=0&source=sparse&temporal=0");
+    test.skip(!state.available?.includes("bunny"), "fixtures missing for bunny");
+    const detail = () => JSON.stringify({ state, errors }, null, 2);
+    expect(state.sourceKind, detail()).toBe("sparse");
+    const sparse1 = await settle(page, 2);
+    await page.locator("#ctl-density").fill("3");
+    const sparse3 = await settle(page, 3);
+    await page.selectOption("#ctl-source", "dense");
+    const dense3 = await settle(page, 3);
+    expect((await page.evaluate(() => window.__DEMO10__))!.sourceKind).toBe("dense");
+    await page.locator("#ctl-density").fill("1");
+    const dense1 = await settle(page, 3);
+    const d = { sparse: thumbDiff(sparse1, sparse3), dense: thumbDiff(dense1, dense3), at3: thumbDiff(sparse3, dense3), at1: thumbDiff(sparse1, dense1) };
+    console.log(`K5.9a density diffs: ${JSON.stringify(d)}`);
+    expect(d.dense, detail()).toBeGreaterThan(1);
+    // The sparse change is the dense one's size (it was 0 before the fix), and the kinds agree at each scale.
+    expect(d.sparse, JSON.stringify(d)).toBeGreaterThan(d.dense * 0.5);
+    expect(d.at3, JSON.stringify(d)).toBeLessThan(d.dense * 0.5);
+    expect(d.at1, JSON.stringify(d)).toBeLessThan(d.dense * 0.5);
+    expect((await page.evaluate(() => window.__DEMO10__))!.uncaptured, detail()).toEqual([]);
+    expect(errors, detail()).toEqual([]);
+  });
+
   test("live controls change the image", async ({ page }) => {
     const errors = collectErrors(page);
     // smoke has both source kinds; else the first froxel scene there is
@@ -105,8 +152,7 @@ test.describe("demo 10 — froxel renderer showcase", () => {
       previous = next;
     };
 
-    // Lighting path, scattering and density are settings / props read every frame. Density on smoke's sparse
-    // source also guards the demo's workaround for TASKS K5.9a (densityScale needs updateSource() there).
+    // Lighting path, scattering and density are settings / props read every frame (density on a sparse source: K5.9a).
     await step("lighting volume", () => page.selectOption("#ctl-lighting", "volume"), 0.5);
     await step("multiple scattering off", () => page.selectOption("#ctl-ms", "off"), 0.5);
     await step("density x3", () => page.locator("#ctl-density").fill("3"), 0.3);

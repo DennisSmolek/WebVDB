@@ -13,7 +13,10 @@ export function frameDense(scene: Scene, wvdb: ArrayBuffer): VDBFrameVolume {
     scene.add(volume); // renderer.render(scene, camera) draws it, froxels first
 
     volume.scatterColor.set('#ffffff');
-    volume.phase = 'dual-lobe';
+    // A measured medium in one call: albedo and extinction spectrum on the volume, the phase on the renderer.
+    volume.setMedium('fog');
+    // volume.bbox is the resolved box (here the file's): place the volume by it.
+    volume.position.copy(volume.bbox.getCenter(volume.position)).negate();
     // #endregion
     return volume;
 }

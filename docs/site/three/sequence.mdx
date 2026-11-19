@@ -6,7 +6,9 @@ sourcecode: packages/vdb/src/three/sequence.ts
 ---
 
 `VDBSequence` swaps each frame of an animation into **one** pool id with `pool.replace(id, frame)`, scheduled by a
-prefetch ring and a frame-time clock. It does not touch three: the target is `{ pool, id }`.
+prefetch ring and a frame-time clock. It does not touch three: the target is `{ pool, id }`. It also plays dense
+`.wvdb` frames into a `vdbDenseTextures` source: `new VDBSequence<WvdbDenseVolume>({ urls, loader })` and
+`start({ source })` (see [Froxel renderer](/three/frame-renderer)).
 
 ## The pool contract
 
@@ -55,10 +57,10 @@ const frame = (now: number) => {
 | `frameCount`, `fps` | Length and playback rate |
 | `prefetch` | Frames decoded ahead of the playhead |
 | `loop` | Wrap at the end |
-| `loader` | `(url, index) => Promise<Uint32Array>`; the default fetches and parses a `.nvdb` |
+| `loader` | `(url, index) => Promise<TFrame>` (a grid image by default); the default fetches and parses a `.nvdb`; required for a `{ source }` target |
 | `now` | The clock, default `performance.now`; pass your own to step deterministically |
 | `onFrame`, `onError` | Stats after each swap, and per-frame load failures |
 
 `stats` reports `frame`, `decodedAhead`, `stalls` (a swap that had to wait for a decode), `replaceMs`, `swaps` and
 `failed`. Control it with `start(target, now?)`, `stop()`, `resume()`, `seek(index)`, `preload(count?)` and
-`dispose()`.
+`dispose()`. A `seek` while stopped shows the frame once it is decoded.

@@ -99,8 +99,10 @@ describe("VDBFrameVolume and the view code", () => {
     const v = new VDBFrameVolume(source, { frameRenderer });
     expect(v.isVDBFrameVolume).toBe(true);
     expect(v.extinction).toBe(100);
-    expect(v.phase).toBe("henyey-greenstein");
-    expect(v.phaseG).toBe(0.8);
+    // K5.9: no own phase: the renderer's settings (his volume defaults, HG 0.8, are the renderer's defaults too)
+    expect(v.phase).toBe(null);
+    expect(v.phaseG).toBe(null);
+    expect(v.getPhase()).toEqual({ phase: "henyey-greenstein", phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0 });
     expect(v.shadowSteps).toBe(32);
     expect(v.lights).toBe(vdbFrameAllLights);
     expect(v.meanDensity).toBeCloseTo(dense.meanDensity, 12);

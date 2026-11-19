@@ -61,6 +61,16 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
 - Volume sources with LOD: `vdbDenseSource` / `vdbDenseTextures` (dense) and `vdbSparseSource` (coarse pyramid,
   node-average LOD, optional HDDA empty-space skipping).
 - `VDBLevelSetMaterial` (sphere-traced level-set surfaces lit by three's lights and shadows) and `VDBPoints`.
+- Froxel renderer API (K5.9): one place for the phase (the renderer's `settings.phase*` is every volume's; a volume's
+  `phase*` props are optional `'volume'`-lighting overrides, `volume.getPhase()`); `volume.setMedium(name | props |
+  null)` applies a measured medium in one call (albedo, extinction spectrum, the renderer's phase, spectral on);
+  `densityMean` fixes the mean `normalizeDensity` divides by (one mean for a sequence); `volume.bbox` is the resolved
+  box; the volume follows a `source.replace()` by itself (`syncSource`, per draw).
+- `VDBSequence<TFrame>` plays any frame type; `start({ source })` swaps dense `.wvdb` frames into a
+  `vdbDenseTextures` source. A dense `replace` reads a channel the frame lacks as its absent value (emission 0, mask
+  and albedo 1) and ignores a channel the source lacks. A `seek` while stopped shows the frame once decoded.
+- `wvdbDenseToNvdb(...).sparseSourceOptions` (`@pmndrs/vdb/tools`): the index box, dense stats and box that line a
+  sparse copy of a `.wvdb` level up with the dense source, spread into `vdbSparseSource`.
 
 ### Changed
 
@@ -68,6 +78,14 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
   position `min + (i + 0.5) * (max - min + 1) / n - 0.5`, so at full resolution it is voxel `min + i` (v1 sampled
   half a voxel past, and the last cell read the background). Atlases span the box `[min - 0.5, max + 0.5]` instead
   of `[min, max + 1]`.
+
+### Fixed
+
+- `VDBFrameVolume.densityScale` had no effect on a sparse source: the density uniform's per-render stats refresh
+  overwrote the per-draw value. A new mean from a replaced image is now applied once, when its readback lands (K5.9a).
+- Mesh shadows with `multipleScattering: 'neural'` and temporal/jitter in `'frame'` lighting failed WGSL validation
+  in `VDBFrameTransmittanceMaterial` ("unresolved value 'nodeUniform0'"): the network's layout function is now built
+  per material build (K5.9b).
 
 ### Notes
 
