@@ -227,3 +227,6 @@ From v1; details in docs/handoffs/.
   against it is too high (smoke 128: 45% instead of 42%; a 128³ box: 92%). Bake with a cubic box (demo 15 `cubicBox`).
 - three r187 equirect `backgroundRotation` / `environmentRotation` turn the lookup direction: to put a photo's sun
   (azimuth `a`, from `atan(z, x)`) at azimuth `b`, rotate y by `a − b`, not `b − a` (demo 11).
+- Demo e2e "no errors" checks: use `collectErrors` from `e2e/console-errors.ts`, not a local copy. Pages probe optional,
+  git-ignored fixtures and fall back; Chrome logs each probe as a 404 console error, so a spec that counts every
+  console error passes locally (fixtures present) and fails on CI (demos 10, 15, 16 did).
