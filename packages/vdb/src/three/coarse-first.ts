@@ -26,6 +26,12 @@
  * - the proxy mesh: a new `vdbProxyGeometry(pool.info(id))` (the preview's
  *   box is the full box grown to whole preview voxels).
  *
+ * Into the froxel renderer (G16a): at the first event make the `VDBGridNode`
+ * with `types: event.types` (every grid type of the family) and the sparse
+ * source with `followImage: true`; the source re-reads its boxes after each
+ * swap and the `VDBFrameVolume` follows, with no new node, source, volume or
+ * shader. Froxels integrate in world space: no `voxelRatio` scale there.
+ *
  * Without `bind` it touches only `pool.add` / `pool.replace`, so it works with
  * any `VDBGridPool` host. It lives in `./three` because `tools` may not import
  * the core (D20).
@@ -35,6 +41,7 @@ import type * as THREE from "three";
 
 import { VDBError } from "../core/errors.js";
 import type { VDBBrickMajorant } from "../core/index.js";
+import { VDB_GRID_TYPE_NAMES, type VDBGridTypeName } from "../core/types.js";
 import { vdbProxyGeometry, type VDBProxyGridInfo } from "./material.js";
 import {
   NvdbStreamReader,
@@ -104,6 +111,13 @@ export interface VDBCoarseFirstEvent {
   bytesTotal: number | null;
   /** This grid's voxel size over the full grid's (x axis): 1 for the full grid, > 1 for a preview. */
   voxelRatio: number;
+  /**
+   * G16a: the grid types of the family's grids (the file lists every grid's metadata before any data, so this holds
+   * the full grid's type from the first event on), sorted. A `VDBGridNode` made with `types: event.types` decodes the
+   * preview and the full grid with one module (a baked FpN preview and an Fp8 full grid differ), so a source made
+   * with `followImage` swaps without a recompile.
+   */
+  types: VDBGridTypeName[];
 }
 
 export interface VDBCoarseFirstOptions {
@@ -247,6 +261,11 @@ export async function vdbStreamCoarseFirst(
     const full = familyGrids().find((g) => g.name === family);
     return full ? grid.metadata.voxelSize[0] / full.voxelSize[0] : 1;
   };
+  // The reader accepts only the pool's scalar types (Float, Fp4, Fp8, Fp16, FpN: the names in lower case).
+  const familyTypes = (): VDBGridTypeName[] => {
+    const names = new Set(familyGrids().map((g) => g.gridType.toLowerCase()));
+    return VDB_GRID_TYPE_NAMES.filter((t) => names.has(t));
+  };
 
   try {
     for await (const chunk of iterate) {
@@ -265,7 +284,7 @@ export async function vdbStreamCoarseFirst(
           action = "replace";
         }
         current = grid;
-        const event: VDBCoarseFirstEvent = { id, grid, final, action, bytesReceived: grid.bytesReceived, bytesTotal: grid.bytesTotal, voxelRatio: fullVoxel(grid) };
+        const event: VDBCoarseFirstEvent = { id, grid, final, action, bytesReceived: grid.bytesReceived, bytesTotal: grid.bytesTotal, voxelRatio: fullVoxel(grid), types: familyTypes() };
         shown.push(event);
         if (options.bind) vdbCoarseFirstApply(pool, event, options.bind);
         options.onGrid?.(event);

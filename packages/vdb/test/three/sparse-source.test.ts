@@ -144,4 +144,67 @@ describe("vdbSparseSource", () => {
     expect(u.mipLevels.density.value).toBe(0);
     volume.dispose();
   });
+
+  it("G16a followImage: a replaced image's boxes are re-read once it is resident; the uniforms and the volume's box follow", () => {
+    // A pool id whose image is replaced by one with another box and voxel size (a coarse-first swap).
+    const preview = { min: [0, 0, 0] as [number, number, number], max: [11, 23, 5] as [number, number, number] };
+    const full = { min: [-2, 1, 0] as [number, number, number], max: [47, 95, 23] as [number, number, number] };
+    const pool = {
+      revision: 1,
+      image: { box: preview, scale: 4, imageRevision: 1, resident: true },
+      info: () => {
+        const { box, scale, imageRevision, resident } = pool.image;
+        return { indexBBox: box, indexToWorld: new Float64Array([scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0]), hasStats: true, capacity: 64, type: "fpn", imageRevision, resident };
+      },
+    };
+    const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
+    const base = { lod: "none" as const, images: { density: grid.image } };
+    for (const fixed of [{ indexBox: full }, { bbox: [[0, 0, 0], [1, 1, 1]] as [[number, number, number], [number, number, number]] }, { auxIndexBoxes: {} }]) {
+      expect(() => vdbSparseSource(grids, { density: 0 }, { ...base, followImage: true, ...fixed })).toThrow(/followImage re-reads every box/);
+    }
+    expect(() => vdbSparseSource(grids, { density: 0 }, { lod: "coarse-pyramid", pyramidBuild: "cpu", images: { density: grid.image }, followImage: true })).toThrow(/pyramidBuild 'gpu'/);
+
+    const fixedSource = vdbSparseSource(grids, { density: 0 }, base);
+    const s = vdbSparseSource(grids, { density: 0 }, { ...base, followImage: true });
+    expect([s.followImage, fixedSource.followImage]).toEqual([true, false]);
+    const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
+    const u = volume.sourceUniforms as unknown as { boxes: { density: { min: { value: { toArray(): number[] } }; size: { value: { toArray(): number[] } } } }; gridTexels: { value: { toArray(): number[] } } };
+    expect(s.version).toBe(1);
+    expect(volume.bbox.min.toArray()).toEqual([-2, -2, -2]); // the preview's cell box [−½, max + ½] × 4
+    expect(u.gridTexels.value.toArray()).toEqual([12, 24, 6]);
+
+    // Replaced but not written yet: the GPU still holds the preview, so the boxes stay.
+    pool.revision = 2;
+    pool.image = { box: full, scale: 1, imageRevision: 2, resident: false };
+    volume.syncSource();
+    expect([s.version, s.layoutUpdates]).toEqual([1, 0]);
+    expect(s.indexBox).toEqual(preview);
+
+    // Written (pool.update): the next frame re-reads everything.
+    pool.image.resident = true;
+    volume.syncSource();
+    expect([s.version, s.layoutUpdates]).toEqual([2, 1]);
+    expect(s.indexBox).toEqual(full);
+    expect(s.texels).toEqual([50, 95, 24]);
+    expect(s.bbox).toEqual([
+      [-2.5, 0.5, -0.5],
+      [47.5, 95.5, 23.5],
+    ]);
+    expect(u.boxes.density.min.value.toArray()).toEqual([-2, 1, 0]);
+    expect(u.boxes.density.size.value.toArray()).toEqual([50, 95, 24]);
+    expect(u.gridTexels.value.toArray()).toEqual([50, 95, 24]);
+    expect(volume.bbox.min.toArray()).toEqual([-2.5, 0.5, -0.5]);
+    expect(volume.bbox.max.toArray()).toEqual([47.5, 95.5, 23.5]);
+    // The unit box maps onto the new box: its centre and size.
+    const e = volume.volumes[0]!.matrix.elements;
+    expect([e[0], e[5], e[10], e[12], e[13], e[14]]).toEqual([50, 95, 24, 22.5, 48, 11.5]);
+    // Nothing more to do until the image changes again.
+    volume.syncSource();
+    expect(s.layoutUpdates).toBe(1);
+
+    // Without followImage the box stays as made (the K3 behaviour: a sequence keeps the first frame's box).
+    expect(fixedSource.indexBox).toEqual(preview);
+    expect(fixedSource.version).toBe(2);
+    volume.dispose();
+  });
 });

@@ -60,6 +60,45 @@ before `onGrid` runs; every member is optional:
   `pool.setMajorant` is called for you.
 - `bind.grids`: a `VDBGridNode`; `pool.flush()` then `grids.update()`.
 
+### Into the froxel renderer
+
+A `VDBFrameVolume` needs no `bind` member of its own. Make the `VDBGridNode`, a sparse source with `followImage: true`
+and the volume once, at the first grid. `event.types` lists every grid type of the family (the file lists the full
+grid's metadata before any data), so the one module decodes both a baked FpN preview and an Fp8 full grid. After a swap,
+once the new image is resident, the source re-reads the grid's index box, world box and transform from `pool.info`,
+rebuilds its coarse pyramid at the new size and bumps its `version`, and the volume moves its box to follow. Boxes,
+sizes and LOD levels are uniforms on a following source, so the swap builds no shader or pipeline. Froxels integrate in
+world space, so a preview needs no `voxelRatio` scale.
+
+{/* snippet: coarse-first-frame */}
+```ts
+import { VDBFrameVolume, VDBGridNode, vdbSparseSource, vdbStreamCoarseFirst, type VDBCoarseFirstBind } from '@pmndrs/vdb/three';
+
+// Into the froxel renderer: one node, source and volume, made at the first grid (the preview).
+const bind: VDBCoarseFirstBind = {}; // later swaps: pool.flush() + grids.update()
+const { id } = await vdbStreamCoarseFirst(pool, await fetch(url), {
+    bind,
+    onGrid: (event) => {
+        if (event.action !== 'add') return; // a swap: the source and the volume follow by themselves
+        pool.flush();
+        // Every grid type of the family (a baked FpN preview, an Fp8 full grid): one module reads both.
+        const grids = new VDBGridNode(renderer, pool, {
+            profile: 'march',
+            helpers: ['cellBoundTrilinear', 'hddaCellEnd', 'fastTrilinear'],
+            types: event.types,
+        });
+        bind.grids = grids;
+        // followImage: after a swap the source re-reads the grid's boxes and rebuilds its pyramid, and the
+        // volume moves its box. No new node, source, volume or shader.
+        const source = vdbSparseSource(grids, { density: event.id }, { images: { density: event.grid.image }, followImage: true });
+        scene.add(new VDBFrameVolume(source, { extinction: 100 })); // froxels: no voxelRatio scale
+    },
+});
+```
+
+The source's density mean (`normalizeDensity`) is read back from the pool after a swap, as for a sequence frame; await
+`source.refreshStats()` after `pool.flush()` if the first frame after the swap must use the new mean.
+
 The members are read at every swap, so they can be assigned in `onGrid` once the first grid exists. Code that handles a
 swap asynchronously can call `vdbCoarseFirstApply(pool, event, bind)` itself. Without `bind` the loader touches only
 `pool.add` and `pool.replace`, so it works with any pool host. It lives in `./three` because `tools`

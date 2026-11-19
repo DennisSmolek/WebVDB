@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { BoxGeometry } from "three";
 import { vdbStreamCoarseFirst, type VDBCoarseFirstEvent } from "../../src/three/index.js";
-import { vdbBuildFromDense, NvdbFormatError, writeNvdb } from "../../src/tools/index.js";
+import { vdbBuildFromDense, vdbQuantize, NvdbFormatError, writeNvdb } from "../../src/tools/index.js";
 
 function ball(dims: number, name: string, voxelSize: number): Uint32Array {
   const v = new Float32Array(dims ** 3);
@@ -82,6 +82,17 @@ describe("vdbStreamCoarseFirst (K4.16)", () => {
     expect(result.firstBytes).toBe(events[0]!.bytesReceived);
     expect(result.fullBytes).toBe(file.length);
     expect(result.firstBytes).toBeLessThan(result.fullBytes);
+    expect(events.every((e) => e.types.join() === "float")).toBe(true);
+  });
+
+  it("G16a: every event lists the family's grid types (the full grid's from the first one), not other families'", async () => {
+    const file = new Uint8Array(writeNvdb([OTHER, vdbQuantize(LOD8, "fpn"), vdbQuantize(FULL, "fp8")]));
+    const events: VDBCoarseFirstEvent[] = [];
+    await vdbStreamCoarseFirst(stubPool(), chunked(file, 509).stream, { gridName: "density", onGrid: (e) => events.push(e) });
+    expect(events.map((e) => [e.grid.metadata.gridType, e.types])).toEqual([
+      ["FpN", ["fp8", "fpn"]],
+      ["Fp8", ["fp8", "fpn"]],
+    ]);
   });
 
   it("selects a family by name, skips other grids, ignores a coarser grid after a finer one, and stops reading at the full grid", async () => {

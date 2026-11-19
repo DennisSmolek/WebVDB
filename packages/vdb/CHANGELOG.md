@@ -55,6 +55,11 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
   wrappers (`vdbGridStats`, `vdbDecodeToAtlas`).
 - Coarse-first streaming: `vdbStreamCoarseFirst` and `vdbCoarseFirstApply`, with `bind` to update material, mesh and
   node after each swap.
+- Coarse-first into the froxel renderer without a rebuild (G16a): `vdbSparseSource(..., { followImage: true })`
+  re-reads its boxes and rebuilds its pyramid after a `pool.replace` changes the grid's box (boxes, sizes and LOD levels
+  are uniforms then), and a `VDBFrameVolume` whose box is the source's follows it. `VDBCoarseFirstEvent.types` lists
+  the family's grid types for `new VDBGridNode(renderer, pool, { types })`, so one node, source and volume take the
+  preview and the full grid with no shader or pipeline built at the swap.
 - The froxel renderer, ported from mjurczyk/openvdb and re-based on the sparse pool: `VDBFrameVolume` and
   `VDBFrameRenderer` (`vdbFrameRenderer`) with `'volume'` and `'frame'` lighting, temporal accumulation, phase
   functions including Lorenz-Mie, multiple scattering (two-sided, octaves, neural), spectral media and measured

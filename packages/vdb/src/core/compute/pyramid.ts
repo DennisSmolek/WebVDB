@@ -275,6 +275,15 @@ function pyramidPipelines(device: GPUDevice, type: VDBGridTypeName): PyramidPipe
   return p;
 }
 
+/**
+ * @internal Compiles (once per device and type, cached) the pyramid pipelines for grids of `types`, so a later
+ * pyramid over a grid of one of them (G16a: a sparse source following a coarse-first swap to another grid type)
+ * creates no pipeline. Returns the pipelines' validation results.
+ */
+export function warmBoxPyramidPipelines(device: GPUDevice, types: Iterable<VDBGridTypeName>): Promise<GPUError | null>[] {
+  return [...types].map((type) => pyramidPipelines(device, type).error);
+}
+
 /** Options of {@link vdbCreateBoxPyramid}. */
 export interface VDBBoxPyramidGpuOptions {
   /** Inclusive voxel index box the pyramid covers. Default: the grid's index bbox now (fixed afterwards). */

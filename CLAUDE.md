@@ -218,10 +218,13 @@ From v1; details in docs/handoffs/.
   tone maps on screen must apply the same curve on the CPU (the one gallery shell, `examples/src/demos/showcase-shell.ts`, does ACES in `Presenter.readTarget` when `renderer.toneMapping` is ACESFilmic: set it in every demo, readback too) or readback images look flat.
 - Demo 13 gives each large grid its own `VDBGridPool`: four level sets (6–81 MB images, 212 MB in all) in one pool would
   pass WebGPU's default `maxStorageBufferBindingSize` (128 MiB); a material reads one pool's `VDBGridNode` anyway.
-- Coarse-first into the froxel renderer (gallery demo 16): `vdbSparseSource` fixes its index box and world box when made,
-  and a `VDBGridNode` compiles the pool's grid types at construction (a FpN preview then an Fp8 full grid reads 0). After
-  each `vdbStreamCoarseFirst` swap make a new node, source and `VDBFrameVolume` over the same id, before the next render
-  (the old source would read the new grid through the preview's box). No `voxelRatio` scale: froxels integrate in world space.
+- Coarse-first into the froxel renderer (gallery demo 16, G16a): `vdbSparseSource` fixes its boxes when made unless made
+  with `followImage: true`, and a `VDBGridNode` compiles the pool's types now unless given `types` (an FpN preview then an
+  Fp8 full grid reads 0). At the first `vdbStreamCoarseFirst` event make one node with `types: event.types` and a source
+  with `followImage`; after a swap only `pool.flush()` + `grids.update()` (await `source.refreshStats()` if the first frame
+  must have the new density mean: it is read back). The layout is re-read only once the new image is resident. No
+  `voxelRatio` scale: froxels integrate in world space. Count builds by wrapping the device's `create*Pipeline*` /
+  `createShaderModule` (demo 16 `?test=1`); settle the first grid's lazy passes first.
 - A default `vdbToWvdb` bake has non-cubic voxels (each side's texel count rounds on its own; `resolution³` dims on a
   non-cubic box even more so). Since G15a `wvdbDenseToNvdb` gives each axis its own voxel size: read
   `voxelSizeXYZ`, not `voxelSize` (the x side), and don't assume the Map is a uniform scale. Comparing a bake with its

@@ -6,7 +6,9 @@ import { collectErrors } from "./console-errors";
  * streamed in 1 KiB chunks (`?test=1`: unthrottled, the stream held until each grid's frame is read back) through
  * `vdbStreamCoarseFirst` into one pool id. The preview must draw from the first ~14 KiB and differ from the final
  * frame, and the final frame must equal the full grid added directly (`?mode=direct`, as demo 09's golden checks
- * its full grid). Runs with and without the gallery assets (`?gallery=0`: procedural sky).
+ * its full grid). Runs with and without the gallery assets (`?gallery=0`: procedural sky). G16a: the bake has an FpN
+ * preview and an Fp8 full grid, and the swap goes into the node, source and volume made for the preview (`followImage`)
+ * with no shader module or pipeline built.
  */
 const DEMO = "/src/demos/16-streaming/index.html";
 const SOURCE = "/fixtures/vdb-samples/smoke.vdb";
@@ -63,6 +65,11 @@ test.describe("demo 16 — gallery: streaming", () => {
       expect(preview.transferBytes, detail()).toBeGreaterThan(0);
       expect(preview.transferBytes, detail()).toBeLessThanOrEqual(GATE);
       expect(preview.voxelRatio, detail()).toBeGreaterThan(1);
+      // G16a: the swap changes the grid type (FpN preview, Fp8 full grid) and the box, into the same node, source and
+      // volume (made at the preview with every type of the family and `followImage`): no shader or pipeline is built.
+      expect([preview.gridType, full.gridType], detail()).toEqual(["FpN", "Fp8"]);
+      expect(preview.builds, detail()).toBeGreaterThan(0);
+      expect(full.builds, detail()).toBe(0);
       expect(full.transferBytes, detail()).toBe(state.totalBytes);
       expect(state.transferred, detail()).toBe(state.totalBytes);
       await expect(page.getByTestId("phase")).toHaveAttribute("data-phase", "full");
@@ -79,7 +86,10 @@ test.describe("demo 16 — gallery: streaming", () => {
       expect(direct.error, JSON.stringify(direct)).toBeUndefined();
       const reference = direct.reference!;
       const final = fineDiff(f, reference);
-      console.log(`demo 16 (gallery ${gallery ? "on" : "off"}): preview at ${preview.transferBytes} B of ${state.totalBytes}; preview->full diff ${swap.toFixed(2)}, full vs direct ${final.toFixed(3)}`);
+      console.log(
+        `demo 16 (gallery ${gallery ? "on" : "off"}): preview at ${preview.transferBytes} B of ${state.totalBytes}; preview->full diff ${swap.toFixed(2)}, ` +
+          `full vs direct ${final.toFixed(3)}; shader/pipeline builds: preview ${preview.builds}, swap ${full.builds}`,
+      );
       // Low-quality froxels blur both a lot (a 0.3 mean difference); the direct render is bit-identical (0.000), so the
       // preview must stand clearly above that floor and the streamed final at it.
       expect(swap, detail()).toBeGreaterThan(0.15);
