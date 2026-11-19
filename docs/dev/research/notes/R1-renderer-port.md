@@ -368,7 +368,7 @@ Generated and data files need provenance lines:
   (Nov 10), and 0 lines from v0.25 to v0.26. The renderer is stabilizing.
 - His `CHANGELOG.md` has no headings after v0.5.1; everything sits under "Unreleased". **Track by tag diff, not
   by changelog.**
-- Plan: the pinned commit goes in every ported header and in a `research/upstream.md` table (upstream path →
+- Plan: the pinned commit goes in every ported header and in a `docs/dev/research/upstream.md` table (upstream path →
   our path → pinned commit). A small read-only script lists upstream changes to ported paths between the pin
   and the latest tag. Review at each K3 step and before each of our releases; bump the pin deliberately, with a
   DIVERGES review.

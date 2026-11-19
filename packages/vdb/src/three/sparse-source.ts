@@ -20,7 +20,7 @@
  * (i + 0.5) / N lands on voxel min + i as on a dense texel centre. The sample position is clamped to
  * `[min, max]` (his clamp-to-edge). Level 0 is the pool's trilinear `vdbSample`; with the node helper
  * `'fastTrilinear'` (recommended, K3.2d) it is `vdbSampleFast` through one accessor per shader invocation
- * (`cacheAccessor`): the same values, 1.5–2× faster on the hardware GPU (docs/handoffs/K3-2d.md).
+ * (`cacheAccessor`): the same values, 1.5–2× faster on the hardware GPU (docs/archive/handoffs/K3-2d.md).
  *
  * LOD (`lod`, his `sampleExtinction(localPos, lod)` at lod ≥ 1; R1 §4.3):
  * - `'none'`: level 0 always (no prefilter; aliases when a froxel spans many voxels). lodLevels 0.
@@ -99,7 +99,7 @@ export interface VDBIndexBox {
 export interface VDBSparseSourceOptions {
   /**
    * LOD strategy. Default `'coarse-pyramid'`, the K3.2 A/B's pick (closest to his mips, low flicker, cheap to
-   * sample; needs `images.density`); see docs/handoffs/K3-2.md.
+   * sample; needs `images.density`); see docs/archive/handoffs/K3-2.md.
    */
   lod?: VDBSparseLod;
   /** `'coarse-pyramid'`: base level texels on the longest side at most (default 128). */

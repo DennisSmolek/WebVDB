@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// GPU parity harness — the Phase 2 gate (docs/PLAN.md): thousands of
+// GPU parity harness — the Phase 2 gate (docs/archive/v1/PLAN.md): thousands of
 // deterministic voxel probes and trilinear samples across all nine fixtures,
 // run through the extended vendored WGSL module and compared against the
 // proven CPU reference. SwiftShader (software WebGPU) compiles + runs the

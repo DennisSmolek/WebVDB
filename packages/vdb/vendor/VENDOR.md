@@ -1,6 +1,6 @@
 # Vendored: `pnanovdb.wgsl` (fork) + `upstream/PNanoVDB.h` (reference)
 
-Per [D2](../../../docs/DECISIONS.md): we adopt the Apache-2.0 WGSL port of
+Per [D2](../../../docs/archive/v1/DECISIONS.md): we adopt the Apache-2.0 WGSL port of
 PNanoVDB and **vendor it as a fork from day one** — pinned commit, NOTICE
 preserved, our fixes applied in-tree with a diff log — rather than depending
 on the upstream repo. We are prepared to diverge permanently and happy to
@@ -28,7 +28,7 @@ the same commit.
 
 The port tracks `PNanoVDB.h` in `PNANOVDB_ADDRESS_32` mode. The reference
 header itself is vendored (read-only, never edited) so the Phase 2
-line-by-line audit (see `docs/PLAN.md`) — Fp4/Fp8/Fp16/FpN decoders, the
+line-by-line audit (see `docs/archive/v1/PLAN.md`) — Fp4/Fp8/Fp16/FpN decoders, the
 HDDA family, readaccessor completeness, stats readers, world↔index map —
 diffs against a fixed target:
 
@@ -72,7 +72,7 @@ Every in-tree change to `pnanovdb.wgsl` gets one row here, newest first.
 file (`src/core/wgsl/pnanovdb.chunks.generated.ts`; sync test
 `test/core/wgsl-chunks.test.ts`). These transforms are applied to generated
 output only: they are not edits to `pnanovdb.wgsl`, its SHA-256 or the diff log
-above. One row per transform (design note `docs/design/K1-core.md` §3.3).
+above. One row per transform (design note `docs/dev/design/K1-core.md` §3.3).
 
 | Since | Declaration | Becomes | Why |
 |---|---|---|---|

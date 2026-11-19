@@ -1,7 +1,7 @@
 /**
  * coarse-first.ts — `vdbBakeCoarseFirst` (K4.16): the K4.5 option (a) bake. A
  * small preview grid (or a chain, coarsest first) and then the full grid, in
- * one multi-grid `.nvdb` (docs/design/K4-5-coarse-first.md):
+ * one multi-grid `.nvdb` (docs/dev/design/K4-5-coarse-first.md):
  *
  *     [ <name>.lod48 , <name> ]
  *

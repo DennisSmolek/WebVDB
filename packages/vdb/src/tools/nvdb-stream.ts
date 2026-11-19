@@ -1,7 +1,7 @@
 /**
  * `NvdbStreamReader` (K4.16): read a `.nvdb` file from pushed bytes and emit
  * each grid as soon as its data is complete, so a coarse preview written first
- * (docs/design/K4-5-coarse-first.md, option a) can be drawn while the full
+ * (docs/dev/design/K4-5-coarse-first.md, option a) can be drawn while the full
  * grid is still downloading.
  *
  *     const reader = new NvdbStreamReader();

@@ -32,7 +32,7 @@
  * synthetic per-voxel leaf boxes here: they aren't leaves, and this panel is
  * "leaf-level bboxes" specifically. Grids this project builds itself never
  * emit active tiles; native fixtures occasionally do (see
- * docs/handoffs/PHASE-4.md's demo 04 notes on `box_fog_float`) — those
+ * docs/archive/handoffs/PHASE-4.md's demo 04 notes on `box_fog_float`) — those
  * regions are simply absent from the wireframe, a documented, minor gap.
  */
 import { defineNumber, gridTypeConstantsForId } from "../../../../packages/vdb/src/tools/internal.js";

@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 
 /**
  * Demo 08 — webgpu-smoke (K1.7): the OpenVDB smoke through raw WebGPU and the
- * `@pmndrs/vdb` core only (no three.js). The e2e gate (docs/design/K1-core.md
+ * `@pmndrs/vdb` core only (no three.js). The e2e gate (docs/dev/design/K1-core.md
  * §8 row K1.7):
  *   - the first frame matches the golden (`presentation=readback`: headless
  *     SwiftShader has no compositor for a WebGPU canvas context);

@@ -1,5 +1,5 @@
 /**
- * Demo 05 — embergen-sequence: animated NanoVDB playback (docs/PLAN.md Phase 7,
+ * Demo 05 — embergen-sequence: animated NanoVDB playback (docs/archive/v1/PLAN.md Phase 7,
  * SPEC §3.5) on the K2 three adapter. Plays a looping volume sequence through
  * ONE pool grid and ONE `VDBVolumeMaterial`: `VDBSequence` swaps each frame in
  * with `pool.replace(id, frame)`, scheduled by its prefetch ring + frame-time

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// K1.6: the K1 regression gate (docs/design/K1-core.md §7, docs/handoffs/K1-6.md).
+// K1.6: the K1 regression gate (docs/dev/design/K1-core.md §7, docs/archive/handoffs/K1-6.md).
 // One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures, two synthetic quantized grids (sphere_fog_fp4 / sphere_fog_fp16, K5.4b) plus
 // torus_fog_fp8 again with an instance transform; every generated-module variant of
 // the matrix is dispatched and compared with the CPU twins. The page does the

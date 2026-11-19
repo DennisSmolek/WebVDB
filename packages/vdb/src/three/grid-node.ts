@@ -1,6 +1,6 @@
 /**
  * `VDBGridNode`: a `VDBGridPool` inside three's node system (task K2.2,
- * docs/design/K1-core.md §6). Follows `@pmndrs/bvh`'s `src/three/trace-nodes.ts`.
+ * docs/dev/design/K1-core.md §6). Follows `@pmndrs/bvh`'s `src/three/trace-nodes.ts`.
  *
  *   const grids = new VDBGridNode(renderer, pool, { profile: 'sample' });
  *   // TSL:

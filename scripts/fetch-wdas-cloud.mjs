@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fetch the Walt Disney Animation Studios cloud dataset and extract the
-// quarter-resolution VDB — our stretch fixture (docs/DECISIONS.md D4).
+// quarter-resolution VDB — our stretch fixture (docs/archive/v1/DECISIONS.md D4).
 //
 // License: CC-BY-SA 3.0 — © Walt Disney Animation Studios.
 // https://disneyanimation.com/data-sets/  (do not commit; fixtures are

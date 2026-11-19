@@ -1,5 +1,5 @@
 /**
- * Pool buffer layout 1 (docs/design/K1-core.md §1): a 32-byte header, a table of
+ * Pool buffer layout 1 (docs/dev/design/K1-core.md §1): a 32-byte header, a table of
  * fixed-stride 160-byte grid records, then 32-byte-aligned ranges (NanoVDB
  * images, brick-majorant grids).
  *

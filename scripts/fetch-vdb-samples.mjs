@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fetch the classic openvdb.org sample `.vdb` models, hosted (MIT) by the
 // mjurczyk/openvdb pure-JS reader project — our Phase 5 parser fixture
-// corpus (docs/PLAN.md Phase 5, docs/handoffs/PHASE-3.md "Phase 4/5 entry
+// corpus (docs/archive/v1/PLAN.md Phase 5, docs/archive/handoffs/PHASE-3.md "Phase 4/5 entry
 // points": "mjurczyk/openvdb (MIT) commits the classic openvdb.org samples").
 //
 // Pinned commit (resolved via `git ls-remote https://github.com/mjurczyk/openvdb.git HEAD`

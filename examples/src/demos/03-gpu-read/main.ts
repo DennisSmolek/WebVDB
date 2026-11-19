@@ -1,7 +1,7 @@
 /**
  * Demo 03 — gpu-read: read a NanoVDB volume on the GPU with WebGPU.
  *
- * Goal (docs/PLAN.md Phase 3, docs/SPEC.md §5 row 03 — a *stated main goal*,
+ * Goal (docs/archive/v1/PLAN.md Phase 3, docs/archive/v1/SPEC.md §5 row 03 — a *stated main goal*,
  * marked "educational"): a single, self-contained file that a newcomer can
  * read top to bottom and come away understanding how NanoVDB volumes get
  * from disk to a GPU shader and back. Everything you need is in this one
@@ -73,7 +73,7 @@ function log(text: string, cls = ""): void {
 // It is one contiguous, pointer-free block of memory — an immutable snapshot
 // of a sparse volume where every "this points to that" relationship is a
 // plain byte offset, not a pointer. Compact ASCII map of the layout (full
-// version: docs/FEASIBILITY.md §3; authoritative byte offsets:
+// version: docs/archive/v1/FEASIBILITY.md §3; authoritative byte offsets:
 // packages/vdb/vendor/upstream/PNanoVDB.h):
 //
 //   byte 0                                                          byte N

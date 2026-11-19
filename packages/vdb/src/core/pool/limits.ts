@@ -1,5 +1,5 @@
 /**
- * Device checks and size limits for the pool (docs/design/K1-core.md §1.5).
+ * Device checks and size limits for the pool (docs/dev/design/K1-core.md §1.5).
  */
 
 /**

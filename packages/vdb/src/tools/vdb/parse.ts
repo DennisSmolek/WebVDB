@@ -1,5 +1,5 @@
 /**
- * parse.ts — top-level `.vdb` container reader (docs/SPEC.md §4).
+ * parse.ts — top-level `.vdb` container reader (docs/archive/v1/SPEC.md §4).
  *
  * File layout (format facts cross-checked between `mjurczyk/openvdb`'s
  * `OpenVDBReader`/`GridDescriptor` and `vdb-rs`'s `VdbReader::new`/

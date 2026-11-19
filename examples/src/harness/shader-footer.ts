@@ -22,7 +22,7 @@
  *
  * Naming: every harness-owned identifier is prefixed `harness_` to avoid
  * colliding with pnanovdb.wgsl's own names. Note `active` is a reserved
- * WGSL keyword (a Phase 1 finding, see docs/handoffs/PHASE-1.md) — hence
+ * WGSL keyword (a Phase 1 finding, see docs/archive/handoffs/PHASE-1.md) — hence
  * `is_act` below, not `active`.
  */
 export const HARNESS_FOOTER_WGSL = /* wgsl */ `

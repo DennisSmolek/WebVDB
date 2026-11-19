@@ -26,7 +26,7 @@
  *  - `levelSetSampler: 'surface-mean'` samples level sets with his CLI's
  *    `sampleLevelSet` (`level-set.ts`), which reproduces his level-set files.
  *
- * Differences from his CLI (also in docs/handoffs/K4-3.md):
+ * Differences from his CLI (also in docs/archive/handoffs/K4-3.md):
  *  - by default (`levelSetSampler: 'spec'`) level sets are point-sampled and
  *    then encoded by the §8 rule (active: clamp to `±(b - 2b/maxCode)`;
  *    inactive: `±b` by sign). His CLI uses `sampleLevelSet` (a surface-aware

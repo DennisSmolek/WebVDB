@@ -1,4 +1,4 @@
-> **Superseded (2026-11-18).** This is the frozen v1 document. Current plan: [PHASES.md](../PHASES.md); decisions: [DECISIONS.md](../DECISIONS.md); spec draft: [spec/SPEC-draft.md](../spec/SPEC-draft.md).
+> **Superseded (2026-11-18).** This is the frozen v1 document. Current plan: [PHASES.md](../../dev/PHASES.md); decisions: [DECISIONS.md](../../dev/DECISIONS.md); spec draft: [spec/SPEC-draft.md](../spec/SPEC-draft.md).
 
 # Spec: VDB-on-the-Web
 

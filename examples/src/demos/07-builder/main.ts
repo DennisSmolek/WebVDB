@@ -1,6 +1,6 @@
 /**
  * Demo 07 — builder: in-browser NanoVDB authoring round-trip (Phase 5/8 demo
- * gate half 2, docs/PLAN.md — "dense -> TS-build -> render round-trip").
+ * gate half 2, docs/archive/v1/PLAN.md — "dense -> TS-build -> render round-trip").
  *
  * Pipeline (SPEC §3.3/§4, all pure-TS `@pmndrs/vdb/tools`):
  *

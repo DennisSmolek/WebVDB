@@ -3,7 +3,7 @@
 ## 0.1 publish checklist
 
 Work through it top to bottom. **[owner]** marks a step only Dennis can do: accounts, settings, licences, the
-publish itself. **[agent]** steps get a task row in `TASKS.md` when they start. Tick a box when its check passes.
+publish itself. **[agent]** steps get a task row in `docs/dev/TASKS.md` when they start. Tick a box when its check passes.
 The npm steps at the end follow the procedure in [First publish](#first-publish-010-manual).
 
 ### 1. Code frozen for 0.1
@@ -18,12 +18,12 @@ The npm steps at the end follow the procedure in [First publish](#first-publish-
 
 ### 2. Repo cleanup
 
-- [ ] Process docs move to `docs/dev/` (TASKS, PHASES, DECISIONS, DIVERGES, design, research, assets-licensing).
+- [x] Process docs move to `docs/dev/` (TASKS, PHASES, DECISIONS, DIVERGES, design, research, assets-licensing).
       Frozen history moves to `docs/archive/` (the v1 study, handoffs, spikes, the spec draft, STATUS). The root
       keeps README, LICENSE, THIRD_PARTY, CLAUDE.md and this file. **[agent]**
-- [ ] No broken relative links after the move: a link check over every tracked `.md`/`.mdx`, plus code comments
+- [x] No broken relative links after the move: a link check over every tracked `.md`/`.mdx`, plus code comments
       that cite paths. **[agent]**
-- [ ] The root README reads as a public landing page: what it is, install, links to docs, examples and the
+- [x] The root README reads as a public landing page: what it is, install, links to docs, examples and the
       changelog. **[agent]**
 
 ### 3. Docs site (pmndrs/docs)
@@ -62,7 +62,7 @@ from disk. A hosted build needs an asset set.
 - [ ] Attribution page on the site, built from `fixtures/ATTRIBUTION.md` and `docs/dev/assets-licensing.md`. Every
       hosted asset is listed with source and licence (openvdb.org samples and the WDAS cloud are CC BY-SA and need
       it; EmberGen is CC0). **[agent]**
-- [ ] Gallery assets (HDR skies, GLBs, `boat_points.wvdb`): every row in `docs/assets-licensing.md` set to `ok`,
+- [ ] Gallery assets (HDR skies, GLBs, `boat_points.wvdb`): every row in `docs/dev/assets-licensing.md` set to `ok`,
       or the asset swapped. Until then the hosted gallery uses its procedural fallbacks. **[owner]**
 - [ ] Vite `base` set for the Pages sub-path (docs at `/vdb/`, examples at `/vdb/examples/`); every demo loads from
       the built site, not only from `pnpm dev`. Check with `vite preview` plus an e2e smoke run against the build.

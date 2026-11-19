@@ -2,7 +2,7 @@
 //
 //   node experiments/picovdb-spike/scripts/sizes.mjs
 //
-// Prints a markdown table (copied into docs/spikes/PICOVDB.md) and writes
+// Prints a markdown table (copied into docs/archive/spikes/PICOVDB.md) and writes
 // .out/sizes.json. All PicoVDB numbers come from src/convert.ts, which is
 // byte-identical to the native converter (test/convert.test.ts).
 

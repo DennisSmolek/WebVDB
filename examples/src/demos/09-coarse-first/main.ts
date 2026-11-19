@@ -1,9 +1,9 @@
 /**
  * Demo 09 — coarse-first (K4.20): stream one `.nvdb` that holds a small preview grid and then the full grid
- * (docs/design/K4-5-coarse-first.md, K4.16), and watch the volume go from preview to full with a byte counter.
+ * (docs/dev/design/K4-5-coarse-first.md, K4.16), and watch the volume go from preview to full with a byte counter.
  *
  * - The file is baked in the page (`vdbBakeCoarseFirst` on `fixtures/vdb-samples/smoke.vdb`: `[density.lod48, density]`,
- *   box previews, FpN, codec ZIP; K4.19 proposes trilinear as the default, docs/handoffs/K4-19.md), made a `Blob`, and fetched back as a `Response` so the loader
+ *   box previews, FpN, codec ZIP; K4.19 proposes trilinear as the default, docs/archive/handoffs/K4-19.md), made a `Blob`, and fetched back as a `Response` so the loader
  *   sees what a network delivers. `?file=<url>` streams a file you baked yourself instead
  *   (`node scripts/bake-coarse-first.mjs --out fixtures/smoke.coarse.nvdb`, then `?file=/fixtures/smoke.coarse.nvdb`).
  * - The body is throttled to a fixed link speed (`?speed=<KiB/s>`, default 256) by a pull-driven stream, so the

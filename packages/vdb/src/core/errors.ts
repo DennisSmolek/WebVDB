@@ -1,5 +1,5 @@
 /**
- * Error type for the engine-free core (docs/design/K1-core.md §4).
+ * Error type for the engine-free core (docs/dev/design/K1-core.md §4).
  * Every message should say what to do next.
  */
 export type VDBErrorCode =

@@ -39,7 +39,7 @@ fixtures/k3
 # D33: the exact CIE 1931 2° colour matching functions (CC BY-SA 4.0), test-only (scripts/fetch-cie-cmf.mjs), never committed
 fixtures/cie
 
-# Gallery assets pending licence review (docs/assets-licensing.md); local only, never committed
+# Gallery assets pending licence review (docs/dev/assets-licensing.md); local only, never committed
 fixtures/gallery
 
 # Fetched fixture dirs (no trailing slash: worktrees symlink them)

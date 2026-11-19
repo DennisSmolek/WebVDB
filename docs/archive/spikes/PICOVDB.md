@@ -2,7 +2,7 @@
 
 *Evaluation spike, 2026-10-01. Pinned upstream: [emcfarlane/picovdb](https://github.com/emcfarlane/picovdb)
 @ `f5d22e5602a7fc7f206d33ec35328f58e8667c83` (2026-08-24), Apache-2.0 since
-2026-07-15. Code: [`experiments/picovdb-spike/`](../../experiments/picovdb-spike/). Nothing
+2026-07-15. Code: [`experiments/picovdb-spike/`](../../../experiments/picovdb-spike/). Nothing
 under `packages/` was touched. This document is evidence for a decision the
 owner makes. It decides nothing.*
 
@@ -338,7 +338,7 @@ interim server op is "CSG / composites".
 > ## D7 — PicoVDB: not adopted now; re-evaluate on triggers
 > NanoVDB Float/Fp8/FpN remains WebVDB's only shipping GPU format, and
 > PicoVDB is **not** adopted as a format or as a CSG engine at this time
-> (evidence: [spikes/PICOVDB.md](./spikes/PICOVDB.md)). On our fog corpus
+> (evidence: [spikes/PICOVDB.md](./PICOVDB.md)). On our fog corpus
 > PicoVDB float is 2.2× NanoVDB Fp8, it has no quantized fog encoding, no
 > world transform and no format version, and its converter mis-reads fog
 > grids with active internal tiles. The spike stays in

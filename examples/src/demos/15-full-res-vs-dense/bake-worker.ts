@@ -1,7 +1,7 @@
 /**
  * Demo 15's CPU side, off the main thread: load an asset (the full-resolution grid image and its file size), bake its
  * dense `.wvdb` at a resolution (his `wvdb` bake: point sampling, 8-bit, clamped to 0–1), then measure both sides
- * against the source with the comparison report's metric (`vdbResampleError`, research/INDEX) and the file's gzip
+ * against the source with the comparison report's metric (`vdbResampleError`, docs/dev/research/INDEX) and the file's gzip
  * size. Requests run in order: the page asks for `load`, `bake`, then `measure`, so a bake shows before the numbers.
  * Public tools API only.
  *

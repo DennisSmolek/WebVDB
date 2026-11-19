@@ -1,6 +1,6 @@
 /**
  * The public `vdb*` WGSL API layered over the vendored traversal
- * (docs/design/K1-core.md §3.2). Written in the generated module's final names:
+ * (docs/dev/design/K1-core.md §3.2). Written in the generated module's final names:
  * vendored declarations appear renamed (`vdb_*`, `VDB_*`), and the generator
  * pulls in exactly the vendored declarations this text references.
  *

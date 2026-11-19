@@ -1,7 +1,7 @@
 NanoVDB WGSL traversal module (vendored fork)
 
 This directory contains pnanovdb.wgsl, a WGSL port of the PNanoVDB C API,
-vendored as a fork per WebVDB decision D2 (docs/DECISIONS.md).
+vendored as a fork per WebVDB decision D2 (docs/archive/v1/DECISIONS.md).
 
 Original work:
   PNanoVDB.h — Copyright Contributors to the OpenVDB Project

@@ -1,7 +1,7 @@
 /**
  * K3.2c timing harness: one froxel-renderer configuration per page load, timed per pass on the GPU
  * (three's render-pass timestamps mapped to pass names, `k3-pass-timer.ts`) and as a queue-synchronised
- * frame (render, then `queue.onSubmittedWorkDone()`: v1's hardware-gate fallback, docs/handoffs/PHASE-3.md).
+ * frame (render, then `queue.onSubmittedWorkDone()`: v1's hardware-gate fallback, docs/archive/handoffs/PHASE-3.md).
  * Driven by `scripts/k3/time-hardware.mjs` on installed Chrome; SwiftShader works too (slowly).
  *
  * Query: `?asset=cloud04|bunny|smoke|wdas` (as k3-sparse: cloud04 and bunny are identical voxels on both

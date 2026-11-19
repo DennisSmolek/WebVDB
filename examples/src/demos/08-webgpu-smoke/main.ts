@@ -1,6 +1,6 @@
 /**
  * Demo 08 — webgpu-smoke: the OpenVDB smoke rendered with NO engine (task
- * K1.7, docs/design/K1-core.md §7). Only `@pmndrs/vdb` (the core: pool + WGSL
+ * K1.7, docs/dev/design/K1-core.md §7). Only `@pmndrs/vdb` (the core: pool + WGSL
  * generator) and `@pmndrs/vdb/tools` (the .vdb parser); no three.js
  * (examples/test/demo-08-imports.test.ts checks the module graph).
  *
@@ -20,7 +20,7 @@
  * Presentation: `?presentation=direct` (default) draws into the canvas's
  * WebGPU context. `?presentation=readback` renders to a texture, copies it to
  * a buffer and draws it on a 2D canvas: headless SwiftShader has no
- * compositor (docs/handoffs/PHASE-3.md), so the e2e spec uses it.
+ * compositor (docs/archive/handoffs/PHASE-3.md), so the e2e spec uses it.
  * `?test=1` pins the camera and renders only on demand.
  * State for e2e/demo-08.spec.ts: `window.__DEMO08__`.
  */

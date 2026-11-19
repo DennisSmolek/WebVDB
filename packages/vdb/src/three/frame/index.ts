@@ -1,6 +1,6 @@
 /**
  * K3.1: mjurczyk's froxel pipeline with `'volume'` lighting (R1 §6 Step 1), ported as three r187
- * TSL fragment passes over the VDBVolumeSource seam. See docs/handoffs/K3-1.md.
+ * TSL fragment passes over the VDBVolumeSource seam. See docs/archive/handoffs/K3-1.md.
  */
 export { VDBFrameVolume } from "./volume.js";
 export type { VDBFrameVolumeProps } from "./volume.js";

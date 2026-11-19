@@ -1,5 +1,5 @@
 /**
- * WGSL module generator (docs/design/K1-core.md §3, task K1.4a).
+ * WGSL module generator (docs/dev/design/K1-core.md §3, task K1.4a).
  *
  * Roots for the profile and options (the vendored names the API layer uses)
  * -> closure over the declaration table extracted from the unmodified vendored
@@ -441,7 +441,7 @@ function build(o: NormalizedOptions): string {
 }
 
 /**
- * Generate a WGSL module for the pool (docs/design/K1-core.md §3.1).
+ * Generate a WGSL module for the pool (docs/dev/design/K1-core.md §3.1).
  * Deterministic: the same options give the same string.
  *
  * `types` must cover every grid type the host may add to the pool, not just

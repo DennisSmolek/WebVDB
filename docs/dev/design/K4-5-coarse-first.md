@@ -1,6 +1,6 @@
 # K4.5: coarse-first `.nvdb` delivery (design note)
 
-Status: implemented in K4.16/K4.18 ([docs/handoffs/K4-16.md](../handoffs/K4-16.md)). K4.16 found that NanoVDB's
+Status: implemented in K4.16/K4.18 ([docs/archive/handoffs/K4-16.md](../../archive/handoffs/K4-16.md)). K4.16 found that NanoVDB's
 `io::Segment` writes every grid's FileMetaData before any grid data, so the full grid's metadata (184 B) now precedes
 the preview: first paint for (a) at `resolution: 48`, box, FpN is 12.0 KiB of gzip (12.3 KiB with `Codec.ZIP` and
 no HTTP compression), not 11.9 KiB. The tables below are the design-time numbers.
@@ -10,7 +10,7 @@ Original status: design only, 2026-11-18. Numbers are measured with K4.4's `resa
 
 **Goal (PHASES K4 exit gate):** the first paint of a streamed `.nvdb` is no larger than mjurczyk's smoke preview.
 His `smoke.wvdb` needs **14.8 KiB** before LOD0 (32³) can be drawn (`wvdbPrefixLength(info, 0)` on our
-byte-exact re-bake of his file; "14 KiB" in research/INDEX is the LOD0 chunk without the header).
+byte-exact re-bake of his file; "14 KiB" in docs/dev/research/INDEX is the LOD0 chunk without the header).
 
 **Recommendation: (a), a low-resolution preview grid first in the same multi-grid `.nvdb`, streamed with HTTP
 compression.** On smoke the preview is drawable after **11.9 KiB** (box filter, FpN, `resolution: 48`), at the

@@ -1,5 +1,5 @@
 // Declaration-table extraction for the vendored PNanoVDB WGSL fork (K1.4a,
-// docs/design/K1-core.md §3.3).
+// docs/dev/design/K1-core.md §3.3).
 //
 // `extractWgslChunks(source)` parses the UNMODIFIED vendored `pnanovdb.wgsl`
 // into its top-level declarations (fn, struct, const, alias), in file order,

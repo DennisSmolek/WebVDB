@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 // @ts-expect-error -- plain .mjs helper shared with scripts/k3 (no type declarations)
 import { encodePng } from "../scripts/k3/png.mjs";
 
-// K4.16 / K4.18 (docs/design/K4-5-coarse-first.md, the settling test's step 2). The page is
+// K4.16 / K4.18 (docs/dev/design/K4-5-coarse-first.md, the settling test's step 2). The page is
 // examples/src/harness/coarse-first.ts: smoke.vdb baked to [density.lod48, density] in the page,
 // streamed through a throttled pull-driven ReadableStream into vdbStreamCoarseFirst on a real pool.
 // Gates: the preview is added after <= 14.8 KiB of transfer (his smoke LOD0) with ZIP inside the
