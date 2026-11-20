@@ -47,11 +47,15 @@
  *
  * `range: [start, end]` (inclusive frame indices) limits playback to those frames; the default is all of them.
  * `loopMode: 'repeat'` (default) wraps from `end` to `start`; `'pingpong'` plays forward then backward
- * (`start .. end .. start`), with each end frame shown once per turn (no doubled frame at the ends). Both need
- * `loop: true`; with `loop: false` playback holds at `end` and `loopMode` has no effect. `start()` shows `range[0]`.
- * `seek(i)` wraps `i` into the clip, then clamps it into the range. `setRange()` and `setLoopMode()` change them
- * while playing (playback continues from the shown frame, clamped into the new range). The prefetch ring follows
- * the playback order, so a swap is always a `pool.replace` of a frame the ring already holds.
+ * (`start .. end .. start`), with each end frame shown once per turn (no doubled frame at the ends); `'once'` plays
+ * to `end` and holds there. `start()` shows `range[0]`. `seek(i)` wraps `i` into the clip, then clamps it into the
+ * range. `setRange()` and `setLoopMode()` change them while playing (playback continues from the shown frame,
+ * clamped into the new range). The prefetch ring follows the playback order, so a swap is always a `pool.replace`
+ * of a frame the ring already holds.
+ *
+ * **Direction.** A ping-pong keeps its direction across `stop()` / `resume()`, `seek()` and `setRange()`: paused on
+ * the way back, it resumes on the way back. `start()` goes forward; `setLoopMode()` keeps the direction only when the
+ * new mode is `'pingpong'` (`'repeat'` and `'once'` only go forward).
  *
  * ## Failed frames: no retry until `seek` / `start`
  *
@@ -91,8 +95,13 @@ export type VDBSequenceTarget<TFrame = Uint32Array> =
 /** Decodes one frame's URL (or index) into a frame: a NanoVDB grid image by default. */
 export type VDBFrameLoader<TFrame = Uint32Array> = (url: string, index: number) => Promise<TFrame>;
 
-/** How a looping sequence continues past the end of its range: wrap (`'repeat'`) or turn around (`'pingpong'`). */
-export type VDBSequenceLoopMode = "repeat" | "pingpong";
+/**
+ * What playback does at the end of its range: wrap to the start (`'repeat'`), turn around (`'pingpong'`), or hold
+ * the end frame (`'once'`).
+ */
+export type VDBSequenceLoopMode = "once" | "repeat" | "pingpong";
+
+const LOOP_MODES: readonly VDBSequenceLoopMode[] = ["once", "repeat", "pingpong"];
 
 /** An inclusive `[start, end]` frame range. */
 export type VDBSequenceRange = readonly [start: number, end: number];
@@ -106,16 +115,15 @@ export interface VDBSequenceOptions<TFrame = Uint32Array> {
   fps?: number;
   /** How many frames to decode ahead of the current one. Default 3. */
   prefetch?: number;
-  /** Loop back to the range start after the range end. Default true. `false` holds at the range end. */
-  loop?: boolean;
   /**
    * Inclusive `[start, end]` frames to play. Default `[0, frameCount - 1]` (all frames).
    * @throws VDBError `VDB_BAD_OPTION` unless both are integers with `0 <= start <= end < frameCount`.
    */
   range?: VDBSequenceRange;
   /**
-   * What a looping sequence does at the range end: `'repeat'` (default) wraps to the start; `'pingpong'` plays
-   * back to the start and forward again. Ignored when `loop` is false.
+   * What playback does at the range end: `'repeat'` (default) wraps to the start; `'pingpong'` plays back to the
+   * start and forward again; `'once'` holds the end frame. Change it while playing with `setLoopMode()`.
+   * @throws VDBError `VDB_BAD_OPTION` for any other value.
    */
   loopMode?: VDBSequenceLoopMode;
   /**
@@ -171,13 +179,14 @@ export class VDBSequence<TFrame = Uint32Array> {
   readonly frameCount: number;
   readonly fps: number;
   readonly prefetch: number;
-  readonly loop: boolean;
 
   private _rangeStart = 0;
   private _rangeEnd = 0;
   private _loopMode: VDBSequenceLoopMode = "repeat";
   /** Playback direction at the shown frame: +1, or -1 on the way back of a ping-pong. */
   private _dir: 1 | -1 = 1;
+  /** Direction at the clock anchor (`startFrame`): -1 when it was anchored on the way back of a ping-pong. */
+  private startDir: 1 | -1 = 1;
 
   private readonly urlFor: (index: number) => string;
   private readonly loader: VDBFrameLoader<TFrame>;
@@ -200,6 +209,10 @@ export class VDBSequence<TFrame = Uint32Array> {
   private replaceFrame: ((frame: TFrame) => void) | undefined;
   /** K5.9: a frame shown by `seek` while stopped once its decode lands. */
   private pendingFrame = -1;
+  /** The playback direction at `pendingFrame`. */
+  private pendingDir: 1 | -1 = 1;
+  /** `pendingFrame` was asked for (start / seek / a range or mode change), not made due by the clock: it survives `stop()`. */
+  private pendingExplicit = false;
   private playing = false;
   private startNow = 0;
   private startFrame = 0;
@@ -221,7 +234,6 @@ export class VDBSequence<TFrame = Uint32Array> {
     this.fps = opts.fps ?? 24;
     if (!(this.fps > 0)) throw new VDBError("VDB_BAD_OPTION", `VDBSequence: fps must be > 0 (got ${this.fps}).`);
     this.prefetch = Math.max(0, opts.prefetch ?? 3);
-    this.loop = opts.loop ?? true;
     this._rangeEnd = frameCount - 1;
     if (opts.range !== undefined) this.checkRange(opts.range, "VDBSequence");
     this._loopMode = this.checkLoopMode(opts.loopMode ?? "repeat", "VDBSequence");
@@ -262,7 +274,7 @@ export class VDBSequence<TFrame = Uint32Array> {
     return [this._rangeStart, this._rangeEnd];
   }
 
-  /** The loop mode (`'repeat'` unless set). */
+  /** What playback does at the range end (`'repeat'` unless set). */
   get loopMode(): VDBSequenceLoopMode {
     return this._loopMode;
   }
@@ -280,15 +292,16 @@ export class VDBSequence<TFrame = Uint32Array> {
   }
 
   private checkLoopMode(mode: unknown, who: string): VDBSequenceLoopMode {
-    if (mode !== "repeat" && mode !== "pingpong") {
-      throw new VDBError("VDB_BAD_OPTION", `${who}: loopMode must be 'repeat' or 'pingpong' (got ${String(mode)}).`);
+    if (!LOOP_MODES.includes(mode as VDBSequenceLoopMode)) {
+      throw new VDBError("VDB_BAD_OPTION", `${who}: loopMode must be 'once', 'repeat' or 'pingpong' (got ${String(mode)}).`);
     }
-    return mode;
+    return mode as VDBSequenceLoopMode;
   }
 
   /**
    * Change the playback range (inclusive). While playing, playback continues from the shown frame, clamped into the
-   * new range (the clock re-anchors there); the prefetch ring is refilled in the new order.
+   * new range (the clock re-anchors there; a ping-pong keeps its direction); the prefetch ring is refilled in the
+   * new order.
    *
    * @throws VDBError `VDB_BAD_OPTION` for a bad range; `VDB_DISPOSED` after `dispose()`.
    */
@@ -299,24 +312,32 @@ export class VDBSequence<TFrame = Uint32Array> {
   }
 
   /**
-   * Change the loop mode; playback continues from the shown frame going forward.
+   * Change what playback does at the range end. Playback continues from the shown frame: going forward, or, when
+   * both the old and the new mode are `'pingpong'`, in its current direction. Switching to `'once'` at the range end
+   * holds there; switching from `'once'` held at the end to `'repeat'` or `'pingpong'` plays on.
    *
    * @throws VDBError `VDB_BAD_OPTION` for an unknown mode; `VDB_DISPOSED` after `dispose()`.
    */
   setLoopMode(mode: VDBSequenceLoopMode, now: number = this.now()): void {
     this.assertLive("setLoopMode()");
     this._loopMode = this.checkLoopMode(mode, "VDBSequence.setLoopMode");
+    if (this._loopMode !== "pingpong") this._dir = 1;
     this.reanchor(now);
   }
 
   /** Re-anchor the clock at the shown frame (clamped into the range) after a range or mode change. */
   private reanchor(now: number): void {
-    this._dir = 1;
-    this.startNow = now;
-    this.startFrame = this.clampToRange(this._frame < 0 ? this._rangeStart : this._frame);
+    this.anchor(this._frame < 0 ? this._rangeStart : this._frame, this._dir, now);
     if (!this.replaceFrame) return;
-    this.ensurePrefetch(this.startFrame);
-    if (this._frame < 0 || this._frame !== this.startFrame) this.showFrame(this.startFrame);
+    this.ensurePrefetch(this.startFrame, this.startDir);
+    if (this._frame < 0 || this._frame !== this.startFrame) this.showFrame(this.startFrame, this.startDir, true);
+  }
+
+  /** Anchor the clock at `frame` (clamped into the range) heading `dir` (forward unless ping-ponging) at `now`. */
+  private anchor(frame: number, dir: 1 | -1, now: number): void {
+    this.startNow = now;
+    this.startFrame = this.clampToRange(frame);
+    this.startDir = this._loopMode === "pingpong" ? dir : 1;
   }
 
   private clampToRange(index: number): number {
@@ -330,7 +351,7 @@ export class VDBSequence<TFrame = Uint32Array> {
     for (let k = 0; k < steps; k++) {
       let next = frame + d;
       if (next > this._rangeEnd || next < this._rangeStart) {
-        if (!this.loop) break;
+        if (this._loopMode === "once") break;
         if (this._loopMode === "pingpong" && this._rangeEnd > this._rangeStart) {
           d = d === 1 ? -1 : 1;
           next = frame + d;
@@ -343,15 +364,23 @@ export class VDBSequence<TFrame = Uint32Array> {
     return { frame, dir: d };
   }
 
-  /** The frame the clock points at `advanced` frames after the anchor, and the direction there. */
+  /**
+   * The frame the clock points at `advanced` frames after the anchor, and the direction there.
+   *
+   * A ping-pong over `len` frames is a cycle of `period = 2 (len - 1)` steps: phase `q` in `[0, len - 1]` is frame
+   * `rs + q` on the way out, phase `q` in `(len - 1, period)` is frame `rs + period - q` on the way back. An anchor
+   * at offset `o = startFrame - rs` heading forward sits at phase `o`, heading back at phase `period - o` (the two
+   * agree at the ends: `o = len - 1` gives `len - 1` either way, `o = 0` gives 0 or `period`, the same phase).
+   */
   private frameAt(advanced: number): { frame: number; dir: 1 | -1 } {
     const rs = this._rangeStart;
     const len = this._rangeEnd - rs + 1;
-    const t = this.clampToRange(this.startFrame) - rs + advanced;
-    if (!this.loop || len === 1) return { frame: rs + Math.min(t, len - 1), dir: 1 };
-    if (this._loopMode === "repeat") return { frame: rs + (t % len), dir: 1 };
+    const o = this.clampToRange(this.startFrame) - rs;
+    if (len === 1) return { frame: rs, dir: 1 };
+    if (this._loopMode === "once") return { frame: rs + Math.min(o + advanced, len - 1), dir: 1 };
+    if (this._loopMode === "repeat") return { frame: rs + ((o + advanced) % len), dir: 1 };
     const period = 2 * (len - 1);
-    const q = t % period;
+    const q = ((this.startDir === 1 ? o : period - o) + advanced) % period;
     return { frame: rs + (q < len ? q : period - q), dir: q < len - 1 ? 1 : -1 };
   }
 
@@ -359,10 +388,10 @@ export class VDBSequence<TFrame = Uint32Array> {
    * Ensure the frames `[from .. from+prefetch]` in playback order (wrapping or turning around in the range when
    * looping) are decoding or decoded, and evict frames outside that window to bound memory.
    */
-  private ensurePrefetch(from: number): void {
+  private ensurePrefetch(from: number, dir: 1 | -1): void {
     const want = new Set<number>();
     const first = this.clampToRange(from);
-    for (let k = 0; k <= this.prefetch; k++) want.add(this.stepFrom(first, this._dir, k).frame);
+    for (let k = 0; k <= this.prefetch; k++) want.add(this.stepFrom(first, dir, k).frame);
     // Keep the current frame available for hold-last-frame even if it slipped
     // out of the forward window (prefetch 0 edge case).
     if (this._frame >= 0) want.add(this._frame);
@@ -397,7 +426,7 @@ export class VDBSequence<TFrame = Uint32Array> {
       .then((image) => {
         if (!current()) return;
         this.ring.set(index, image);
-        if (index === this.pendingFrame && !this.playing) this.showFrame(index);
+        if (index === this.pendingFrame && !this.playing) this.showFrame(index, this.pendingDir);
       })
       .catch((err) => {
         if (!current()) return;
@@ -466,27 +495,32 @@ export class VDBSequence<TFrame = Uint32Array> {
       this.replaceFrame = (frame) => pool.replace(id, frame);
     }
     this.playing = true;
-    this.startNow = now;
-    this.startFrame = this._rangeStart;
     this._dir = 1;
+    this.anchor(this._rangeStart, 1, now);
     this._frame = -1;
     this._stalls = 0;
     this._replaceMs = 0;
     this._swaps = 0;
     this.failed.clear();
-    this.ensurePrefetch(this._rangeStart);
-    this.showFrame(this._rangeStart);
+    this.ensurePrefetch(this._rangeStart, 1);
+    this.showFrame(this._rangeStart, 1, true);
   }
 
-  /** Stop playback. The ring is preserved so `start`/`resume`/`seek` can resume cheaply. */
+  /**
+   * Stop playback. The ring is preserved so `start`/`resume`/`seek` can resume cheaply. A frame the clock made due
+   * that is still decoding does not land after `stop()`; a frame asked for by `start`, `seek`, `setRange` or
+   * `setLoopMode` (before or after the stop) is shown when its decode lands.
+   */
   stop(): void {
     this.playing = false;
+    if (!this.pendingExplicit) this.pendingFrame = -1;
   }
 
   /**
    * Resume after `stop()` WITHOUT resetting to frame 0 or clearing stats:
    * re-anchors the clock at `now` from the currently-shown frame so playback
-   * continues from where it paused. No-op if `start()` was never called.
+   * continues from where it paused (a ping-pong in the direction it was going).
+   * No-op if `start()` was never called.
    *
    * @throws VDBError `VDB_DISPOSED` after `dispose()`.
    */
@@ -494,25 +528,22 @@ export class VDBSequence<TFrame = Uint32Array> {
     this.assertLive("resume()");
     if (!this.replaceFrame) return;
     this.playing = true;
-    this.startNow = now;
-    this.startFrame = this._frame < 0 ? this._rangeStart : this.clampToRange(this._frame);
+    this.anchor(this._frame < 0 ? this._rangeStart : this._frame, this._dir, now);
+    this.ensurePrefetch(this.startFrame, this.startDir);
   }
 
   /**
-   * Jump to `index` (wrapped into the clip, then clamped into the range), re-anchoring the clock there so playback continues from
-   * it. Clears the failed set (failed frames are retried).
+   * Jump to `index` (wrapped into the clip, then clamped into the range), re-anchoring the clock there so playback
+   * continues from it (a ping-pong keeps its direction). Clears the failed set (failed frames are retried).
    *
    * @throws VDBError `VDB_DISPOSED` after `dispose()`.
    */
   seek(index: number, now: number = this.now()): void {
     this.assertLive("seek()");
     this.failed.clear();
-    const frame = this.clampToRange(this.wrap(Math.trunc(index)));
-    this._dir = 1;
-    this.startNow = now;
-    this.startFrame = frame;
-    this.ensurePrefetch(frame);
-    this.showFrame(frame);
+    this.anchor(this.wrap(Math.trunc(index)), this._dir, now);
+    this.ensurePrefetch(this.startFrame, this.startDir);
+    this.showFrame(this.startFrame, this.startDir, true);
   }
 
   /**
@@ -526,34 +557,38 @@ export class VDBSequence<TFrame = Uint32Array> {
     const elapsed = now - this.startNow;
     const advanced = Math.floor(elapsed / this.frameDurationMs);
     const { frame: target, dir } = this.frameAt(advanced);
-    this._dir = dir;
 
     if (target === this._frame) {
       // Same frame is due; just keep prefetch warm.
-      this.ensurePrefetch(this._frame < 0 ? this._rangeStart : this._frame);
+      this._dir = dir;
+      this.pendingFrame = -1;
+      this.ensurePrefetch(target, dir);
       return this._frame;
     }
 
-    this.showFrame(target);
+    this.showFrame(target, dir);
     return this._frame;
   }
 
   /**
-   * Show `index` if decoded (`pool.replace`, counts a swap, fires `onFrame`,
-   * advances prefetch); otherwise count a stall and hold. Shared by
-   * start/seek/update.
+   * Show `index` (playback heading `dir` there) if decoded (`pool.replace`, counts a swap, fires `onFrame`,
+   * advances prefetch); otherwise count a stall and hold. Shared by start/seek/update.
    */
-  private showFrame(index: number): void {
+  private showFrame(index: number, dir: 1 | -1, explicit = false): void {
     if (!this.replaceFrame) return;
     const image = this.ring.get(index);
     if (image === undefined) {
-      // Not decoded yet: hold the last frame, count a stall, keep decoding (a stopped player shows it when it lands).
+      // Not decoded yet: hold the last frame, count a stall, keep decoding (a stopped player shows an explicit
+      // request, start / seek / a range or mode change, when it lands).
       if (this._frame !== index) this._stalls++;
       this.pendingFrame = index;
-      this.ensurePrefetch(index);
+      this.pendingDir = dir;
+      this.pendingExplicit = explicit;
+      this.ensurePrefetch(index, dir);
       return;
     }
     this.pendingFrame = -1;
+    this._dir = dir;
     if (index === this._frame) return;
 
     const t0 = this.now();
@@ -561,7 +596,7 @@ export class VDBSequence<TFrame = Uint32Array> {
     this._replaceMs = this.now() - t0;
     this._frame = index;
     this._swaps++;
-    this.ensurePrefetch(index);
+    this.ensurePrefetch(index, dir);
     this.onFrame?.(this.stats);
   }
 

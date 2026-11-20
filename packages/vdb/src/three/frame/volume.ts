@@ -163,8 +163,9 @@ export class VDBFrameVolume extends THREE.Group {
   mipmaps: boolean;
   hdda: boolean;
   /**
-   * The volume's box in its local space: the `bbox` prop, else the source's box. A sparse source's box is re-read
-   * when the source's `version` moves (G16a: one made with `followImage` follows its grid's image, e.g. a coarse-first
+   * The volume's box in its local space: the `bbox` prop, else the source's box, re-read
+   * when the source's `version` moves: a dense frame with another `.wvdb` box (a sequence frame; RV, as his WVDB sequences)
+   * or a sparse source made with `followImage` after its grid's image changed (G16a, e.g. a coarse-first
    * swap), so this object is updated in place then. Do not mutate.
    */
   readonly bbox: THREE.Box3;
@@ -173,7 +174,7 @@ export class VDBFrameVolume extends THREE.Group {
   private readonly initialMedium: { baseColor: THREE.Color; extinctionScale: THREE.Vector3; angstromExponent: string | number };
   /** `source.version` the uniforms were last updated for. */
   private sourceVersion: number;
-  /** G16a: the box is a sparse source's (no `bbox` prop), so it follows the source. */
+  /** G16a / RV: the box is the source's (no `bbox` prop), so it follows the source. */
   private readonly boxFromSource: boolean;
   private readonly resolvedPhase: VDBFramePhaseSource = { phase: "henyey-greenstein", phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0 };
 
@@ -258,7 +259,7 @@ export class VDBFrameVolume extends THREE.Group {
     // FrameVolume.js L339–353: the volume box as a matrix of the unit box.
     const box = toBox(bbox, source);
     this.bbox = box;
-    this.boxFromSource = bbox === undefined && source.kind === "sparse";
+    this.boxFromSource = bbox === undefined;
 
     this.volumes = [
       {
@@ -336,9 +337,11 @@ export class VDBFrameVolume extends THREE.Group {
   updateSource(): void {
     this.sourceVersion = this.source.version;
     this.sourceUniforms.update(this.source, { densityScale: this.densityScale, normalizeDensity: this.normalizeDensity });
-    // G16a: a sparse source's box (a followImage source re-reads it after an image change)
-    if (this.boxFromSource && this.source.kind === "sparse") {
-      const [min, max] = this.source.bbox;
+    // G16a: a sparse source's box (a followImage source re-reads it after an image change). RV: a dense frame's
+    // .wvdb box (his WVDB sequences give every frame its own box; a null box, an empty frame, keeps the last one).
+    const sourceBox = this.source.kind === "sparse" ? this.source.bbox : this.source.volume.bbox;
+    if (this.boxFromSource && sourceBox) {
+      const [min, max] = sourceBox;
       const b = this.bbox;
       if (b.min.x !== min[0] || b.min.y !== min[1] || b.min.z !== min[2] || b.max.x !== max[0] || b.max.y !== max[1] || b.max.z !== max[2]) {
         b.min.set(...min);
@@ -353,8 +356,9 @@ export class VDBFrameVolume extends THREE.Group {
     if (this.source.version !== this.sourceVersion) this.updateSource();
   }
 
-  /** Frees the proxy geometry and the pass materials. The source belongs to the caller. */
+  /** Frees the proxy geometry and the pass materials, and stops following the source (its uniforms). The source belongs to the caller. */
   dispose(): void {
+    this.sourceUniforms.dispose();
     this.injectMaterial?.dispose();
     this.injectMaterial = null;
     this.densityMaterial?.dispose();

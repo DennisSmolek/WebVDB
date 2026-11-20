@@ -34,7 +34,7 @@ const sequence = new VDBSequence({
     frameCount: 120,
     fps: 24,
     prefetch: 4, // frames decoded ahead
-    loop: true,
+    loopMode: 'repeat', // or 'pingpong', or 'once' (hold the last frame)
     // The default loader fetches and parses a .nvdb; override it to load from anywhere.
     loader: async (url) => (await NvdbFile.fromURL(url)).gridImage(0),
     onError: (error, index) => console.warn('frame', index, error),
@@ -56,15 +56,20 @@ const frame = (now: number) => {
 | `urls` | An array, or a function of the frame index |
 | `frameCount`, `fps` | Length and playback rate |
 | `prefetch` | Frames decoded ahead of the playhead |
-| `loop` | Wrap at the end of the range (default true; `false` holds on the last frame) |
 | `range` | `[start, end]`, inclusive: play only these frames (default all of them) |
-| `loopMode` | `'repeat'` (wrap, default) or `'pingpong'` (forward then backward; each end frame is shown once per turn). Needs `loop` |
+| `loopMode` | At the end of the range: `'repeat'` (wrap, default), `'pingpong'` (forward then backward; each end frame is shown once per turn) or `'once'` (hold the last frame) |
 | `loader` | `(url, index) => Promise<TFrame>` (a grid image by default); the default fetches and parses a `.nvdb`; required for a `{ source }` target |
 | `now` | The clock, default `performance.now`; pass your own to step deterministically |
 | `onFrame`, `onError` | Stats after each swap, and per-frame load failures |
 
 `stats` reports `frame`, `decodedAhead`, `stalls` (a swap that had to wait for a decode), `replaceMs`, `swaps` and
 `failed`. Control it with `start(target, now?)`, `stop()`, `resume()`, `seek(index)`, `preload(count?)` and
-`dispose()`. A `seek` while stopped shows the frame once it is decoded; a seek is wrapped into the clip, then clamped into
-the range. `setRange([start, end])` and `setLoopMode(mode)` change them while playing (playback continues from the shown
-frame, clamped into the new range); `range` and `loopMode` read them back. A bad range or mode throws `VDB_BAD_OPTION`.
+`dispose()`. A `seek` (before or after a `stop()`) shows the frame once it is decoded; a frame the clock made due
+that is still decoding when you `stop()` is not shown later. A seek is wrapped into the clip, then clamped into the range. `setRange([start, end])` and
+`setLoopMode(mode)` change them while playing (playback continues from the shown frame, clamped into the new range);
+`range` and `loopMode` read them back. Switching to `'once'` past the end holds there, and back to `'repeat'` plays on.
+A ping-pong keeps its direction across `stop()` / `resume()`, `seek()` and `setRange()`. A bad range or mode throws
+`VDB_BAD_OPTION`.
+
+A dense frame with another `.wvdb` box moves a `VDBFrameVolume`'s box with it (each frame keeps its own world box,
+so the voxels do not stretch), unless the volume was given a `bbox`.

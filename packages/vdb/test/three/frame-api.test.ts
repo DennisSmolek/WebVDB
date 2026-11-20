@@ -14,9 +14,8 @@ import { fixture } from "../tools/wvdb-helpers.js";
 const cloud = wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")));
 
 /** A small dense frame: density 0.2 everywhere, optionally a "flames" emission grid. */
-function frame(dims: [number, number, number], flames: boolean, value = 0.2): WvdbDenseVolume {
+function frame(dims: [number, number, number], flames: boolean, value = 0.2, box: [[number, number, number], [number, number, number]] = [[0, 0, 0], [1, 1, 1]]): WvdbDenseVolume {
   const n = dims[0] * dims[1] * dims[2];
-  const box: [[number, number, number], [number, number, number]] = [[0, 0, 0], [1, 1, 1]];
   const grids = [{ name: "density", class: "fog volume" as const, background: 0, bbox: box, finest: { dimensions: dims, values: new Float32Array(n).fill(value) } }];
   if (flames) grids.push({ name: "flames", class: "fog volume" as const, background: 0, bbox: box, finest: { dimensions: dims, values: new Float32Array(n).fill(0.5) } });
   const { bytes } = writeWvdb(grids, { lods: 1 });
@@ -96,6 +95,31 @@ describe("K5.9 VDBFrameVolume API", () => {
     expect(() => plain.replace(frame([8, 8, 8], true))).not.toThrow();
     expect(plain.textures.emission).toBe(null);
     v.dispose();
+  });
+
+  it("RV: a dense frame with another .wvdb box moves the volume's box (his WVDB sequences: each frame its own box); a bbox prop stays", () => {
+    const a = frame([8, 8, 8], false, 0.2, [[0, 0, 0], [8, 8, 8]]);
+    const b = frame([8, 8, 8], false, 0.2, [[4, -2, 0], [20, 6, 16]]); // same texels, another box
+    const source = vdbDenseTextures(a);
+    const v = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer() });
+    const fixed = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer(), bbox: [[0, 0, 0], [1, 1, 1]] });
+    const m = (vol: VDBFrameVolume) => {
+      const e = vol.volumes[0]!.matrix.elements;
+      return [e[0], e[5], e[10], e[12], e[13], e[14]];
+    };
+    expect(m(v)).toEqual([8, 8, 8, 4, 4, 4]);
+    source.replace(b);
+    v.syncSource();
+    fixed.syncSource();
+    expect(m(v)).toEqual([16, 8, 16, 12, 2, 8]);
+    expect(v.bbox.min.toArray()).toEqual([4, -2, 0]);
+    expect(m(fixed)).toEqual([1, 1, 1, 0.5, 0.5, 0.5]);
+    // Back to the first frame's box.
+    source.replace(a);
+    v.syncSource();
+    expect(m(v)).toEqual([8, 8, 8, 4, 4, 4]);
+    v.dispose();
+    fixed.dispose();
   });
 
   it("VDBSequence plays dense frames into a { source } target (needs a loader)", async () => {

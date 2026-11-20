@@ -69,8 +69,9 @@ export interface VDBThreeDenseSource extends VDBVolumeSourceInfo {
   readonly volume: WvdbDenseVolume;
   readonly textures: Readonly<Record<ChannelName, VDBDenseChannelTextures | null>>;
   /**
-   * Swap in another LOD or sequence frame. New sizes make new textures and bump `version` (a `VDBFrameVolume` follows
-   * by itself; other users call `uniforms.update(source)`). A channel the source has and the frame lacks reads its
+   * Swap in another LOD or sequence frame. New sizes make new textures and bump `version`, and so does a frame with
+   * another `.wvdb` box (a `VDBFrameVolume` follows by itself, its box too unless it was given a `bbox`; other users
+   * call `uniforms.update(source)`). A channel the source has and the frame lacks reads its
    * absent value (mask and albedo 1, emission 0); a channel the source lacks is ignored (warned once). The density's
    * mip atlas must stay if the source has one.
    */
@@ -191,7 +192,12 @@ class ThreeDenseSource implements VDBThreeDenseSource {
       set(t.map, v.data, v.dimensions);
       if (t.mip && v.mip) set(t.mip, v.mip.data, v.mip.dimensions);
     }
-    if (resized) this.version++;
+    // A frame with another world box (his WVDB sequences give each frame its own) also bumps `version`, so a
+    // VDBFrameVolume whose box is the source's moves its box (an empty frame's null box keeps the last one).
+    const a = this.volume.bbox;
+    const b = volume.bbox;
+    const moved = !!b && (!a || a.some((corner, i) => corner.some((v, k) => v !== b[i]![k])));
+    if (resized || moved) this.version++;
     this.volume = volume;
     this.texels = [...volume.dimensions] as [number, number, number];
     this.lodLevels = this.textures.density!.mip ? (volume.density.mip?.levels ?? 0) : 0;
@@ -267,6 +273,12 @@ export interface VDBVolumeUniforms {
   readonly wrap3D: VDBTslNode;
   /** Re-read textures, sizes and the normalized density scale after `source.replace` (setMipUniforms, L773–798). */
   update(source: VDBThreeVolumeSource, o?: { densityScale?: number; normalizeDensity?: boolean }): void;
+  /**
+   * Stops following the source: a sparse source drops the listeners these uniforms registered (its stats and, with
+   * `followImage`, its layout), which it otherwise keeps for its lifetime. `VDBFrameVolume.dispose()` calls it; call it
+   * yourself for uniforms you made with `vdbVolumeUniforms`. A no-op for a dense source. Idempotent.
+   */
+  dispose(): void;
 }
 
 /** FrameVolume.js L561–568 `getDensityScale`. */
@@ -330,6 +342,9 @@ export function vdbVolumeUniforms(source: VDBThreeVolumeSource, p: VDBVolumeUnif
         // A channel the frame lacks (K5.9: a constant texture) has the density's levels.
         mipLevels[name].value = densityMip && t?.mip ? (s.volume[name]?.mip?.levels ?? s.volume.density.mip?.levels ?? 0) : 0;
       }
+    },
+    dispose() {
+      // A dense source registers nothing.
     },
   };
   u.update(source);

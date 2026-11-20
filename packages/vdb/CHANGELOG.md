@@ -76,9 +76,9 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
   `vdbDenseTextures` source. A dense `replace` reads a channel the frame lacks as its absent value (emission 0, mask
   and albedo 1) and ignores a channel the source lacks. A `seek` while stopped shows the frame once decoded.
 - `VDBSequence` frame range and ping-pong: `range: [start, end]` (inclusive; default all frames) limits playback, and
-  `loopMode: 'repeat' | 'pingpong'` (default `'repeat'`) turns around at the range end (each end frame shown once per
-  turn). `setRange()` / `setLoopMode()` change them while playing; the prefetch ring follows the playback order. New
-  types `VDBSequenceRange`, `VDBSequenceLoopMode`.
+  `loopMode: 'once' | 'repeat' | 'pingpong'` (default `'repeat'`) holds, wraps or turns around at the range end (each
+  end frame shown once per turn). `setRange()` / `setLoopMode()` change them while playing; the prefetch ring follows
+  the playback order. New types `VDBSequenceRange`, `VDBSequenceLoopMode`.
 - `wvdbDenseToNvdb(...).sparseSourceOptions` (`@pmndrs/vdb/tools`): the index box, dense stats and box that line a
   sparse copy of a `.wvdb` level up with the dense source, spread into `vdbSparseSource`.
 
@@ -88,9 +88,30 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
   position `min + (i + 0.5) * (max - min + 1) / n - 0.5`, so at full resolution it is voxel `min + i` (v1 sampled
   half a voxel past, and the last cell read the background). Atlases span the box `[min - 0.5, max + 0.5]` instead
   of `[min, max + 1]`.
+- `VDBSequence` has one loop knob: the `loop: boolean` option and getter are gone; `loopMode: 'once' | 'repeat' |
+  'pingpong'` (default `'repeat'`, as `loop: true` was; `'once'` is the old `loop: false`, holding at the range end)
+  is settable while playing with `setLoopMode()`. A ping-pong keeps its direction across `stop()` / `resume()`,
+  `seek()` and `setRange()` (RV).
+- `VDBVolumeUniforms` has `dispose()`: a sparse source's uniforms drop the listeners they registered on the source.
+  `VDBFrameVolume.dispose()` calls it; call it for uniforms you made with `vdbVolumeUniforms` (RV).
 
 ### Fixed
 
+- `VDBSequence` ping-pong paused on the way back resumed forward, onto a frame its prefetch ring had evicted (a
+  stall and a dropped frame); it now resumes on the way back (RV).
+- `VDBSequence`: a frame the clock made due, still decoding at `stop()`, was shown when its decode landed; now only a
+  frame asked for (`start`, `seek`, `setRange`, `setLoopMode`) lands while stopped (RV).
+- `vdbSparseSource` with `followImage`: a new image whose grid type the `VDBGridNode` does not compile read 0 silently;
+  it now throws `VDB_TYPE_NOT_COMPILED` naming `VDBCoarseFirstEvent.types` as the fix (as does making a source over
+  such a grid) (RV).
+- `vdbSparseSource` kept a stats listener (and, with `followImage`, a layout listener) for every `VDBFrameVolume` made
+  over it, for the source's lifetime (RV).
+- `vdbSparseSource` with `followImage` destroyed the old pyramid textures at once on a swap (three r187's
+  `texture.dispose()` destroys the GPU texture), though a pass recorded in the same render could still bind them; they
+  are now destroyed once the queue's submitted work is done (RV).
+- A `VDBFrameVolume` over a dense source kept the first frame's box: a `VDBSequence` frame with another `.wvdb` box was
+  stretched into it. The box now follows the frame's box unless the volume was given a `bbox`, as mjurczyk's WVDB
+  sequences give each frame its own box (RV).
 - `wvdbDenseToNvdb` gave the grid one voxel size (the x side's), so a `.wvdb` level with non-cubic voxels (any
   default bake: each side's texel count rounds on its own) read back shifted and stretched in world space. Each axis
   now gets its own voxel size; smoke.vdb's default 128 bake measures 42.3% with `vdbResampleError` (was 45.4%; a

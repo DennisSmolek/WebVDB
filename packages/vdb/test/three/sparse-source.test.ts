@@ -207,4 +207,70 @@ describe("vdbSparseSource", () => {
     expect(fixedSource.version).toBe(2);
     volume.dispose();
   });
+
+  it("RV: a grid type the VDBGridNode does not compile throws VDB_TYPE_NOT_COMPILED (at creation, and when followImage re-reads a new image) instead of reading 0", () => {
+    const pool = {
+      revision: 1,
+      image: { type: "fpn", imageRevision: 1, resident: true },
+      info: () => ({ indexBBox: grid.indexBBox, indexToWorld: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), hasStats: true, capacity: 64, ...pool.image }),
+    };
+    const node = (types: string[]) => ({ module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"], types }, pool }) as unknown as VDBGridNode;
+    const base = { lod: "none" as const, images: { density: grid.image }, followImage: true };
+    const code = (fn: () => unknown): string | undefined => {
+      try {
+        fn();
+      } catch (e) {
+        return (e as { code?: string }).code;
+      }
+      return undefined;
+    };
+    expect(code(() => vdbSparseSource(node(["fp8"]), { density: 0 }, base))).toBe("VDB_TYPE_NOT_COMPILED");
+    const s = vdbSparseSource(node(["fpn"]), { density: 0 }, base);
+    // The coarse-first swap: an fpn preview, then an fp8 full grid in the same id, with a node made for the preview only.
+    pool.revision = 2;
+    pool.image = { type: "fp8", imageRevision: 2, resident: true };
+    let message = "";
+    try {
+      void s.version;
+    } catch (e) {
+      message = String((e as Error).message);
+      expect((e as { code?: string }).code).toBe("VDB_TYPE_NOT_COMPILED");
+    }
+    expect(message).toMatch(/fp8/);
+    expect(message).toMatch(/VDBCoarseFirstEvent\.types/);
+    expect(s.layoutUpdates).toBe(0); // the layout is not re-read through a module that reads 0
+    // A node made with the family's types (event.types) swaps.
+    pool.revision = 1;
+    pool.image = { type: "fpn", imageRevision: 1, resident: true };
+    const ok = vdbSparseSource(node(["fp8", "fpn"]), { density: 0 }, base);
+    pool.revision = 2;
+    pool.image = { type: "fp8", imageRevision: 2, resident: true };
+    expect(ok.version).toBe(2);
+    expect(ok.layoutUpdates).toBe(1);
+  });
+
+  it("RV: uniforms dispose their listeners; volumes made and disposed over one source leave its listener counts flat", () => {
+    const pool = {
+      revision: 1,
+      info: () => ({ indexBBox: grid.indexBBox, indexToWorld: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), hasStats: true, capacity: 64, type: "float", imageRevision: 1, resident: true }),
+    };
+    const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
+    const s = vdbSparseSource(grids, { density: 0 }, { lod: "none", images: { density: grid.image }, followImage: true });
+    const counts = () => {
+      const r = s as unknown as { statsListeners: Set<unknown>; layoutListeners: Set<unknown> };
+      return [r.statsListeners.size, r.layoutListeners.size];
+    };
+    const frameRenderer = new VDBFrameRenderer();
+    const keep = new VDBFrameVolume(s, { frameRenderer });
+    expect(counts()).toEqual([1, 1]);
+    for (let i = 0; i < 50; i++) new VDBFrameVolume(s, { frameRenderer }).dispose();
+    expect(counts()).toEqual([1, 1]);
+    const u = vdbVolumeUniforms(s);
+    expect(counts()).toEqual([2, 2]);
+    u.dispose();
+    u.dispose(); // idempotent
+    expect(counts()).toEqual([1, 1]);
+    keep.dispose();
+    expect(counts()).toEqual([0, 0]);
+  });
 });

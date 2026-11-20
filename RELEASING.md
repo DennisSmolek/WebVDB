@@ -12,8 +12,8 @@ The npm steps at the end follow the procedure in [First publish](#first-publish-
 - [x] G15a per-axis voxel size from dense.
 - [ ] G16a froxel swap for coarse-first streaming. **[agent]**
 - [ ] G-shell: one gallery shell, CPU ACES in readback. **[agent]**
-- [ ] Independent API review of everything since the K5 GO review (75cc1db): the G12a, G15a and G16a signatures,
-      JSDoc, api-surface snapshot, CHANGELOG. **[agent, Opus]**
+- [x] Independent API review of everything since the K5 GO review (75cc1db): the G12a, G15a and G16a signatures,
+      JSDoc, api-surface snapshot, CHANGELOG. **[agent, Opus]** GO-with-fixes; fixes in 0657edb.
 - [ ] CI green on `pmndrs/vdb` `main` at the release commit.
 
 ### 2. Repo cleanup
