@@ -76,6 +76,7 @@ const MD_OFF_VERSION = 172;
 const CODEC_NONE = 0;
 const CODEC_ZIP = 1;
 
+/** Options of {@link writeNvdb}. */
 export interface WriteNvdbOptions {
   /**
    * Per-grid codec. `'none'` (default) stores the images; `'zip'` stores each
@@ -193,6 +194,9 @@ function gridPayload(m: ImageMeta, codec: number, level: number): Uint8Array {
  * file (`NanoVDB2` header, one segment, codec NONE or ZIP) as an
  * `ArrayBuffer`. Grids keep their order, so a coarse preview written first
  * arrives first in a stream.
+ *
+ * @param images Complete NanoVDB grid images; at least one.
+ * @param opts Codec and zlib level.
  */
 export function writeNvdb(images: Uint32Array[], opts: WriteNvdbOptions = {}): ArrayBuffer {
   if (images.length === 0) {

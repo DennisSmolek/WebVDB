@@ -33,6 +33,8 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
+The [cloud demo](https://pmndrs.github.io/vdb/examples/src/demos/02-cloud/index.html) runs it on the WDAS cloud.
+
 It renders on a proxy box with `side: BackSide`, so the camera can be inside. Entry and exit come from the analytic ray
 clip, not the rasterized faces. The material is transparent, writes no depth, and uses premultiplied alpha. It does
 not composite against scene depth.

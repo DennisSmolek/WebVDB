@@ -30,6 +30,7 @@ import {
   type GridClassName,
 } from "./serialize.js";
 
+/** Options of {@link buildFromVdb}. */
 export interface BuildFromVdbOptions {
   /** Grid name for the output image. Default: the source grid's name (or "grid"). */
   gridName?: string;
@@ -45,12 +46,20 @@ export interface BuildFromVdbOptions {
   collapse?: boolean;
 }
 
-/** Builds a NanoVDB grid image (FLOAT, or Vec3f for vector grids) from a parsed `.vdb` grid. */
+/** Builds a NanoVDB grid image (FLOAT, or Vec3f for vector grids) from a parsed `.vdb` grid.
+ *
+ * @param grid A float or vec3 grid from `parseVdb` (point data grids throw).
+ * @param opts Grid name, class and leaf collapsing.
+ */
 export function buildFromVdb(grid: VdbGrid, opts: BuildFromVdbOptions = {}): Uint32Array {
   return buildFromVdbDetailed(grid, opts).image;
 }
 
-/** As {@link buildFromVdb}, but returns the computed metadata alongside the image. */
+/** As {@link buildFromVdb}, but returns the computed metadata alongside the image.
+ *
+ * @param grid A float or vec3 grid from `parseVdb` (point data grids throw).
+ * @param opts Grid name, class and leaf collapsing.
+ */
 export function buildFromVdbDetailed(grid: VdbGrid, opts: BuildFromVdbOptions = {}): VDBBuiltGrid {
   if (grid.valueType === "ptdataidx32") {
     throw new VDBUnsupportedError(

@@ -52,6 +52,7 @@ import {
 
 export { NvdbFormatError };
 
+/** Options of {@link NvdbStreamReader} and {@link readNvdbStream}. */
 export interface NvdbStreamReaderOptions {
   /** Largest `gridSize` (decoded image bytes) the reader allocates. Default 1 GiB. */
   maxGridBytes?: number;
@@ -101,6 +102,7 @@ export function nvdbResponseLength(response: { headers: { get(name: string): str
 export interface NvdbStreamGrid {
   /** Grid number in the file (counted across segments). */
   index: number;
+  /** The grid's metadata from the file's FileMetaData. */
   metadata: NvdbGridMetadata;
   /** The decoded grid image (zero-copy view of a buffer of its own). */
   image: Uint32Array;
@@ -125,7 +127,12 @@ function zipBound(n: number): number {
 
 const LOD_SUFFIX = /^(.*)\.lod(\d+)$/;
 
-/** The preview name for `name` at `resolution`: `<name>.lod<resolution>` (K4.5). */
+/**
+ * The preview name for `name` at `resolution`: `<name>.lod<resolution>` (K4.5).
+ *
+ * @param name The full grid's name.
+ * @param resolution Preview resolution, a positive integer.
+ */
 export function nvdbLodName(name: string, resolution: number): string {
   if (!Number.isInteger(resolution) || resolution < 1) {
     throw new VDBToolsError("VDB_BAD_OPTION", `nvdbLodName: resolution must be a positive integer, got ${resolution}`);
@@ -176,6 +183,7 @@ export class NvdbStreamReader {
   #failed: Error | null = null;
   readonly #grids: NvdbGridMetadata[] = [];
 
+  /** @param options Size limits, a known total size and a progress callback. */
   constructor(options: NvdbStreamReaderOptions = {}) {
     this.#maxGridBytes = options.maxGridBytes ?? DEFAULT_MAX_GRID_BYTES;
     this.#maxNameBytes = options.maxNameBytes ?? DEFAULT_MAX_NAME_BYTES;
@@ -425,6 +433,9 @@ function isResponse(source: NvdbStreamSource): source is Extract<NvdbStreamSourc
  * Reads a byte stream (a `fetch` Response or body, or any async iterable of chunks) through
  * an {@link NvdbStreamReader}, yielding each grid as it completes. Stops
  * reading (and cancels the stream) when the consumer breaks out of the loop.
+ *
+ * @param source A `Response`, a response body, or an async iterable of byte chunks.
+ * @param options Size limits, a known total size and a progress callback.
  */
 export async function* readNvdbStream(
   source: NvdbStreamSource,

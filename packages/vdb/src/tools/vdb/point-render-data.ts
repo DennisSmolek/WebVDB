@@ -45,6 +45,9 @@ export const VDB_POINTS_DEFAULT_MAX = 4_000_000;
  * Builds the {@link VDBPointRenderData} of a parsed point data grid
  * (`parseVdb(...).grids` entry with `valueType: 'ptdataidx32'`). Decodes the
  * grid's points (`grid.points()`, cached by the grid).
+ *
+ * @param grid A point data grid from `parseVdb`.
+ * @param options Point limit and attribute choices ({@link VDBPointRenderDataOptions}).
  */
 export function vdbPointRenderData(grid: VdbPointDataGrid, options: VDBPointRenderDataOptions = {}): VDBPointRenderData {
   if (grid?.valueType !== "ptdataidx32" || typeof grid.points !== "function") {

@@ -107,6 +107,7 @@ export interface VDBDecodeToAtlasOptions {
 export interface VDBAtlas {
   /** `dims` product values, x fastest. */
   data: Uint8Array | Float32Array;
+  /** Output size per axis in cells (the grid's index box, capped by `maxDim`). */
   dims: [number, number, number];
   /** The range used for normalization (echoed so the caller can undo it). */
   range: { min: number; max: number };
@@ -114,7 +115,9 @@ export interface VDBAtlas {
 
 /** The pending atlas: a {@link VDBReadback} plus the GPU output. */
 export interface VDBAtlasReadback extends VDBReadback<VDBAtlas> {
+  /** Output size per axis in cells. */
   readonly dims: [number, number, number];
+  /** The normalization range (the option, or the grid's root min/max). */
   readonly range: { min: number; max: number };
   /** Raw f32 values on the GPU (`STORAGE | COPY_SRC`); freed by `read()` / `dispose()`. */
   readonly buffer: GPUBuffer;
@@ -145,6 +148,11 @@ function checkAtlasOptions(o: VDBDecodeToAtlasOptions): void {
  * The grid must be resident and the pool must live on `device` (as for
  * `gridStats`). The tool frees only its own parameter, output and readback
  * buffers.
+ *
+ * @param device The host's `GPUDevice`; the pool must live on it.
+ * @param pool The pool that holds the grid.
+ * @param gridId The grid's pool id; it must be resident.
+ * @param options Resolution, filter, format, normalization and encoder ({@link VDBDecodeToAtlasOptions}).
  */
 export function vdbDecodeToAtlasGpu(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBDecodeToAtlasOptions = {}): VDBAtlasReadback {
   checkAtlasOptions(options);

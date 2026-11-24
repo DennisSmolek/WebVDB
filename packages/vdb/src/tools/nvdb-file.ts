@@ -107,14 +107,23 @@ export type NvdbCodec = (typeof NvdbCodec)[keyof typeof NvdbCodec];
 /** Grid types targeted for v1 (FogVolume rendering). */
 export const NVDB_SUPPORTED_GRID_TYPES = ["Float", "Fp4", "Fp8", "Fp16", "FpN"] as const;
 
+/** What a `.nvdb` file's metadata says about one grid. */
 export interface NvdbGridMetadata {
+  /** The grid's name. */
   name: string;
+  /** Grid value type name (`'Float'`, `'Fp8'`, `'FpN'`, ...). */
   gridType: string;
+  /** Grid class name (`'FogVolume'`, `'LevelSet'`, ...). */
   gridClass: string;
+  /** World-space box (its max is one voxel beyond the max voxel's centre). */
   worldBBox: { min: [number, number, number]; max: [number, number, number] };
+  /** Inclusive index-space box of the active voxels. */
   indexBBox: { min: [number, number, number]; max: [number, number, number] };
+  /** Voxel size per axis, in world units. */
   voxelSize: [number, number, number];
+  /** Active voxel count. */
   voxelCount: number;
+  /** Size of the decoded grid image in bytes. */
   gridByteSize: number;
 }
 
@@ -676,11 +685,20 @@ export class NvdbFile {
   private readonly records: readonly GridRecord[];
   private readonly sourceBuffer: ArrayBuffer;
 
+  /**
+   * @param sourceBuffer The parsed file's bytes.
+   * @param records The parsed grid records.
+   */
   private constructor(sourceBuffer: ArrayBuffer, records: readonly GridRecord[]) {
     this.sourceBuffer = sourceBuffer;
     this.records = records;
   }
 
+  /**
+   * Fetches and parses a `.nvdb` file.
+   *
+   * @param url The file's URL; a non-OK response throws.
+   */
   static async fromURL(url: string | URL): Promise<NvdbFile> {
     const response = await fetch(url);
     if (!response.ok) {
@@ -692,12 +710,18 @@ export class NvdbFile {
     return NvdbFile.fromArrayBuffer(buffer);
   }
 
+  /**
+   * Parses a `.nvdb` file (or raw grid buffer) already in memory.
+   *
+   * @param buffer The file's bytes; throws `NvdbFormatError` when malformed.
+   */
   static fromArrayBuffer(buffer: ArrayBuffer): NvdbFile {
     const format = sniffFormat(buffer);
     const records = format === "segment" ? parseSegments(buffer) : parseRawGridBuffer(buffer);
     return new NvdbFile(buffer, records);
   }
 
+  /** The metadata of every grid in the file, in file order. */
   get grids(): readonly NvdbGridMetadata[] {
     return this.records.map((r) => r.metadata);
   }

@@ -21,6 +21,7 @@ import { VDBToolsError } from "../errors.js";
 import { vdbBuildFromDenseDetailed, type VDBBuiltGrid } from "../nanovdb/serialize.js";
 import type { WvdbDenseVolume } from "./dense.js";
 
+/** Options of {@link wvdbDenseToNvdb}. */
 export interface WvdbDenseToNvdbOptions {
   /** Channel to convert (a scalar one). Default `'density'`. */
   channel?: "density" | "mask" | "emission";
@@ -45,7 +46,11 @@ export interface WvdbNvdbGrid extends VDBBuiltGrid {
   };
 }
 
-/** Converts one scalar channel of a dense `.wvdb` level to a NanoVDB FLOAT grid, voxel for voxel. */
+/**
+ * Converts one scalar channel of a dense `.wvdb` level to a NanoVDB FLOAT grid, voxel for voxel.
+ * @param volume The dense volume ({@link wvdbDenseVolume}).
+ * @param o The channel and the grid name.
+ */
 export function wvdbDenseToNvdb(volume: WvdbDenseVolume, o: WvdbDenseToNvdbOptions = {}): WvdbNvdbGrid {
   const channel = o.channel ?? "density";
   const tex = volume[channel];

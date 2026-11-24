@@ -63,6 +63,7 @@ type Coord = readonly [number, number, number];
  *   `[min - 0.5, max + 0.5)`.
  */
 export interface VDBSampleCpuOptions {
+  /** What lies outside the root index bbox: the tree's background (default) or zero. */
   outside?: "background" | "zero";
 }
 
@@ -91,6 +92,10 @@ function zeroOutside(
 /**
  * Nearest-voxel sample (twin of `vdbSample` with `sampler: 'nearest'`):
  * the voxel `floor(xyz + 0.5)` (NanoVDB `SampleFromVoxels` order 0 rounds).
+ *
+ * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
+ * @param xyz Position in index space.
+ * @param options The `outside` mode.
  */
 export function vdbSampleNearest(gridWords: Uint32Array, xyz: [number, number, number], options?: VDBSampleCpuOptions): number {
   const ijk: [number, number, number] = [Math.floor(xyz[0] + 0.5), Math.floor(xyz[1] + 0.5), Math.floor(xyz[2] + 0.5)];
@@ -107,6 +112,10 @@ function lerp(a: number, b: number, t: number): number {
  * Continuous index-space trilinear sample. `xyz` is in the same index space
  * as the integer coords passed to `readValue` (i.e. NOT world space — no
  * voxel-size or grid-transform scaling is applied here).
+ *
+ * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
+ * @param xyz Position in index space.
+ * @param options The `outside` mode.
  */
 export function vdbSampleTrilinear(gridWords: Uint32Array, xyz: [number, number, number], options?: VDBSampleCpuOptions): number {
   const outside = zeroOutside(gridWords, options);
@@ -147,6 +156,10 @@ export function vdbSampleTrilinear(gridWords: Uint32Array, xyz: [number, number,
  * Componentwise trilinear sample of a VEC3F grid image: the same eight taps,
  * lerp order and `outside` handling as {@link vdbSampleTrilinear}, applied to x,
  * y and z independently (NanoVDB `TrilinearSampler` on a `Vec3f` grid).
+ *
+ * @param gridWords The VEC3F grid image (little-endian u32 words, `GridData` at word 0).
+ * @param xyz Position in index space.
+ * @param options The `outside` mode.
  */
 export function vdbSampleTrilinearVec3(
   gridWords: Uint32Array,

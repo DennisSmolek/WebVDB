@@ -56,7 +56,9 @@ import {
 // Header
 // ---------------------------------------------------------------------------
 
+/** A parsed preamble and header, with where the data section starts. */
 export interface WvdbHeaderInfo {
+  /** The parsed JSON header. */
   header: WvdbHeader;
   /** File version from the preamble (equals `header.version`). */
   version: number;
@@ -64,6 +66,7 @@ export interface WvdbHeaderInfo {
   dataStart: number;
 }
 
+/** Options of {@link readWvdbHeader}: the §14 limits and checks. */
 export interface ReadWvdbHeaderOptions {
   /**
    * Total file length, when known. Enables the §14 checks that need it:
@@ -88,6 +91,8 @@ export function normalizeWvdbClass(value: string): WvdbGridClass {
  * Reads the preamble and header. Returns `null` while `bytes` (a prefix of
  * the file) does not yet hold the whole header; throws `WvdbFormatError` on a
  * bad magic, an unsupported version, or a header that breaks §5/§14.
+ * @param bytes A prefix of the file (at least the preamble to get anything back).
+ * @param opts Limits and optional checks.
  */
 export function readWvdbHeader(bytes: Uint8Array, opts: ReadWvdbHeaderOptions = {}): WvdbHeaderInfo | null {
   if (bytes.byteLength >= 4) {
@@ -239,12 +244,17 @@ function validateHeader(h: unknown, version: number, opts: ReadWvdbHeaderOptions
 // Chunks and byte ranges (§9)
 // ---------------------------------------------------------------------------
 
+/** One chunk of the data section, as {@link wvdbChunks} lists them. */
 export interface WvdbChunkInfo {
+  /** Index into `header.grids`. */
   gridIndex: number;
+  /** The LOD the chunk belongs to. */
   lod: number;
+  /** What the chunk holds: a sparse LOD's mask, a page of bricks, or a page of points. */
   kind: "mask" | "page" | "points";
   /** Relative to dataStart. */
   offset: number;
+  /** Compressed byte length. */
   length: number;
   /** page: bricks in the page; points: points in the chunk; mask: 0. */
   count: number;
@@ -295,6 +305,8 @@ function checkChunkOrder(header: WvdbHeader, dataLength?: number): void {
  * Absolute file byte range `[start, end)` that holds the chunks of `lod` for
  * all grids (one contiguous range in a conforming file, §9). `start === end`
  * when the LOD has no chunks.
+ * @param info The parsed header.
+ * @param lod LOD index (0 is the coarsest).
  */
 export function wvdbLodByteRange(info: WvdbHeaderInfo, lod: number): { start: number; end: number } {
   checkLodIndex(info.header, lod);
@@ -312,7 +324,11 @@ export function wvdbLodByteRange(info: WvdbHeaderInfo, lod: number): { start: nu
   return { start: info.dataStart + start, end: info.dataStart + end };
 }
 
-/** Bytes from the start of the file needed to decode LODs 0..lod (header included). */
+/**
+ * Bytes from the start of the file needed to decode LODs 0..lod (header included).
+ * @param info The parsed header.
+ * @param lod The last LOD to decode.
+ */
 export function wvdbPrefixLength(info: WvdbHeaderInfo, lod: number): number {
   checkLodIndex(info.header, lod);
   let end = 0;
@@ -330,13 +346,21 @@ function checkLodIndex(header: WvdbHeader, lod: number): void {
 // Decoded data
 // ---------------------------------------------------------------------------
 
+/** One decoded LOD of a volume grid. */
 export interface WvdbVolumeLevel {
+  /** Discriminant: a volume level. */
   kind: "volume";
+  /** LOD index (0 is the coarsest). */
   lod: number;
+  /** Voxels per axis. */
   dimensions: WvdbVec3;
+  /** Brick layout the LOD was stored in. */
   layout: WvdbLayout;
+  /** Channels per voxel. */
   channels: 1 | 3;
+  /** Bricks per axis (`ceil(dimensions / 8)`). */
   brickCounts: WvdbVec3;
+  /** Bricks in the whole LOD, stored or not. */
   brickTotal: number;
   /** Mask words of a sparse LOD (bit `index` set = stored); null for dense. */
   mask: Uint32Array | null;
@@ -344,6 +368,7 @@ export interface WvdbVolumeLevel {
   brickIndices: Uint32Array;
   /** Brick channel ranges in file order, `b * channels + c`. */
   mins: Float32Array;
+  /** The matching maxima, same indexing as `mins`. */
   maxs: Float32Array;
   /** Dense decoded values: channel planes, x fastest; background where no brick is stored. */
   values: Float32Array;
@@ -351,11 +376,15 @@ export interface WvdbVolumeLevel {
   bricksDecoded: number;
 }
 
+/** One decoded LOD of a points grid. */
 export interface WvdbPointsLevel {
+  /** Discriminant: a points level. */
   kind: "points";
+  /** LOD index (0 is the coarsest). */
   lod: number;
   /** Stored index of the first point of this LOD within the LOD-ordered point list. */
   firstPoint: number;
+  /** Points this LOD adds. */
   count: number;
   /** xyz per point. */
   positions: Float32Array;
@@ -365,6 +394,7 @@ export interface WvdbPointsLevel {
   pointsDecoded: number;
 }
 
+/** A decoded LOD of either grid kind. */
 export type WvdbLevel = WvdbVolumeLevel | WvdbPointsLevel;
 
 interface WvdbGridBase {
@@ -375,37 +405,58 @@ interface WvdbGridBase {
   header: WvdbGridHeader;
 }
 
+/** A decoded volume grid. */
 export interface WvdbVolumeGrid extends WvdbGridBase {
+  /** Discriminant: a volume grid. */
   kind: "volume";
+  /** Channels per voxel. */
   channels: 1 | 3;
   /** One value per channel. */
   background: number[];
+  /** Baked mean density, when the header has it. */
   meanDensity?: number;
+  /** Baked count of non-zero voxels, when the header has it. */
   nonZeroVoxels?: number;
+  /** The grid's header record. */
   header: WvdbVolumeGridHeader;
   /** Decoded LODs, coarse first (`levels[k].lod === k`). */
   levels: WvdbVolumeLevel[];
 }
 
+/** A decoded points grid. */
 export interface WvdbPointsGrid extends WvdbGridBase {
+  /** Discriminant: a points grid. */
   kind: "points";
+  /** Points in the grid, all LODs together. */
   count: number;
+  /** Points in the source before thinning, when recorded. */
   sourceCount?: number;
+  /** Mean point spacing in world units, when recorded. */
   spacing?: number;
+  /** True when the points carry colours. */
   colors: boolean;
+  /** The grid's header record. */
   header: WvdbPointsGridHeader;
   /** Decoded LODs, coarse first. LOD k adds its points to LODs 0..k-1 (§3.5). */
   levels: WvdbPointsLevel[];
 }
 
+/** A decoded grid of either kind. */
 export type WvdbGrid = WvdbVolumeGrid | WvdbPointsGrid;
 
+/** A decoded `.wvdb` file: its header and the LODs read so far. */
 export interface WvdbFile {
+  /** File version. */
   version: number;
+  /** The parsed header. */
   header: WvdbHeader;
+  /** Absolute file offset of the data section. */
   dataStart: number;
+  /** `header.source`. */
   source: WvdbSource;
+  /** `header.bake`. */
   bake: WvdbBake;
+  /** The decoded grids, in header order. */
   grids: WvdbGrid[];
   /** Number of LODs decoded (LODs 0..lodsDecoded-1). */
   lodsDecoded: number;
@@ -446,6 +497,10 @@ function sliceChunk(bytes: Uint8Array, byteOffset: number, info: WvdbHeaderInfo,
  * offset `byteOffset` (0 for the whole file or a prefix; `range.start` for a
  * range read from `wvdbLodByteRange`). Returns one level per grid, in header
  * order.
+ * @param info The parsed header.
+ * @param lod The LOD to decode.
+ * @param bytes File bytes holding every chunk of that LOD.
+ * @param byteOffset File offset of `bytes[0]`.
  */
 export function decodeWvdbLod(info: WvdbHeaderInfo, lod: number, bytes: Uint8Array, byteOffset = 0): WvdbLevel[] {
   checkLodIndex(info.header, lod);
@@ -624,6 +679,7 @@ function addLevels(grids: WvdbGrid[], levels: WvdbLevel[]): void {
   levels.forEach((level, i) => (grids[i]!.levels as WvdbLevel[]).push(level));
 }
 
+/** Options of {@link readWvdb}: the header limits, a LOD cap and prefix reads. */
 export interface ReadWvdbOptions extends Omit<ReadWvdbHeaderOptions, "fileLength"> {
   /** Decode LODs 0..maxLod only. Default: all. */
   maxLod?: number;
@@ -638,6 +694,8 @@ export interface ReadWvdbOptions extends Omit<ReadWvdbHeaderOptions, "fileLength
 /**
  * Reads a `.wvdb` file (or, with `partial`, a prefix of one) and decodes its
  * LODs coarse to fine.
+ * @param input The file's bytes (or a prefix with `partial`).
+ * @param opts LOD cap, prefix mode and header limits.
  */
 export function readWvdb(input: Uint8Array | ArrayBuffer, opts: ReadWvdbOptions = {}): WvdbFile {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -665,7 +723,9 @@ export function readWvdb(input: Uint8Array | ArrayBuffer, opts: ReadWvdbOptions 
   };
 }
 
+/** What {@link WvdbStreamReader.push} reports: a LOD that finished, or gained a chunk. */
 export interface WvdbLodEvent {
+  /** The LOD index. */
   lod: number;
   /**
    * One level per grid, in header order. For a partial event these are the
@@ -679,6 +739,7 @@ export interface WvdbLodEvent {
   chunk?: WvdbChunkInfo;
 }
 
+/** Options of {@link WvdbStreamReader}. */
 export interface WvdbStreamReaderOptions extends Omit<ReadWvdbOptions, "partial"> {
   /**
    * Also emit an event (`complete: false`) after every chunk of a LOD decodes,
@@ -728,6 +789,7 @@ function inflatedLimit(header: WvdbHeader, c: WvdbChunkInfo): number {
  * bounded by the largest chunk plus one pushed buffer. Each chunk's length is
  * checked against {@link wvdbChunkByteLimit} when the header arrives. After an
  * error, every later call throws the same error.
+
  */
 export class WvdbStreamReader {
   private buf = new Uint8Array(0);
@@ -743,12 +805,15 @@ export class WvdbStreamReader {
   private decoders = new Map<number, LodDecoder[]>();
   private failure: unknown = null;
   private peak = 0;
+  /** The parsed header, or null before it has arrived. */
   info: WvdbHeaderInfo | null = null;
   /** The decoded file so far (grids gain levels as LODs complete); null before the header. */
   file: WvdbFile | null = null;
 
+  /** @param opts LOD cap, partial-LOD events and header limits. */
   constructor(private readonly opts: WvdbStreamReaderOptions = {}) {}
 
+  /** The parsed JSON header, or null before it has arrived. */
   get header(): WvdbHeader | null {
     return this.info?.header ?? null;
   }
@@ -773,10 +838,16 @@ export class WvdbStreamReader {
     return this.bufEnd - this.bufStart;
   }
 
+  /** The most compressed bytes the reader has held at once. */
   get peakBufferedBytes(): number {
     return this.peak;
   }
 
+  /**
+   * Feeds the next bytes of the download and decodes what they complete.
+   * @param chunk The next bytes, in file order.
+   * @returns The LOD events this push produced (possibly none).
+   */
   push(chunk: Uint8Array): WvdbLodEvent[] {
     if (this.failure !== null) throw this.failure;
     if (this.done) return [];

@@ -11,9 +11,11 @@ integrated into a view-aligned slice atlas, then composited over the scene up to
 re-based on a volume source (D18). Add it to a scene and call `renderer.render(scene, camera)` as usual: the first
 proxy in a render draws the froxels, and every proxy then composites.
 
-To try the settings below live, run `pnpm dev` and open demo 10 (`examples/src/demos/10-frame-renderer`): it
-renders a cloud, smoke, an emissive explosion, a level set and a point grid with the panel's lighting, scattering,
-phase, spectral, shadow and quality settings, and lists the fixture script for any scene whose files are missing.
+To try the settings below live, open the [froxel renderer demo](https://pmndrs.github.io/vdb/examples/src/demos/10-frame-renderer/index.html) (demo 10, source in
+`examples/src/demos/10-frame-renderer`; locally, `pnpm dev`): it renders a cloud, smoke, an emissive explosion, a level set and a point grid with the panel's lighting, scattering,
+phase, spectral, shadow and quality settings, and lists the fixture script for any scene whose files are missing. The gallery shows the renderer on full-resolution
+sparse volumes: [sky clouds](https://pmndrs.github.io/vdb/examples/src/demos/11-sky-clouds/index.html) (demo 11) and an [explosion](https://pmndrs.github.io/vdb/examples/src/demos/12-explosion/index.html) lighting the
+ground and props with its flames (demo 12).
 
 > [!NOTE]
 > The pass timings recorded so far are provisional (D25). Read the quality settings below as defaults to tune, not as

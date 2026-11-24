@@ -8,10 +8,6 @@ nav: 1
 npm install @pmndrs/vdb
 ```
 
-> [!NOTE]
-> `@pmndrs/vdb` is not published yet. Until it is, build it from [the repository](https://github.com/pmndrs/vdb)
-> (`pnpm install && pnpm build`) and link `packages/vdb`.
-
 For the three.js subpath, also install three. It is an optional peer dependency, pinned to `>=0.187.0 <0.188.0`
 because `VDBGridNode` binds the pool through three's WebGPU backend internals, and each three release is checked
 before the range widens.
@@ -34,6 +30,17 @@ The package is ES modules only, with `sideEffects: false`. `core` never imports 
 
 In Vite, the raw WGSL text is `import wgsl from '@pmndrs/vdb/pnanovdb.wgsl?raw'`. Most code never needs it: the
 generated module (`vdbModuleWgsl`) is the supported way to get WGSL.
+
+How the file reaches your code depends on the bundler:
+
+| Where | How |
+| --- | --- |
+| Vite | `import wgsl from '@pmndrs/vdb/pnanovdb.wgsl?raw'` (a string). |
+| webpack 5 | Add a rule for `.wgsl`: `{ test: /\.wgsl$/, type: 'asset/source' }`, then a plain `import`. |
+| Node | Resolve the path and read it: `readFile(fileURLToPath(import.meta.resolve('@pmndrs/vdb/pnanovdb.wgsl')), 'utf8')`. |
+
+The package's own code does not need a loader for it: the WGSL the pool and the materials use is generated into
+JavaScript strings.
 
 ## The device is yours
 
