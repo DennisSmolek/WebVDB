@@ -2,6 +2,8 @@
 
 ## 0.1 publish checklist
 
+**0.1.0 is on npm (2026-11-24, tag `v0.1.0` at 5328b27).** Open: the docs and examples deploy (§3, §4), licences (§5), announce (§7).
+
 Work through it top to bottom. **[owner]** marks a step only Dennis can do: accounts, settings, licences, the
 publish itself. **[agent]** steps get a task row in `docs/dev/TASKS.md` when they start. Tick a box when its check passes.
 The npm steps at the end follow the procedure in [First publish](#first-publish-010-manual).
@@ -101,17 +103,17 @@ with `fixtureUrl("wdas/x.nvdb")` (`examples/src/demos/assets.ts`): Vite `BASE_UR
 
 ### 6. npm
 
-- [ ] Your npm account can publish under the `@pmndrs` scope (ask a pmndrs npm org owner) and has 2FA on.
+- [x] Your npm account can publish under the `@pmndrs` scope (ask a pmndrs npm org owner) and has 2FA on.
       `npm view @pmndrs/vdb` returns 404 (the name is free). **[owner]**
-- [ ] `packages/vdb/README.md` links the docs and examples URLs; `homepage` in `package.json` points at the docs.
+- [x] `packages/vdb/README.md` links the docs and examples URLs; `homepage` in `package.json` points at the docs.
       **[agent]**
-- [ ] CHANGELOG `Unreleased` lists every change since the last review, then gets dated in the release commit.
-- [ ] First publish by hand, steps 1–4 below. **[owner]**
-- [ ] Trusted publishing, step 5 below; later releases run `release.yml`. **[owner]**
+- [x] CHANGELOG `Unreleased` lists every change since the last review, then gets dated in the release commit.
+- [x] First publish by hand, steps 1–4 below. **[owner]**
+- [x] Trusted publishing, step 5 below; later releases run `release.yml`. **[owner]**
 
 ### 7. After the publish
 
-- [ ] `pmndrs/vdb` default branch is `main`; delete `v2` once nothing points at it. **[owner]**
+- [x] `pmndrs/vdb` default branch is `main`; delete `v2` once nothing points at it. **[owner]**
 - [ ] Docs and examples live; docs.pmnd.rs PR merged.
 - [ ] Announce (pmndrs Discord, the rendering initiative). **[owner]**
 

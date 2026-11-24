@@ -149,9 +149,9 @@ decode exactly per the spec; a `.wvdb` we write loads in his `WVDBLoader`; and t
 
 ## K5 — Release 0.1 🟨
 
-Ready to publish (2026-11-19): final re-review GO at 75cc1db + fixes; docs site (docs/site), CHANGELOG, shipped
-THIRD_PARTY_NOTICES.md, RELEASING.md. Remaining: the owner's manual first publish (RELEASING.md), then trusted
-publishing for later releases; K5.3 cloud-system showcase.
+`@pmndrs/vdb@0.1.0` published 2026-11-24 (manual first publish from 5328b27, tag `v0.1.0`; trusted publishing set up
+for later releases). Remaining for the exit gate: docs and examples live on GitHub Pages (the examples asset release,
+then the Pages workflow; RELEASING §3–4). K5.3 cloud-system showcase moves to after 0.1.
 
 - Docs in pmndrs/docs MDX format, with compiled snippets (`docs:check`, as in bvh).
 - Examples for raw WebGPU and three.js, plus the owner's cloud system as the showcase consumer.
