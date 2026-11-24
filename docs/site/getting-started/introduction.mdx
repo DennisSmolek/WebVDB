@@ -24,7 +24,7 @@ three.js subpath imports three.
 
 - Many grids in **one storage buffer**, bound at one slot, so a kernel that already uses most of its storage-buffer
   budget can still read volumes.
-- **Full-resolution sparse data** on the GPU: Float, Fp4, Fp8, Fp16 and FpN grids are decoded in the shader, with no
+- **Full-resolution sparse data** on the GPU: Float, Fp4, Fp8, Fp16, FpN and Half grids are decoded in the shader, with no
   dense 3D texture in between.
 - A **device you own**. Nothing here creates or destroys a `GPUDevice`, so the volumes share it with other pmndrs
   tools and compose in the same frame.

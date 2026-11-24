@@ -1,0 +1,68 @@
+{
+  "file": "half_edge.nvdb",
+  "grid": {"name": "half_edge", "type": "half", "class": "Unknown", "gridByteSize": 614976, "activeVoxelCount": 31, "nodeCounts": {"leaf": 5, "lower": 2, "upper": 2}, "backgroundInput": 1036831949},
+  "native": {
+    "nanovdb": "32.11.0",
+    "source": "OpenVDB v14.0.0 tools::createNanoGrid<SrcGridT, nanovdb::Half> (docker/fixture-bake/bake_half.cpp)",
+    "gridFlags": 62,
+    "background": 11878,
+    "root": {"min": 64512, "max": 31744, "ave": 2143289344, "stddev": 2143289344},
+    "leafBlocksFnv1a": 3028128357,
+    "leafValuesFnv1a": 3199843975
+  },
+  "voxels": [
+    {"ijk": [0, 0, 0], "input": 1065353216, "bits": 15360, "active": true},
+    {"ijk": [0, 0, 1], "input": 3223322624, "bits": 49408, "active": true},
+    {"ijk": [0, 0, 2], "input": 1036831949, "bits": 11878, "active": true},
+    {"ijk": [0, 0, 3], "input": 1051372203, "bits": 13653, "active": true},
+    {"ijk": [0, 0, 4], "input": 3237478400, "bits": 51136, "active": true},
+    {"ijk": [0, 0, 5], "input": 1078530011, "bits": 16968, "active": true},
+    {"ijk": [0, 0, 6], "input": 1157632000, "bits": 26624, "active": true},
+    {"ijk": [0, 0, 7], "input": 1157640192, "bits": 26626, "active": true},
+    {"ijk": [0, 1, 0], "input": 1199562752, "bits": 31743, "active": true},
+    {"ijk": [0, 1, 1], "input": 1199566592, "bits": 31743, "active": true},
+    {"ijk": [0, 1, 2], "input": 1150964267, "bits": 25811, "active": true},
+    {"ijk": [0, 1, 3], "input": 2147483648, "bits": 32768, "active": true},
+    {"ijk": [0, 1, 4], "input": 1056964608, "bits": 14336, "active": true},
+    {"ijk": [7, 7, 7], "input": 1065336439, "bits": 15358, "active": true},
+    {"ijk": [3, 5, 1], "input": 3296331366, "bits": 58320, "active": true},
+    {"ijk": [8, 0, 0], "input": 925353388, "bits": 168, "active": true},
+    {"ijk": [8, 0, 1], "input": 864082265, "bits": 1, "active": true},
+    {"ijk": [8, 0, 2], "input": 855638016, "bits": 0, "active": true},
+    {"ijk": [8, 0, 3], "input": 868220928, "bits": 2, "active": true},
+    {"ijk": [8, 0, 4], "input": 228737632, "bits": 0, "active": true},
+    {"ijk": [8, 0, 5], "input": 3045472189, "bits": 32785, "active": true},
+    {"ijk": [8, 0, 6], "input": 947903040, "bits": 1023, "active": true},
+    {"ijk": [8, 0, 7], "input": 864025317, "bits": 1, "active": true},
+    {"ijk": [9, 2, 3], "input": 947912704, "bits": 1024, "active": true},
+    {"ijk": [0, 8, 0], "input": 1199566848, "bits": 31744, "active": true},
+    {"ijk": [0, 8, 1], "input": 1203982336, "bits": 31744, "active": true},
+    {"ijk": [0, 8, 2], "input": 1088421888, "bits": 18176, "active": true},
+    {"ijk": [0, 0, 8], "input": 3351465984, "bits": 64512, "active": true},
+    {"ijk": [1, 1, 9], "input": 3225419776, "bits": 49664, "active": true},
+    {"ijk": [4096, -4096, 128], "input": 1061158912, "bits": 14848, "active": true},
+    {"ijk": [4097, -4095, 130], "input": 1109917696, "bits": 20800, "active": true}
+  ],
+  "inactive": [
+    {"ijk": [1, 0, 0], "bits": 11878, "active": false},
+    {"ijk": [6, 6, 6], "bits": 11878, "active": false},
+    {"ijk": [40, 40, 40], "bits": 11878, "active": false},
+    {"ijk": [-500, 3, 9], "bits": 11878, "active": false},
+    {"ijk": [100000, 0, 0], "bits": 11878, "active": false}
+  ],
+  "leaves": [
+    {"origin": [0, 0, 0], "flags": 2, "bboxMin": [0, 0, 0], "bboxDif": [7, 7, 7], "stats": {"min": 58320, "max": 31743, "ave": 1175255642, "stddev": 1185755189}},
+    {"origin": [0, 0, 8], "flags": 2, "bboxMin": [0, 0, 8], "bboxDif": [1, 1, 1], "stats": {"min": 64512, "max": 49664, "ave": 2143289344, "stddev": 2143289344}},
+    {"origin": [0, 8, 0], "flags": 2, "bboxMin": [0, 8, 0], "bboxDif": [0, 0, 2], "stats": {"min": 18176, "max": 31744, "ave": 2143289344, "stddev": 2143289344}},
+    {"origin": [8, 0, 0], "flags": 2, "bboxMin": [8, 0, 0], "bboxDif": [1, 2, 7], "stats": {"min": 32785, "max": 1024, "ave": 930392747, "stddev": 936497593}},
+    {"origin": [4096, -4096, 128], "flags": 2, "bboxMin": [4096, -4096, 128], "bboxDif": [1, 1, 2], "stats": {"min": 14848, "max": 20800, "ave": 1101725696, "stddev": 1101332480}}
+  ],
+  "lowers": [
+    {"origin": [0, 0, 0], "stats": {"min": 64512, "max": 31744, "ave": 2143289344, "stddev": 2143289344}},
+    {"origin": [4096, -4096, 128], "stats": {"min": 14848, "max": 20800, "ave": 1101725696, "stddev": 1101332480}}
+  ],
+  "uppers": [
+    {"origin": [0, 0, 0], "stats": {"min": 64512, "max": 31744, "ave": 2143289344, "stddev": 2143289344}},
+    {"origin": [4096, -4096, 0], "stats": {"min": 14848, "max": 20800, "ave": 1101725696, "stddev": 1101332480}}
+  ]
+}

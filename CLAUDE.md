@@ -255,3 +255,13 @@ From v1; details in docs/archive/handoffs/.
 - NVIDIA Warp's `.nvdb` (`Volume.save_to_nvdb`): `NanoVDB0` header, FileMetaData `indexBBox`/`voxelCount` zero (we fill them from the image), `fileSize` without the 8-byte codec prefix (so a stream's `bytesTotal` is 8 bytes short per grid), BloscLZ frames with typesize 8.
 - `tools/vdb/blosc.ts` throws `VdbFormatError` (`VDB_BAD_VDB`) even for `.nvdb` frames; `.nvdb` callers go through `decodeBloscChunk` (`nvdb-file.ts`), which rethrows as `NvdbFormatError` / `VDBUnsupportedError`.
 - Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: oneTBB from source, then OpenVDB's CMake with `USE_ZSTD=OFF` (Blosc is vendored, Boost gone); NanoVDB is header-only plus one C file for Blosc. Recipe: `packages/vdb/test/tools/fixtures/native-v14/README.md`.
+- Half grids (K7.H, `GridType::Half` = 9): values, tile values, the background AND min/max stats are binary16 at
+  2-byte-aligned addresses (root background/min/max at 28/30/32, leaf min/max 80/82, values from 96 at 2 bytes);
+  ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32` /
+  `readImageHeader` or the WGSL readers. Generation transform 8 strips the Half readers from modules without `'half'`.
+- `nanovdb_convert` (even v14) has no Half option: native Half grids come from `createNanoGrid<…, nanovdb::Half>` in
+  C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).
+- NanoVDB v14 stores root tiles in another order than the a532de55 bake: `treeNodes` order differs between a native
+  v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
+- `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
+  and other explicit-type modules are byte-identical).

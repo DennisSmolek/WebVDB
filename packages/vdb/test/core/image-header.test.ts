@@ -45,13 +45,14 @@ describe("image-header offsets match tools and PNanoVDB.h", () => {
     expect(NANOVDB_FLAG_HAS_MIN_MAX & bytes.GRID_FLAGS_STATS_BBOX_BREADTH_FIRST).toBe(NANOVDB_FLAG_HAS_MIN_MAX);
   });
 
-  it("typed root fields are f32 at 28/32/36 for every supported type", () => {
+  it("typed root fields are f32 at 28/32/36 (Half: binary16 at 28/30/32) for every supported type", () => {
     for (const name of Object.keys(VDB_GRID_TYPE_IDS)) {
       const c = strideTables.gridTypeConstants[name.toUpperCase()];
       expect(c, name).toBeTruthy();
-      expect(c.root_off_background, name).toBe(O.rootBackground);
-      expect(c.root_off_min, name).toBe(O.rootMin);
-      expect(c.root_off_max, name).toBe(O.rootMax);
+      const half = name === "half";
+      expect(c.root_off_background, name).toBe(half ? O.rootHalfBackground : O.rootBackground);
+      expect(c.root_off_min, name).toBe(half ? O.rootHalfMin : O.rootMin);
+      expect(c.root_off_max, name).toBe(half ? O.rootHalfMax : O.rootMax);
       expect(c.root_size, name).toBe(O.rootSize);
       expect(strideTables.gridTypes[name.toUpperCase()], name).toBe(VDB_GRID_TYPE_IDS[name as VDBGridTypeName]);
     }
@@ -67,6 +68,22 @@ describe("readImageHeader validation", () => {
     expect(h.rootMin).toBe(-0.25);
     expect(h.rootMax).toBe(2);
     expect(h.indexBBoxMin).toEqual([-4, -4, -4]);
+  });
+
+  it("reads a Half image's binary16 background and root min/max (K7.H)", () => {
+    const img = makeImage({ bytes: 2048, gridType: 9 });
+    const v = new DataView(img.buffer);
+    const root = 736;
+    v.setUint32(root + 28, 0, true);
+    v.setUint32(root + 32, 0, true);
+    v.setUint16(root + 28, 0x3800, true); // background 0.5
+    v.setUint16(root + 30, 0xb400, true); // min -0.25
+    v.setUint16(root + 32, 0x7bff, true); // max 65504
+    const h = readImageHeader(img);
+    expect(h.gridType).toBe("half");
+    expect(h.background).toBe(0.5);
+    expect(h.rootMin).toBe(-0.25);
+    expect(h.rootMax).toBe(65504);
   });
 
   const code = (fn: () => unknown) => {

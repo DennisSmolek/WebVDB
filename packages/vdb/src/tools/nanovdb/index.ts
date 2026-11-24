@@ -27,6 +27,7 @@ export {
   VDB_FP4_LEAF_CODEC,
   VDB_FP8_LEAF_CODEC,
   VDB_FP16_LEAF_CODEC,
+  VDB_HALF_LEAF_CODEC,
   vdbMakeFpNLeafCodec,
   FPN_DEFAULT_TOLERANCE,
   VDB_VEC3F_LEAF_CODEC,
@@ -50,4 +51,5 @@ export type { VDBGridTransformInput, VDBTransformSpec } from "./transform.js";
 export { vdbBakeCoarseFirst } from "./coarse-first.js";
 export type { VDBBakeCoarseFirstOptions } from "./coarse-first.js";
 export { vdbInspect } from "./inspect.js";
+export { vdbFloatToHalf, vdbHalfToFloat, vdbRoundToHalf } from "./half.js";
 export type { VDBInspectReport } from "./inspect.js";

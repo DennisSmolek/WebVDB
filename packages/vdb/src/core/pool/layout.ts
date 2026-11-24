@@ -61,7 +61,7 @@ export const VDB_RECORD_WORD = {
   imageOffset: 0,
   /** u32: NanoVDB `GridData.mGridSize` (its high word must be 0). */
   imageBytes: 1,
-  /** u32: NanoVDB `GridType` id (1 Float, 13 Fp4, 14 Fp8, 15 Fp16, 16 FpN). */
+  /** u32: NanoVDB `GridType` id (1 Float, 9 Half, 13 Fp4, 14 Fp8, 15 Fp16, 16 FpN). */
   gridType: 2,
   /** u32: see {@link VDB_RECORD_FLAG} and the class / brick-log2 bit fields. */
   flags: 3,

@@ -1,6 +1,6 @@
 ---
 title: Build, quantize, resample
-description: Make NanoVDB grid images from dense arrays or .vdb grids, shrink them to Fp4, Fp8, Fp16 or FpN, and resample them.
+description: Make NanoVDB grid images from dense arrays or .vdb grids, shrink them to Fp4, Fp8, Fp16, FpN or Half, and resample them.
 nav: 31
 sourcecode: packages/vdb/src/tools/nanovdb/index.ts
 ---
@@ -18,7 +18,8 @@ take. Everything on this page returns one, or a `VDBBuiltGrid` that carries one 
   `background`, `activeThreshold`, `gridName`, `gridClass`, `collapse`. `VDBBuiltGrid.voxelSize` is the x side;
   `voxelSizeXYZ` has all three.
 - `vdbBuildFromLeavesDetailed(leaves, codec, options?)` is the general entry: your leaves and a `VDBLeafCodec`
-  (`VDB_FLOAT_LEAF_CODEC`, `VDB_FP4_LEAF_CODEC`, `VDB_FP8_LEAF_CODEC`, `VDB_FP16_LEAF_CODEC`, `VDB_VEC3F_LEAF_CODEC`, or `vdbMakeFpNLeafCodec`).
+  (`VDB_FLOAT_LEAF_CODEC`, `VDB_FP4_LEAF_CODEC`, `VDB_FP8_LEAF_CODEC`, `VDB_FP16_LEAF_CODEC`, `VDB_HALF_LEAF_CODEC`,
+  `VDB_VEC3F_LEAF_CODEC`, or `vdbMakeFpNLeafCodec`).
 
 {/* snippet: build-dense */}
 ```ts
@@ -50,6 +51,13 @@ its bit width per leaf from the absolute `tolerance`. All load on the GPU throug
 `['fp8']`, `['fp16']` or `['fpn']`). Fp8 and FpN match `nanovdb_convert` byte for byte on the fixtures; Fp4 and Fp16 use
 the same rules but have no native fixture to compare with.
 
+`'half'` writes a NanoVDB **Half** grid (`GridType::Half`, implemented in NanoVDB 13.2): every value, tiles and the
+background included, becomes the nearest IEEE binary16 (round to nearest even; beyond ±65504 it becomes infinity), 2 bytes
+per voxel with no per-leaf range, so negative values and wide ranges keep about 3 significant digits everywhere. Min/max
+statistics are binary16, average and standard deviation f32. Load it with `types: ['half']`. The values match native
+NanoVDB v14 (`createNanoGrid<FloatGrid, nanovdb::Half>`) bit for bit on the fixtures. `nanovdb_convert` has no Half
+option; `vdbFloatToHalf` / `vdbHalfToFloat` / `vdbRoundToHalf` are the conversions it uses.
+
 {/* snippet: quantize */}
 ```ts
 import { vdbCollapseGrid, vdbQuantize } from '@pmndrs/vdb/tools';
@@ -58,6 +66,8 @@ import { vdbCollapseGrid, vdbQuantize } from '@pmndrs/vdb/tools';
 // 16 bits); FpN picks the bit width per leaf from the tolerance (an absolute error bound in value units).
 const fp8 = vdbQuantize(image, 'fp8');
 const fpn = vdbQuantize(image, 'fpn', 0.001);
+// NanoVDB Half: every value as an IEEE binary16 (2 bytes per voxel, ~3 significant digits, no per-leaf range).
+const half = vdbQuantize(image, 'half');
 
 // vdbCollapseGrid() folds constant leaves into tiles (a smaller image, the same values).
 // vdbQuantize() does the same when asked: vdbQuantize(image, 'fpn', 0.001, { collapse: true }).

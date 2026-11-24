@@ -29,6 +29,7 @@
     "fixtures:cie": "node scripts/fetch-cie-cmf.mjs",
     "fixtures:bake": "node scripts/bake-fixtures.mjs",
     "fixtures:bake-sequence": "node scripts/bake-vdb-sequence.mjs",
+    "fixtures:bake-half": "node scripts/bake-half-fixtures.mjs",
     "wgsl:chunks": "node scripts/extract-wgsl-chunks.mjs",
     "wgsl:variants": "pnpm build && node scripts/check-wgsl-variants.mjs",
     "wgsl:size": "node scripts/wgsl-size.mjs",

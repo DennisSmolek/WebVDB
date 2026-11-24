@@ -22,6 +22,11 @@
  *   7. `pnanovdb_leaf_get_stat_float` keeps only the compiled types' branch
  *      (the Fp leaf-stats decode, K1.4b), so a Float-only module has no
  *      uint16 decoder.
+ *   8. Half min/max stats (K7.H): without `half`, calls to
+ *      `pnanovdb_read_minmax_float` / `pnanovdb_leaf_get_minmax_float` are
+ *      rewritten to the plain readers they wrap (so modules without `half` are
+ *      byte-identical to those generated before Half existed); with `half`,
+ *      the two keep only the compiled types' branch.
  *
  * Output is deterministic: the same options give the same bytes, and `types`
  * is a set (order and duplicates do not matter).
@@ -231,7 +236,11 @@ const GRID_TYPE_CONSTANT_PRE: Readonly<Record<VDBGridTypeName, string>> = {
   fp8: "PNANOVDB_GRID_TYPE_FP8",
   fp16: "PNANOVDB_GRID_TYPE_FP16",
   fpn: "PNANOVDB_GRID_TYPE_FPN",
+  half: "PNANOVDB_GRID_TYPE_HALF",
 };
+
+/** Types whose leaf values are Fp codes (decoded by `pnanovdb_root_<t>_read_float`). */
+const FP_TYPES: ReadonlySet<VDBGridTypeName> = new Set(["fp4", "fp8", "fp16", "fpn"]);
 
 /** Field names of the vendored `pnanovdb_grid_type_constants_t`, in order. */
 const TYPE_TABLE_FIELDS: readonly string[] = [...chunk("pnanovdb_grid_type_constants_t").text.matchAll(/^\s+(\w+)\s*:/gm)].map((m) => m[1] as string);
@@ -298,18 +307,19 @@ function typeTableOverride({ o, fields }: Context): string {
 function readFloatTypedOverride({ o }: Context): string {
   const text = chunk("pnanovdb_read_float_typed").text;
   const signature = text.slice(0, text.indexOf("{") + 1);
-  const fpTypes = o.types.filter((t) => t !== "float");
-  const decode = (t: VDBGridTypeName) => `pnanovdb_root_${t}_read_float(buf, address, ijk, level)`;
+  const special = o.types.filter((t) => t !== "float");
+  const decode = (t: VDBGridTypeName) =>
+    t === "half" ? "pnanovdb_read_half(buf, address)" : `pnanovdb_root_${t}_read_float(buf, address, ijk, level)`;
   const lines = [signature];
-  // Without Float, the last Fp type is the fallthrough: `ok` already rejects
-  // every other type before a read reaches here.
-  const branches = o.types.includes("float") ? fpTypes : fpTypes.slice(0, -1);
+  // Without Float, the last other type is the fallthrough: `ok` already rejects
+  // every type not compiled before a read reaches here.
+  const branches = o.types.includes("float") ? special : special.slice(0, -1);
   for (const t of branches) {
     lines.push(`    if grid_type == ${GRID_TYPE_CONSTANT_PRE[t]} {`);
     lines.push(`        return ${decode(t)};`);
     lines.push(`    }`);
   }
-  lines.push(o.types.includes("float") ? "    return pnanovdb_read_float(buf, address);" : `    return ${decode(fpTypes[fpTypes.length - 1] as VDBGridTypeName)};`);
+  lines.push(o.types.includes("float") ? "    return pnanovdb_read_float(buf, address);" : `    return ${decode(special[special.length - 1] as VDBGridTypeName)};`);
   lines.push("}");
   return lines.join("\n");
 }
@@ -317,18 +327,21 @@ function readFloatTypedOverride({ o }: Context): string {
 /**
  * Transform 7: the leaf-stat dispatch limited to the compiled types. No Fp type
  * compiled: a plain f32 read (the code decoder drops out). Only Fp types: the
- * decode, unconditionally. Both: one branch over the compiled Fp types.
+ * decode, unconditionally. Both: one branch over the compiled Fp types. (Half
+ * leaf ave/stddev are f32, so Half counts as a plain type here; its min/max go
+ * through transform 8.)
  */
 function leafStatOverride({ o }: Context): string {
   const text = chunk("pnanovdb_leaf_get_stat_float").text;
   const signature = text.slice(0, text.indexOf("{") + 1);
-  const fpTypes = o.types.filter((t) => t !== "float");
+  const fpTypes = o.types.filter((t) => FP_TYPES.has(t));
+  const plainTypes = o.types.filter((t) => !FP_TYPES.has(t));
   const decode = "return pnanovdb_leaf_fp_get_stat_float(grid_type, buf, node, address, with_minimum);";
   const plain = "return pnanovdb_read_float(buf, address);";
   const lines = [signature];
   if (fpTypes.length === 0) {
     lines.push(`    ${plain}`);
-  } else if (!o.types.includes("float")) {
+  } else if (plainTypes.length === 0) {
     lines.push(`    ${decode}`);
   } else {
     lines.push(`    if ${fpTypes.map((t) => `grid_type == ${GRID_TYPE_CONSTANT_PRE[t]}`).join(" || ")} {`);
@@ -340,17 +353,52 @@ function leafStatOverride({ o }: Context): string {
   return lines.join("\n");
 }
 
+/** Transform 8 (with `half`): a Half-aware min/max reader keeping only the compiled types' branch. */
+function minmaxOverride(name: string, other: string): (ctx: Context) => string {
+  return ({ o }) => {
+    const text = chunk(name).text;
+    const signature = text.slice(0, text.indexOf("{") + 1);
+    const half = "return pnanovdb_read_half(buf, address);";
+    const lines = [signature];
+    if (o.types.length === 1) {
+      lines.push(`    ${half}`);
+    } else {
+      lines.push(`    if grid_type == ${GRID_TYPE_CONSTANT_PRE.half} {`);
+      lines.push(`        ${half}`);
+      lines.push("    }");
+      lines.push(`    ${other}`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  };
+}
+
+/** Transform 8 (without `half`): call sites of the Half-aware min/max readers, back to the readers they wrap. */
+const MINMAX_CALL_SITE = /\bpnanovdb_read_minmax_float\(grid_type, buf, /g;
+const LEAF_MINMAX_CALL_SITE = /\bpnanovdb_leaf_get_minmax_float\(grid_type, buf, node, (pnanovdb_leaf_get_m(?:in|ax)_address\(grid_type, buf, node\))\)/g;
+
 const OVERRIDES = new Map<string, (ctx: Context) => string>([
   ["pnanovdb_buf_read_uint32", bufReadOverride],
   [TYPE_TABLE, typeTableOverride],
   ["pnanovdb_read_float_typed", readFloatTypedOverride],
   ["pnanovdb_leaf_get_stat_float", leafStatOverride],
+  ["pnanovdb_read_minmax_float", minmaxOverride("pnanovdb_read_minmax_float", "return pnanovdb_read_float(buf, address);")],
+  [
+    "pnanovdb_leaf_get_minmax_float",
+    minmaxOverride("pnanovdb_leaf_get_minmax_float", "return pnanovdb_leaf_get_stat_float(grid_type, buf, node, address, true);"),
+  ],
 ]);
 
 function effectiveText(c: PnanovdbChunk, ctx: Context): string {
   const override = OVERRIDES.get(c.name);
   if (override) return override(ctx);
-  return c.text.replace(TYPE_TABLE_CALL_SITE, `${TYPE_TABLE_FN}($1)`);
+  let text = c.text.replace(TYPE_TABLE_CALL_SITE, `${TYPE_TABLE_FN}($1)`);
+  if (!ctx.o.types.includes("half")) {
+    text = text
+      .replace(MINMAX_CALL_SITE, "pnanovdb_read_float(buf, ")
+      .replace(LEAF_MINMAX_CALL_SITE, "pnanovdb_leaf_get_stat_float(grid_type, buf, node, $1, true)");
+  }
+  return text;
 }
 
 function referencedChunks(text: string, self?: string): string[] {

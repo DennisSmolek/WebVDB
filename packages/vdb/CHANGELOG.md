@@ -8,6 +8,15 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Added
 
+- NanoVDB **Half** grids (`GridType::Half` = 9, raw IEEE binary16 values; implemented in NanoVDB 13.2, OpenVDB PR 2335), end
+  to end (K7.H). Core: grid type `'half'` (`VDBGridTypeName`, `VDB_GRID_TYPE_IDS.half`, in `VDB_ALL_SCALAR_TYPES`); the pool
+  holds Half images (binary16 background and root min/max decoded); `vdbModuleWgsl({ types: ['half'] })` decodes them
+  with `unpack2x16float` at every level and reads binary16 min/max stats. Modules without `'half'` are byte-identical to
+  0.1.0's. Tools: `vdbQuantize(image, 'half')`, `VDB_HALF_LEAF_CODEC`, `vdbFloatToHalf` / `vdbHalfToFloat` /
+  `vdbRoundToHalf` (NanoVDB `math/HalfLite.h` rounding), `NvdbFile` loads Half grids (`NVDB_SUPPORTED_GRID_TYPES`), and
+  the CPU readers and samplers decode them. Three: `VDBGridNode` and `vdbSparseSource` take `types: ['half']`. Values and
+  min/max match native NanoVDB v14.0.0 (`createNanoGrid<…, nanovdb::Half>`) bit for bit on the fixtures
+  (`pnpm fixtures:bake-half`).
 - Tools: `NvdbFile` and `NvdbStreamReader` / `readNvdbStream` read `.nvdb` files with the BLOSC codec: NanoVDB's
   LZ4 frames (`nanovdb_convert -b/--blosc`, now built by default in OpenVDB v14) in any chunking, and NVIDIA Warp's
   BloscLZ frames (which NanoVDB 14 reads too). Hostile-input checks run before allocating. `writeNvdb` still writes

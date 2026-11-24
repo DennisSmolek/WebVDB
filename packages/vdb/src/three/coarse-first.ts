@@ -133,7 +133,7 @@ export interface VDBCoarseFirstEvent {
   voxelRatio: number;
   /**
    * G16a: the grid types of the family's grids (the file lists every grid's metadata before any data, so this holds
-   * the full grid's type from the first event on), in `VDB_GRID_TYPE_NAMES` order (`float, fp4, fp8, fp16, fpn`, not
+   * the full grid's type from the first event on), in `VDB_GRID_TYPE_NAMES` order (`float, fp4, fp8, fp16, fpn, half`, not
    * alphabetical), each once. A `VDBGridNode` made with `types: event.types` decodes the
    * preview and the full grid with one module (a baked FpN preview and an Fp8 full grid differ), so a source made
    * with `followImage` swaps without a recompile.
@@ -293,7 +293,7 @@ export async function vdbStreamCoarseFirst(
     const full = familyGrids().find((g) => g.name === family);
     return full ? grid.metadata.voxelSize[0] / full.voxelSize[0] : 1;
   };
-  // The reader accepts only the pool's scalar types (Float, Fp4, Fp8, Fp16, FpN: the names in lower case).
+  // The reader accepts only the pool's scalar types (Float, Fp4, Fp8, Fp16, FpN, Half: the names in lower case).
   const familyTypes = (): VDBGridTypeName[] => {
     const names = new Set(familyGrids().map((g) => g.gridType.toLowerCase()));
     return VDB_GRID_TYPE_NAMES.filter((t) => names.has(t));

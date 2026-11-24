@@ -343,7 +343,13 @@ export function vdbBuildFromLeavesDetailed(
     );
   }
 
-  const tree = buildTreeFromLeaves(leaves, opts.tiles, components, { collapse: opts.collapse === true, background });
+  const round = components === 1 ? codec.roundValue : undefined;
+  const tree = round
+    ? buildTreeFromLeaves(roundLeaves(leaves, round), roundTiles(opts.tiles, round), components, {
+        collapse: opts.collapse === true,
+        background: round(background as number),
+      })
+    : buildTreeFromLeaves(leaves, opts.tiles, components, { collapse: opts.collapse === true, background });
   const image = layoutGrid(tree, codec, {
     gridName,
     nameBytes,
@@ -368,6 +374,20 @@ export function vdbBuildFromLeavesDetailed(
     nodeCounts: { leaf: tree.leaves.length, lower: tree.lowers.length, upper: tree.uppers.length },
     tileCounts: { ...tree.tileCounts },
   };
+}
+
+/** Leaves with every value passed through the codec's `roundValue` (a copy; the input is not touched). */
+function* roundLeaves(leaves: Iterable<LeafInput>, round: (v: number) => number): Iterable<LeafInput> {
+  for (const leaf of leaves) {
+    const values = new Float32Array(leaf.values.length);
+    for (let n = 0; n < values.length; n++) values[n] = round(leaf.values[n]!);
+    yield { ...leaf, values };
+  }
+}
+
+function roundTiles(tiles: Iterable<TileInput> | undefined, round: (v: number) => number): TileInput[] | undefined {
+  if (tiles === undefined) return undefined;
+  return [...tiles].map((t) => ({ ...t, value: typeof t.value === "number" ? round(t.value) : t.value }));
 }
 
 interface LayoutParams {
@@ -564,8 +584,9 @@ function writeStats(
     writeVec3StatsBlock(w, base, offMin, offMax, offAve, offStdDev, s);
     return;
   }
-  w.setF32(base + offMin, s.isEmpty ? 0 : s.min);
-  w.setF32(base + offMax, s.isEmpty ? 0 : s.max);
+  // Min/max have the grid's value type (f32, or binary16 for Half); ave/stddev are f32.
+  codec.writeConstant(w, base + offMin, s.isEmpty ? 0 : s.min);
+  codec.writeConstant(w, base + offMax, s.isEmpty ? 0 : s.max);
   w.setF32(base + offAve, s.average);
   w.setF32(base + offStdDev, s.stdDev);
 }
