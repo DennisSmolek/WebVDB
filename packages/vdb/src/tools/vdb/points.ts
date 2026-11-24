@@ -63,6 +63,30 @@
  *   budget of {@link MAX_POINT_EXPANSION} times the file size before it is
  *   allocated. Strides and group offsets are range-checked (no int32
  *   wrap-around).
+ *
+ * ## OpenVDB v14.0.0 security checks (K7.C)
+ *
+ * OpenVDB v14 throws `IoError` on four PointDataGrid inconsistencies
+ * (CHANGES "Security Fixes"; `TypedAttributeArray::readMetadata` /
+ * `readBuffers` / `readPagedBuffers`, `PagedInputStream::createHandle` /
+ * `read`, `Page::readHeader`, `codecs/PointDataCodec.h`
+ * `validateReadOffsets` / `validatePointDataAttributeCount`). Each maps here:
+ *
+ * 1. Attribute byte count smaller than the array: a byte count below its 6
+ *    header bytes, a size of 0, a constant stride of 0 or with `size * stride`
+ *    past u32, and a total size below `size` fail in `readArrayMetadata`;
+ *    the stored bytes must equal the array's exactly (stricter than v14's
+ *    "at least") when {@link decodePoints} reads them.
+ * 2. Page size that does not match its data: page headers of 0, i32 minimum or
+ *    a non-positive uncompressed size, an array of 0 bytes or past its page
+ *    (`createPageHandle`), and a page whose arrays don't fill it exactly
+ *    (`checkStreamComplete`, stricter than v14's unread-page check); a
+ *    decoded page must be exactly its header's size.
+ * 3. Voxel offsets beyond the arrays: end offsets must not decrease, and every
+ *    array's size must equal the leaf's last offset (v14: offsets at most the
+ *    last, the last at most each size; ours is exact).
+ * 4. Pass count too small: a leaf with more arrays than `(numPasses - 4) / 2`
+ *    covers fails (and fewer than 4 passes with leaves).
  */
 
 import type { ByteReader } from "./byte-reader.js";
@@ -225,8 +249,17 @@ function readArrayMetadata(reader: ByteReader): PointArrayData {
   }
   const bytes = Number(total) - 2 - 4; // minus the two flag bytes and the u32 size
   const strideOrTotal = serialization & WRITE_STRIDED ? reader.u32() : 1;
-  if (serialization & WRITE_STRIDED && flags & FLAG_CONSTANT_STRIDE && strideOrTotal === 0) {
-    throw new VdbFormatError("point attribute array has a constant stride of 0");
+  // OpenVDB v14 (`readMetadata`): size and stride come from the file, so a size of 0, a constant
+  // stride of 0 or whose `size * stride` passes u32, or a total below the size is an IoError.
+  if (size === 0) throw new VdbFormatError("point attribute array has a size of 0");
+  const constantStride = !(serialization & WRITE_STRIDED) || (flags & FLAG_CONSTANT_STRIDE) !== 0;
+  if (constantStride) {
+    if (strideOrTotal === 0) throw new VdbFormatError("point attribute array has a constant stride of 0");
+    if (size * strideOrTotal > 0xffffffff) {
+      throw new VdbFormatError(`point attribute array of ${size} x stride ${strideOrTotal} values passes 2^32`);
+    }
+  } else if (strideOrTotal < size) {
+    throw new VdbFormatError(`point attribute array has a total size of ${strideOrTotal}, below its ${size} points`);
   }
   return {
     flags,
@@ -248,7 +281,8 @@ function createPageHandle(reader: ByteReader, stream: PagedStream, array: PointA
   if (stream.byteIndex === stream.uncompressedBytes) {
     const compressedBytes = reader.i32();
     const uncompressedBytes = compressedBytes > 0 ? reader.i32() : -compressedBytes;
-    if (compressedBytes === 0 || uncompressedBytes <= 0) {
+    // OpenVDB v14 `Page::readHeader`: 0 and the i32 minimum (whose negation overflows) are invalid.
+    if (compressedBytes === 0 || compressedBytes === -0x80000000 || uncompressedBytes <= 0) {
       throw new VdbFormatError(`point attribute page header ${compressedBytes}/${uncompressedBytes} is empty`);
     }
     // The body follows later in the file, so it can be no larger than the file.
@@ -267,9 +301,10 @@ function createPageHandle(reader: ByteReader, stream: PagedStream, array: PointA
     stream.uncompressedBytes = uncompressedBytes;
     stream.byteIndex = 0;
   }
-  if (stream.byteIndex + array.bytes > stream.uncompressedBytes) {
+  // OpenVDB v14 `PagedInputStream::createHandle`: a handle of n <= 0 bytes, or past the page, is an IoError.
+  if (array.bytes <= 0 || stream.byteIndex + array.bytes > stream.uncompressedBytes) {
     throw new VdbFormatError(
-      `point attribute array of ${array.bytes} bytes overruns its ${stream.uncompressedBytes}-byte page`,
+      `point attribute array of ${array.bytes} bytes ${array.bytes <= 0 ? "is empty in" : "overruns"} its ${stream.uncompressedBytes}-byte page`,
     );
   }
   array.page = stream.page;

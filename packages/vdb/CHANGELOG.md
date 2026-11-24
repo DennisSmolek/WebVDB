@@ -6,6 +6,35 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Tools: `NvdbFile` and `NvdbStreamReader` / `readNvdbStream` read `.nvdb` files with the BLOSC codec: NanoVDB's
+  LZ4 frames (`nanovdb_convert -b/--blosc`, now built by default in OpenVDB v14) in any chunking, and NVIDIA Warp's
+  BloscLZ frames (which NanoVDB 14 reads too). Hostile-input checks run before allocating. `writeNvdb` still writes
+  NONE and ZIP.
+- Tools: the Blosc decoder reads BloscLZ frames (also inside `.vdb` files).
+- Tools: `parseVdb` reads OpenVDB 13+ `HalfGrid`s (`Tree_half_5_4_3`) under every codec. Values widen to f32
+  exactly; the grid reports `valueType: 'float'` (its `gridType` stays `Tree_half_5_4_3`), so `buildFromVdb` makes a
+  NanoVDB Float grid from it.
+
+### Changed
+
+- Tools: an `.nvdb` from another NanoVDB major version (not 32.x) throws `VDBUnsupportedError` (`VDB_UNSUPPORTED`)
+  instead of `NvdbFormatError`. A `.vdb` newer than file version 225 still throws `VDBUnsupportedError`, now saying
+  it was written by a newer OpenVDB.
+- Tools: point data grids get OpenVDB v14's read-time checks: an attribute array of size 0, a constant stride whose
+  `size × stride` passes 2^32, a total size below the point count, a zero-byte paged array and a page header of
+  i32 minimum are `VdbFormatError`s.
+- Tools: a raw `NanoVDB1` grid buffer whose `mGridSize` is below 736 bytes or unrepresentable is an
+  `NvdbFormatError` (a 0 size used to loop over empty grids).
+- Tools: for `.nvdb` files whose FileMetaData leaves `indexBBox` and `voxelCount` zero (Warp writes them so),
+  `NvdbGridMetadata` takes them from the grid image.
+
+### Fixed
+
+- Tools: the unknown-codec error names the real `nanovdb_convert` flags (`-z/--zip`, `-b/--blosc`); it suggested
+  `--codec=zip`, which doesn't exist.
+
 ## [0.1.0] - 2026-11-24
 
 First public release (0.1.0). Our earlier v1 unscoped packages were never published (the npm `webvdb` package is mjurczyk's, not ours);

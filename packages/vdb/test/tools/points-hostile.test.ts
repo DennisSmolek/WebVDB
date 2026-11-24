@@ -319,15 +319,37 @@ describe("attribute array metadata", () => {
     expectRejected(() => parse(meta((l, a, m) => (a === 1 ? { ...m, size: 0xffffffff } : m))), /an attribute array of size 4294967295/);
   });
 
-  it("uniform array with a stride of 2^32 - 1: points() stops at the output budget", () => {
-    const s = base({
+  const strided = (stride: number) =>
+    base({
       mode: "plain",
       attributes: [...ATTRS, { name: "w", type: "float", codec: "null", uniform: true, stride: 2 }],
       leaves: base().leaves.map((l) => ({ ...l, arrays: [...l.arrays, new Uint8Array(4)] })),
-      tamper: { arrayMeta: (l, a, m) => (a === 3 ? { ...m, stride: 0xffffffff } : m) },
+      tamper: { arrayMeta: (l, a, m) => (a === 3 ? { ...m, stride } : m) },
     });
-    const grid = parse(s).grids[0] as VdbPointDataGrid; // the stride costs nothing to parse
+
+  it("uniform array with a stride of 2^32 - 1: size x stride passes 2^32 (OpenVDB v14 readMetadata)", () => {
+    expectRejected(() => parse(strided(0xffffffff)), /point attribute array of 5 x stride 4294967295 values passes 2\^32/);
+  });
+
+  it("uniform array with a stride of 2^24: legal, and points() stops at the output budget", () => {
+    const grid = parse(strided(1 << 24)).grids[0] as VdbPointDataGrid; // the stride costs nothing to parse
     expectRejected(() => grid.points(), /point attribute "w" needs \d+ bytes, past the point grid's \d+-byte output budget/);
+  });
+
+  // OpenVDB v14.0.0 security checks (CHANGES "Security Fixes"; the mapping is in points.ts).
+  it("v14 check 1: an array size of 0", () => {
+    expectRejected(() => parse(meta((l, a, m) => (a === 1 ? { ...m, size: 0 } : m))), /point attribute array has a size of 0/);
+  });
+
+  it("v14 check 1: a variable-stride array whose total size is below its point count", () => {
+    expectRejected(
+      () => parse(meta((l, a, m) => (a === 1 ? { ...m, flags: m.flags & ~0x8, serialization: m.serialization | 1, stride: 2 } : m))),
+      /total size of 2, below its 5 points/,
+    );
+  });
+
+  it("v14 check 2: an attribute array of 0 bytes in a page", () => {
+    expectRejected(() => parse(meta((l, a, m) => (a === 1 ? { ...m, total: 6n } : m))), /array of 0 bytes is empty in its/);
   });
 });
 
@@ -345,8 +367,8 @@ describe("page headers", () => {
     );
   });
 
-  it("raw page of 2^31 bytes (i32 minimum)", () => {
-    expectRejected(() => parse(pages((a, h) => (a === 0 ? [[-0x80000000]] : h))), /claims 2147483648 stored bytes/);
+  it("raw page of 2^31 bytes (i32 minimum, invalid in OpenVDB v14 Page::readHeader)", () => {
+    expectRejected(() => parse(pages((a, h) => (a === 0 ? [[-0x80000000]] : h))), /page header -2147483648\/2147483648 is empty/);
   });
 
   it("2 GiB uncompressed from a small Blosc frame", () => {

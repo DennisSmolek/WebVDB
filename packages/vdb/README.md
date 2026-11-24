@@ -95,7 +95,7 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 |---|---|
 | `NONE` | yes |
 | `ZIP` (zlib, via `fflate`) | read and write (`writeNvdb(images, { codec: 'zip' })`) |
-| `BLOSC` | not supported for `.nvdb`: throws; re-export with `nanovdb_convert --codec=zip` (Blosc inside `.vdb` files is supported) |
+| `BLOSC` | read: NanoVDB's LZ4 frames (`nanovdb_convert -b/--blosc`, any chunking) and NVIDIA Warp's BloscLZ frames. Not written yet: `writeNvdb` writes `none` or `zip` |
 
 ### The vendoring story
 
@@ -171,7 +171,7 @@ the NanoVDB `Map`.
 
 | Function | What it does |
 |---|---|
-| `parseVdb(buffer)` | Reads a `.vdb` container: float, vec3 and point grids, 5-4-3 tree, uncompressed, zlib or Blosc, active tiles |
+| `parseVdb(buffer)` | Reads a `.vdb` container (file version 225 or older): float, half (as float), vec3 and point grids, 5-4-3 tree, uncompressed, zlib or Blosc, active tiles |
 | `vdbBuildFromDense` / `vdbBuildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
 | `vdbBuildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `vdbQuantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
@@ -187,10 +187,11 @@ the NanoVDB `Map`.
 
 | | Support |
 |---|---|
-| Grid type | float, vec3 (`Vec3f`/`Vec3d`/`Vec3i`) and point data grids |
+| Grid type | float, half (`HalfGrid`, OpenVDB 13+; read as float, `gridType` keeps `Tree_half_5_4_3`), vec3 (`Vec3f`/`Vec3d`/`Vec3i`) and point data grids |
 | Tree configuration | 5-4-3 (OpenVDB's default) |
-| Compression | none, zlib, Blosc (LZ4 and zlib) |
+| Compression | none, zlib, Blosc (LZ4, BloscLZ and zlib) |
 | Half-float leaf storage | yes |
+| File version | up to 225 (what OpenVDB v14 writes); a newer one throws `VDBUnsupportedError` |
 | Transform | uniform scale + translate (affine `Map`); non-uniform/rotated throws on `vdbTransform()`, parses fine on `parseVdb()`/`buildFromVdb()` |
 
 ### Native parity
