@@ -6,12 +6,11 @@ name: Pages
 # because a repo gets one Pages site and the examples site (RELEASING section 4) goes into the
 # same artifact under out/examples/.
 #
-# OWNER: Settings -> Pages -> Source: GitHub Actions (the deploy job fails until it is set).
-# Manual only until then, so pushes to main don't fail. After setting the source, add:
-#   push:
-#     branches: [main]
+# Pages source is GitHub Actions (set by the owner). Every push to main deploys; it can also be run by hand.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -59,8 +58,9 @@ jobs:
       # RELEASING section 4: the examples site at /vdb/examples/. The volumes are too big to fetch in CI (WDAS is a
       # 2.8 GB zip plus a conversion), so a prebuilt tarball comes from a GitHub Release on this repo
       # (examples-assets-v1, asset examples-assets.tar; the owner uploads it with scripts/examples-assets.mjs --pack,
-      # RELEASING.md section 4). Its sha256 is pinned in examples/assets.manifest.json. A missing or mismatched
-      # tarball fails the job: a broken examples site never deploys.
+      # RELEASING.md section 4). Its sha256 is pinned in examples/assets.manifest.json. Until the owner publishes it
+      # (sha256 null) the docs deploy alone and the examples are skipped with a warning; once pinned, a missing or
+      # mismatched tarball fails the job, so a broken examples site never deploys.
       - uses: pnpm/action-setup@v4
 
       - name: Install
@@ -72,20 +72,26 @@ jobs:
           VDB_EXAMPLES_BASE: ${{ env.BASE_PATH }}/examples/
 
       - name: Examples assets (release tarball)
+        id: assets
         run: |
           set -euo pipefail
           tag=$(node -p "require('./examples/assets.manifest.json').release.tag")
           asset=$(node -p "require('./examples/assets.manifest.json').release.asset")
-          test -n "$(node -p "require('./examples/assets.manifest.json').release.sha256 || ''")" \
-            || { echo "::error::examples/assets.manifest.json release.sha256 is null: the owner has not published the asset tarball (RELEASING.md section 4)"; exit 1; }
+          if [ -z "$(node -p "require('./examples/assets.manifest.json').release.sha256 || ''")" ]; then
+            echo "::warning::examples/assets.manifest.json release.sha256 is null: the asset tarball is not published yet (RELEASING.md section 4). Deploying the docs without the examples."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           mkdir -p "$RUNNER_TEMP/examples-assets"
           gh release download "$tag" --repo "${{ github.repository }}" --pattern "$asset" --dir "$RUNNER_TEMP/examples-assets" \
             || { echo "::error::release $tag / $asset not found on ${{ github.repository }}: run scripts/examples-assets.mjs --pack and upload it (RELEASING.md section 4)"; exit 1; }
           node scripts/examples-assets.mjs --from-tar "$RUNNER_TEMP/examples-assets/$asset" --out examples/dist/fixtures --verify-dir examples/dist
+          echo "ready=true" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Copy examples into the Pages artifact
+        if: steps.assets.outputs.ready == 'true'
         run: |
           mkdir -p out/examples
           cp -R examples/dist/. out/examples/
