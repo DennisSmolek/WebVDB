@@ -156,8 +156,9 @@ decode exactly per the spec; a `.wvdb` we write loads in his `WVDBLoader`; and t
 ## K5 — Release 0.1 🟨
 
 `@pmndrs/vdb@0.1.0` published 2026-11-24 (manual first publish from 5328b27, tag `v0.1.0`; trusted publishing set up
-for later releases). Remaining for the exit gate: docs and examples live on GitHub Pages (the examples asset release,
-then the Pages workflow; RELEASING §3–4). K5.3 cloud-system showcase moves to after 0.1.
+for later releases). Docs live at https://pmndrs.github.io/vdb/ since 2026-11-24 (Pages deploys on every push to
+`main`), linked both ways with the examples (K5.7 close-out). **Remaining for the exit gate:** the examples live, which
+needs the owner's asset release (`examples-assets-v1`, RELEASING §4). K5.3 cloud-system showcase moves to after 0.1.
 
 - Docs in pmndrs/docs MDX format, with compiled snippets (`docs:check`, as in bvh).
 - Examples for raw WebGPU and three.js, plus the owner's cloud system as the showcase consumer.
@@ -165,7 +166,10 @@ then the Pages workflow; RELEASING §3–4). K5.3 cloud-system showcase moves to
 
 **Exit gate:** `@pmndrs/vdb@0.1.0` published from `pmndrs/vdb`, with docs live and the examples linked.
 
-## K6 — Renderer in the core (pure WebGPU) ⬜
+## K6 — Renderer in the core (pure WebGPU) 🟨
+
+**Status 2026-11-24:** K6.0 design written ([design/K6-core-renderer.md](design/K6-core-renderer.md), D34 draft in §10);
+waiting on the owner's answers to its open questions Q1–Q10 before K6.1 starts.
 
 The froxel renderer, level-set tracer and points live in `./three` as TSL today. K6 moves them into the engine-free
 core as WGSL passes, as D8 intended: the core takes the host's `GPUDevice`, records into the host's encoder and
@@ -183,7 +187,11 @@ over those passes, and other engines (R6: babylon, pixi) can follow.
 importing three; `./three` draws through the core passes with the K3 parity suite and demo goldens unchanged; every
 core pass has CPU-twin parity; `test/boundaries.test.ts` still holds.
 
-## K7 — Upstream sync ⬜
+## K7 — Upstream sync 🟨
+
+**Status 2026-11-24:** K7.H (NanoVDB Half grids) and K7.C (v14 codecs and parser, native v14 fixtures committed) done.
+Next: K7.1–K7.3 (his shadow fixes, post-processing/MRT, multi-scale scattering), K7.5, K7.6. Open: K7.4 (issue #1),
+K7.C1, K7.H1, K7.7.
 
 Since 0.1 OpenVDB shipped 13.1, 13.2 and 14.0, and mjurczyk/openvdb 0.27–0.29 (research 2026-11-24, TASKS K7). The
 NanoVDB file format and PNanoVDB layout are unchanged, but NanoVDB 13.2 added Half grids, Blosc is on by default in
@@ -195,6 +203,8 @@ read and render here with native parity; his post-0.26 fixes ported with tests; 
 when OpenVDB, NanoVDB or mjurczyk/openvdb release.
 
 ## P1 — Pathtracer integration ⬜
+
+**Status 2026-11-24:** planned from its code; starts when the pathtracer's volume phase closes. Our side first (P1.1–P1.6).
 
 Owner-led on the pathtracer side (D19); our side builds what it needs in the core. Inputs read from pmndrs/pathtracer
 on 2026-11-24 (`docs/internal/design/volumes-plan.md`, its V244/V308): its volume phase (V0–V6) is closing; it
