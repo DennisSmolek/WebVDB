@@ -27,11 +27,11 @@ jobs:
       BASE_PATH: /vdb
     steps:
       # Full history and tags for the version label in the sidebar footer (git describe).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -61,7 +61,7 @@ jobs:
       # RELEASING.md section 4). Its sha256 is pinned in examples/assets.manifest.json. Until the owner publishes it
       # (sha256 null) the docs deploy alone and the examples are skipped with a warning; once pinned, a missing or
       # mismatched tarball fails the job, so a broken examples site never deploys.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -97,7 +97,7 @@ jobs:
           cp -R examples/dist/. out/examples/
           test -s out/examples/index.html && test -s out/examples/attribution.html && test -d out/examples/fixtures
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: out
 
@@ -112,4 +112,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

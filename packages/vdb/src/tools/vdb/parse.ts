@@ -89,6 +89,12 @@ function readBBoxFromMetadata(metadata: Record<string, unknown>): VdbBBox | null
   return null;
 }
 
+/**
+ * Parses an OpenVDB `.vdb` file (float, vec3 and point data grids) into trees you can read, iterate or
+ * convert to NanoVDB. Throws `VdbFormatError` for a malformed buffer, `VDBUnsupportedError` for unsupported constructs.
+ *
+ * @param buffer The file's bytes.
+ */
 export function parseVdb(buffer: ArrayBuffer): VdbFile {
   const reader = new ByteReader(buffer);
 

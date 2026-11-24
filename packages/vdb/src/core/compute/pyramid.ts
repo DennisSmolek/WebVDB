@@ -298,6 +298,7 @@ export interface VDBBoxPyramidGpuOptions {
    * `GPUTexture`, for example).
    */
   targets?: { base: GPUTexture; atlas: GPUTexture | null };
+  /** Debug label of the GPU objects. */
   label?: string;
 }
 
@@ -309,7 +310,9 @@ export interface VDBBoxPyramidRecordOptions {
 
 /** A coarse pyramid on the GPU (see the file comment). */
 export interface VDBBoxPyramidGpu {
+  /** The pool id of the grid the pyramid is built from. */
   readonly gridId: number;
+  /** The sizes and level layout of the textures. */
   readonly layout: VDBBoxPyramidLayout;
   /** r16float, the base level (`layout.dimensions`). */
   readonly base: GPUTexture;
@@ -326,6 +329,9 @@ export interface VDBBoxPyramidGpu {
   /**
    * Records a (re)build into `encoder`. The grid must be resident (`pool.update(encoder)` recorded
    * earlier in this encoder or submitted before); call after the pool's update, as for bind groups.
+   *
+   * @param encoder The encoder the build is recorded into; the host submits it.
+   * @param options Timestamp writes for the build pass.
    */
   record(encoder: GPUCommandEncoder, options?: VDBBoxPyramidRecordOptions): void;
   /** Records a rebuild when {@link stale} and the grid is resident; returns whether it did. */
@@ -538,6 +544,11 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
  *     pool.update(encoder);
  *     pyramid.update(encoder);           // first build, then only on a replace
  *     device.queue.submit([encoder.finish()]);
+ *
+ * @param device The host's `GPUDevice`; the pool must live on it.
+ * @param pool The pool that holds the grid.
+ * @param gridId The grid's pool id.
+ * @param options Index box, size cap, level, target textures and label ({@link VDBBoxPyramidGpuOptions}).
  */
 export function vdbCreateBoxPyramid(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBBoxPyramidGpuOptions = {}): VDBBoxPyramidGpu {
   return new BoxPyramidGpu(device, pool, gridId, options);

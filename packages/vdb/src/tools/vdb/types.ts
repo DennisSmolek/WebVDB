@@ -1,19 +1,28 @@
 /** Public `.vdb` parser types (docs/archive/v1/SPEC.md §4, docs/archive/v1/PLAN.md Phase 5). */
 
+/** A parsed `.vdb` file. */
 export interface VdbFile {
+  /** The OpenVDB file format version. */
   fileVersion: number;
+  /** Every grid in the file, in file order. */
   grids: VdbGrid[];
 }
 
+/** A grid's index-to-world transform. */
 export interface VdbTransformInfo {
+  /** OpenVDB map type name (e.g. a uniform or scale-translate map). */
   type: string;
   /** 4x4 row-major index->world affine matrix. */
   matrix: number[];
+  /** Voxel size per axis, in world units. */
   voxelSize: [number, number, number];
 }
 
+/** An inclusive index-space box. */
 export interface VdbBBox {
+  /** Smallest index corner. */
   min: [number, number, number];
+  /** Largest index corner. */
   max: [number, number, number];
 }
 
@@ -28,7 +37,9 @@ export type VDBVec3 = [number, number, number];
  */
 export type VdbValueType = "float" | "vec3s" | "vec3d" | "vec3i" | "ptdataidx32";
 
+/** One 8x8x8 leaf node of a parsed grid. */
 export interface VdbLeaf {
+  /** Index-space min corner (a multiple of 8). */
   origin: [number, number, number];
   /**
    * All 512 voxel values in leaf-offset order, `components` scalars each
@@ -48,7 +59,9 @@ export interface VdbLeaf {
 export interface VdbTile<V = number> {
   /** Index-space min corner, a multiple of `dim`. */
   origin: [number, number, number];
+  /** Edge length of the tile in voxels. */
   dim: 8 | 128 | 4096;
+  /** The value of every voxel in the tile. */
   value: V;
 }
 
@@ -79,13 +92,17 @@ interface VdbGridBase<V> {
 
 /** A scalar `FloatGrid`. */
 export interface VdbFloatGrid extends VdbGridBase<number> {
+  /** Discriminant: a float grid. */
   valueType: "float";
+  /** Scalars per value. */
   components: 1;
 }
 
 /** A `Vec3SGrid` / `Vec3DGrid` / `Vec3IGrid`. Values are `[x, y, z]`. */
 export interface VdbVec3Grid extends VdbGridBase<VDBVec3> {
+  /** Discriminant: which vector type the file stored. */
   valueType: "vec3s" | "vec3d" | "vec3i";
+  /** Scalars per value. */
   components: 3;
 }
 
@@ -104,6 +121,7 @@ export type VdbPointAttributeArray =
 
 /** One attribute in a point data grid's descriptor. */
 export interface VdbPointAttributeInfo {
+  /** Attribute name (e.g. `P`, `Cd`, `v`). */
   name: string;
   /** OpenVDB value type name, e.g. `vec3s`, `float`, `int32`, `uint8`. */
   type: string;
@@ -115,6 +133,7 @@ export interface VdbPointAttributeInfo {
 
 /** Points decoded from a point data grid, in OpenVDB leaf and voxel order. */
 export interface VdbPointList {
+  /** Number of points. */
   count: number;
   /** World-space positions, xyz per point: `vdbTransform(voxel ijk + P)`. */
   positions: Float32Array;
@@ -141,7 +160,9 @@ export interface VdbPointList {
  * attribute arrays.
  */
 export interface VdbPointDataGrid extends VdbGridBase<number> {
+  /** Discriminant: a point data grid. */
   valueType: "ptdataidx32";
+  /** Scalars per voxel value (the point end offset). */
   components: 1;
   /** Total points (the sum of every leaf's last end offset). */
   pointCount: number;
@@ -153,4 +174,5 @@ export interface VdbPointDataGrid extends VdbGridBase<number> {
   points(): VdbPointList;
 }
 
+/** Any grid {@link parseVdb} returns, discriminated by `valueType`. */
 export type VdbGrid = VdbFloatGrid | VdbVec3Grid | VdbPointDataGrid;

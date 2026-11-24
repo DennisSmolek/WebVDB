@@ -56,7 +56,9 @@ export interface VDBFrameVolumeProps {
    * box; else the unit box at the origin). Read back as {@link VDBFrameVolume.bbox}.
    */
   bbox?: THREE.Box3 | [[number, number, number], [number, number, number]];
+  /** Albedo (single-scattering colour) of the medium (default white). */
   baseColor?: THREE.ColorRepresentation;
+  /** Colour added to the volume's own emission, so it shows without light (default black). */
   scatterColor?: THREE.ColorRepresentation;
   /** With normalizeDensity: optical depth of the longest box side at the mean density (default 100). */
   extinction?: number;
@@ -70,11 +72,17 @@ export interface VDBFrameVolumeProps {
    * `phaseG`, `phaseBackG`, `phaseBackWeight` and `phaseGExponent`, field by field.
    */
   phase?: VDBFramePhase | null;
+  /** Forward `g` of this volume's phase in `'volume'` lighting (null: the renderer's). */
   phaseG?: number | null;
+  /** Backward-lobe `g` in `'volume'` lighting (null: the renderer's). */
   phaseBackG?: number | null;
+  /** Backward-lobe weight in `'volume'` lighting (null: the renderer's). */
   phaseBackWeight?: number | null;
+  /** Wavelength exponent of `g` in spectral rendering (null: the renderer's). */
   phaseGExponent?: number | null;
+  /** Multiplier of the density (default 1; divided by the mean density with `normalizeDensity`). */
   densityScale?: number;
+  /** Divide `densityScale` by the mean density so `extinction` sets the optical depth (default true). */
   normalizeDensity?: boolean;
   /**
    * The mean density `normalizeDensity` divides by (default: unset, the source's `stats.meanNonZero`, which follows
@@ -82,16 +90,26 @@ export interface VDBFrameVolumeProps {
    * by the mean of all frames' non-zero texels (`FrameVolume.getDensityScale`).
    */
   densityMean?: number | null;
+  /** Densities at or below this read as 0 (default 0). */
   densityCutoff?: number;
+  /** Scales the optical depth of the shadow march (0 turns the volume's own shadow off; default 1). */
   absorbance?: number;
+  /** Opacity of the composited volume, 0 to 1 (default 1). */
   opacity?: number;
+  /** Multiplier of the emission (default 1). */
   emissiveIntensity?: number;
   /** Kelvin at emission values 0 and 1. */
   temperatureRange?: [number, number];
+  /**
+   * Offset of the texture lookup in texture coordinates (default 0); a sparse source with a nonzero offset turns HDDA
+   * skipping off.
+   */
   offset3D?: THREE.Vector3Like;
+  /** Texture wrapping of the lookup (default clamp to edge); wrapping turns a sparse source's HDDA skipping off. */
   wrap3D?: THREE.Wrapping;
   /** Light types bitmask ({@link vdbFrameLights}); default all. */
   lights?: number;
+  /** Steps of the shadow march toward each light in `'volume'` lighting (default 32). */
   shadowSteps?: number;
   /** Sample the source's mip levels (default true; needs a source with a mip atlas). */
   mipmaps?: boolean;
@@ -120,47 +138,81 @@ const boxMatrix = (box: THREE.Box3, target: THREE.Matrix4): THREE.Matrix4 => {
   return target.compose(center, new THREE.Quaternion(), size);
 };
 
+/**
+ * A volume drawn by the froxel renderer: a `Group` whose proxy mesh composites the volume's density and light over
+ * the scene (his `FrameVolume`). Add it to a scene and render as usual; its props are live fields.
+ */
 export class VDBFrameVolume extends THREE.Group {
+  /** Type flag. */
   readonly isVDBFrameVolume = true as const;
+  /** The volume source the density (and emission) is read from. */
   readonly source: VDBThreeVolumeSource;
+  /** Uniforms of the source: extinction, density scale and normalisation. */
   readonly sourceUniforms: VDBVolumeUniforms;
+  /** The froxel renderer that draws this volume. */
   readonly frameRenderer: VDBFrameRenderer;
+  /** The proxy mesh whose draw triggers the frame render and composites the volume. */
   readonly proxy: THREE.Mesh<THREE.InstancedBufferGeometry>;
+  /** The volume records (box matrices and per-render view data) the renderer reads. */
   readonly volumes: FrameVolumeRecord[];
   /** Built by the renderer on first use (the source is compiled into it). */
   injectMaterial: VDBFrameInjectMaterial | null = null;
   /** 'frame' lighting: the density and shadow density materials, built by the renderer on first use (K3.3). */
   densityMaterial: VDBFrameDensityMaterial | null = null;
+  /** The shadow density material (`'frame'` lighting), built by the renderer on first use. */
   shadowDensityMaterial: VDBFrameShadowDensityMaterial | null = null;
   /** K3.6: the emission light's direction-pass material of this volume (made by the light on first use). */
   emissionDirectionMaterial: VDBFrameEmissionDirectionMaterial | null = null;
+  /** Emission colour hook (default white); see {@link VDBFrameVolumeProps.emissionColor}. */
   readonly emissionColor: VDBVolumeNodesOptions["emissionColor"];
 
+  /** Albedo of the medium; see {@link VDBFrameVolumeProps.baseColor}. */
   baseColor: THREE.Color;
+  /** Colour added to the emission; see {@link VDBFrameVolumeProps.scatterColor}. */
   scatterColor: THREE.Color;
+  /** Optical depth of the longest box side at the mean density (with `normalizeDensity`). */
   extinction: number;
+  /** Extinction scale of each channel (spectral rendering). */
   extinctionScale: THREE.Vector3;
+  /** Angstrom exponent of the extinction spectrum: a number or a name of `frameAngstromExponents`. */
   angstromExponent: string | number;
   /** `'volume'` lighting: phase overrides (null: the renderer's `settings`); see {@link VDBFrameVolumeProps.phase}. */
   phase: VDBFramePhase | null;
+  /** Forward `g` override of `'volume'` lighting (null: the renderer's). */
   phaseG: number | null;
+  /** Backward-lobe `g` override (null: the renderer's). */
   phaseBackG: number | null;
+  /** Backward-lobe weight override (null: the renderer's). */
   phaseBackWeight: number | null;
+  /** Wavelength exponent of `g` override (null: the renderer's). */
   phaseGExponent: number | null;
+  /** Multiplier of the density; see {@link VDBFrameVolumeProps.densityScale}. */
   densityScale: number;
+  /** Whether the density scale is divided by the mean density. */
   normalizeDensity: boolean;
   /** See {@link VDBFrameVolumeProps.densityMean}; null: the source's mean. */
   densityMean: number | null;
+  /** Densities at or below this read as 0. */
   densityCutoff: number;
+  /** Scales the optical depth of the shadow march. */
   absorbance: number;
+  /** Opacity of the composited volume, 0 to 1. */
   opacity: number;
+  /** Multiplier of the emission. */
   emissiveIntensity: number;
+  /** Kelvin at emission values 0 (x) and 1 (y). */
   temperatureRange: THREE.Vector2;
+  /** Offset of the texture lookup in texture coordinates. */
   offset3D: THREE.Vector3;
+  /** Texture wrapping of the lookup. */
   wrap3D: THREE.Wrapping;
+  /** Light types bitmask ({@link vdbFrameLights}) this volume receives. */
   lights: number;
+  /** Steps of the shadow march in `'volume'` lighting. */
   shadowSteps: number;
+  /** Whether the source's mip levels are sampled. */
   mipmaps: boolean;
+  /** Whether the sparse source's shadow march skips empty space (no effect on dense sources). */
   hdda: boolean;
   /**
    * The volume's box in its local space: the `bbox` prop, else the source's box, re-read
@@ -178,6 +230,11 @@ export class VDBFrameVolume extends THREE.Group {
   private readonly boxFromSource: boolean;
   private readonly resolvedPhase: VDBFramePhaseSource = { phase: "henyey-greenstein", phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0 };
 
+  /**
+   * Makes a volume over a dense or sparse source. Throws `VDB_BAD_OPTION` for a source that is neither.
+   * @param source A source from `vdbDenseTextures()` or `vdbSparseSource()`.
+   * @param props {@link VDBFrameVolumeProps}; all optional.
+   */
   constructor(source: VDBThreeVolumeSource, props: VDBFrameVolumeProps = {}) {
     super();
 

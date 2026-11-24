@@ -83,15 +83,21 @@ export type VDBSparseLod = "none" | "coarse-pyramid" | "node-average";
 
 /** The pool grid ids of the channels. `albedo`: one grey grid or three (RGB). */
 export interface VDBSparseSourceGrids {
+  /** Pool id of the density grid. */
   density: number;
+  /** Pool id of an optional mask grid (multiplies the density). */
   mask?: number;
+  /** Pool id of one grey albedo grid, or three ids for RGB. */
   albedo?: number | readonly [number, number, number];
+  /** Pool id of an optional emission (temperature) grid. */
   emission?: number;
 }
 
 /** Inclusive voxel index box. */
 export interface VDBIndexBox {
+  /** Smallest voxel index (inclusive). */
   min: Vec3;
+  /** Largest voxel index (inclusive). */
   max: Vec3;
 }
 
@@ -179,6 +185,7 @@ export interface VDBSparsePyramid {
   readonly data?: Float32Array;
   /** r16f textures: the base level and the atlas. */
   readonly map: THREE.Data3DTexture;
+  /** r16f texture of the atlas of the levels above the base, or null for a 1x1x1 base. */
   readonly mip: THREE.Data3DTexture | null;
   /** The core GPU pyramid writing into `map` / `mip` (GPU path), else null. */
   readonly gpu: VDBBoxPyramidGpu | null;
@@ -186,9 +193,13 @@ export interface VDBSparsePyramid {
 
 /** The sparse source in three. */
 export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
+  /** The grid node the source reads through. */
   readonly grids: VDBGridNode;
+  /** The pool ids of the channels. */
   readonly ids: Readonly<VDBSparseSourceGrids>;
+  /** The LOD strategy in use. */
   readonly lod: VDBSparseLod;
+  /** Density normalization: `'clamp01'` clamps to [0, 1], `'none'` leaves it. */
   readonly normalize: "none" | "clamp01";
   /** The density index box the unit box covers. */
   readonly indexBox: VDBIndexBox;
@@ -233,7 +244,9 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
    * `vdbFrameSkipEmpty(g, o, d, t0, t1, cutoff, dilate) -> vec2f` (twin `vdbFrameSkipEmpty`).
    */
   nodeAverageFn(): VDBTslNode;
+  /** The HDDA empty-space query as a `wgslFn` node (see {@link nodeAverageFn}). */
   skipEmptyFn(): VDBTslNode;
+  /** Frees the pyramid textures and drops the listeners. */
   dispose(): void;
 }
 
@@ -241,9 +254,13 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
 export interface VDBSparseVolumeUniforms extends VDBVolumeUniforms {
   /** Per channel: index min and size of the index box (voxels). */
   readonly boxes: Readonly<Record<"density" | "mask" | "albedo" | "emission", { min: VDBTslNode; size: VDBTslNode } | null>>;
+  /** The pyramid's base level L0 (see {@link VDBSparsePyramid.level}); levels below it read the grid itself. */
   readonly pyramidLevel: VDBTslNode;
+  /** Levels in the pyramid (base plus atlas). */
   readonly pyramidLevels: VDBTslNode;
+  /** Texel size of the pyramid base level. */
   readonly pyramidTexels: VDBTslNode;
+  /** Texel size of the pyramid atlas. */
   readonly pyramidAtlasSize: VDBTslNode;
 }
 
@@ -1045,6 +1062,10 @@ class SparseSource implements VDBThreeSparseSource {
  * made with profile `'march'` and helpers `['cellBoundTrilinear', 'hddaCellEnd']` (+ `'nodeAverage'`
  * for that LOD). The source holds no grid buffer of its own (the pool's), only the pyramid textures
  * (and, building on the GPU, the build's scratch buffers).
+ *
+ * @param grids A `VDBGridNode` with profile `march` and the helpers the LOD needs.
+ * @param ids The pool ids of the density grid and optional channels.
+ * @param options LOD, normalization, boxes, pyramid and sampling options.
  */
 export function vdbSparseSource(grids: VDBGridNode, ids: VDBSparseSourceGrids, options: VDBSparseSourceOptions = {}): VDBThreeSparseSource {
   if (!grids || typeof grids !== "object" || !("module" in grids)) throw bad("pass a VDBGridNode.");

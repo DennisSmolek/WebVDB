@@ -40,8 +40,11 @@ import {
   type GridTypeConstants,
 } from "./stride-tables.js";
 
+/** A voxel read: its decoded value and whether it is active. */
 export interface VDBReadResult {
+  /** The decoded value (the background value for an unset voxel). */
   value: number;
+  /** Whether the voxel is active. */
   active: boolean;
 }
 
@@ -361,6 +364,9 @@ function checkMagic(gridWords: Uint32Array, fn: string): void {
  * evaluation order: `vdbReadValueF32` (CPU twin of `vdbReadValue`) matches the
  * shader's f32 arithmetic, and the two can differ by 1 ulp (f32) on Fp grids.
  * Use `vdbReadValueF32` as the oracle for GPU parity.
+ *
+ * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
+ * @param ijk Integer index coordinates of the voxel.
  */
 export function vdbReadValueCpu(gridWords: Uint32Array, ijk: [number, number, number]): VDBReadResult {
   checkMagic(gridWords, "readValue");
@@ -416,8 +422,11 @@ export function readLeafQuantum(gridWords: Uint32Array, ijk: [number, number, nu
   return readF32(gridWords, resolved.valueAddress - LEAF_TABLE_NEG_OFF_QUANTUM);
 }
 
+/** A VEC3F voxel read: its three components and whether it is active. */
 export interface VDBReadVec3Result {
+  /** The decoded `[x, y, z]` value (the background for an unset voxel). */
   value: [number, number, number];
+  /** Whether the voxel is active. */
   active: boolean;
 }
 
@@ -426,6 +435,9 @@ export interface VDBReadVec3Result {
  * upper -> lower -> leaf descent as {@link vdbReadValueCpu} with the VEC3F layout
  * constants, then 3 f32 at the resolved address (`pnanovdb_read_vec3f`).
  * Throws for any other grid type.
+ *
+ * @param gridWords The VEC3F grid image (little-endian u32 words, `GridData` at word 0).
+ * @param ijk Integer index coordinates of the voxel.
  */
 export function vdbReadValueVec3(gridWords: Uint32Array, ijk: [number, number, number]): VDBReadVec3Result {
   checkMagic(gridWords, "vdbReadValueVec3");

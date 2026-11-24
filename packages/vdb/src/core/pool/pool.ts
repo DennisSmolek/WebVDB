@@ -99,16 +99,21 @@ export interface VDBAddOptions {
 
 /** What {@link VDBGridPool.info} reports about one grid. */
 export interface VDBGridInfo {
+  /** The grid's pool id. */
   id: number;
+  /** The grid's value type (a NanoVDB grid type name). */
   type: VDBGridTypeName;
   /** NanoVDB `GridType` id. */
   gridTypeId: number;
   /** NanoVDB `GridClass` name, e.g. `"FogVolume"`. */
   gridClass: string;
+  /** NanoVDB `GridClass` id. */
   gridClassId: number;
   /** Grid name from the image header. */
   name: string;
+  /** The `label` given to `add`, if any. */
   label: string | undefined;
+  /** Size of the grid image in bytes. */
   imageBytes: number;
   /** Bytes reserved for the image (≥ `imageBytes`, 32 B multiple). */
   capacity: number;
@@ -122,12 +127,19 @@ export interface VDBGridInfo {
    * image (a coarse pyramid, K3.2a) rebuilds when it moves; ids reused after `remove` get a new one.
    */
   imageRevision: number;
+  /** True when the image carries node statistics (min/max/average/deviation). */
   hasStats: boolean;
+  /** True when brick-majorant bounds are set for this grid. */
   hasBrickMajorant: boolean;
+  /** Byte offset of the majorant data in the pool, or `null` when none is placed. */
   majorantOffset: number | null;
+  /** Brick counts of the majorant per axis, or `null` when none. */
   majorantDims: VDBVec3 | null;
+  /** True when an instance transform (`setTransform`) is set. */
   instanceTransform: boolean;
+  /** The tree's background value. */
   background: number;
+  /** Global density bound that marchers use (record word 35). */
   valueMax: number;
   /**
    * The root node's min/max statistics as stored in the image (f32). Meaningful
@@ -135,13 +147,17 @@ export interface VDBGridInfo {
    * (usually 0). `gridStats` and `decodeToAtlas` use them as their range.
    */
   rootMin: number;
+  /** Root max statistic; see `rootMin`. */
   rootMax: number;
+  /** Voxel size per axis in the grid's own world units (before the instance transform). */
   voxelSize: VDBVec3;
+  /** Inclusive index-space box of the active voxels. */
   indexBBox: { min: VDBVec3; max: VDBVec3 };
   /** World-space AABB of the index bbox's voxels (max corner + 1 voxel), through the record's f64 transform. */
   worldBBox: { min: VDBVec3; max: VDBVec3 };
   /** f64 affines before f32 rounding, 3x4 row-major. */
   worldToIndex: Float64Array;
+  /** Index-to-world affine, 3x4 row-major, f64. */
   indexToWorld: Float64Array;
 }
 
@@ -296,6 +312,17 @@ export class VDBGridPool {
   #headerDirty = true;
   #disposed = false;
 
+  /**
+   * Use {@link VDBGridPool.create}.
+   *
+   * @param device The host's device.
+   * @param buffer The pool buffer.
+   * @param owns True when the pool created `buffer` and frees it.
+   * @param capacity Grid table capacity in grids.
+   * @param limit Upper bound on the buffer size in bytes.
+   * @param label Debug label of the buffers.
+   * @param usage Extra `GPUBufferUsage` flags of the buffer.
+   */
   private constructor(device: GPUDevice, buffer: GPUBuffer, owns: boolean, capacity: number, limit: number, label: string, usage: number) {
     this.device = device;
     this.#buffer = buffer;
@@ -311,6 +338,9 @@ export class VDBGridPool {
    * Creates a pool on `device`. Throws `VDB_UNSUPPORTED_DEVICE` (see
    * {@link unsupportedReason}) or `VDB_BAD_OPTION`. The returned pool is
    * bindable at once (an empty table).
+   *
+   * @param device The host's `GPUDevice`.
+   * @param options Initial size, table capacity, limits, label, usage and an optional host buffer.
    */
   static async create(device: GPUDevice, options: VDBGridPoolOptions = {}): Promise<VDBGridPool> {
     const reason = unsupportedReason(device);
@@ -484,6 +514,9 @@ export class VDBGridPool {
    * or `VDB_ALL_SCALAR_TYPES`), or regenerated and its pipeline rebuilt when
    * a new type arrives. Call `vdbCheckModule(pool, options)` after `add` to
    * catch a mismatch (`VDB_TYPE_NOT_COMPILED`).
+   *
+   * @param image A NanoVDB grid image (one grid) as 32-bit words.
+   * @param options Reserved capacity, transform, majorant, density bound and label.
    */
   add(image: Uint32Array, options: VDBAddOptions = {}): number {
     this.#checkAlive();
@@ -539,6 +572,9 @@ export class VDBGridPool {
    * grid's reserved range (no `version` change: the sequence-player path), else
    * moved. A brick majorant set on the grid is dropped (it described the old
    * image); call `setMajorant` again. Transform, label and `valueMax` are kept.
+   *
+   * @param id The grid's pool id.
+   * @param image The new grid image, as for `add`.
    */
   replace(id: number, image: Uint32Array): void {
     this.#checkAlive();
@@ -577,6 +613,9 @@ export class VDBGridPool {
    * matrix (WebGPU / three convention), or `null` for the file's own map. The
    * pool composes `worldToIndex = map⁻¹ ∘ objectToWorld⁻¹` and `indexToWorld`
    * in f64 and rounds to f32. Only the record changes; the image is untouched.
+   *
+   * @param id The grid's pool id.
+   * @param objectToWorld A 4x4 column-major matrix, or `null` for the file's own map.
    */
   setTransform(id: number, objectToWorld: VDBTransformInput): void {
     this.#checkAlive();
@@ -590,6 +629,9 @@ export class VDBGridPool {
   /**
    * Stores brick-majorant bounds for grid `id` in the pool (record words
    * 36–39, flag b2, brick log2 in b16–23), or clears them with `null`.
+   *
+   * @param id The grid's pool id.
+   * @param majorant The brick bounds, or `null` to clear them.
    */
   setMajorant(id: number, majorant: VDBBrickMajorant | null): void {
     this.#checkAlive();

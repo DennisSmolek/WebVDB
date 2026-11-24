@@ -50,8 +50,10 @@ import { VDB_FLOAT_LEAF_CODEC, VDB_FP4_LEAF_CODEC, VDB_FP8_LEAF_CODEC, VDB_FP16_
 import { vdbBuildFromLeavesDetailed, type VDBBuiltGrid } from "./serialize.js";
 import type { LeafInput, TileInput } from "./tree.js";
 
+/** Target encoding of {@link vdbQuantize}: fixed 4, 8 or 16-bit codes, or FpN (bit-width chosen per leaf by tolerance). */
 export type VDBQuantizeMode = "fp4" | "fp8" | "fp16" | "fpn";
 
+/** Options of {@link vdbQuantize}. */
 export interface VDBQuantizeOptions {
   /**
    * Also collapse uniform leaves and nodes of the source into tiles (OpenVDB
@@ -61,7 +63,14 @@ export interface VDBQuantizeOptions {
   collapse?: boolean;
 }
 
-/** Quantizes a FLOAT grid image (or built grid) to Fp8/FpN. Returns a new image. */
+/**
+ * Quantizes a FLOAT grid image (or built grid) to Fp8/FpN. Returns a new image.
+ *
+ * @param input A FLOAT grid image, or a built grid.
+ * @param mode Target encoding.
+ * @param tolerance Absolute error bound for `'fpn'` (leaf bit-width is chosen to meet it); ignored by the fixed-width modes.
+ * @param options Topology options (leaf collapsing).
+ */
 export function vdbQuantize(
   input: Uint32Array | VDBBuiltGrid,
   mode: VDBQuantizeMode,
@@ -71,7 +80,14 @@ export function vdbQuantize(
   return vdbQuantizeDetailed(input, mode, tolerance, options).image;
 }
 
-/** As {@link vdbQuantize}, but returns the computed metadata alongside the image. */
+/**
+ * As {@link vdbQuantize}, but returns the computed metadata alongside the image.
+ *
+ * @param input A FLOAT grid image, or a built grid.
+ * @param mode Target encoding.
+ * @param tolerance Absolute error bound for `'fpn'`; ignored by the fixed-width modes.
+ * @param options Topology options (leaf collapsing).
+ */
 export function vdbQuantizeDetailed(
   input: Uint32Array | VDBBuiltGrid,
   mode: VDBQuantizeMode,

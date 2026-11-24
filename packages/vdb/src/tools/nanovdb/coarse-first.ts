@@ -22,6 +22,7 @@ import { vdbCollapseGrid, vdbQuantize, type VDBQuantizeMode } from "./quantize.j
 import { vdbResampleGrid, type VDBResampleFilter } from "./resample.js";
 import { writeNvdb } from "./write-nvdb.js";
 
+/** Options of {@link vdbBakeCoarseFirst}. */
 export interface VDBBakeCoarseFirstOptions {
   /**
    * Preview resolution(s): voxels on the longest side of the source's active
@@ -83,6 +84,9 @@ function pickGrid(file: VdbFile, name: string | undefined): VdbGrid {
 /**
  * Bakes a coarse-first `.nvdb`: previews at `previewResolution` (coarsest
  * first), then the full grid, in one segment, as file bytes.
+ *
+ * @param source The full grid: a NanoVDB image, a parsed `.vdb` grid, or a parsed `.vdb` file (its first float grid).
+ * @param options Preview resolution(s), filter, quantization and tolerance.
  */
 export function vdbBakeCoarseFirst(source: Uint32Array | VdbGrid | VdbFile, options: VDBBakeCoarseFirstOptions = {}): Uint8Array {
   const resolutions = [options.previewResolution ?? 48].flat();

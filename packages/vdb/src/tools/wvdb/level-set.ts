@@ -27,9 +27,17 @@ import type { WvdbBits, WvdbBox, WvdbVec3 } from "./format.js";
 
 /** Index-space access to a sample source (axis-aligned or affine map). */
 export interface WvdbIndexAccess {
-  /** World position → fractional index coordinate (the grid's inverse map), into `out`. */
+  /**
+   * World position → fractional index coordinate (the grid's inverse map), into `out`.
+   * @param world The world position.
+   * @param out Receives the index coordinate (returned).
+   */
   toIndex(world: WvdbVec3, out: WvdbVec3): WvdbVec3;
-  /** A world-space vector → index units (the inverse Jacobian), into `out`. */
+  /**
+   * A world-space vector → index units (the inverse Jacobian), into `out`.
+   * @param vector The world-space vector.
+   * @param out Receives the vector in index units (returned).
+   */
   toIndexVector(vector: WvdbVec3, out: WvdbVec3): WvdbVec3;
   /** Value and active state of an integer voxel (inactive tile values included). */
   voxel(ijk: [number, number, number]): { value: number; active: boolean };

@@ -37,6 +37,11 @@ export type VDBGridStatsResult = VDBGridStats;
  * (see the core `gridStats`). The grid must be resident (`pool.flush()` or an
  * update submitted) and the pool must live on the renderer's device. Records
  * into its own encoder and submits it. Rejects (never throws) on bad input.
+ *
+ * @param renderer The initialized `WebGPURenderer` whose device the pool lives on.
+ * @param pool The pool that holds the grid.
+ * @param gridId The grid's pool id; it must be resident.
+ * @param options Histogram bin count.
  */
 export function vdbGridStats(
   renderer: VDBThreeRendererLike,
@@ -76,6 +81,11 @@ export interface VDBDecodeToAtlasResult extends VDBAtlas {
  * Dense decode of grid `gridId`'s index bbox (see the core `decodeToAtlas`,
  * including its voxel-centre sample convention), read back and wrapped in a
  * `Data3DTexture`. Records into its own encoder and submits it.
+ *
+ * @param renderer The initialized `WebGPURenderer` whose device the pool lives on.
+ * @param pool The pool that holds the grid.
+ * @param gridId The grid's pool id; it must be resident.
+ * @param options Resolution cap, filter, format and normalization range.
  */
 export async function vdbDecodeToAtlas(
   renderer: VDBThreeRendererLike,

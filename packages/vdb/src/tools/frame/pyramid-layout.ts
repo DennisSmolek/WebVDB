@@ -25,7 +25,9 @@ export function vdbPyramidBaseLevel(texels: readonly number[], pyramidMax = 128)
 
 /** One level of the mip atlas: its x offset in the atlas and its size. */
 export interface VDBPyramidAtlasLevel {
+  /** The level's x offset in texels. */
   readonly offset: number;
+  /** The level's size in texels per axis. */
   readonly dimensions: Vec3;
 }
 

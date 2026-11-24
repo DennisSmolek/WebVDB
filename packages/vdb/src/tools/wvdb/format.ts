@@ -29,94 +29,153 @@ export const WVDB_SUPPORTED_VERSIONS = [1, 2] as const;
 /** First version with points grids. */
 export const WVDB_POINTS_VERSION = 2;
 
+/** Voxels per brick edge (spec §3.3). */
 export const WVDB_BRICK_DIM = 8;
+/** Voxels per brick: `WVDB_BRICK_DIM` cubed. */
 export const WVDB_BRICK_VOXELS = 512;
 /** Points of one points page chunk, as his writer chooses (`1 << 18`). */
 export const WVDB_POINTS_PAGE = 1 << 18;
 const POINT_CODE_MAX = 0xffff;
 
+/** Three numbers: a dimension triple, a position or an RGB value. */
 export type WvdbVec3 = [number, number, number];
 /** `[[minX, minY, minZ], [maxX, maxY, maxZ]]` in world units. */
 export type WvdbBox = [WvdbVec3, WvdbVec3];
+/** How a LOD stores its bricks: every brick (`dense`) or only the non-empty ones, listed by a mask (`sparse`). */
 export type WvdbLayout = "dense" | "sparse";
+/** Bits per stored density sample: 8 or 16 (spec §3). */
 export type WvdbBits = 8 | 16;
 /** Grid classes the spec names; any other string reads as `"unknown"` (spec §5.4). */
 export type WvdbGridClass = "fog volume" | "level set" | "staggered" | "unknown";
 
+/** A byte range of the file's data section (the compressed chunk of one page or mask). */
 export interface WvdbChunkRef {
+  /** Byte offset from the start of the data section. */
   offset: number;
+  /** Byte length of the chunk. */
   length: number;
 }
+/** A page of a volume LOD: a chunk that holds up to `bake.pageBricks` bricks. */
 export interface WvdbPageRef extends WvdbChunkRef {
+  /** Bricks in this page. */
   bricks: number;
 }
+/** A page of a points LOD: a chunk that holds up to `WVDB_POINTS_PAGE` points. */
 export interface WvdbPointsPageRef extends WvdbChunkRef {
+  /** Points in this page. */
   points: number;
 }
 
+/** The header record of one LOD of a volume grid. */
 export interface WvdbVolumeLodHeader {
+  /** Voxels per axis at this LOD. */
   dimensions: WvdbVec3;
+  /** Bricks stored (all of them for the dense layout, the non-empty ones for the sparse layout). */
   bricks: number;
   /** Present iff the LOD has the sparse layout. */
   mask?: WvdbChunkRef;
+  /** The brick pages, in order. */
   pages: WvdbPageRef[];
 }
 
+/** The header record of a volume grid. */
 export interface WvdbVolumeGridHeader {
+  /** The OpenVDB grid name. */
   name: string;
+  /** `"volume"`; absent in version 1 files. */
   type?: "volume";
+  /** The OpenVDB grid class as a string (see {@link WvdbGridClass}). */
   class: string;
+  /** Channels per voxel: 1 (scalar) or 3 (vector). Default 1. */
   channels?: 1 | 3;
+  /** The value of voxels outside the grid, a number or an RGB triple. */
   background: number | WvdbVec3;
+  /** The grid's active-voxel box in world units, or null when it has none. */
   bbox: WvdbBox | null;
+  /** Mean density over the baked box, when the baker recorded it. */
   meanDensity?: number;
+  /** Count of voxels with a non-zero density, when the baker recorded it. */
   nonZeroVoxels?: number;
+  /** The LODs, coarse first (LOD `bake.lods - 1` is the finest). */
   lods: WvdbVolumeLodHeader[];
 }
 
+/** The header record of one LOD of a points grid. */
 export interface WvdbPointsLodHeader {
+  /** Points stored in this LOD's pages (the ones it adds to the coarser LODs). */
   points: number;
+  /** The point pages, in order. */
   pages: WvdbPointsPageRef[];
 }
 
+/** The header record of a points grid (version 2). */
 export interface WvdbPointsGridHeader {
+  /** The OpenVDB grid name. */
   name: string;
+  /** Always `"points"`. */
   type: "points";
+  /** The OpenVDB grid class as a string. */
   class: string;
+  /** Points in the grid, all LODs together. */
   count: number;
+  /** Points in the source grid before `bake.maxPoints` thinned them. */
   sourceCount?: number;
+  /** Mean point spacing in world units. */
   spacing?: number;
+  /** True when each point carries an RGB colour. */
   colors: boolean;
+  /** The points' box in world units, or null for an empty grid. */
   bbox: WvdbBox | null;
+  /** The LODs, coarse first (LOD `bake.lods - 1` is the finest). */
   lods: WvdbPointsLodHeader[];
 }
 
+/** A grid's header record: a volume or a points grid (tell them apart with {@link isPointsGridHeader}). */
 export type WvdbGridHeader = WvdbVolumeGridHeader | WvdbPointsGridHeader;
 
+/** The settings a file was baked with (spec §5.2). */
 export interface WvdbBake {
+  /** Names of the grids baked, or null for every grid in the source. */
   grids: string[] | null;
+  /** Voxels along the longest axis of the finest LOD. */
   resolution: number;
+  /** Number of LODs baked. */
   lods: number;
+  /** Bits per density sample. */
   bits: WvdbBits;
+  /** Brick layout of the volume LODs. */
   layout: WvdbLayout;
+  /** Bricks per page. */
   pageBricks: number;
+  /** The box that was baked, in world units, or null for the grid's own box. */
   bbox?: WvdbBox | null;
+  /** Cap on the points kept per points grid. */
   maxPoints?: number;
 }
 
+/** The file a `.wvdb` was baked from. */
 export interface WvdbSource {
+  /** The source file's name. */
   file: string;
+  /** SHA-256 of the source file, hex. */
   sha256: string;
 }
 
+/** The JSON header of a `.wvdb` file (spec §5). */
 export interface WvdbHeader {
+  /** File version: 1, or 2 when the file has points grids. */
   version: number;
+  /** The file this one was baked from. */
   source: WvdbSource;
+  /** The bake settings. */
   bake: WvdbBake;
+  /** Voxels per brick edge (8). */
   brickDim: number;
+  /** One header per grid. */
   grids: WvdbGridHeader[];
 }
 
+/** Narrows a {@link WvdbGridHeader} to a points grid. */
 export const isPointsGridHeader = (grid: WvdbGridHeader): grid is WvdbPointsGridHeader =>
   grid.type === "points";
 

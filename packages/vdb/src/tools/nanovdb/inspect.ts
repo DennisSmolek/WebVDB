@@ -27,10 +27,15 @@ import {
   TREE_SIZE,
 } from "./bytes.js";
 
+/** Structure and memory report of a NanoVDB grid image ({@link vdbInspect}). */
 export interface VDBInspectReport {
+  /** Grid value type name (`'Float'`, `'Fp8'`, `'FpN'`, `'Vec3f'`, ...; `'Unknown'` otherwise). */
   gridType: string;
+  /** Grid class name (`'LevelSet'`, `'FogVolume'`, `'Staggered'`, `'Unknown'`). */
   gridClass: string;
+  /** Active voxel count from the tree header. */
   voxelCount: number;
+  /** Number of nodes per level. */
   nodeCounts: { upper: number; lower: number; leaf: number };
   /** Byte size of each grid section plus `total` (== mGridSize). */
   memoryBreakdown: Record<string, number>;
@@ -52,7 +57,11 @@ const GRID_CLASS_NAMES: Record<number, string> = {
   3: "Staggered",
 };
 
-/** Produces a structural + memory report for a NanoVDB grid image. */
+/**
+ * Produces a structural + memory report for a NanoVDB grid image.
+ *
+ * @param image The grid image (little-endian u32 words, `GridData` at word 0).
+ */
 export function vdbInspect(image: Uint32Array): VDBInspectReport {
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
 

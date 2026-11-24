@@ -6,6 +6,13 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- JSDoc on every public export of `core`, `tools` and `three`: a summary line on each export, a doc on each option,
+  prop and member, and `@param` tags on functions, methods and constructors. No signature changed.
+- Installation: how each bundler loads `@pmndrs/vdb/pnanovdb.wgsl`. New page on level sets (shadow-map cost) and points.
+- Docs link the live examples, and the examples link back. `THIRD_PARTY_NOTICES.md` now credits three.js and `@webgpu/types`.
+
 ## [0.1.0] - 2026-11-24
 
 First public release (0.1.0). Our earlier v1 unscoped packages were never published (the npm `webvdb` package is mjurczyk's, not ours);

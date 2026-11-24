@@ -71,7 +71,9 @@ export interface LeafPlan {
   readonly byteSize: number;
 }
 
+/** Encodes the leaves and constants of one NanoVDB value type (Float, Fp4, Fp8, Fp16, FpN, Vec3f). */
 export interface VDBLeafCodec {
+  /** The grid type's node layout (strides and offsets) that the writer places nodes with. */
   readonly layout: GridTypeLayout;
   /** Scalars per value: 1 (default) or 3 (Vec3f). */
   readonly components?: 1 | 3;
@@ -79,15 +81,28 @@ export interface VDBLeafCodec {
    * Computes a leaf's encoding plan (its byte size, and for FpN the chosen
    * bit-width) from its 512 values. Called once before layout so variable-size
    * (FpN) leaves can be placed at cumulative offsets.
+   *
+   * @param values The leaf's 512 values in the leaf's storage order.
    */
   planLeaf(values: Float32Array): LeafPlan;
   /**
    * Writes one leaf's entire block — bbox, `bbox_dif_and_flags`, value mask,
    * value table and per-leaf stats — into the image at absolute byte offset
    * `leafOff`. `plan` is the value returned by {@link planLeaf} for this leaf.
+   *
+   * @param w The image writer.
+   * @param leafOff Absolute byte offset of the leaf in the image.
+   * @param leaf The leaf's origin, values, value mask and active-value statistics.
+   * @param plan The plan {@link planLeaf} returned for this leaf.
    */
   encodeLeaf(w: GridImageWriter, leafOff: number, leaf: EncodableLeaf, plan: LeafPlan): void;
-  /** Writes a single constant value (an internal-node tile / background). */
+  /**
+   * Writes a single constant value (an internal-node tile / background).
+   *
+   * @param w The image writer.
+   * @param off Absolute byte offset to write at.
+   * @param value The constant: a number, or `[x, y, z]` for a Vec3f codec.
+   */
   writeConstant(w: GridImageWriter, off: number, value: TileValue): void;
 }
 
@@ -344,6 +359,7 @@ function makeFixedLeafCodec(layout: GridTypeLayout, bits: 4 | 8 | 16): VDBLeafCo
 
 /** Fp4: fixed 4-bit codes (`LeafData<Fp4>`, 16 levels per leaf). */
 export const VDB_FP4_LEAF_CODEC: VDBLeafCodec = makeFixedLeafCodec(FP4_LAYOUT, 4);
+/** Fp8: fixed 8-bit codes (`LeafData<Fp8>`). */
 export const VDB_FP8_LEAF_CODEC: VDBLeafCodec = makeFixedLeafCodec(FP8_LAYOUT, 8);
 /** Fp16: fixed 16-bit codes (`LeafData<Fp16>`). */
 export const VDB_FP16_LEAF_CODEC: VDBLeafCodec = makeFixedLeafCodec(FP16_LAYOUT, 16);

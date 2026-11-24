@@ -309,7 +309,7 @@ export function mountShowcase(cfg: { number: string; title: string; blurb: strin
   caption.className = "sc-card";
   caption.dataset.testid = "caption";
   caption.innerHTML =
-    `<h1><span class="num">${cfg.number} ·</span> ${cfg.title}</h1><p>${cfg.blurb}</p><a href="${HOME_URL}">&larr; all demos</a> · <a href="${HOME_URL}attribution.html">credits</a><div id="sc-extra"></div>` +
+    `<h1><span class="num">${cfg.number} ·</span> ${cfg.title}</h1><p>${cfg.blurb}</p><a href="${HOME_URL}">&larr; all demos</a> · <a href="${HOME_URL}attribution.html">credits</a> · <a href="https://pmndrs.github.io/vdb/">docs</a><div id="sc-extra"></div>` +
     `<div id="sc-status" data-testid="status" hidden><span></span><div id="sc-bar"><div></div></div></div>` +
     `<div id="sc-stats" data-testid="stats">starting WebGPU…</div><div id="sc-note" data-testid="note"></div><div id="sc-error" data-testid="error"></div>`;
   const strip = document.createElement("div");
