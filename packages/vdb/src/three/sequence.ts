@@ -80,6 +80,12 @@ import { NvdbFile } from "../tools/index.js";
 
 /** The part of a `VDBGridPool` the player uses. */
 export interface VDBSequencePoolLike<TFrame = Uint32Array> {
+  /**
+   * Stages a new image for grid `id` (`VDBGridPool.replace`).
+   *
+   * @param id The grid's pool id.
+   * @param image The frame to show.
+   */
   replace(id: number, image: TFrame): void;
 }
 
@@ -106,6 +112,7 @@ const LOOP_MODES: readonly VDBSequenceLoopMode[] = ["once", "repeat", "pingpong"
 /** An inclusive `[start, end]` frame range. */
 export type VDBSequenceRange = readonly [start: number, end: number];
 
+/** Options of {@link VDBSequence}. */
 export interface VDBSequenceOptions<TFrame = Uint32Array> {
   /** Per-frame source URLs: an array, or `(i) => url`. Length/`frameCount` gate playback. */
   urls: string[] | ((index: number) => string);
@@ -143,6 +150,7 @@ export interface VDBSequenceOptions<TFrame = Uint32Array> {
   onError?: (error: unknown, index: number) => void;
 }
 
+/** Playback counters read through {@link VDBSequence.stats}. */
 export interface VDBSequenceStats {
   /** Frame index currently shown. -1 before the first frame binds. */
   frame: number;
@@ -176,8 +184,11 @@ async function defaultLoader(url: string): Promise<Uint32Array> {
  *   // per frame: sequence.update(performance.now()); pool.update(encoder); grids.update(); render
  */
 export class VDBSequence<TFrame = Uint32Array> {
+  /** Total frames of the clip. */
   readonly frameCount: number;
+  /** Playback rate in frames per second. */
   readonly fps: number;
+  /** How many frames are decoded ahead of the shown one. */
   readonly prefetch: number;
 
   private _rangeStart = 0;
@@ -221,6 +232,11 @@ export class VDBSequence<TFrame = Uint32Array> {
   private _replaceMs = 0;
   private _swaps = 0;
 
+  /**
+   * Creates the player; nothing is loaded until `start`.
+   *
+   * @param opts URLs, frame count, rate, prefetch, range, loop mode, loader, clock and callbacks.
+   */
   constructor(opts: VDBSequenceOptions<TFrame>) {
     const frameCount = opts.frameCount ?? (Array.isArray(opts.urls) ? opts.urls.length : undefined);
     if (frameCount === undefined || !Number.isInteger(frameCount) || frameCount < 1) {
@@ -248,6 +264,7 @@ export class VDBSequence<TFrame = Uint32Array> {
     this.onError = opts.onError;
   }
 
+  /** A snapshot of the playback counters. */
   get stats(): Readonly<VDBSequenceStats> {
     return {
       frame: this._frame,
@@ -259,6 +276,7 @@ export class VDBSequence<TFrame = Uint32Array> {
     };
   }
 
+  /** True while the clock is running: after `start` or `resume`, until `stop`. */
   get isPlaying(): boolean {
     return this.playing;
   }
@@ -303,6 +321,9 @@ export class VDBSequence<TFrame = Uint32Array> {
    * new range (the clock re-anchors there; a ping-pong keeps its direction); the prefetch ring is refilled in the
    * new order.
    *
+   * @param range Inclusive `[start, end]` frame range.
+   * @param now Clock time in ms to re-anchor at (default: the injected clock).
+   *
    * @throws VDBError `VDB_BAD_OPTION` for a bad range; `VDB_DISPOSED` after `dispose()`.
    */
   setRange(range: VDBSequenceRange, now: number = this.now()): void {
@@ -315,6 +336,9 @@ export class VDBSequence<TFrame = Uint32Array> {
    * Change what playback does at the range end. Playback continues from the shown frame: going forward, or, when
    * both the old and the new mode are `'pingpong'`, in its current direction. Switching to `'once'` at the range end
    * holds there; switching from `'once'` held at the end to `'repeat'` or `'pingpong'` plays on.
+   *
+   * @param mode `'once'`, `'repeat'` or `'pingpong'`.
+   * @param now Clock time in ms to re-anchor at (default: the injected clock).
    *
    * @throws VDBError `VDB_BAD_OPTION` for an unknown mode; `VDB_DISPOSED` after `dispose()`.
    */
@@ -477,6 +501,9 @@ export class VDBSequence<TFrame = Uint32Array> {
    * to the injected clock). Call `update(now)` every animation frame thereafter.
    * Clears the failed set (failed frames are retried).
    *
+   * @param target Where frames go: `{ pool, id }` or `{ source }`.
+   * @param now Clock time in ms the playback is anchored at (default: the injected clock).
+   *
    * @throws VDBError `VDB_DISPOSED` after `dispose()`; `VDB_BAD_OPTION` for a bad target.
    */
   start(target: VDBSequenceTarget<TFrame>, now: number = this.now()): void {
@@ -535,6 +562,9 @@ export class VDBSequence<TFrame = Uint32Array> {
   /**
    * Jump to `index` (wrapped into the clip, then clamped into the range), re-anchoring the clock there so playback
    * continues from it (a ping-pong keeps its direction). Clears the failed set (failed frames are retried).
+   *
+   * @param index The frame to jump to.
+   * @param now Clock time in ms to re-anchor at (default: the injected clock).
    *
    * @throws VDBError `VDB_DISPOSED` after `dispose()`.
    */

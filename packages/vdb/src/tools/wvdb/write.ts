@@ -59,7 +59,9 @@ import {
 
 /** One dense level: channel planes one after the other, x fastest. */
 export interface WvdbDenseLevel {
+  /** Voxels per axis. */
   dimensions: WvdbVec3;
+  /** The values: all channel planes one after the other (x fastest within a plane). */
   values: Float32Array;
   /**
    * Sparse layout only: the bricks to store, in page order (e.g. a decoded
@@ -70,8 +72,11 @@ export interface WvdbDenseLevel {
   brickOrder?: ArrayLike<number>;
 }
 
+/** A volume grid to write with {@link writeWvdb}. */
 export interface WvdbVolumeGridInput {
+  /** `"volume"` (the default). */
   type?: "volume";
+  /** The grid name. */
   name: string;
   /** Default `"unknown"`. */
   class?: string;
@@ -79,6 +84,7 @@ export interface WvdbVolumeGridInput {
   channels?: 1 | 3;
   /** One number, or 3 for a vector grid. */
   background: number | readonly number[];
+  /** The grid's active-voxel box in world units, or null when it has none. */
   bbox: WvdbBox | null;
   /**
    * The finest LOD. Coarser LODs are built by `downsampleWvdbLevel` (§3.2).
@@ -95,9 +101,13 @@ export interface WvdbVolumeGridInput {
   stats?: boolean | { meanDensity: number; nonZeroVoxels: number };
 }
 
+/** A points grid to write with {@link writeWvdb} (makes the file version 2). */
 export interface WvdbPointsGridInput {
+  /** Always `"points"`. */
   type: "points";
+  /** The grid name. */
   name: string;
+  /** The grid class string. Default `"unknown"`. */
   class?: string;
   /** xyz per point, in the stored order (near indices should be near in space, §3.5). */
   positions: Float32Array;
@@ -109,8 +119,10 @@ export interface WvdbPointsGridInput {
   spacing?: number;
 }
 
+/** A grid to write: a volume or a points grid. */
 export type WvdbGridInput = WvdbVolumeGridInput | WvdbPointsGridInput;
 
+/** Options of {@link writeWvdb}. */
 export interface WriteWvdbOptions {
   /** LOD count. Default 3. */
   lods?: number;
@@ -134,8 +146,11 @@ export interface WriteWvdbOptions {
   compress?: (raw: Uint8Array) => Uint8Array;
 }
 
+/** What {@link writeWvdb} returns. */
 export interface WriteWvdbResult {
+  /** The file's bytes. */
   bytes: Uint8Array;
+  /** The header that was written. */
   header: WvdbHeader;
 }
 
@@ -285,7 +300,12 @@ function encodeLod(
   };
 }
 
-/** §3.5: point i is in the first LOD k where i is a multiple of 8^(lods-1-k). */
+/**
+ * §3.5: point i is in the first LOD k where i is a multiple of 8^(lods-1-k).
+ * @param count Points in the grid.
+ * @param lods Number of LODs.
+ * @returns Per LOD (coarse first), the stored indices of the points it adds.
+ */
 export function wvdbPointLods(count: number, lods: number): number[][] {
   return Array.from({ length: lods }, (_, lod) => {
     const stride = 8 ** (lods - 1 - lod);
@@ -331,6 +351,8 @@ type PendingChunk = { bytes: Uint8Array; entry: WvdbChunkRef };
  * Points `spacing`, when not given, is `cbrt(boxVolume / sourceCount) *
  * cbrt(stride)` (a uniform-density estimate; his CLI derives it from the
  * source voxel size instead).
+ * @param grids The grids to write.
+ * @param options LOD count, bits, layout, page size and the header fields.
  */
 export function writeWvdb(grids: readonly WvdbGridInput[], options: WriteWvdbOptions = {}): WriteWvdbResult {
   const lods = options.lods ?? DEFAULTS.lods;

@@ -63,9 +63,11 @@ import { writeWvdb, type WriteWvdbOptions, type WriteWvdbResult, type WvdbVolume
 
 /** A grid the baker can point-sample in world space. */
 export interface WvdbSampleSource {
+  /** The grid name (matched by `gridNames`). */
   name: string;
   /** `.wvdb` class string: "fog volume", "level set", "staggered" or "unknown". */
   class: string;
+  /** The value outside the grid's active voxels. */
   background: number;
   /** World box of the active voxels (voxel centres), or null when the grid has none. */
   bbox: WvdbBox | null;
@@ -77,6 +79,7 @@ export interface WvdbSampleSource {
   grid?: Uint32Array | VdbGrid;
 }
 
+/** Options of {@link bakeWvdb}: the writer's options plus the box, resolution and sampling choices. */
 export interface BakeWvdbOptions extends Omit<WriteWvdbOptions, "resolution" | "bakeBBox"> {
   /** Voxels on the longest box side of the finest LOD. Default 128. */
   resolution?: number;
@@ -104,7 +107,9 @@ export interface BakeWvdbOptions extends Omit<WriteWvdbOptions, "resolution" | "
   levelSetSampler?: WvdbLevelSetSampler;
 }
 
+/** Resampling filter of the baker: point sampling (`nearest`) or the area-weighted mean of each texel cell (`box`). */
 export type WvdbSampling = "nearest" | "box";
+/** How the baker samples level sets: the spec rule (`spec`) or his CLI sampler (`surface-mean`). */
 export type WvdbLevelSetSampler = "spec" | "surface-mean";
 
 function unionBox(boxes: WvdbBox[]): WvdbBox | null {
@@ -190,7 +195,11 @@ export function sampleWvdbDenseBox(
   return values;
 }
 
-/** Bakes sources to a `.wvdb` with his CLI defaults (128, 3 LODs, 8 bits, sparse, 1024 bricks per page). */
+/**
+ * Bakes sources to a `.wvdb` with his CLI defaults (128, 3 LODs, 8 bits, sparse, 1024 bricks per page).
+ * @param sources The grids to bake, point-sampled in world space.
+ * @param options Resolution, box, grid names, sampling and the writer's options ({@link BakeWvdbOptions}).
+ */
 export function bakeWvdb(sources: readonly WvdbSampleSource[], options: BakeWvdbOptions = {}): WriteWvdbResult {
   const {
     resolution = 128,
@@ -355,6 +364,7 @@ export function wvdbSourceFromNvdb(gridWords: Uint32Array): WvdbSampleSource {
   };
 }
 
+/** Options of {@link vdbToWvdb}: the baker's options plus the source file name. */
 export interface VdbToWvdbOptions extends BakeWvdbOptions {
   /** `source.file` (the name without directories). Default "". */
   fileName?: string;
@@ -365,6 +375,9 @@ export interface VdbToWvdbOptions extends BakeWvdbOptions {
  * bytes, `source.sha256` is their digest. Only float grids are baked: vector
  * and point data grids are skipped (his CLI bakes vectors as 3 channels and
  * point data grids as points grids; not ported yet).
+ * @param input The `.vdb` file's bytes, or an already parsed {@link VdbFile}.
+ * @param options Baker options and the `source.file` name.
+ * @throws VDBToolsError `VDB_UNSUPPORTED_GRID_TYPE` when the file has no float grids.
  */
 export function vdbToWvdb(input: ArrayBuffer | Uint8Array | VdbFile, options: VdbToWvdbOptions = {}): WriteWvdbResult {
   const { fileName = "", ...bake } = options;
@@ -385,7 +398,11 @@ export function vdbToWvdb(input: ArrayBuffer | Uint8Array | VdbFile, options: Vd
   return bakeWvdb(floatGrids.map(wvdbSourceFromVdbGrid), { ...bake, ...(source ? { source } : {}) });
 }
 
-/** NanoVDB grid image(s) → `.wvdb`, sampled through the CPU oracle. */
+/**
+ * NanoVDB grid image(s) → `.wvdb`, sampled through the CPU oracle.
+ * @param images One grid image or several.
+ * @param options Baker options.
+ */
 export function nvdbToWvdb(images: Uint32Array | readonly Uint32Array[], options: BakeWvdbOptions = {}): WriteWvdbResult {
   const list = images instanceof Uint32Array ? [images] : images;
   return bakeWvdb(list.map(wvdbSourceFromNvdb), options);

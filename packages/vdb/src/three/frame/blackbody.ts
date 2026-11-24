@@ -81,6 +81,9 @@ export interface VDBFrameBlackbodyHook {
   (temperature: N): N;
   /** The soot exponent (0–3; 'planck': 0). Set `.value` at runtime. */
   readonly sootExponent: { value: number };
+  /**
+   * Which emission spectrum the table holds: `"planck"` (a blackbody) or `"soot"` (soot-attenuated).
+   */
   readonly spectrum: "planck" | "soot";
   /** The table texture this hook reads (one per colour matching functions; D33). */
   readonly table: THREE.DataTexture;
@@ -91,6 +94,10 @@ export interface VDBFrameBlackbodyHook {
  * `emissionColor`). Temperatures ≤ 0 give black (the source's `sampleEmission` already selects them out).
  * `options.cmf`: the CIE 1931 colour matching functions (x̄, ȳ, z̄ at a wavelength in nm, read at 380–780 nm in 5 nm
  * steps); default the analytic fit `vdbCie1931Fit` (D33). Pass the exact CIE table here to match his colours exactly.
+ * @param spectrum `"planck"` (default) or `"soot"`.
+ * @param sootExponent Soot absorption exponent of the `"soot"` spectrum (default 1.39); `"planck"` ignores it.
+ *   Live on the hook as `sootExponent.value`.
+ * @param options `cmf`: colour matching functions the table integrates (default the analytic fit `vdbCie1931Fit`).
  */
 export function vdbFrameBlackbodyEmission(spectrum: "planck" | "soot" = "planck", sootExponent = 1.39, options: { cmf?: VDBColorMatchingFunctions } = {}): VDBFrameBlackbodyHook {
   const [, exponent] = vdbFrameEmissionSpectrum(spectrum, sootExponent);

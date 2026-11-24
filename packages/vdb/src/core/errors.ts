@@ -17,9 +17,17 @@ export type VDBErrorCode =
   /** An engine adapter found the engine's internals not behaving as the adapter expects (e.g. a renderer version it wasn't built for). */
   | "VDB_ENGINE_MISMATCH";
 
+/** The error every core API throws, with a machine-readable {@link VDBErrorCode} in `code`. */
 export class VDBError extends Error {
+  /** The error kind; the message is prefixed with it. */
   readonly code: VDBErrorCode;
 
+  /**
+   * Creates the error; the message is prefixed with `@pmndrs/vdb [code]`.
+   *
+   * @param code The error kind.
+   * @param message What went wrong and how to fix it.
+   */
   constructor(code: VDBErrorCode, message: string) {
     super(`@pmndrs/vdb [${code}]: ${message}`);
     this.name = "VDBError";

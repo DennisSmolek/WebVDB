@@ -17,6 +17,8 @@ Options are the [module options](/core/wgsl-module) minus the binding, which the
 | `sampler`, `isActive`, `outside`, `helpers` | as in the module options |
 | `name` | `'vdbPool'`, the name of the storage binding three emits |
 
+The [hello-nvdb demo](https://pmndrs.github.io/vdb/examples/src/demos/01-hello-nvdb/index.html) reads voxels through a `VDBGridNode` in a TSL compute pass.
+
 ## TSL
 
 `vdbSample(grids, id, position, options?)` is the grid's value at a `vec3` node, through the grid's own transform

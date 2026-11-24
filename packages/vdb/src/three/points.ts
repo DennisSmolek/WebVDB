@@ -98,6 +98,7 @@ interface RendererSizeLike {
  * and the other sprite parameters apply; `Cd` multiplies the colour).
  */
 export class VDBPoints extends Sprite {
+  /** Type flag: true. */
   readonly isVDBPoints = true;
   declare material: PointsNodeMaterial;
   /** Points drawn. */
@@ -108,9 +109,17 @@ export class VDBPoints extends Sprite {
   size: number | null;
   /** Point diameter in pixels at view depth 1 (set before each render). */
   readonly pixelScale: ScalarUniform;
+  /** The instanced position attribute (world xyz per point). */
   readonly positionAttribute: InstancedBufferAttribute;
+  /** The instanced colour attribute (linear RGB per point), or null without colours. */
   readonly colorAttribute: InstancedBufferAttribute | null;
 
+  /**
+   * Builds the sprite from render data (tools `vdbPointRenderData`).
+   *
+   * @param data World positions (xyz triples), optional colours, count and spacing.
+   * @param options Sprite material parameters plus `size`, the world diameter of a point.
+   */
   constructor(data: VDBPointsData, options: VDBPointsOptions = {}) {
     if (!data || !(data.positions instanceof Float32Array) || data.positions.length % 3 !== 0) {
       throw new VDBError("VDB_BAD_OPTION", "VDBPoints: data.positions must be a Float32Array of xyz triples (tools vdbPointRenderData).");
@@ -155,7 +164,12 @@ export class VDBPoints extends Sprite {
     return this.size ?? this.spacing * 0.5;
   }
 
-  /** Sets {@link pixelScale} for a camera and the renderer's current target (called before each render). */
+  /**
+   * Sets {@link pixelScale} for a camera and the renderer's current target (called before each render).
+   *
+   * @param renderer The renderer whose current target size gives the pixel height.
+   * @param camera The camera whose field of view (or zoom) sets the scale.
+   */
   updatePixelScale(renderer: RendererSizeLike, camera: THREE.Camera): void {
     const target = renderer.getRenderTarget?.() ?? null;
     const height = target ? target.height : renderer.getSize(canvasSize).y;

@@ -60,6 +60,7 @@ import { VDBGridNode, type VDBTslNode } from "./grid-node.js";
 
 /** Default hard caps of the compiled loops (the live uniforms clamp under them). */
 export const VDB_VOLUME_MAX_STEPS_CAP = 1024;
+/** Default compiled cap on `shadowSteps`. */
 export const VDB_VOLUME_SHADOW_STEPS_CAP = 128;
 /**
  * Default cap on the total samples (primary + shadow) one fragment takes.
@@ -72,18 +73,25 @@ export const VDB_VOLUME_SAMPLE_BUDGET_CAP = 16384;
 
 /** Parameters of {@link VDBVolumeMaterial}: initial uniform values and compile-time caps. */
 export interface VDBVolumeMaterialParameters {
+  /** Extinction per index voxel at density 1. Default 40. */
   densityScale?: number;
   /** March step in index voxels. */
   stepSize?: number;
+  /** Primary march steps (live, clamped to `maxStepsCap`). Default 512. */
   maxSteps?: number;
+  /** Direction toward the sun in world space; normalized at construction. */
   sunDirection?: THREE.Vector3;
+  /** Sun colour (linear). Default (1, 0.95, 0.9). */
   sunColor?: THREE.Color;
+  /** Sun intensity. Default 3. */
   sunIntensity?: number;
   /** Henyey-Greenstein anisotropy g in (-1, 1). */
   anisotropy?: number;
+  /** Shadow-ray steps per lit sample (live, clamped to `shadowStepsCap`). Default 12. */
   shadowSteps?: number;
   /** Density multiplier along the shadow ray only. */
   shadowDensity?: number;
+  /** Constant ambient term added to the sun light. Default 0.15. */
   ambient?: number;
   /** Per-pixel jitter of the first sample. Default true. */
   jitter?: boolean;
@@ -257,6 +265,7 @@ function positiveInt(name: string, value: number | undefined, fallback: number):
  *   makes {@link gridId} a `uint` uniform; a node is kept as given.
  */
 export class VDBVolumeMaterial<TGridId extends number | VDBTslNode = number> extends NodeMaterial {
+  /** Type flag: true. */
   readonly isVDBVolumeMaterial = true;
 
   /** The pool node this material reads (its `module` is the march's include). */
@@ -294,6 +303,9 @@ export class VDBVolumeMaterial<TGridId extends number | VDBTslNode = number> ext
   readonly jitter: ScalarUniform;
 
   /**
+   *
+   * @param params Initial uniform values and compile-time caps ({@link VDBVolumeMaterialParameters}).
+   *
    * @param renderer The initialized `WebGPURenderer` the pool and `grids` live on.
    * @param grids A `VDBGridNode` made on this same renderer, with profile
    *   `sample` or `march` and `helpers: ['rayClipSupport']`. Share one per
@@ -375,6 +387,7 @@ export class VDBVolumeMaterial<TGridId extends number | VDBTslNode = number> ext
 
 /** What {@link vdbProxyGeometry} reads from `pool.info(id)`. */
 export interface VDBProxyGridInfo {
+  /** Inclusive index-space box of the active voxels (`pool.info(id).indexBBox`). */
   readonly indexBBox: { readonly min: readonly number[]; readonly max: readonly number[] };
   /** 3x4 row-major index-to-world affine (`pool.info(id).indexToWorld`). */
   readonly indexToWorld: ArrayLike<number>;
@@ -387,6 +400,9 @@ export interface VDBProxyGridInfo {
  * `pool.info(id).worldBBox`, the box v1 used; `pad: 1` also covers the
  * min-side half voxel of the trilinear support that `VDBVolumeMaterial`
  * marches (rays that cross only that shell are otherwise not rasterized).
+ *
+ * @param info The grid's `pool.info(id)`.
+ * @param options `pad`: voxels added on every side of the index box (default 0).
  */
 export function vdbProxyGeometry(info: VDBProxyGridInfo, options: { pad?: number } = {}): THREE.BoxGeometry {
   const pad = options.pad ?? 0;

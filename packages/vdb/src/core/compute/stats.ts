@@ -121,11 +121,13 @@ export interface VDBGridStatsOptions {
 export interface VDBGridStats {
   /** Exact extremes over the active voxels (0 when there are none). */
   min: number;
+  /** Exact maximum over the active voxels. */
   max: number;
   /** Mean over the active voxels: fixed-point (2^-20 of the range) on the atomics path, f64 on the dump path. */
   mean: number;
   /** `histogramBins` counts over `range`, clamped to the end bins. */
   histogram: Uint32Array;
+  /** Number of active voxels counted. */
   activeVoxelCount: number;
   /** True when the atomics path ran (root min ≥ 0). */
   usedAtomicFastPath: boolean;
@@ -145,6 +147,11 @@ const WHERE = "gridStats";
  * after its `add`), and the pool must live on `device`. The tool allocates
  * its own parameter, output and readback buffers and frees them in `read()`
  * or `dispose()`; it never touches the pool's buffer beyond binding it.
+ *
+ * @param device The host's `GPUDevice`; the pool must live on it.
+ * @param pool The pool that holds the grid.
+ * @param gridId The grid's pool id; it must be resident.
+ * @param options Histogram bins and an optional host encoder ({@link VDBGridStatsOptions}).
  *
  * @throws VDBError `VDB_BAD_OPTION` for bad options, a pool on another
  *   device, a non-resident grid, or (root min < 0, the dump path) a bbox whose

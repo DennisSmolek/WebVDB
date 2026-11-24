@@ -70,7 +70,7 @@
  * NanoVDB splits at 1 GiB (`MAX_SIZE`) and writes LZ4 frames (byte shuffle,
  * typesize 4, 256 KiB blocks); NVIDIA Warp writes one BloscLZ frame per grid
  * (python-blosc defaults), which NanoVDB 14 reads too. We accept any chunking
- * whose sizes add up (DIVERGES V68). Frames decode with `tools/vdb/blosc.ts`.
+ * whose sizes add up (DIVERGES V69). Frames decode with `tools/vdb/blosc.ts`.
  *
  * ## Raw grid buffer format (magic `NanoVDB1`, no FileHeader)
  *
@@ -115,14 +115,23 @@ export type NvdbCodec = (typeof NvdbCodec)[keyof typeof NvdbCodec];
 /** Grid types targeted for v1 (FogVolume rendering). */
 export const NVDB_SUPPORTED_GRID_TYPES = ["Float", "Fp4", "Fp8", "Fp16", "FpN"] as const;
 
+/** What a `.nvdb` file's metadata says about one grid. */
 export interface NvdbGridMetadata {
+  /** The grid's name. */
   name: string;
+  /** Grid value type name (`'Float'`, `'Fp8'`, `'FpN'`, ...). */
   gridType: string;
+  /** Grid class name (`'FogVolume'`, `'LevelSet'`, ...). */
   gridClass: string;
+  /** World-space box (its max is one voxel beyond the max voxel's centre). */
   worldBBox: { min: [number, number, number]; max: [number, number, number] };
+  /** Inclusive index-space box of the active voxels. */
   indexBBox: { min: [number, number, number]; max: [number, number, number] };
+  /** Voxel size per axis, in world units. */
   voxelSize: [number, number, number];
+  /** Active voxel count. */
   voxelCount: number;
+  /** Size of the decoded grid image in bytes. */
   gridByteSize: number;
 }
 
@@ -579,7 +588,7 @@ export function inflateZipGrid(compressed: Uint8Array, gridSize: number, i: numb
 /**
  * NVIDIA Warp's `Volume.save_to_nvdb` leaves FileMetaData's `indexBBox` and `voxelCount` zero
  * (and its `fileSize` excludes the codec's 8-byte size prefix). When both are zero, the image's
- * own RootData bbox and TreeData voxel count stand in for them (K7.C; DIVERGES V68).
+ * own RootData bbox and TreeData voxel count stand in for them (K7.C; DIVERGES V69).
  */
 function metadataFromImage(meta: ParsedFileMetaData, gridBytes: Uint8Array): Pick<ParsedFileMetaData, "indexBBox" | "voxelCount"> {
   const zeroBox = [...meta.indexBBox.min, ...meta.indexBBox.max].every((c) => c === 0);
@@ -822,11 +831,20 @@ export class NvdbFile {
   private readonly records: readonly GridRecord[];
   private readonly sourceBuffer: ArrayBuffer;
 
+  /**
+   * @param sourceBuffer The parsed file's bytes.
+   * @param records The parsed grid records.
+   */
   private constructor(sourceBuffer: ArrayBuffer, records: readonly GridRecord[]) {
     this.sourceBuffer = sourceBuffer;
     this.records = records;
   }
 
+  /**
+   * Fetches and parses a `.nvdb` file.
+   *
+   * @param url The file's URL; a non-OK response throws.
+   */
   static async fromURL(url: string | URL): Promise<NvdbFile> {
     const response = await fetch(url);
     if (!response.ok) {
@@ -838,12 +856,18 @@ export class NvdbFile {
     return NvdbFile.fromArrayBuffer(buffer);
   }
 
+  /**
+   * Parses a `.nvdb` file (or raw grid buffer) already in memory.
+   *
+   * @param buffer The file's bytes; throws `NvdbFormatError` when malformed.
+   */
   static fromArrayBuffer(buffer: ArrayBuffer): NvdbFile {
     const format = sniffFormat(buffer);
     const records = format === "segment" ? parseSegments(buffer) : parseRawGridBuffer(buffer);
     return new NvdbFile(buffer, records);
   }
 
+  /** The metadata of every grid in the file, in file order. */
   get grids(): readonly NvdbGridMetadata[] {
     return this.records.map((r) => r.metadata);
   }

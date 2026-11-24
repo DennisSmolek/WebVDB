@@ -485,7 +485,9 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
 
 /** Props of {@link VDBFrameEmissionLight} (his `FrameEmissionLight` props; same names and defaults). */
 export interface VDBFrameEmissionLightProps {
+  /** Light colour (default white). */
   color?: THREE.ColorRepresentation;
+  /** Light intensity, a multiplier of the volumes' emitted light (default 1). */
   intensity?: number;
   /** Probes on each axis of each cascade, 2–32 (default 16). */
   resolution?: number;
@@ -560,47 +562,83 @@ const sourceKey = (frameVolume: VDBFrameVolume): string => {
 /** One registration of the light node class (internal 4), checked at the first construction. */
 let registered = false;
 
+/**
+ * Light that lights lit meshes with the emission of emissive `VDBFrameVolume`s: per-volume direction and centre
+ * passes, then a probe grid of cascades (his `FrameEmissionLight`). Add it to the scene; the renderer-side node
+ * updates its probes before each render.
+ */
 export class VDBFrameEmissionLight extends THREE.Light {
+  /** Type flag. */
   readonly isVDBFrameEmissionLight = true as const;
 
+  /** Probes on each axis of each cascade, 2 to 32. */
   resolution: number;
+  /** Size of the last cascade as a multiple of the box of all emitting volumes. */
   range: number;
+  /** Probe grid cascades, 1 to 4 (1: one grid for all volumes). */
   cascades: number;
+  /** Distance from the camera that the finer cascades cover. */
   distance: number;
+  /** Steps of each ray in a volume (rounded, at least 1). */
   steps: number;
 
+  /** Minimum corner of each cascade in world space (valid for the first `cascadeCount`). */
   readonly cascadeMin = Array.from({ length: maxCascades }, () => new THREE.Vector3());
+  /** Size of each cascade in world space (valid for the first `cascadeCount`). */
   readonly cascadeSize = Array.from({ length: maxCascades }, () => new THREE.Vector3(1.0, 1.0, 1.0));
+  /** Cascades in use after the last probe-grid update. */
   cascadeCount = 0;
+  /** Probes on each axis of each cascade after the last update. */
   probeResolution = 2;
+  /** World centre of the probe grid after the last update. */
   readonly probeCenter = new THREE.Vector3();
 
+  /** Emitter records of the last collection (pooled; only the first `emitterCount` are current). */
   emitters: Emitter[] = [];
+  /** Emissive volumes found in the last collection. */
   emitterCount = 0;
+  /** Per-slot change key of the volume last drawn into that slot of the direction and emitter targets. */
   slotKeys: string[] = [];
+  /** Rows of the direction and emitter targets (a power of two at least `emitterCount`). */
   slotCount = 0;
+  /** Change key of the probe grid last drawn; the probes draw again when it moves. */
   probeKey = "";
 
   // NOTE Float targets for the volumes: intensities in world units do not overflow
+  /** Float target of the per-volume direction pass (intensity and centre, one row per slot). */
   directionTarget = createTarget(2, THREE.FloatType, THREE.NearestFilter);
+  /** Float target of the reduced per-volume emitter data (one texel per slot). */
   emitterTarget = createTarget(2, THREE.FloatType, THREE.NearestFilter);
   // NOTE The probe atlas has the size for the largest grid and all cascades: lit materials keep its binding
+  /** Half-float atlas of the probe grid that lit materials read (sized for the largest grid and all cascades). */
   readonly probeTarget = createTarget(3, THREE.HalfFloatType, THREE.LinearFilter, atlasSize, atlasSize);
 
   // NOTE One draw for each changed volume, in one render
+  /** Scene whose meshes draw one direction pass per changed volume. */
   readonly directionScene = new THREE.Scene();
+  /** Pooled direction-pass meshes, reused between frames. */
   directionPool: THREE.Mesh[] = [];
+  /** Material of the pass that reduces the direction samples to one emitter per slot. */
   readonly reduceMaterial = new VDBFrameEmissionReduceMaterial();
+  /** Material of the pass that gathers the emitters into the probe grid. */
   readonly probeMaterial = new VDBFrameEmissionProbeMaterial();
+  /** Fullscreen scene of the reduce pass. */
   readonly reduceScene: THREE.Scene;
+  /** Fullscreen scene of the probe pass. */
   readonly probeScene: THREE.Scene;
   // NOTE WebGPURenderer calls updateProjectionMatrix() on the camera
+  /** Orthographic camera the passes render with. */
   readonly passCamera = new THREE.OrthographicCamera();
   // NOTE RendererUtils fills this object
+  /** Scratch object that the renderer state save and restore around the passes fills. */
   rendererState: object = {};
   /** Volumes drawn in the last probe update and whether the probes were drawn (not his; tests and timing). */
   readonly lastUpdate = { directions: 0, probes: false };
 
+  /**
+   * Makes the light with its targets, passes and probe grid settings.
+   * @param props {@link VDBFrameEmissionLightProps}; all fields optional.
+   */
   constructor(props: VDBFrameEmissionLightProps = {}) {
     const { color = 0xffffff, intensity = 1.0, resolution = 16, range = 3.0, cascades = 1, distance = 512, steps = 24 } = props;
 
@@ -635,6 +673,7 @@ export class VDBFrameEmissionLight extends THREE.Light {
     this.probeScene = createPassScene(this.probeMaterial);
   }
 
+  /** Steps of each ray, rounded and at least 1. */
   getSteps(): number {
     return Math.max(1, Math.round(this.steps));
   }
@@ -655,6 +694,11 @@ export class VDBFrameEmissionLight extends THREE.Light {
   }
 
   // NOTE Emissive volumes of the scene (visible, with an emission channel)
+  /**
+   * Collects the visible emissive volumes of `scene` into `emitters` and sets `emitterCount`; each gets a key that
+   * changes when its draw would.
+   * @param scene Root to traverse.
+   */
   collectEmitters(scene: THREE.Object3D): void {
     let count = 0;
     const steps = this.getSteps();
@@ -710,6 +754,10 @@ export class VDBFrameEmissionLight extends THREE.Light {
   }
 
   // NOTE The probe cascades (tools/frame/emission.ts). Returns a key that changes with them.
+  /**
+   * Recomputes the probe cascades for the collected emitters and the camera. Returns a key that changes with them.
+   * @param camera Camera whose position centres the finer cascades.
+   */
   updateProbeGrid(camera: THREE.Camera): string {
     cameraPosition.setFromMatrixPosition(camera.matrixWorld);
 
@@ -731,6 +779,12 @@ export class VDBFrameEmissionLight extends THREE.Light {
 
   // NOTE The changed volumes as { emitter, slot }, or null when the probes stay the same.
   // Slots grow to the next power of two. New targets are empty, so all volumes draw again.
+  /**
+   * Collects emitters and returns the volumes whose direction pass must draw again (with their slots), or null when
+   * nothing changed.
+   * @param scene Root to traverse.
+   * @param camera Camera of the render.
+   */
   prepareProbes(scene: THREE.Object3D, camera: THREE.Camera): { emitter: Emitter; slot: number }[] | null {
     this.collectEmitters(scene);
 
@@ -769,6 +823,10 @@ export class VDBFrameEmissionLight extends THREE.Light {
   }
 
   // NOTE New targets, because setSize() destroys the GPU textures that materials still bind
+  /**
+   * Makes new direction and emitter targets for `slotCount` rows (resizing would destroy GPU textures that materials
+   * still bind).
+   */
   resizeSlots(): void {
     this.directionTarget.dispose();
     this.emitterTarget.dispose();
@@ -776,6 +834,10 @@ export class VDBFrameEmissionLight extends THREE.Light {
     this.emitterTarget = createTarget(2, THREE.FloatType, THREE.NearestFilter, 1, this.slotCount);
   }
 
+  /**
+   * The pooled direction-pass mesh at `index`, made on first use.
+   * @param index Position in the pool (one per changed volume).
+   */
   getDirectionMesh(index: number): THREE.Mesh {
     if (!this.directionPool[index]) {
       const mesh = new THREE.Mesh(createGeometry(quadPositions), new THREE.MeshBasicMaterial());
@@ -801,7 +863,12 @@ export class VDBFrameEmissionLight extends THREE.Light {
     return this.directionPool[index]!;
   }
 
-  /** Runs the passes of changed volumes. The light node calls it before the lit meshes of each render. */
+  /**
+   * Runs the passes of changed volumes. The light node calls it before the lit meshes of each render.
+   * @param renderer The WebGPU renderer.
+   * @param scene Root of the emissive volumes.
+   * @param viewCamera Camera of the lit render.
+   */
   updateProbes(renderer: RendererLike, scene: THREE.Object3D, viewCamera: THREE.Camera): void {
     this.lastUpdate.directions = 0;
     this.lastUpdate.probes = false;

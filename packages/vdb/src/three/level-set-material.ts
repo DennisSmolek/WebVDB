@@ -105,6 +105,7 @@ function bad(message: string): VDBError {
  *   makes {@link gridId} a `uint` uniform; a node is kept as given.
  */
 export class VDBLevelSetMaterial<TGridId extends number | VDBTslNode = number> extends MeshStandardNodeMaterial {
+  /** Type flag: true. */
   readonly isVDBLevelSetMaterial = true;
   /** The pool node this material reads. */
   readonly grids: VDBGridNode;

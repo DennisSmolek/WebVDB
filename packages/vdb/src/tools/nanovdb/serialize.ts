@@ -116,6 +116,7 @@ import {
   type UpperNode,
 } from "./tree.js";
 
+/** Options of {@link vdbBuildFromDense}. */
 export interface VDBBuildFromDenseOptions {
   /** Index-space min corner of the dense block. Default [0,0,0]. */
   origin?: [number, number, number];
@@ -153,15 +154,21 @@ export type GridClassName = "FogVolume" | "LevelSet" | "Staggered" | "Unknown";
 
 /** Result of a build, exposing metadata alongside the raw image. */
 export interface VDBBuiltGrid {
+  /** The grid image (little-endian u32 words, `GridData` at word 0). */
   image: Uint32Array;
+  /** The grid's name. */
   gridName: string;
+  /** Active voxel count. */
   voxelCount: number;
+  /** Inclusive index-space box of the active voxels. */
   indexBBox: { min: [number, number, number]; max: [number, number, number] };
+  /** World-space box (its max is one voxel beyond the max voxel's centre). */
   worldBBox: { min: [number, number, number]; max: [number, number, number] };
   /** Voxel size along x: the voxel size of a uniform grid. See {@link VDBBuiltGrid.voxelSizeXYZ} for all three. */
   voxelSize: number;
   /** Voxel size per axis (equal for a uniform grid; an anisotropic grid has a diagonal, non-uniform Map). */
   voxelSizeXYZ: [number, number, number];
+  /** Number of nodes per level. */
   nodeCounts: { leaf: number; lower: number; upper: number };
   /** Active tiles per level (all 0 unless the source had active tiles). */
   tileCounts: { lower: number; upper: number; root: number };
@@ -177,6 +184,10 @@ const GRID_CLASS_ID: Record<GridClassName, number> = {
 /**
  * Builds a complete FLOAT NanoVDB grid image from a dense array of shape
  * `[nx,ny,nz]` (x-major: idx = (x*ny + y)*nz + z).
+ *
+ * @param values The dense values, `nx * ny * nz` of them.
+ * @param dims Voxels per axis `[nx, ny, nz]`.
+ * @param opts Origin, voxel size, background, activity rule, name, class and collapsing.
  */
 export function vdbBuildFromDense(
   values: Float32Array,
@@ -186,7 +197,13 @@ export function vdbBuildFromDense(
   return vdbBuildFromDenseDetailed(values, dims, opts).image;
 }
 
-/** As `vdbBuildFromDense`, but also returns computed metadata (used by writeNvdb). */
+/**
+ * As `vdbBuildFromDense`, but also returns computed metadata (used by writeNvdb).
+ *
+ * @param values The dense values, `nx * ny * nz` of them.
+ * @param dims Voxels per axis `[nx, ny, nz]`.
+ * @param opts Origin, voxel size, background, activity rule, name, class and collapsing.
+ */
 export function vdbBuildFromDenseDetailed(
   values: Float32Array,
   dims: [number, number, number],
@@ -262,6 +279,7 @@ function voxelSizeVec3(vs: number | readonly number[] | undefined, fn: string): 
   return xyz;
 }
 
+/** Options of {@link vdbBuildFromLeavesDetailed}. */
 export interface VDBBuildFromLeavesOptions {
   /**
    * Voxel size in world units: a number (uniform), or `[x, y, z]` for an
@@ -297,6 +315,10 @@ export interface VDBBuildFromLeavesOptions {
  * mask), using the given {@link VDBLeafCodec}. This is the memory-frugal path —
  * leaves stream in, no dense array is ever allocated — that backs `buildFromVdb`
  * (parser leaves -> FLOAT) and `quantize` (an existing grid's leaves -> Fp8/FpN).
+ *
+ * @param leaves The leaves, in any order.
+ * @param codec Encodes the leaves and constants (e.g. `VDB_FP8_LEAF_CODEC`).
+ * @param opts Voxel size, origin, background, name, class, tiles and collapsing.
  */
 export function vdbBuildFromLeavesDetailed(
   leaves: Iterable<LeafInput>,

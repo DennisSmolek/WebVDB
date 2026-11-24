@@ -221,6 +221,7 @@ export interface VDBReadback<T> {
    * call {@link submitted} first (else rejects with `VDB_BAD_OPTION`).
    */
   read(): Promise<T>;
+  /** Drops the work without reading it and frees the tool's buffers. */
   dispose(): void;
 }
 

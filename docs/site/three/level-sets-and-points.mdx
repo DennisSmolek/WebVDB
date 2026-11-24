@@ -1,0 +1,44 @@
+---
+title: Level sets and points
+description: VDBLevelSetMaterial traces an OpenVDB level set's surface on the sparse pool; VDBPoints draws point grids.
+nav: 56
+sourcecode: packages/vdb/src/three/level-set-material.ts
+---
+
+## Level sets
+
+`VDBLevelSetMaterial` is a `MeshStandardNodeMaterial` that draws the zero surface of a NanoVDB level set (a signed
+distance grid) by tracing it on the sparse pool, at the grid's full resolution. Lights, shadows, depth and fog are
+three's own. Give it a `VDBGridNode` made with profile `'march'` and the `'levelSet'` helper, and a mesh with an
+identity transform and `vdbProxyGeometry(pool.info(id), { pad: 1 })`. The grid is placed with `pool.setTransform`,
+not with the mesh.
+
+The trace is the core's `vdbLevelSetHit` (an HDDA skip over empty space, then a trilinear sample of the distance
+field), and the normal is a central difference of that field. It works with perspective and orthographic cameras, so
+directional-light shadow maps trace too. `maxSamples` (samples per fragment) and `normalStep` are live uniforms, and the trace is exposed as TSL nodes
+(`hitWorldNode`, `normalViewNode`, ...) for custom shading.
+
+See the [level sets demo](https://pmndrs.github.io/vdb/examples/src/demos/13-level-sets/index.html): four OpenVDB
+level sets, each in its own pool, traced at full resolution with an HDR sky and shadows.
+
+### Shadows cost a trace per texel
+
+A mesh that casts a shadow draws into the shadow map with the same material, so the map is traced too: one
+orthographic ray per shadow texel the proxy covers. Demo 13 (four level sets) took 44 ms a frame at 1280 by 720 on
+an M-series Mac with the automatic update on, and 12 ms with `light.shadow.autoUpdate = false`.
+
+For a static scene, turn the automatic update off and ask for a new map only when something moved.
+Set `light.shadow.autoUpdate = false`, then `light.shadow.needsUpdate = true` once, and again after the light or a
+caster changes.
+
+Set `needsUpdate` for a few frames after a change rather than one. three r187 WebGPU also drops `PCFSoftShadowMap` (it warns and uses `PCFShadowMap`).
+
+## Points
+
+`VDBPoints` draws the points of an OpenVDB point data grid as one instanced sprite, with the point colour from the
+grid's `Cd` attribute when it has one. Parse the `.vdb` with `parseVdb` from `@pmndrs/vdb/tools`, turn a grid with
+`valueType: 'ptdataidx32'` into render data with `vdbPointRenderData(grid)`, and pass that to
+`new VDBPoints(data, { size })`. The default diameter is half the mean point spacing.
+
+The [points demo](https://pmndrs.github.io/vdb/examples/src/demos/14-points/index.html) decodes the grids in a worker
+and colours them by `Cd` or by speed.

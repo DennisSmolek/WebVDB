@@ -38,12 +38,16 @@ export interface VDBTransformSpec {
   worldOrigin: [number, number, number];
 }
 
+/** A new transform: a row-major 4x4 matrix (`Float32Array` or `number[16]`), or a {@link VDBTransformSpec}. */
 export type VDBGridTransformInput = Float32Array | number[] | VDBTransformSpec;
 
 /**
  * Returns a copy of `image` with its transform replaced by an affine uniform
  * scale + translate. Accepts either a row-major 4x4 matrix (`Float32Array` /
  * `number[16]`) or an explicit `{ voxelSize, worldOrigin }`.
+ *
+ * @param image The grid image to copy.
+ * @param input The new transform.
  */
 export function vdbTransform(image: Uint32Array, input: VDBGridTransformInput): Uint32Array {
   const { voxelSize, translation } = resolve(input);

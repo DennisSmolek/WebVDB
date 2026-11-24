@@ -22,7 +22,7 @@
  * is a literal run of `ctrl + 1` bytes when `ctrl < 32`, else a match: length `(ctrl >> 5) + 2`
  * (`ctrl >> 5 == 7` adds following bytes until one is not 255), distance `((ctrl & 31) << 8) + next
  * byte + 1`, and the all-ones 13-bit distance (8191) escapes to a 16-bit big-endian distance + 8191.
- * Every failure the C decoder reports by returning 0 throws a `VdbFormatError` here. DIVERGES V67:
+ * Every failure the C decoder reports by returning 0 throws a `VdbFormatError` here. DIVERGES V68:
  * same behaviour; the C code's 8-byte wild copy becomes a byte loop.
  */
 

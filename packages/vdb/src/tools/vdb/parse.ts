@@ -46,7 +46,7 @@ const MIN_SUPPORTED_VERSION = 213; // OPENVDB_FILE_VERSION_ROOTNODE_MAP
  * OPENVDB_FILE_VERSION (225, `OPENVDB_FILE_VERSION_HALF_GRID`), still current in OpenVDB v14.0.0.
  * A newer file fails with `VDBUnsupportedError` before anything after the header is read: a
  * future layout could misparse silently. OpenVDB 13.2+ warns for 226-299 and rejects 300+
- * (`OPENVDB_UNSUPPORTED_FILE_VERSION`); we reject from 226 (DIVERGES V70).
+ * (`OPENVDB_UNSUPPORTED_FILE_VERSION`); we reject from 226 (DIVERGES V71).
  */
 const MAX_SUPPORTED_VERSION = 225;
 const VERSION_GRID_INSTANCING = 216;
@@ -65,7 +65,7 @@ const VALUE_FORMATS = {
   vec3i: VEC3I_FORMAT,
   ptdataidx32: PTDATAIDX32_FORMAT,
   // K7.C: OpenVDB 13+ `HalfGrid`. Values widen exactly to f32, so it parses as a float grid
-  // (`valueType: "float"`, `gridType` keeps `Tree_half_5_4_3`; DIVERGES V69).
+  // (`valueType: "float"`, `gridType` keeps `Tree_half_5_4_3`; DIVERGES V70).
   half: HALF_FORMAT,
 } as const satisfies Record<string, ValueFormat>;
 
@@ -111,6 +111,12 @@ function readBBoxFromMetadata(metadata: Record<string, unknown>): VdbBBox | null
   return null;
 }
 
+/**
+ * Parses an OpenVDB `.vdb` file (float, vec3 and point data grids) into trees you can read, iterate or
+ * convert to NanoVDB. Throws `VdbFormatError` for a malformed buffer, `VDBUnsupportedError` for unsupported constructs.
+ *
+ * @param buffer The file's bytes.
+ */
 export function parseVdb(buffer: ArrayBuffer): VdbFile {
   const reader = new ByteReader(buffer);
 

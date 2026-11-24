@@ -109,7 +109,9 @@ export interface VDBFrameRendererSettings {
   depth: number;
   /** Most sub-steps across one slice (default 32). */
   subSteps: number;
+  /** Near distance of the froxel slices in view units (default 0.1). */
   near: number;
+  /** Far distance of the froxel slices in view units (default Infinity: the camera far plane). */
   far: number;
   /** View distance where the density fades to 0 (FogExp2-like). Infinity: no fade. */
   fadeRadius: number;
@@ -134,9 +136,13 @@ export interface VDBFrameRendererSettings {
    * read only the volume's).
    */
   phase: VDBFramePhase;
+  /** Henyey-Greenstein asymmetry `g` of the forward lobe (default 0.8). */
   phaseG: number;
+  /** `g` of the backward lobe of the dual-lobe phases (default -0.3). */
   phaseBackG: number;
+  /** Weight of the backward lobe of the dual-lobe phases (default 0.2). */
   phaseBackWeight: number;
+  /** Wavelength exponent of `g` in spectral rendering (default 0: the same `g` in every channel). */
   phaseGExponent: number;
   /** Blend the volumes over the scene in sRGB, as WebGLRenderer. false blends in linear space. */
   srgbBlending: boolean;
@@ -196,15 +202,29 @@ export interface VDBFrameRendererSettings {
 /** Per-pass hook (D25: timings are provisional). */
 export type VDBFramePass = "froxels" | "inject" | "shadowDensity" | "gridMips" | "transmittance" | "environmentGrid" | "density" | "lighting" | "temporal" | "volumeShadows" | "emissionProbes";
 
+/** Hooks called around each renderer pass, for timing and debugging (D25: timings are provisional). */
 export interface VDBFramePassHook {
+  /**
+   * Called before `pass` runs.
+   * @param pass The pass about to run.
+   * @param detail The volume, for per-volume passes.
+   */
   begin?(pass: VDBFramePass, detail?: { volume: VDBFrameVolume }): void;
+  /**
+   * Called after `pass` ran.
+   * @param pass The pass that ran.
+   * @param detail The volume, for per-volume passes.
+   */
   end?(pass: VDBFramePass, detail?: { volume: VDBFrameVolume }): void;
 }
 
 /** Redraw counters of the signature-cached `'frame'` passes (drawn / skipped renders). Not his. */
 export interface VDBFrameRedrawStats {
+  /** Counters of the shadow density pass (world shadow grid). */
   shadowDensity: { drawn: number; skipped: number };
+  /** Counters of the transmittance pass (light transmittance in the grid). */
   transmittance: { drawn: number; skipped: number };
+  /** Counters of the environment grid pass. */
   environmentGrid: { drawn: number; skipped: number };
 }
 
@@ -374,6 +394,7 @@ type SceneLike = THREE.Object3D & { overrideMaterial?: THREE.Material | null; en
 
 /** His `FrameRenderer` (`'volume'` and `'frame'` lighting). One instance can serve many volumes and cameras. */
 export class VDBFrameRenderer {
+  /** The renderer settings ({@link VDBFrameRendererSettings}); live, read at the next render. */
   settings: VDBFrameRendererSettings = {
     width: 512,
     height: 512,
@@ -438,117 +459,197 @@ export class VDBFrameRenderer {
   };
 
   // NOTE TSL uniform nodes. Passes share them, the CPU writes .value.
+  /** Uniforms of the froxel grid (size, range, jitter) that every pass shares. */
   readonly froxelUniforms = createFroxelUniforms();
   // NOTE Canvas and drawing buffer sizes that settings.pixelsPerFroxel holds (layout.ts getFroxelSize)
+  /** Canvas and drawing buffer sizes that `settings.pixelsPerFroxel` last resolved to. */
   readonly froxelHeldSize = { canvasX: 0, canvasY: 0, bufferX: 0, bufferY: 0 };
+  /** Tile uniforms of the passes that draw over the froxel atlas. */
   readonly froxelTileUniforms = createTileUniforms();
   // NOTE Froxel area of all volumes. Passes over the froxel grid draw only this area.
+  /** Uniforms of the froxel area (screen rectangle and first slice of all volumes). */
   readonly froxelAreaUniforms = createAreaUniforms();
+  /** Froxel area of all volumes in view: screen rectangle in froxel cells, first slice and slice count. */
   readonly froxelArea = { rect: new THREE.Vector4(), first: 0, count: 0 };
+  /** Tile quad geometry whose instance count is the number of slices of the froxel area. */
   readonly areaGeometry = createTileGeometry();
+  /** Uniforms of the world shadow grid (cascades, voxel sizes, resolution). */
   readonly gridUniforms = createGridUniforms(this.froxelUniforms.frameJitter);
+  /** Tile uniforms of the passes that draw over the shadow grid atlas. */
   readonly gridTileUniforms = createTileUniforms();
+  /** Uniforms of the density pass for the sky and environment shadows. */
   readonly densityShadowUniforms = createDensityShadowUniforms();
+  /** Scene lights as read by the custom passes (see `updateLights`). */
   readonly lightUniforms = createLightUniforms();
+  /** Uniforms of the environment grid pass. */
   readonly environmentGridUniforms = createEnvironmentGridUniforms();
   // NOTE Octaves of the settings (getFrameScatteringOctaves), for the signatures
+  /** The multiple-scattering octaves of the settings (`getFrameScatteringOctaves`), kept for the signatures. */
   readonly scatteringOctaves = new THREE.Vector4();
 
+  /** Material of the integrate pass that every volume proxy draws, compositing the froxels over the scene. */
   readonly integrateMaterial: VDBFrameIntegrateMaterial;
+  /** Material of the combined `'frame'` lighting pass. */
   readonly lightingMaterial: VDBFrameLightingMaterial;
+  /** Material of the pass that marches the shadow grid to each light. */
   readonly transmittanceMaterial: VDBFrameTransmittanceMaterial;
+  /** Material of the temporal blend of the froxels with their history. */
   readonly temporalMaterial: VDBFrameTemporalMaterial;
 
   // NOTE The light scene draws the volume inject pass or the lighting pass. The inject mesh takes the inject material of each volume.
+  /** Scene of the `'volume'` lighting inject pass or the combined lighting pass. */
   readonly injectScene = createScene();
+  /** Mesh of the `'volume'` inject pass; it takes the inject material of each volume. */
   readonly injectMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material> = new THREE.Mesh(createTileGeometry(), new THREE.MeshBasicMaterial());
+  /** Mesh of the combined `'frame'` lighting pass. */
   readonly lightingMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
 
+  /** Scene of the density pass (one draw per volume). */
   readonly densityScene = createScene();
+  /** Pooled density pass entries, reused between frames. */
   densityPool: PoolEntry[] = [];
   // NOTE Clears the density targets in the froxel area (one draw for all targets)
+  /** Material that clears the density targets in the froxel area. */
   readonly densityClearMaterial = new NodeMaterial();
+  /** Scene of the density clear draw. */
   readonly densityClearScene = createScene();
+  /** Mesh of the density clear draw. */
   readonly densityClearMesh: THREE.Mesh<THREE.InstancedBufferGeometry, NodeMaterial>;
 
+  /** Scene of the shadow density pass (one draw per caster and cascade). */
   readonly shadowScene = createScene();
+  /** Pooled shadow density pass entries, reused between frames. */
   shadowPool: PoolEntry[] = [];
 
+  /** Scene of the transmittance pass. */
   readonly transmittanceScene = createScene();
+  /** Mesh of the transmittance pass. */
   readonly transmittanceMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
 
+  /** Scene of the temporal pass. */
   readonly temporalScene = createScene();
+  /** Mesh of the temporal pass. */
   readonly temporalMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
+  /** The two froxel history targets the temporal pass swaps between (null until made). */
   historyTargets: [THREE.RenderTarget | null, THREE.RenderTarget | null] = [null, null];
+  /** Index in `historyTargets` of the target holding the last frame. */
   historyIndex = 0;
+  /** Whether the history holds a frame that the camera and settings still match. */
   historyValid = false;
+  /** Camera whose frame the history holds. */
   historyCamera: THREE.Camera | null = null;
+  /** View matrix of the history frame, for reprojection. */
   readonly previousViewMatrix = new THREE.Matrix4();
+  /** Projection matrix of the history frame, for reprojection. */
   readonly previousProjectionMatrix = new THREE.Matrix4();
+  /** Near and far of the history frame. */
   readonly previousRange = new THREE.Vector2(0.1, 1.0);
+  /** Frame counter of the golden-ratio jitter. */
   jitterIndex = 0;
 
   // NOTE Environment lights from a small map of the scene environment (tools/frame/environment.ts)
+  /**
+   * Directional lights read back from a small map of the scene environment (an async readback: the frame that asks
+   * renders the `'outward'` path).
+   */
   environmentLights: VDBFrameEnvironmentLights<RendererLike, SceneLike & VDBFrameEnvironmentSceneFields>;
+  /** Material that draws the lat-long environment map for the readback. */
   readonly environmentMapMaterial = new VDBFrameEnvironmentMapMaterial();
+  /** Scene of the environment map draw. */
   readonly environmentMapScene = createScene();
+  /** Mesh of the environment map draw. */
   readonly environmentMapMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
+  /** Camera of the environment map draw. */
   readonly environmentMapCamera = new THREE.OrthographicCamera(-1.0, 1.0, 1.0, -1.0, 0.0, 1.0);
+  /** Float target of the environment map (null until made). */
   environmentMapTarget: THREE.RenderTarget | null = null;
+  /** Result of the last environment read back (null until it settles). */
   environment: VDBFrameEnvironmentResult | null = null;
 
   // NOTE Environment grid: environment light of the last cascade voxels, from the environment lights with no slot
+  /** Material of the environment grid pass (environment light of the last cascade voxels). */
   readonly environmentGridMaterial: VDBFrameEnvironmentGridMaterial;
+  /** Scene of the environment grid pass. */
   readonly environmentGridScene = createScene();
+  /** Mesh of the environment grid pass. */
   readonly environmentGridMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
+  /** Target of the environment grid (null until made). */
   environmentGridTarget: THREE.RenderTarget | null = null;
+  /** Signature of the environment grid last drawn; it draws again when this changes. */
   environmentGridSignature: number[] = [];
+  /** Scratch for the signature of the current render. */
   nextEnvironmentGridSignature: number[] = [];
 
   // NOTE multipleScattering 'neural': mips of the last grid cascade, levels 1 and up (VDBFrameGridMipMaterial)
+  /** Material that builds the mips of the last grid cascade for the neural network. */
   readonly gridMipMaterial = new VDBFrameGridMipMaterial();
+  /** Scene of the grid mip pass. */
   readonly gridMipScene = createScene();
+  /** Mesh of the grid mip pass. */
   readonly gridMipMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material>;
+  /** Targets of mip levels 1 and up of the last grid cascade. */
   gridMipTargets: THREE.RenderTarget[] = [];
+  /** Signature of the grid mips last drawn. */
   gridMipSignature: number[] = [];
 
+  /** Froxel atlas target (null until the first render). */
   atlasTarget: THREE.RenderTarget | null = null;
+  /** Target of the combined density pass (`'frame'` lighting; null until made). */
   densityTarget: THREE.RenderTarget | null = null;
+  /** Target of the world shadow grid extinction (null until made). */
   shadowDensityTarget: THREE.RenderTarget | null = null;
+  /** Target of the transmittance to each light (null until made, and null when spectral). */
   transmittanceTarget: THREE.RenderTarget | null = null;
   // NOTE Renderer settings.spectral: 3 transmittance targets for each slot group in use (spectrum.ts).
   // Made when a group is first used. transmittanceTarget is null then.
+  /** With `settings.spectral`: the 3-channel transmittance targets of each slot group in use. */
   spectralTransmittanceTargets: THREE.RenderTarget[] = [];
+  /** Whether the light limit warning was logged. */
   lightLimitWarned = false;
   private readonly warned = new Set<string>();
 
   // NOTE Shadow grid state: cascades of the last update, signatures (tools/frame/grid.ts)
+  /** Cascades, versions and signatures of the world shadow grid (`vdbFrameGridSignatureState`). */
   readonly gridState: VDBFrameGridSignatureState = vdbFrameGridSignatureState();
   // NOTE World shadow grid of the current render. Volume shadows make it before the first lit mesh; 'frame' lighting
   // then uses it again (gridFreshCamera). gridState.castVersion changes when the last cascade (all volumes) changes.
+  /** three render id for which the world shadow grid was last made. */
   gridRenderId = -1;
+  /** Camera for which the world shadow grid was last made. */
   gridCamera: THREE.Camera | null = null;
+  /** Camera for which the grid was made in this render, for `'frame'` lighting to reuse. */
   gridFreshCamera: THREE.Camera | null = null;
+  /** Whether the grid of the current render has casters. */
   gridReady = false;
   /** K3.6: volume shadows on meshes (settings.castShadows). */
   volumeShadows: VDBFrameVolumeShadows;
   // NOTE gridVersion and target of the last shadow density draw. The same version is not drawn again.
+  /** Grid version of the last shadow density draw; the same version is not drawn again. */
   shadowDrawnVersion = -1;
+  /** Target of the last shadow density draw. */
   shadowDrawnTarget: THREE.RenderTarget | null = null;
+  /** Signature of the transmittance target contents last drawn. */
   transmittanceSignature: number[] = [];
+  /** Scratch for the signature of the current render. */
   nextTransmittanceSignature: number[] = [];
 
   // NOTE collectVolumes result of the current render
+  /** Volumes and casters collected for the current render (one collection per render id, camera and scene). */
   readonly collected: { renderId: number; camera: THREE.Camera | null; scene: THREE.Object3D | null; result: FrameVolumeCollector<VDBFrameVolume> | null } = {
     renderId: -1,
     camera: null,
     scene: null,
     result: null,
   };
+  /** Collector that gathers visible volumes and casters. */
   readonly volumeCollector = new FrameVolumeCollector<VDBFrameVolume>();
+  /** Reused result of `getSliceRange`. */
   readonly sliceRange = { first: 0, count: 0 };
+  /** Reused result of `getGridRange`. */
   readonly gridRange = { rect: new THREE.Vector4(), first: 0, count: 0 };
+  /** Pooled caster and cascade pairs for the shadow density draws. */
   readonly cascadeCasterPool: { items: { caster: FrameVolumeEntry<VDBFrameVolume>; cascade: number }[]; entries: { caster: FrameVolumeEntry<VDBFrameVolume>; cascade: number }[] } = { items: [], entries: [] };
+  /** Scene lights gathered by `updateLights`, by type. */
   readonly lightState = {
     camera: null as THREE.Camera | null,
     hemiCount: 0,
@@ -557,11 +658,16 @@ export class VDBFrameRenderer {
     points: { length: 0, entries: [] } as LightList,
     spots: { length: 0, entries: [] } as LightList,
   };
+  /** Reused result of `updateLights`. */
   readonly lightResult: LightResult = { shadowLightCount: 0, environmentLightCount: 0, environmentShadowSlot: 0, environmentGridLights: [] };
+  /** Environment lights that have no shadow slot, for the environment grid. */
   readonly environmentGridLightEntries: { direction: number[]; color: number[] }[] = [];
 
+  /** Frame number of the cached render. */
   cachedFrame = -1;
+  /** Camera of the cached render. */
   cachedCamera: THREE.Camera | null = null;
+  /** Whether the non-WebGPU renderer error was logged. */
   rendererWarned = false;
 
   constructor() {
@@ -616,6 +722,14 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Each frame volume proxy calls this. The first proxy in a frame renders the frame. Other proxies draw nothing.
+  /**
+   * Called by each volume proxy before it draws. The first proxy of a frame renders the froxels; the others draw only
+   * the integrate pass.
+   * @param renderer The WebGPU renderer.
+   * @param scene Scene being rendered.
+   * @param camera Camera of the render.
+   * @param proxy The volume proxy that is drawing.
+   */
   render(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, proxy: THREE.Mesh<THREE.InstancedBufferGeometry>): void {
     if (!renderer.isWebGPURenderer) {
       if (!this.rendererWarned) {
@@ -668,6 +782,9 @@ export class VDBFrameRenderer {
   /**
    * Draws only the froxel atlas for this scene and camera (no integrate): the per-pass timing
    * harness renders this alone. Returns the number of volumes in view.
+   * @param renderer The WebGPU renderer.
+   * @param scene Scene whose volumes to draw.
+   * @param camera Camera of the render.
    */
   renderFroxels(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera): number {
     this.collected.renderId = -1;
@@ -681,6 +798,7 @@ export class VDBFrameRenderer {
   }
 
   // NOTE A quad. The integrate material puts it on the screen rectangle of the froxel area.
+  /** A quad geometry for a volume proxy; the integrate material places it over the froxel area. */
   createProxyGeometry(): THREE.InstancedBufferGeometry {
     const geometry = createTileGeometry();
 
@@ -689,16 +807,24 @@ export class VDBFrameRenderer {
     return geometry;
   }
 
+  /** Whether the renderer uses `'frame'` lighting. */
   isFrameLighting(): boolean {
     return this.settings.lighting === "frame";
   }
 
   // NOTE The world shadow grid is used by 'frame' lighting and by volume shadows on meshes
+  /** Whether the world shadow grid is needed (`'frame'` lighting or mesh shadows). */
   usesShadowGrid(): boolean {
     return this.isFrameLighting() || this.settings.castShadows;
   }
 
   // NOTE Visible volumes and shadow casters, one time in a render (the render id of three.js NodeFrame, internal)
+  /**
+   * Collects the visible volumes and shadow casters, once per render.
+   * @param renderer The WebGPU renderer.
+   * @param scene Root to traverse.
+   * @param camera Camera of the render.
+   */
   collectVolumes(renderer: RendererLike, scene: THREE.Object3D, camera: THREE.Camera): FrameVolumeCollector<VDBFrameVolume> {
     const renderId = (renderer as unknown as { _nodes?: { nodeFrame?: { renderId?: number } } })._nodes?.nodeFrame?.renderId ?? -1;
     const { collected } = this;
@@ -720,6 +846,10 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Slices of a volume. Returns this.sliceRange ({ first, count }), used again in the next call.
+  /**
+   * Slices of the froxel grid a volume covers. Returns the reused `sliceRange`.
+   * @param volume The volume record.
+   */
   getSliceRange(volume: FrameVolumeRecord) {
     const { froxelRange, froxelGrid } = this.froxelUniforms;
 
@@ -738,11 +868,13 @@ export class VDBFrameRenderer {
     return this.settings.multipleScattering;
   }
 
+  /** Whether `settings.spectral` is on. */
   isSpectral(): boolean {
     return this.settings.spectral === true;
   }
 
   // NOTE multipleScattering 'neural' uses the network only with grey 'frame' lighting. Other cases use diffusion.
+  /** Whether multiple scattering uses the neural network (only grey `'frame'` lighting with a valid network). */
   isNeural(): boolean {
     if (this.settings.multipleScattering !== "neural" || this.settings.spectral || !this.neuralNetwork) return false;
     const problem = vdbFrameNeuralCheck(this.neuralNetwork);
@@ -754,6 +886,11 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Mips of the last grid cascade for the network. Drawn again only when the grid changes.
+  /**
+   * Draws the mips of the last grid cascade for the network; skipped when the grid is unchanged.
+   * @param renderer The WebGPU renderer.
+   * @param camera Camera of the render.
+   */
   renderGridMips(renderer: RendererLike, camera: THREE.Camera): void {
     const { frameGridResolution, frameGridColumns, frameGridCount } = this.gridUniforms;
     const resolution = frameGridResolution.value as number;
@@ -810,6 +947,10 @@ export class VDBFrameRenderer {
   }
 
   // NOTE The 3 transmittance targets of a spectral slot group, the same size as the shadow grid
+  /**
+   * The 3-channel transmittance target of a spectral slot group, made on first use at the shadow grid size.
+   * @param group Slot group index.
+   */
   getSpectralTransmittanceTarget(group: number): THREE.RenderTarget {
     const targets = this.spectralTransmittanceTargets;
 
@@ -824,6 +965,7 @@ export class VDBFrameRenderer {
 
   // NOTE The lighting and density passes keep their group textures bound when they do not read them: they get their
   // own placeholders (one texture each, see renderFrameLighting), not the disposed targets.
+  /** Disposes the spectral transmittance targets and gives the passes placeholder textures. */
   disposeSpectralTransmittanceTargets(): void {
     this.spectralTransmittanceTargets.forEach((target) => target.dispose());
     this.spectralTransmittanceTargets = [];
@@ -833,6 +975,10 @@ export class VDBFrameRenderer {
     }
   }
 
+  /**
+   * Makes or resizes the froxel atlas, history and density targets for the settings and canvas size.
+   * @param renderer The WebGPU renderer.
+   */
   updateTargets(renderer: RendererLike): void {
     const { depth, subSteps } = this.settings;
     const { width, height } = getFroxelSize(this.settings, renderer, froxelSize, this.froxelHeldSize);
@@ -900,6 +1046,7 @@ export class VDBFrameRenderer {
     }
   }
 
+  /** Makes or resizes the shadow grid targets for `shadowResolution` and the cascade count. */
   updateGridTargets(): void {
     const resolution = Math.max(2, Math.round(this.settings.shadowResolution));
     const cascades = this.getCascadeCount();
@@ -946,6 +1093,14 @@ export class VDBFrameRenderer {
     this.gridTileUniforms.frameTargetSize.value.set(gridAtlas.width, gridAtlas.height);
   }
 
+  /**
+   * Draws the froxel atlas (inject or combined lighting, temporal) for the volumes in view.
+   * @param renderer The WebGPU renderer.
+   * @param scene Scene being rendered.
+   * @param camera Camera of the render.
+   * @param volumes Visible volumes.
+   * @param casters Shadow casters (default none).
+   */
   renderFrame(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, volumes: FrameVolumeCollector<VDBFrameVolume>["volumes"], casters: FrameVolumeCollector<VDBFrameVolume>["casters"] = []): void {
     this.checkSettings();
 
@@ -1008,6 +1163,11 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Froxel area of the volumes, for the passes over the froxel grid and for the integrate pass
+  /**
+   * Updates the froxel area of the volumes, for the passes over the froxel grid and for the integrate pass.
+   * @param volumes Visible volumes.
+   * @param camera Camera of the render.
+   */
   updateFroxelArea(volumes: FrameVolumeCollector<VDBFrameVolume>["volumes"], camera: THREE.Camera): void {
     const { froxelGrid, froxelRange } = this.froxelUniforms;
     const { x: width, y: height, z: depth } = froxelGrid.value;
@@ -1026,6 +1186,11 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Blends this frame into the history. The integrate pass then reads the blended froxels.
+  /**
+   * Blends this frame into the history; the integrate pass then reads the blended froxels.
+   * @param renderer The WebGPU renderer.
+   * @param camera Camera of the render.
+   */
   renderTemporal(renderer: RendererLike, camera: THREE.Camera): void {
     const material = this.temporalMaterial;
     const readTarget = this.historyTargets[this.historyIndex]!;
@@ -1062,12 +1227,23 @@ export class VDBFrameRenderer {
   }
 
   // NOTE PMREM rotation and intensity uniforms read the environment of the rendered pass scene
+  /**
+   * Copies the environment, its intensity and rotation of `scene` onto a pass scene.
+   * @param target The pass scene.
+   * @param scene The rendered scene.
+   */
   copyEnvironment(target: THREE.Scene, scene: SceneLike): void {
     target.environment = scene.environment ?? null;
     target.environmentIntensity = scene.environmentIntensity ?? 1.0;
     if (scene.environmentRotation) target.environmentRotation.copy(scene.environmentRotation);
   }
 
+  /**
+   * Prepares the inject or lighting scene (environment, which mesh shows, layers) and gathers the scene lights.
+   * @param scene The rendered scene.
+   * @param camera Camera of the render.
+   * @param mesh The mesh to show: `injectMesh` or `lightingMesh`.
+   */
   prepareLightScene(scene: SceneLike, camera: THREE.Camera, mesh: THREE.Mesh): LightResult {
     this.copyEnvironment(this.injectScene, scene);
 
@@ -1078,6 +1254,13 @@ export class VDBFrameRenderer {
     return this.updateLights(scene, camera);
   }
 
+  /**
+   * Draws the `'volume'` lighting inject pass of each volume into the froxel atlas.
+   * @param renderer The WebGPU renderer.
+   * @param scene The rendered scene.
+   * @param camera Camera of the render.
+   * @param volumes Visible volumes.
+   */
   renderInject(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, volumes: FrameVolumeCollector<VDBFrameVolume>["volumes"]): void {
     const { atlasTarget, injectScene, injectMesh } = this;
 
@@ -1204,6 +1387,15 @@ export class VDBFrameRenderer {
 
   // NOTE Combined lighting: density of all volumes, one shadow grid, one lighting pass.
   // Lighting and transmittance render calls do not grow with the number of volumes.
+  /**
+   * Draws the combined `'frame'` lighting: shadow density, transmittance, environment grid, density of all volumes
+   * and one lighting pass.
+   * @param renderer The WebGPU renderer.
+   * @param scene The rendered scene.
+   * @param camera Camera of the render.
+   * @param volumes Visible volumes.
+   * @param casters Shadow casters.
+   */
   renderFrameLighting(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, volumes: FrameVolumeCollector<VDBFrameVolume>["volumes"], casters: FrameVolumeCollector<VDBFrameVolume>["casters"]): void {
     const lights = this.prepareLightScene(scene, camera, this.lightingMesh);
     const ms = getFrameMultipleScattering(this.multipleScatteringMode(), this.settings);
@@ -1359,6 +1551,12 @@ export class VDBFrameRenderer {
 
   // NOTE Whether the transmittance target already holds what this render would draw: the same grid content, target,
   // shadow lights and settings. A jittered grid changes in each frame, so it is always drawn.
+  /**
+   * Whether the transmittance target already holds what this render would draw (same grid content, target, lights and
+   * settings).
+   * @param shadowLightCount Lights with a shadow slot.
+   * @param spectralGroups Spectral slot groups in use (default 0).
+   */
   transmittanceUnchanged(shadowLightCount: number, spectralGroups = 0): boolean {
     const material = this.transmittanceMaterial;
     const values = this.nextTransmittanceSignature;
@@ -1398,6 +1596,13 @@ export class VDBFrameRenderer {
   // NOTE Extinction of all casters in the world shadow grid cascades. Returns false with no casters.
   // NOTE onlyLast: only the last cascade (all volumes), drawn only when castVersion changed. Volume shadows on meshes
   // read only the last cascade; 'frame' lighting needs all cascades.
+  /**
+   * Draws the extinction of the casters into the world shadow grid cascades. Returns false with no casters.
+   * @param renderer The WebGPU renderer.
+   * @param camera Camera of the render.
+   * @param casters Shadow casters.
+   * @param onlyLast Draw only the last cascade (all volumes), and only when it changed (default false).
+   */
   renderShadowDensity(renderer: RendererLike, camera: THREE.Camera, casters: FrameVolumeCollector<VDBFrameVolume>["casters"], onlyLast = false): boolean {
     const ready = casters.length > 0 && this.updateGrid(casters, camera);
     const castChanged = this.updateGridVersion(ready ? casters : []);
@@ -1439,6 +1644,10 @@ export class VDBFrameRenderer {
    * Makes the world shadow grid one time in a render, before the first lit mesh (the volume shadow maps need it).
    * 'frame' lighting uses it again in the same render. Returns false with no casters. `renderId`: three's node frame
    * render id (three-internals.ts).
+   * @param renderer The WebGPU renderer.
+   * @param scene The rendered scene.
+   * @param camera Camera of the render.
+   * @param renderId three node frame render id.
    */
   prepareShadowGrid(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, renderId: number): boolean {
     if (this.gridRenderId === renderId && this.gridCamera === camera) {
@@ -1479,6 +1688,10 @@ export class VDBFrameRenderer {
 
   // NOTE gridVersion changes when the cascades, a caster transform, a caster's data or a caster's shadow props change.
   // castVersion changes only for the last cascade. Returns true when castVersion changed.
+  /**
+   * Updates the grid and last cascade versions from the casters. Returns true when the last cascade changed.
+   * @param casters Shadow casters.
+   */
   updateGridVersion(casters: FrameVolumeCollector<VDBFrameVolume>["casters"]): boolean {
     const { frameGridMin, frameGridSize, frameGridCount, frameGridResolution } = this.gridUniforms;
 
@@ -1504,6 +1717,15 @@ export class VDBFrameRenderer {
 
   // NOTE Environment grid of the last cascade. It is drawn again only when its signature changes.
   // NOTE Signature: the grid lights, the last cascade, and the caster data that the shadow density pass reads.
+  /**
+   * Draws the environment light of the last cascade voxels; skipped when its signature is unchanged.
+   * @param renderer The WebGPU renderer.
+   * @param camera Camera of the render.
+   * @param casters Shadow casters.
+   * @param gridLights Environment lights without a shadow slot.
+   * @param ms Multiple scattering mode.
+   * @param octaves Scattering octaves.
+   */
   renderEnvironmentGrid(renderer: RendererLike, camera: THREE.Camera, casters: FrameVolumeCollector<VDBFrameVolume>["casters"], gridLights: LightResult["environmentGridLights"], ms: number, octaves: THREE.Vector4): void {
     const { frameGridMin, frameGridSize, frameGridCount, frameGridResolution } = this.gridUniforms;
     const cascade = (frameGridCount.value as number) - 1;
@@ -1559,6 +1781,11 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Draws the lat-long environment map with the rotation of the scene and intensity 1.0, then reads it.
+  /**
+   * Draws the lat-long environment map (scene rotation, intensity 1) and reads it back.
+   * @param renderer The WebGPU renderer.
+   * @param scene The rendered scene.
+   */
   renderEnvironmentMap(renderer: RendererLike, scene: SceneLike): Promise<ArrayLike<number>> {
     if (!this.environmentMapTarget) {
       this.environmentMapTarget = createRenderTarget(frameEnvironmentMapWidth, frameEnvironmentMapHeight, {
@@ -1582,6 +1809,9 @@ export class VDBFrameRenderer {
   }
 
   // NOTE updatePool setup of the density pass: one instance for each slice of the volume
+  /**
+   * Sets up a density pool entry for a volume (material, rectangle, slices). Returns false when it covers no froxel.
+   */
   readonly setupDensityEntry = (entry: PoolEntry, { frameVolume, volume }: FrameVolumeEntry<VDBFrameVolume>, camera: THREE.Camera): boolean => {
     if (!this.getFroxelRect(volume, camera, entry.rect)) {
       return false;
@@ -1600,6 +1830,7 @@ export class VDBFrameRenderer {
   };
 
   // NOTE updatePool setup of the shadow density pass: the voxels of the volume in one cascade
+  /** Sets up a shadow density pool entry for a caster and cascade. Returns false when it covers no voxel. */
   readonly setupShadowEntry = (entry: PoolEntry, { caster, cascade }: { caster: FrameVolumeEntry<VDBFrameVolume>; cascade: number }): boolean => {
     const { frameVolume, volume } = caster;
     const range = this.getGridRange(volume, cascade);
@@ -1620,6 +1851,15 @@ export class VDBFrameRenderer {
 
   // NOTE Pool entries are reused between frames. Unused entries are hidden.
   // Each entry takes the material of its volume and sets the volume uniforms before its draw.
+  /**
+   * Reuses pool entries for `items` (unused entries are hidden); `setup` fills each entry and returns false to skip
+   * it.
+   * @param pool Entries to reuse and grow.
+   * @param scene Scene the entries' meshes live in.
+   * @param items What to draw.
+   * @param camera Camera of the render.
+   * @param setup Fills an entry for an item.
+   */
   updatePool<T>(pool: PoolEntry[], scene: THREE.Scene, items: readonly T[], camera: THREE.Camera, setup: (entry: PoolEntry, item: T, camera: THREE.Camera) => boolean): void {
     let used = 0;
 
@@ -1661,17 +1901,29 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Screen rectangle of the volume in froxel cells. Writes target. Returns false when it covers no cell.
+  /**
+   * Screen rectangle of a volume in froxel cells, written to `target`. Returns false when it covers no cell.
+   * @param volume The volume record.
+   * @param camera Camera of the render.
+   * @param target Receives the rectangle.
+   */
   getFroxelRect(volume: FrameVolumeRecord, camera: THREE.Camera, target: THREE.Vector4): boolean {
     const { x: width, y: height } = this.froxelUniforms.froxelGrid.value;
 
     return getFroxelRect(volume, camera, width, height, target);
   }
 
+  /** Shadow grid cascades from `settings.shadowCascades` (rounded, 1 to the maximum). */
   getCascadeCount(): number {
     return Math.min(frameMaxShadowCascades, Math.max(1, Math.round(this.settings.shadowCascades)));
   }
 
   // NOTE Shadow grid cascades of the casters (tools/frame/grid.ts). Returns false with no casters.
+  /**
+   * Updates the shadow grid cascades for the casters and the camera. Returns false with no casters.
+   * @param casters Shadow casters.
+   * @param camera Camera of the render.
+   */
   updateGrid(casters: FrameVolumeCollector<VDBFrameVolume>["casters"], camera: THREE.Camera): boolean {
     const { frameGridMin, frameGridSize, frameGridVoxel, frameGridCount, frameGridResolution } = this.gridUniforms;
 
@@ -1696,6 +1948,11 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Voxel rectangle and atlas slices of the volume in one shadow grid cascade
+  /**
+   * Voxel rectangle and atlas slices of a volume in one shadow grid cascade, or null (reused result).
+   * @param volume The volume record.
+   * @param cascade Cascade index.
+   */
   getGridRange(volume: FrameVolumeRecord, cascade: number): { rect: THREE.Vector4; first: number; count: number } | null {
     const { frameGridMin, frameGridVoxel, frameGridResolution } = this.gridUniforms;
     const found = vdbFrameGridRange(volume.worldBox, cascade, frameGridResolution.value as number, frameGridMin.array as THREE.Vector3[], frameGridVoxel.array as THREE.Vector3[], this.gridRange);
@@ -1704,6 +1961,10 @@ export class VDBFrameRenderer {
   }
 
   // NOTE A pooled light record of updateLights: (position, w type), (color, w spot cos), (spot direction, cos), falloff
+  /**
+   * A pooled light record of the list, reset and counted.
+   * @param list The list of one light type.
+   */
   getLightRecord(list: LightList): LightRecord {
     if (list.length === list.entries.length) {
       list.entries.push({ position: new THREE.Vector4(), color: new THREE.Vector4(), spot: new THREE.Vector4(), falloff: new THREE.Vector2() });
@@ -1718,6 +1979,10 @@ export class VDBFrameRenderer {
   }
 
   // NOTE Light i of updateLights in slot order: directional, point, spot
+  /**
+   * Light `index` of the last `updateLights`, in slot order: directional, point, spot.
+   * @param index Slot index.
+   */
   getSortedLight(index: number): LightRecord {
     const { directions, points, spots } = this.lightState;
 
@@ -1732,6 +1997,7 @@ export class VDBFrameRenderer {
     return spots.entries[index - directions.length - points.length]!;
   }
 
+  /** `traverseVisible` callback of `updateLights`: adds one light of the scene to `lightState`. */
   // NOTE traverseVisible callback of updateLights. this.lightState holds the state of the current call.
   readonly visitLight = (object: THREE.Object3D): void => {
     const state = this.lightState;
@@ -1818,6 +2084,12 @@ export class VDBFrameRenderer {
   // NOTE Scene lights into the light uniforms. Node materials in custom passes have no three.js light uniforms.
   // Shadow slots follow the light order: directional, point, spot.
   // NOTE Returns this.lightResult, used again in the next call.
+  /**
+   * Gathers the scene lights into the light uniforms; shadow slots follow directional, point, spot. Returns the
+   * reused `lightResult`.
+   * @param scene The rendered scene.
+   * @param camera Camera of the render.
+   */
   updateLights(scene: SceneLike, camera: THREE.Camera): LightResult {
     const u = this.lightUniforms;
     const state = this.lightState;
@@ -1935,6 +2207,7 @@ export class VDBFrameRenderer {
     return result;
   }
 
+  /** Disposes the renderer's targets, materials and shadow filters. A later render makes them again. */
   dispose(): void {
     // NOTE Puts back the shadow filter of each light; the new instance installs again on the next render
     this.volumeShadows.dispose();
