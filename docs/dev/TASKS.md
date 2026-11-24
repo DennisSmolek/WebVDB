@@ -176,6 +176,7 @@ emcfarlane/webgpu-nanovdb unchanged since our fork base.
 | K7.6 | Upstream watch: a scheduled workflow that checks OpenVDB releases, mjurczyk/openvdb tags and npm, emcfarlane commits, and opens an issue when something moves | T2 | ⬜ | Home-for-VDB-on-the-web goal: we hear about format changes before users do. |
 | K7.7 | Native v14 fixture pipeline: Docker image with OpenVDB/NanoVDB 14 tools; Half, Blosc and HalfGrid fixtures; `pnpm parity:native` covers them | owner | ⬜ | Needs Docker. Exit-gate evidence for K7.H/K7.C. K7.C made the first such fixtures without Docker (local v14.0.0 build, committed under `packages/vdb/test/tools/fixtures/native-v14/` with their generators); the image should still move `docker/fixture-bake` from `a532de55` to the v14.0.0 tag (Blosc vendored, no `libblosc-dev`, no Boost) and run those generators. |
 | K7.8 | Watch his open PR #112 (points as foam/liquid) | — | ⬜ | Research only. |
+| CI1 | Shard the e2e suite across parallel jobs (Playwright `--shard`, fixtures cache shared) | T2 | ⬜ | 2026-11-24: the suite outgrew the 30-minute job limit (cancelled at 30:12 mid-e2e); limit raised to 60 as a stopgap. |
 
 ## P1 — Pathtracer integration
 

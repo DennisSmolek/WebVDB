@@ -14,7 +14,7 @@ jobs:
   test:
     name: typecheck · unit · build · e2e
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       # Runners have a live Docker daemon, which bake-fixtures.mjs would
       # otherwise prefer — that path builds full OpenVDB (30-60 min). The
