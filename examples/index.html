@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebVDB Examples</title>
+    <title>@pmndrs/vdb examples</title>
     <style>
       :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
       body { max-width: 42rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
@@ -13,10 +13,10 @@
     </style>
   </head>
   <body>
-    <h1>WebVDB Examples</h1>
+    <h1>@pmndrs/vdb examples</h1>
     <p>
-      OpenVDB/NanoVDB volumes on the web — WebGPU + three.js (TSL).
-      Demos land phase by phase (<code>docs/archive/v1/PLAN.md</code>):
+      Sparse OpenVDB/NanoVDB volumes on WebGPU: the engine-free core, the tools and the three.js adapter.
+      Demos 01–09 show the building blocks, 10 the froxel renderer with every control, and 11–16 are the gallery.
     </p>
     <ol id="demo-list">
       <li>01 · <a href="./src/demos/01-hello-nvdb/index.html">hello-nvdb</a> — read voxels in a TSL compute pass (VDBGridNode)</li>
@@ -43,6 +43,7 @@
       <li>15 · <a href="./src/demos/15-full-res-vs-dense/index.html">Full-res vs 128³</a> — one volume split by a divider: sparse full resolution against a dense <code>.wvdb</code> bake, with GPU bytes, file size and error per side</li>
       <li>16 · <a href="./src/demos/16-streaming/index.html">Streaming</a> — coarse-first <code>.nvdb</code> into the froxel renderer: a 14 KiB preview, then the full grid in place</li>
     </ul>
+    <p><a href="https://pmndrs.github.io/vdb/">Documentation</a> for the package behind these demos.</p>
     <p><a href="./attribution.html">Credits and licences</a> for the volumes, skies and models these demos load.</p>
     <div id="webgpu-report" data-testid="webgpu-report">Checking WebGPU…</div>
     <script type="module" src="/src/main.ts"></script>

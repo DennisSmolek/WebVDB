@@ -29,6 +29,9 @@ console.log(atlas.dims, atlas.texture);
 
 ## Coarse-first streaming
 
+Two demos show it: [coarse-first](https://pmndrs.github.io/vdb/examples/src/demos/09-coarse-first/index.html) (a 12 KiB preview, then the full grid, with a live byte
+counter) and [streaming](https://pmndrs.github.io/vdb/examples/src/demos/16-streaming/index.html) (the same into the froxel renderer).
+
 `vdbStreamCoarseFirst(pool, response, options?)` streams a file baked with
 [`vdbBakeCoarseFirst`](/tools/nvdb) into one pool id. It adds the preview as soon as its bytes are in, with the full grid's
 size reserved, then replaces it in place with each finer grid. The id, its bind-group slot and any instance transform

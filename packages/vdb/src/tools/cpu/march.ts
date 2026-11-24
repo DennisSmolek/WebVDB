@@ -318,6 +318,9 @@ export function isActive(gridWords: Uint32Array, ijk: Vec3): boolean {
  * This matches the GPU's evaluation order (f32 arithmetic), so it is the right
  * oracle for GPU parity checks. `readValue` instead returns the exact f64
  * decode; on Fp grids the two can differ by 1 ulp (f32).
+ *
+ * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
+ * @param ijk Integer index coordinates of the voxel.
  */
 export function vdbReadValueF32(gridWords: Uint32Array, ijk: Vec3): number {
   const g = grid(gridWords);

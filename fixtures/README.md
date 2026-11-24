@@ -77,6 +77,12 @@ SEQUENCE_TEMPORAL=1 SEQUENCE_GRID=flames SEQUENCE_START_INDEX=1 \
   pnpm fixtures:bake-sequence fixtures/embergen/Fire_01
 ```
 
+## Committed native v14 fixtures
+
+A few files written by native OpenVDB / NanoVDB v14.0.0 and NVIDIA Warp are small enough to commit (about 100 KiB
+together): `packages/vdb/test/tools/fixtures/native-v14/` (BLOSC and BloscLZ `.nvdb`, HalfGrid `.vdb`; K7.C). Its
+README holds the generator programs and the commands that rebuild them; nothing there needs Docker or a fetch.
+
 ### Half grids (K7.H)
 
 ```sh

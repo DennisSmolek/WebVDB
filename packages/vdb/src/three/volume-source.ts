@@ -59,14 +59,19 @@ const CHANNELS: readonly ChannelName[] = ["density", "mask", "albedo", "emission
 
 /** The three textures of one channel. */
 export interface VDBDenseChannelTextures {
+  /** The level-0 texture (8-bit, linear filtering). */
   readonly map: THREE.Data3DTexture;
+  /** The box mip atlas of the levels above, or null. */
   readonly mip: THREE.Data3DTexture | null;
 }
 
 /** A dense source as three textures (the descriptive part of `VDBVolumeSource`; no raw bindings). */
 export interface VDBThreeDenseSource extends VDBVolumeSourceInfo {
+  /** Always `"dense"`. */
   readonly kind: "dense";
+  /** The `.wvdb` volume currently uploaded. */
   readonly volume: WvdbDenseVolume;
+  /** The textures per channel, null for a channel the source lacks. */
   readonly textures: Readonly<Record<ChannelName, VDBDenseChannelTextures | null>>;
   /**
    * Swap in another LOD or sequence frame. New sizes make new textures and bump `version`, and so does a frame with
@@ -76,6 +81,7 @@ export interface VDBThreeDenseSource extends VDBVolumeSourceInfo {
    * mip atlas must stay if the source has one.
    */
   replace(volume: WvdbDenseVolume): void;
+  /** Frees the textures. */
   dispose(): void;
 }
 
@@ -226,11 +232,20 @@ export function vdbDenseTextures(volume: WvdbDenseVolume): VDBThreeDenseSource {
  * passes take either kind through {@link vdbVolumeUniforms} / {@link vdbVolumeNodes}.
  */
 export interface VDBThreeSourceFactory extends VDBVolumeSourceInfo {
+  /** Always `"sparse"`. */
   readonly kind: "sparse";
   /** World box of the volume (`[min, max]`), the default `VDBFrameVolume` box. */
   readonly bbox: [[number, number, number], [number, number, number]];
+  /** Makes the live uniforms for this source (see {@link vdbVolumeUniforms}). */
   createUniforms(p: VDBVolumeUniformParameters): VDBVolumeUniforms;
+  /**
+   * Makes the sampling nodes for these uniforms (see {@link vdbVolumeNodes}).
+   *
+   * @param u The uniforms made by `createUniforms`.
+   * @param o Mip and emission-colour options.
+   */
   createNodes(u: VDBVolumeUniforms, o: VDBVolumeNodesOptions): VDBVolumeNodes;
+  /** Frees what the source allocated. */
   dispose(): void;
 }
 
@@ -243,13 +258,19 @@ export interface VDBVolumeUniformParameters {
   extinction?: number;
   /** Density multiplier (default 1); with `normalizeDensity` it divides by `stats.meanNonZero`. */
   densityScale?: number;
+  /** Divide the density scale by the source's mean non-zero density (default true). */
   normalizeDensity?: boolean;
+  /** Densities at or below this read as 0 (default 0). */
   densityCutoff?: number;
+  /** Albedo multiplier (default white). */
   baseColor?: THREE.ColorRepresentation;
+  /** Emission multiplier (default 1). */
   emissiveIntensity?: number;
   /** Kelvin at emission values 0 and 1 (default [0, 6500]). */
   temperatureRange?: [number, number];
+  /** Shift of the sampled box in unit-box coordinates (default 0). */
   offset3D?: THREE.Vector3Like;
+  /** Wrapping outside the box: clamp (default), repeat or mirrored repeat. */
   wrap3D?: THREE.Wrapping;
   /** `matrixWorld.getMaxScaleOnAxis()` of the volume (default 1). */
   worldScale?: number;
@@ -257,21 +278,40 @@ export interface VDBVolumeUniformParameters {
 
 /** His `createVolumeUniforms()` subset the source reads (frameShaderChunks.js L729–763), as live TSL uniforms. */
 export interface VDBVolumeUniforms {
+  /** Largest world scale of the volume's matrix; divides the extinction. */
   readonly worldScale: VDBTslNode;
+  /** Size in texels of the level-0 textures. */
   readonly gridTexels: VDBTslNode;
+  /** Size in texels of the mip atlas. */
   readonly mipAtlasSize: VDBTslNode;
+  /** The level-0 texture node per channel (null when absent). */
   readonly maps: Readonly<Record<ChannelName, VDBTslNode | null>>;
+  /** The mip-atlas texture node per channel (null when absent). */
   readonly mipMaps: Readonly<Record<ChannelName, VDBTslNode | null>>;
+  /** Levels in each channel's mip atlas. */
   readonly mipLevels: Readonly<Record<ChannelName, VDBTslNode>>;
+  /** Albedo multiplier (colour). */
   readonly baseColor: VDBTslNode;
+  /** Optical depth of the longest box side at the mean density. */
   readonly extinction: VDBTslNode;
+  /** Density multiplier, already divided by the mean non-zero density when normalizing. */
   readonly densityScale: VDBTslNode;
+  /** Densities at or below this read as 0. */
   readonly densityCutoff: VDBTslNode;
+  /** Emission multiplier. */
   readonly emissiveIntensity: VDBTslNode;
+  /** Kelvin at emission values 0 and 1. */
   readonly temperatureRange: VDBTslNode;
+  /** Shift of the sampled box in unit-box coordinates. */
   readonly offset3D: VDBTslNode;
+  /** Wrapping mode outside the box (a three `Wrapping` constant). */
   readonly wrap3D: VDBTslNode;
-  /** Re-read textures, sizes and the normalized density scale after `source.replace` (setMipUniforms, L773–798). */
+  /**
+   * Re-read textures, sizes and the normalized density scale after `source.replace` (setMipUniforms, L773–798).
+   *
+   * @param source The dense source after a `replace` (these uniforms belong to it).
+   * @param o New `densityScale` or `normalizeDensity` values to keep.
+   */
   update(source: VDBThreeVolumeSource, o?: { densityScale?: number; normalizeDensity?: boolean }): void;
   /**
    * Stops following the source: a sparse source drops the listeners these uniforms registered (its stats and, with
@@ -289,6 +329,9 @@ const densityScaleOf = vdbDensityScaleOf;
 /**
  * Live uniforms for one source (his `createVolumeUniforms` + `setVolumeUniforms` + `setMipUniforms`).
  * A sparse source makes its own (`source.createUniforms`), with the same fields.
+ *
+ * @param source A dense or sparse source.
+ * @param p Initial values ({@link VDBVolumeUniformParameters}).
  */
 export function vdbVolumeUniforms(source: VDBThreeVolumeSource, p: VDBVolumeUniformParameters = {}): VDBVolumeUniforms {
   if (source.kind === "sparse") return source.createUniforms(p);
@@ -366,12 +409,44 @@ export interface VDBVolumeNodesOptions {
 
 /** The node factory of his `createVolumeNodes()` (frameShaderChunks.js L834–1028). */
 export interface VDBVolumeNodes {
+  /** The mip level for a footprint of `localSize` (unit-box units): `max(0, log2(localSize * texels))`. */
   getLod(localSize: VDBTslNode): VDBTslNode;
+  /**
+   * Extinction per world unit at a local position, sampled at `lod`.
+   *
+   * @param localPosition Position in the local unit box (centred, [-0.5, 0.5]).
+   * @param lod The mip level to sample at.
+   */
   sampleExtinction(localPosition: VDBTslNode, lod: VDBTslNode): VDBTslNode;
+  /**
+   * Albedo (RGB) at a local position, sampled at `lod`.
+   *
+   * @param localPosition Position in the local unit box (centred, [-0.5, 0.5]).
+   * @param lod The mip level to sample at.
+   */
   sampleAlbedo(localPosition: VDBTslNode, lod: VDBTslNode): VDBTslNode;
+  /**
+   * Emission (a temperature factor) at a local position, sampled at `lod`.
+   *
+   * @param localPosition Position in the local unit box (centred, [-0.5, 0.5]).
+   * @param lod The mip level to sample at.
+   */
   sampleEmission(localPosition: VDBTslNode, lod: VDBTslNode): VDBTslNode;
+  /** True when a local position is inside the unit box. */
   insideBox(localPosition: VDBTslNode): VDBTslNode;
+  /**
+   * Ray parameter where a ray from inside the box leaves it.
+   *
+   * @param origin Ray origin in local units.
+   * @param direction Ray direction in local units.
+   */
   boxExit(origin: VDBTslNode, direction: VDBTslNode): VDBTslNode;
+  /**
+   * The `vec2(t0, t1)` part of the segment `start`..`end` (t in [0, 1]) inside the box.
+   *
+   * @param start Segment start in local units.
+   * @param end Segment end in local units.
+   */
   boxSegment(start: VDBTslNode, end: VDBTslNode): VDBTslNode;
   /**
    * Sparse sources only (K3.2): the empty-space query of a march along `origin + direction·t`
@@ -379,6 +454,12 @@ export interface VDBVolumeNodes {
    * `t < ts` is exactly 0 (skip it), the samples in `[ts, te)` must be read, ask again from `te`.
    * When no safe bound exists (a coarse level, wrapping, an offset) it returns `(t0, 1e30)`.
    * Call in the Fn body. Absent for dense sources (no skipping).
+   *
+   * @param origin Ray origin in local units.
+   * @param direction Ray direction in local units.
+   * @param t0 Where to start asking.
+   * @param t1 End of the march.
+   * @param lod The level the samples are read at.
    */
   skipEmpty?(origin: VDBTslNode, direction: VDBTslNode, t0: VDBTslNode, t1: VDBTslNode, lod: VDBTslNode): VDBTslNode;
 }
@@ -466,6 +547,13 @@ export const vdbBoxNodes = {
   },
 };
 
+/**
+ * Sampling nodes of one source in his `createVolumeNodes` shape; call them inside a TSL `Fn` body.
+ *
+ * @param source A dense or sparse source.
+ * @param u The uniforms made for that source.
+ * @param o Mip and emission-colour options.
+ */
 export function vdbVolumeNodes(source: VDBThreeVolumeSource, u: VDBVolumeUniforms, o: VDBVolumeNodesOptions = {}): VDBVolumeNodes {
   if (source.kind === "sparse") return source.createNodes(u, o);
   const useMipmaps = o.useMipmaps ?? source.lodLevels > 0;

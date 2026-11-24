@@ -1,0 +1,6 @@
+{
+  "openvdb": "14.0.0",
+  "fileVersion": 225,
+  "fog": {"background": 0, "activeVoxelCount": 517, "probes": [{"ijk": [0, 0, 0], "value": 0.25, "active": true}, {"ijk": [1, 2, 3], "value": 0.333007812, "active": true}, {"ijk": [7, 7, 7], "value": 1, "active": true}, {"ijk": [9, 5, 1], "value": 65504, "active": true}, {"ijk": [15, 8, 8], "value": 6.10351562e-05, "active": true}, {"ijk": [3, 3, 3], "value": 0.125, "active": false}, {"ijk": [64, 0, 0], "value": 0.75, "active": true}, {"ijk": [71, 7, 7], "value": 0.75, "active": true}, {"ijk": [72, 0, 0], "value": 0, "active": false}, {"ijk": [100, 100, 100], "value": 0, "active": false}]},
+  "ls": {"background": 3, "activeVoxelCount": 2070, "probes": [{"ijk": [16, 16, 16], "value": -3, "active": false}, {"ijk": [21, 16, 16], "value": 0, "active": true}, {"ijk": [20, 17, 16], "value": -0.876953125, "active": true}, {"ijk": [16, 22, 17], "value": 1.08300781, "active": true}, {"ijk": [16, 16, 9], "value": 2, "active": true}, {"ijk": [17, 17, 17], "value": -3, "active": false}, {"ijk": [25, 16, 16], "value": 3, "active": false}, {"ijk": [-30, 0, 0], "value": 3, "active": false}]}
+}

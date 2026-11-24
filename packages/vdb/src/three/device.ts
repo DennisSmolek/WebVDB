@@ -24,8 +24,11 @@ import { VDBError } from "../core/errors.js";
 
 /** The parts of three's WebGPU backend the adapter reads (structural, three r187). */
 export interface VDBThreeBackendLike {
+  /** True on three's WebGPU backend (false on the WebGL fallback). */
   readonly isWebGPUBackend?: boolean;
+  /** The backend's `GPUDevice`, set once the renderer is initialized. */
   readonly device?: GPUDevice | null;
+  /** three's per-object backend record (texture or buffer data). */
   get(object: object): { texture?: GPUTexture; buffer?: GPUBuffer } & Record<string, unknown>;
 }
 
@@ -36,6 +39,7 @@ export interface VDBThreeBackendLike {
  * checked at runtime instead.
  */
 export interface VDBThreeRendererLike {
+  /** The renderer's backend object (checked at runtime). */
   readonly backend: object;
 }
 
@@ -66,6 +70,9 @@ export function getDevice(renderer: VDBThreeRendererLike): GPUDevice {
  * The raw `GPUTexture` behind a three texture (render-target attachment,
  * `DepthTexture`, `StorageTexture`...). It must already be allocated: render to
  * it once or call `renderer.initTexture(texture)`.
+ *
+ * @param renderer The initialized `WebGPURenderer` whose device the pool lives on.
+ * @param texture The three texture (or render-target attachment) to look up.
  *
  * @throws VDBError `VDB_UNSUPPORTED_DEVICE` for an uninitialized or non-WebGPU
  *   renderer; `VDB_BAD_OPTION` if the texture has no GPU allocation yet.

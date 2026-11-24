@@ -250,6 +250,11 @@ From v1; details in docs/archive/handoffs/.
 - Every demo entry imports `../webgpu-gate.js` first (top-level await: without WebGPU the page shows a card and the demo never runs). Don't add a demo `main.ts` without it; `e2e/no-webgpu.spec.ts` lists the demos.
 - The hosted build sets `HOSTED` (`import.meta.env.PROD`): `ui.note` is silent there, since the notes name local-only fixtures. Test notes in dev.
 - Links in demo HTML are relative (`../../../` for "all demos", `./src/demos/..` on the home page) and the shell's use `HOME_URL`: never `href="/"`.
+- A `HalfGrid` (`Tree_half_5_4_3`) parses with `valueType: 'float'` (halves widen exactly; V70): filter on `gridType` to tell it from a FloatGrid. Its values are 2 bytes everywhere (background, tiles, inactive fill) and it never takes the `HalfReader<true>` empty-array rule (K4.7): `isRealFormat` is false for `f16`.
+- OpenVDB never ZIPs a fog volume or level set (`Archive::setGridCompression` clears `COMPRESS_ZIP`): a "zip" `.vdb` of one is uncompressed. Native fixtures that must exercise zlib mark the grid class Unknown.
+- NVIDIA Warp's `.nvdb` (`Volume.save_to_nvdb`): `NanoVDB0` header, FileMetaData `indexBBox`/`voxelCount` zero (we fill them from the image), `fileSize` without the 8-byte codec prefix (so a stream's `bytesTotal` is 8 bytes short per grid), BloscLZ frames with typesize 8.
+- `tools/vdb/blosc.ts` throws `VdbFormatError` (`VDB_BAD_VDB`) even for `.nvdb` frames; `.nvdb` callers go through `decodeBloscChunk` (`nvdb-file.ts`), which rethrows as `NvdbFormatError` / `VDBUnsupportedError`.
+- Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: oneTBB from source, then OpenVDB's CMake with `USE_ZSTD=OFF` (Blosc is vendored, Boost gone); NanoVDB is header-only plus one C file for Blosc. Recipe: `packages/vdb/test/tools/fixtures/native-v14/README.md`.
 - Half grids (K7.H, `GridType::Half` = 9): values, tile values, the background AND min/max stats are binary16 at
   2-byte-aligned addresses (root background/min/max at 28/30/32, leaf min/max 80/82, values from 96 at 2 bytes);
   ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32` /

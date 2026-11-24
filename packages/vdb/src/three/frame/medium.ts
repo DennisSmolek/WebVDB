@@ -13,9 +13,21 @@ export interface VDBFrameMediumVolumeProps {
   baseColor: THREE.Color;
   /** (1, 1, 1): extinction depends on the scene scale, so a preset does not set it. */
   extinctionScale: THREE.Vector3;
+  /**
+   * Angstrom exponent of the extinction spectrum (0 is grey).
+   */
   angstromExponent: number;
+  /**
+   * Phase function of the medium (the renderer's `settings.phase`).
+   */
   phase: VDBFrameMediumPreset["phase"];
+  /**
+   * Henyey-Greenstein asymmetry `g` of the phase.
+   */
   phaseG: number;
+  /**
+   * Wavelength exponent of `g` in spectral rendering (the renderer's `settings.phaseGExponent`).
+   */
   phaseGExponent: number;
 }
 

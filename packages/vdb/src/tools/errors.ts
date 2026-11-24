@@ -35,8 +35,13 @@ export type VDBToolsErrorCode =
 
 /** Base class of every error `@pmndrs/vdb/tools` throws on bad input. */
 export class VDBToolsError extends Error {
+  /** The machine-readable reason (see {@link VDBToolsErrorCode}). */
   readonly code: VDBToolsErrorCode;
 
+  /**
+   * @param code The machine-readable reason.
+   * @param message What went wrong; the message is prefixed with the package and code.
+   */
   constructor(code: VDBToolsErrorCode, message: string) {
     super(`@pmndrs/vdb/tools [${code}]: ${message}`);
     this.name = "VDBToolsError";
@@ -46,6 +51,7 @@ export class VDBToolsError extends Error {
 
 /** The bytes are not a valid OpenVDB `.vdb` stream (bad magic, truncated buffer, corrupt masks). */
 export class VdbFormatError extends VDBToolsError {
+  /** @param message What is malformed; the message is prefixed with the format. */
   constructor(message: string) {
     super("VDB_BAD_VDB", `malformed .vdb: ${message}`);
     this.name = "VdbFormatError";
@@ -54,6 +60,7 @@ export class VdbFormatError extends VDBToolsError {
 
 /** A malformed or truncated `.nvdb` (K4.20), from `NvdbFile` and the stream reader alike. */
 export class NvdbFormatError extends VDBToolsError {
+  /** @param message What is malformed; the message is prefixed with the format. */
   constructor(message: string) {
     super("VDB_BAD_NVDB", `malformed .nvdb: ${message}`);
     this.name = "NvdbFormatError";
@@ -62,6 +69,7 @@ export class NvdbFormatError extends VDBToolsError {
 
 /** A `.wvdb` file breaks the spec (bad magic, header, offsets, sizes). */
 export class WvdbFormatError extends VDBToolsError {
+  /** @param message What is malformed; the message is prefixed with the format. */
   constructor(message: string) {
     super("VDB_BAD_WVDB", `malformed .wvdb: ${message}`);
     this.name = "WvdbFormatError";
@@ -73,6 +81,7 @@ export class WvdbFormatError extends VDBToolsError {
  * unsupported codecs, non-5-4-3 trees, rotated transforms, ...), per SPEC's "throw clear errors" contract.
  */
 export class VDBUnsupportedError extends VDBToolsError {
+  /** @param message The unsupported construct; the message is prefixed with "not supported". */
   constructor(message: string) {
     super("VDB_UNSUPPORTED", `not supported: ${message}`);
     this.name = "VDBUnsupportedError";

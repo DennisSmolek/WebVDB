@@ -69,11 +69,15 @@ import { webgpuBackendOf, type VDBThreeRendererLike } from "./device.js";
 
 /** What `VDBGridNode` needs from a pool; a `VDBGridPool` is one. */
 export interface VDBGridNodePoolLike {
+  /** The device the pool lives on; it must be the renderer's. */
   readonly device: GPUDevice;
   /** Replaced only when `version` changes. */
   readonly buffer: GPUBuffer;
+  /** Changes when the pool's buffer is replaced. */
   readonly version: number;
+  /** The pool's GPU layout version. */
   readonly layoutVersion: number;
+  /** Grid types the pool holds now. */
   readonly types: Iterable<VDBGridTypeName>;
 }
 
@@ -83,8 +87,11 @@ export interface VDBGridNodeOptions {
   readonly types?: Iterable<VDBGridTypeName> | undefined;
   /** `'read'`, `'sample'` (default) or `'march'`. `vdbSample` needs `sample`+. */
   readonly profile?: Exclude<VDBModuleProfile, "majorant"> | undefined;
+  /** `vdbSample`'s filter: `'trilinear'` (default) or `'nearest'`. */
   readonly sampler?: VDBModuleOptions["sampler"];
+  /** Whether the module has `vdbIsActive` (default true). */
   readonly isActive?: VDBModuleOptions["isActive"];
+  /** What `vdbSample` returns outside the index box: `'background'` (default) or `'zero'`. */
   readonly outside?: VDBModuleOptions["outside"];
   /**
    * Opt-in WGSL helpers for the module (`'rayClipSupport'`, and with `march`
@@ -421,6 +428,13 @@ export class VDBGridNode {
   private readonly verified = new WeakSet<object>();
   private readonly helpers = new Map<HelperKind, (...args: unknown[]) => VDBTslNode>();
 
+  /**
+   * Wraps `pool` for the renderer's shaders.
+   *
+   * @param renderer The initialized `WebGPURenderer` (on its WebGPU backend) that will render with this node.
+   * @param pool The pool (a `VDBGridPool`) created on the renderer's device.
+   * @param options The module options (types, profile, sampler, helpers, binding name).
+   */
   constructor(
     renderer: VDBThreeRendererLike,
     readonly pool: VDBGridNodePoolLike,
@@ -599,6 +613,11 @@ export interface VDBSampleOptions {
  * (`trilinear` or `nearest`) and `outside` mode. `gridIndex` is a `uint` node
  * or a number (the id `pool.add` returned). Needs profile `sample` or `march`.
  * A dead id, or a grid type the module does not compile, reads 0.
+ *
+ * @param grids The node whose module is compiled into the shader.
+ * @param gridIndex The grid's pool id: a number or a `uint` node.
+ * @param position A `vec3` node in the space chosen by `options.space`.
+ * @param options `space`: `'world'` (default) or `'index'`.
  */
 export function vdbSample(grids: VDBGridNode, gridIndex: VDBTslNode | number, position: VDBTslNode, options: VDBSampleOptions = {}): VDBTslNode {
   const space = options.space ?? "world";
@@ -610,6 +629,10 @@ export function vdbSample(grids: VDBGridNode, gridIndex: VDBTslNode | number, po
  * TSL: the grid's value at index coordinate `ijk` (an `ivec3` node; a float
  * vector converts by truncation). Any profile. A dead id, or a grid type the
  * module does not compile, reads 0.
+ *
+ * @param grids The node whose module is compiled into the shader.
+ * @param gridIndex The grid's pool id: a number or a `uint` node.
+ * @param ijk An `ivec3` node: the voxel's index coordinate.
  */
 export function vdbReadValue(grids: VDBGridNode, gridIndex: VDBTslNode | number, ijk: VDBTslNode): VDBTslNode {
   return grids.helper("readValue")(gridId(gridIndex), ijk);

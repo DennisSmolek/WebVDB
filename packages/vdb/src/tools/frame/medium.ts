@@ -9,12 +9,15 @@
 // range, green albedo = mean of red and blue when not measured, phaseGExponent from the blue and red g); the
 // unit tests check that the ported table is that fit at his precision (3 decimals). Divergences: none.
 
-/** A measured medium: linear albedo (red 650 nm, green 550 nm, blue 450 nm), Ångström exponent, phase. */
-
 import { VDBToolsError } from "../errors.js";
+
+/** A measured medium: linear albedo (red 650 nm, green 550 nm, blue 450 nm), Ångström exponent, phase. */
 export interface VDBFrameMediumPreset {
+  /** Linear albedo (red, green, blue). */
   readonly albedo: readonly [number, number, number];
+  /** The Ångström exponent: how the extinction falls with wavelength. */
   readonly angstromExponent: number;
+  /** The phase function family: Henyey-Greenstein, or the Lorenz-Mie RGB tables. */
   readonly phase: "henyey-greenstein" | "lorenz-mie-rgb";
   /** g at 550 nm. */
   readonly phaseG: number;
@@ -25,6 +28,7 @@ export interface VDBFrameMediumPreset {
 // NOTE Measured media. Albedo is linear (red 650 nm, green 550 nm, blue 450 nm). A range gives its midpoint.
 // NOTE A green albedo that is not measured is the mean of red and blue.
 // NOTE phaseG is g at 550 nm. phaseGExponent fits g at 450 nm and 650 nm. Extinction depends on the scene scale, so it is not here.
+/** The measured medium presets by name: `cloud`, `fog`, `ice`, `soot`, `white-smoke`, `dark-smoke`, `haze` and `dust`. */
 export const vdbFrameMediumPresets: Readonly<Record<string, VDBFrameMediumPreset>> = {
   // NOTE Mie, Pope & Fry 1997. g 0.857 / 0.853 / 0.850 (blue / green / red): the 'lorenz-mie-rgb' tables.
   cloud: { albedo: [1.0, 1.0, 1.0], angstromExponent: 0.0, phase: "lorenz-mie-rgb", phaseG: 0.853, phaseGExponent: 0.0 },
@@ -53,9 +57,13 @@ export interface VDBFrameMediumProps {
   albedo: [number, number, number];
   /** Always (1, 1, 1): extinction depends on the scene scale. */
   extinctionScale: [number, number, number];
+  /** The preset's Ångström exponent. */
   angstromExponent: number;
+  /** The preset's phase function family. */
   phase: VDBFrameMediumPreset["phase"];
+  /** g at 550 nm. */
   phaseG: number;
+  /** How g changes with wavelength (see {@link VDBFrameMediumPreset.phaseGExponent}). */
   phaseGExponent: number;
 }
 
@@ -91,10 +99,15 @@ export type VDBFrameMeasured = number | readonly [number, number];
  * 'lorenz-mie-rgb' tables' green asymmetry (cloud).
  */
 export interface VDBFrameMediumMeasurement {
+  /** The source of the numbers. */
   readonly citation: string;
+  /** Albedo as measured: red, green (null: not measured) and blue; each a value or a range. */
   readonly albedo: readonly [VDBFrameMeasured, VDBFrameMeasured | null, VDBFrameMeasured];
+  /** The Ångström exponent, a value or a range. */
   readonly angstromExponent: VDBFrameMeasured;
+  /** The phase function family. */
   readonly phase: VDBFrameMediumPreset["phase"];
+  /** The measured asymmetry g: at 550 nm (`green`), at 450 nm (`blue`) and 650 nm (`red`), or taken from the Mie tables. */
   readonly g: { readonly green?: VDBFrameMeasured; readonly blue?: number; readonly red?: number; readonly asymmetryFromMieRgb?: boolean };
 }
 
@@ -125,6 +138,8 @@ export function vdbFrameFitPhaseGExponent(gBlue: number, gRed: number): number {
  * mean of red and blue; phaseGExponent fits the blue and red g; g at 550 nm is the measured green g, else the
  * blue g moved to 550 nm by the fit. `mieRgbGreenAsymmetry` is the green asymmetry of the 'lorenz-mie-rgb'
  * tables (`vdbFrameMieTable`), for cloud.
+ * @param m The cited measurements of one preset.
+ * @param mieRgbGreenAsymmetry Required when `m.g.asymmetryFromMieRgb` is set; ignored otherwise.
  */
 export function vdbFrameMediumFromMeasurements(m: VDBFrameMediumMeasurement, mieRgbGreenAsymmetry?: number): VDBFrameMediumPreset {
   const red = midpoint(m.albedo[0]);

@@ -63,16 +63,23 @@ export function rootStats(gridWords: Uint32Array): { min: number; max: number } 
 // ---------------------------------------------------------------------------
 // gridStats
 
+/** Options of {@link vdbGridStatsCpu}. */
 export interface VDBGridStatsCpuOptions {
   /** Histogram bins (default 256). */
   histogramBins?: number;
 }
 
+/** Result of {@link vdbGridStatsCpu}, the twin of the GPU `gridStats` result. */
 export interface VDBGridStatsCpuResult {
+  /** Smallest active value. */
   min: number;
+  /** Largest active value. */
   max: number;
+  /** Mean of the active values. */
   mean: number;
+  /** Counts of active voxels per bin over {@link range}. */
   histogram: Uint32Array;
+  /** Number of active voxels in the index bbox. */
   activeVoxelCount: number;
   /** The path the GPU takes for this grid: `true` when the root min is ≥ 0 (atomics). */
   usedAtomicFastPath: boolean;
@@ -91,6 +98,9 @@ export interface VDBGridStatsCpuResult {
  * < 0) reduces f32 values in f64 on the CPU. The f32 normalization divides, so
  * a GPU with an inexact division may put a voxel in the neighbouring bin or
  * shift the mean by a fixed-point step.
+ *
+ * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
+ * @param options Histogram bin count.
  */
 export function vdbGridStatsCpu(gridWords: Uint32Array, options: VDBGridStatsCpuOptions = {}): VDBGridStatsCpuResult {
   const bins = options.histogramBins ?? 256;
@@ -142,7 +152,9 @@ export function vdbGridStatsCpu(gridWords: Uint32Array, options: VDBGridStatsCpu
 // ---------------------------------------------------------------------------
 // decodeToAtlas
 
+/** How an atlas samples the grid: the nearest voxel or trilinear interpolation. */
 export type VDBAtlasFilter = "nearest" | "trilinear";
+/** Texel format of a decoded atlas: 8-bit unsigned or 32-bit float. */
 export type VDBAtlasFormat = "uint8" | "float32";
 
 export interface AtlasFromRawOptions {
@@ -174,8 +186,11 @@ export function atlasFromRaw(raw: Float32Array, o: AtlasFromRawOptions): Uint8Ar
   return out;
 }
 
+/** Options of {@link vdbDecodeToAtlasCpu}. */
 export interface VDBDecodeToAtlasCpuOptions {
+  /** Longest atlas side in texels (default 256). */
   maxDim?: number;
+  /** Sampling filter (default `'trilinear'`). */
   filter?: VDBAtlasFilter;
 }
 
@@ -186,6 +201,9 @@ export interface VDBDecodeToAtlasCpuOptions {
  * centres at full resolution, K2.6) with `vdbReadValue(floor(p + 0.5))` (`'nearest'`) or
  * the vendored trilinear (`'trilinear'`, the default). Feed the result to
  * {@link atlasFromRaw} for the formatted atlas.
+ *
+ * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
+ * @param options Longest atlas side and filter.
  */
 export function vdbDecodeToAtlasCpu(
   gridWords: Uint32Array,

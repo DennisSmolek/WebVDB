@@ -109,6 +109,9 @@ export function vdbFrameBlackbodyTable(cmf: VDBColorMatchingFunctions = vdbCie19
 /**
  * frameBlackbodyColor (CPU twin): the table read with linear blending in log temperature and exponent between the
  * texels (`load`, no sampler), on the f32 table values (of the `cmf` table; default: the analytic fit, D33).
+ * @param temperature Kelvin; clamped to the table's range.
+ * @param exponent The soot exponent, clamped to `0..frameMaxSootExponent`.
+ * @param cmf The colour matching functions the table integrates. Default {@link vdbCie1931Fit}.
  */
 export function vdbFrameBlackbodyColor(temperature: number, exponent: number, cmf: VDBColorMatchingFunctions = vdbCie1931Fit): Vec3 {
   const t = vdbFrameBlackbodyTable(cmf);

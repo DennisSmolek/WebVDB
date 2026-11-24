@@ -42,6 +42,8 @@ export const VDB_ALL_SCALAR_TYPES: readonly VDBGridTypeName[] = Object.freeze([.
 
 /** Where a kernel binds the pool: `@group(group) @binding(firstBinding)`. Layout 1 uses one binding (D10). */
 export interface VDBSlot {
+  /** The bind group index. */
   readonly group: number;
+  /** The binding index of the pool buffer within the group. */
   readonly firstBinding: number;
 }

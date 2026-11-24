@@ -557,6 +557,9 @@ export function vdbModuleEntries(
  * After every `pool.add`: a module must be generated for every type the host
  * may add, or regenerated and its pipeline rebuilt.
  *
+ * @param pool The pool whose grids the module must read.
+ * @param options The module's options, or just `{ types, layoutVersion? }`.
+ *
  * @throws VDBError `VDB_LAYOUT_MISMATCH` if the pool's layout is not the one
  *   the module targets; `VDB_TYPE_NOT_COMPILED` if the pool holds a grid
  *   type the module would not decode; `VDB_BAD_OPTION` for invalid options.

@@ -55,14 +55,34 @@ import {
 
 /** The part of a `VDBGridPool` the loader uses. */
 export interface VDBCoarseFirstPoolLike {
+  /**
+   * Stages a grid image and returns its pool id (`VDBGridPool.add`).
+   *
+   * @param image The grid image.
+   * @param options Reserved capacity and label.
+   */
   add(image: Uint32Array, options?: { capacity?: number; label?: string }): number;
+  /**
+   * Stages a new image for grid `id` (`VDBGridPool.replace`).
+   *
+   * @param id The grid's pool id.
+   * @param image The new grid image.
+   */
   replace(id: number, image: Uint32Array): void;
 }
 
 /** The extra pool calls `bind` makes (a `VDBGridPool` has them all). */
 export interface VDBCoarseFirstBindPoolLike {
+  /** Writes the staged changes to the GPU (`VDBGridPool.flush`). */
   flush(): void;
+  /** Reports a grid's index box and transform (`VDBGridPool.info`). */
   info(id: number): VDBProxyGridInfo;
+  /**
+   * Sets or clears a grid's brick-majorant bounds (`VDBGridPool.setMajorant`).
+   *
+   * @param id The grid's pool id.
+   * @param majorant The brick bounds, or `null` to clear them.
+   */
   setMajorant(id: number, majorant: VDBBrickMajorant | null): void;
 }
 
@@ -121,6 +141,7 @@ export interface VDBCoarseFirstEvent {
   types: VDBGridTypeName[];
 }
 
+/** Options of {@link vdbStreamCoarseFirst}. */
 export interface VDBCoarseFirstOptions {
   /** Which family to load, by the full grid's name. Default: the first grid's family. */
   gridName?: string;
@@ -142,7 +163,9 @@ export interface VDBCoarseFirstOptions {
   signal?: AbortSignal;
 }
 
+/** What {@link vdbStreamCoarseFirst} resolves with once the full grid is in the pool. */
 export interface VDBCoarseFirstResult {
+  /** The pool id the preview and every finer grid were shown in. */
   id: number;
   /** Every grid shown, in order (the preview(s), then the full grid). */
   shown: VDBCoarseFirstEvent[];
@@ -161,6 +184,10 @@ const baseScale = new WeakMap<object, number>();
  * The work `bind` does after a swap, callable on its own from an async `onGrid` (or any code that shows a
  * {@link VDBCoarseFirstEvent}): majorant, proxy geometry, `pool.flush()` + `grids.update()`, density scale. It never
  * touches what `bind` leaves out.
+ *
+ * @param pool The pool the grid is in (with `flush`, `info` and `setMajorant` when `bind` needs them).
+ * @param event The swap to follow, as passed to `onGrid`.
+ * @param bind What to keep in step: material, proxy mesh, grid node, majorant.
  */
 export function vdbCoarseFirstApply(
   pool: VDBCoarseFirstPoolLike & Partial<VDBCoarseFirstBindPoolLike>,
@@ -236,6 +263,10 @@ function chunks(source: VDBCoarseFirstSource): { iterate: AsyncIterable<Uint8Arr
  * finer grid. Resolves when the full grid is in the pool (the rest of the
  * stream is cancelled). Rejects with the reader's `NvdbFormatError` on bad
  * or truncated data.
+ *
+ * @param pool The pool the grid is added to and replaced in.
+ * @param source A `fetch` `Response`, a byte `ReadableStream` or an async iterable of chunks.
+ * @param options Family name, label, reader limits, `bind`, callbacks and an abort signal.
  */
 export async function vdbStreamCoarseFirst(
   pool: VDBCoarseFirstPoolLike & Partial<VDBCoarseFirstBindPoolLike>,

@@ -55,6 +55,7 @@ export interface VDBModuleCommonOptions {
    * `vdbCheckModule(pool, options)` after each `add`.
    */
   readonly types: Iterable<VDBGridTypeName>;
+  /** Which functions the module includes (see {@link VDBModuleProfile}). */
   readonly profile: VDBModuleProfile;
   /** `sample`+: `'trilinear'` (default) or `'nearest'` (rounds to the closest voxel). */
   readonly sampler?: "trilinear" | "nearest" | undefined;
@@ -75,6 +76,7 @@ export interface VDBModuleCommonOptions {
 export interface VDBSlotModuleOptions extends VDBModuleCommonOptions {
   /** The same `VDBSlot` that `vdbModuleEntries(slot)` and `pool.bindGroupEntry(slot)` take. */
   readonly slot: VDBSlot;
+  /** Absent in slot mode. */
   readonly buffer?: undefined;
 }
 
@@ -84,7 +86,9 @@ export interface VDBSlotModuleOptions extends VDBModuleCommonOptions {
  * `'vdbPool.value'` from three's TSL).
  */
 export interface VDBBufferModuleOptions extends VDBModuleCommonOptions {
+  /** WGSL expression of the host's `array<u32>` the module reads. */
   readonly buffer: string;
+  /** Absent in buffer mode. */
   readonly slot?: undefined;
 }
 
@@ -101,12 +105,16 @@ export type VDBModuleOptions = VDBSlotModuleOptions | VDBBufferModuleOptions;
  * `VDB_GPU_LAYOUT_VERSION`). No binding or profile needed.
  */
 export interface VDBModuleTypeCheck {
+  /** Grid types the module decodes. */
   readonly types: Iterable<VDBGridTypeName>;
+  /** Pool layout the module targets. Default `VDB_GPU_LAYOUT_VERSION`. */
   readonly layoutVersion?: number | undefined;
 }
 
 /** What `vdbCheckModule` needs from a pool (structural, so tests and adapters can pass plain objects). */
 export interface VDBModulePoolLike {
+  /** Grid types the pool holds now. */
   readonly types: Iterable<VDBGridTypeName>;
+  /** The pool's layout version. */
   readonly layoutVersion: number;
 }

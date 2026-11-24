@@ -313,6 +313,10 @@ export type VDBDenseSource = VDBVolumeSource & {
  * Upload a dense `.wvdb` volume (`wvdbDenseVolume` from `@pmndrs/vdb/tools`) on
  * the host's device. The source owns its textures and sampler; `dispose()` frees
  * the textures (samplers have no destroy).
+ *
+ * @param device The host's `GPUDevice`; the source creates its textures on it.
+ * @param volume The decoded `.wvdb` level (`wvdbDenseVolume`).
+ * @param o Options ({@link VDBDenseSourceOptions}).
  */
 export function vdbDenseSource(device: GPUDevice, volume: WvdbDenseVolume, o: VDBDenseSourceOptions = {}): VDBDenseSource {
   if (!device || typeof (device as { createTexture?: unknown }).createTexture !== "function") {

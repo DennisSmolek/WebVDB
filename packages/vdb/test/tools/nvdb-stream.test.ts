@@ -211,20 +211,21 @@ describe("NvdbStreamReader (K4.16)", () => {
       }
     });
 
-    it("bad magic, raw grid buffers, BLOSC, zero grids, a bad version", () => {
+    it("bad magic, raw grid buffers, an unknown codec, zero grids, a bad version", () => {
       const bad = file();
       bad[0] = 0x58;
       expect(() => new NvdbStreamReader().push(bad)).toThrow(NvdbFormatError);
       expect(() => new NvdbStreamReader().push(u8(B))).toThrow(VDBUnsupportedError); // NanoVDB1 raw grid
-      const blosc = file();
-      dv(blosc).setUint16(14, 2, true);
-      expect(() => new NvdbStreamReader().push(blosc)).toThrow(VDBUnsupportedError);
+      const codec = file();
+      dv(codec).setUint16(14, 7, true);
+      expect(() => new NvdbStreamReader().push(codec)).toThrow(NvdbFormatError);
       const zero = file();
       dv(zero).setUint16(12, 0, true);
       expect(() => new NvdbStreamReader().push(zero)).toThrow(/0 grids/);
       const version = file();
       dv(version).setUint32(8, 31 << 21, true);
       expect(() => new NvdbStreamReader().push(version)).toThrow(/incompatible NanoVDB version/);
+      expect(() => new NvdbStreamReader().push(version)).toThrow(VDBUnsupportedError);
     });
 
     it("declared sizes are checked before allocation: gridSize (u64, max, minimum), nameSize, ZIP payload", () => {

@@ -1,0 +1,5 @@
+{
+  "nanovdb": "32.11.0",
+  "density": [{"ijk": [16, 16, 16], "value": 1, "active": true}, {"ijk": [19, 14, 17], "value": 1, "active": true}, {"ijk": [11, 16, 20], "value": 0.532291889, "active": true}, {"ijk": [22, 22, 22], "value": 0, "active": false}, {"ijk": [7, 17, 18], "value": 0, "active": false}, {"ijk": [36, 16, 16], "value": 0, "active": false}],
+  "density_fp8": [{"ijk": [16, 16, 16], "value": 1, "active": true}, {"ijk": [19, 14, 17], "value": 1, "active": true}, {"ijk": [11, 16, 20], "value": 0, "active": false}, {"ijk": [22, 22, 22], "value": 0, "active": false}, {"ijk": [7, 17, 18], "value": 0, "active": false}, {"ijk": [36, 16, 16], "value": 0, "active": false}]
+}

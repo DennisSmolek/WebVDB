@@ -44,8 +44,8 @@ workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages 
 - [ ] Icon and logo for the docs header (`icon`, `logo` inputs). **[owner]** picks them.
 - [x] Repo Settings → Pages → Source: **GitHub Actions**. **[owner]** Then turn on the `push: main` trigger in
       `pages.yml`; it runs only by hand until then, so pushes to `main` don't fail.
-- [ ] Docs link to the live examples (an `<iframe>` or link per relevant page) and the examples link back.
-      **[agent]**
+- [x] Docs link to the live examples (a link per relevant page, absolute `https://pmndrs.github.io/vdb/examples/src/demos/<dir>/index.html` URLs) and the examples
+      home and every showcase caption link back to the docs. The links go live with the first examples deploy (§4). **[agent]**
 - [ ] After the first deploy: a PR to `pmndrs/docs` adding `@pmndrs/vdb` to `src/libs.ts` so it lists on
       docs.pmnd.rs (`docs_url: https://pmndrs.github.io/vdb`; `llms_full: true` once `/llms-full.txt` returns 200).
       **[owner]** opens or approves it.
@@ -96,8 +96,9 @@ with `fixtureUrl("wdas/x.nvdb")` (`examples/src/demos/assets.ts`): Vite `BASE_UR
 
 ### 5. Licences and credits
 
-- [ ] `THIRD_PARTY.md` and `packages/vdb/THIRD_PARTY_NOTICES.md` current (vendored WGSL, NanoVDB, mjurczyk
-      port, neural weights credit, Wyman CMF fit). **[agent]** checks.
+- [x] `THIRD_PARTY.md` and `packages/vdb/THIRD_PARTY_NOTICES.md` current (vendored WGSL, NanoVDB, mjurczyk
+      port, neural weights credit, Wyman CMF fit). Checked 2026-11-24 against the source headers; added three.js
+      `getShIrradianceAt` (MIT, CPU twin), `@webgpu/types` (BSD-3-Clause), and two files to the shipped list. **[agent]** checks.
 - [ ] mjurczyk outreach: his LICENSE file, the neural weights' training data, the CIE table. Not blocking: his
       package metadata declares MIT and we credit him. **[owner]**
 

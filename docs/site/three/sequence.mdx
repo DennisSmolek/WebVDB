@@ -5,6 +5,9 @@ nav: 53
 sourcecode: packages/vdb/src/three/sequence.ts
 ---
 
+See it play in the [EmberGen sequence demo](https://pmndrs.github.io/vdb/examples/src/demos/05-embergen-sequence/index.html) (sparse, one pool id) and the
+[explosion demo](https://pmndrs.github.io/vdb/examples/src/demos/12-explosion/index.html) (dense, into the froxel renderer).
+
 `VDBSequence` swaps each frame of an animation into **one** pool id with `pool.replace(id, frame)`, scheduled by a
 prefetch ring and a frame-time clock. It does not touch three: the target is `{ pool, id }`. It also plays dense
 `.wvdb` frames into a `vdbDenseTextures` source: `new VDBSequence<WvdbDenseVolume>({ urls, loader })` and

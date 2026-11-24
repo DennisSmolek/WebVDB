@@ -55,15 +55,18 @@ const enum NodeMetaData {
 // Value formats
 // ---------------------------------------------------------------------------
 
-/** On-disk encoding of one value component at full precision. */
-export type ComponentKind = "f32" | "f64" | "i32" | "u32";
+/**
+ * On-disk encoding of one value component at full precision. `f16` is a
+ * `HalfGrid` (`math::half`, OpenVDB 13+), whose full width *is* 16 bits.
+ */
+export type ComponentKind = "f16" | "f32" | "f64" | "i32" | "u32";
 
 /**
  * How a grid's `ValueType` is laid out on disk: `components` scalars of
  * `kind` each (`sizeof(ValueType) = components * bytes(kind)`). Decoded values
  * always land in a `Float32Array`, `components` entries per value (xyz
- * interleaved for vectors). That is exact for f32, and for i32/u32 below 2^24;
- * f64 is narrowed to f32.
+ * interleaved for vectors). That is exact for f16 and f32, and for i32/u32
+ * below 2^24; f64 is narrowed to f32.
  */
 export interface ValueFormat {
   readonly components: 1 | 3;
@@ -76,8 +79,10 @@ export const VEC3D_FORMAT: ValueFormat = { components: 3, kind: "f64" };
 export const VEC3I_FORMAT: ValueFormat = { components: 3, kind: "i32" };
 /** `PointDataIndex32`: internal-node and root values of a point data grid. */
 export const PTDATAIDX32_FORMAT: ValueFormat = { components: 1, kind: "u32" };
+/** `math::half` (`Tree_half_5_4_3`, K7.C): every value, background and tile is 2 bytes. */
+export const HALF_FORMAT: ValueFormat = { components: 1, kind: "f16" };
 
-const KIND_BYTES: Record<ComponentKind, number> = { f32: 4, f64: 8, i32: 4, u32: 4 };
+const KIND_BYTES: Record<ComponentKind, number> = { f16: 2, f32: 4, f64: 8, i32: 4, u32: 4 };
 
 /** `sizeof(ValueType)` at full precision. */
 export function valueBytes(format: ValueFormat): number {
@@ -87,7 +92,10 @@ export function valueBytes(format: ValueFormat): number {
 /**
  * OpenVDB `RealToHalf<T>::isReal`: half-float storage applies to float,
  * double and their vector types only. An integer grid "saved as half" still
- * writes full-width values (`HalfReader<false, T>` is plain `readData`).
+ * writes full-width values (`HalfReader<false, T>` is plain `readData`), and
+ * so does a `HalfGrid` (`RealToHalf<half>` is the generic `isReal = false`):
+ * its values are already halves, read through plain `readData`, so the
+ * empty-array rule of `HalfReader<true, T>` (K4.7) does not apply to it.
  */
 export function isRealFormat(format: ValueFormat): boolean {
   return format.kind === "f32" || format.kind === "f64";
@@ -95,6 +103,8 @@ export function isRealFormat(format: ValueFormat): boolean {
 
 function readComponent(reader: ByteReader, kind: ComponentKind): number {
   switch (kind) {
+    case "f16":
+      return halfToFloat(reader.u16());
     case "f32":
       return reader.f32();
     case "f64":
@@ -122,6 +132,9 @@ function decodeScalars(raw: Uint8Array, scalars: number, kind: ComponentKind, ha
     return out;
   }
   switch (kind) {
+    case "f16":
+      for (let i = 0; i < scalars; i++) out[i] = halfToFloat(view.getUint16(i * 2, true));
+      break;
     case "f32":
       for (let i = 0; i < scalars; i++) out[i] = view.getFloat32(i * 4, true);
       break;

@@ -28,6 +28,7 @@ export const VDB_VALUE_TRANSFORM_PRESETS: Readonly<Record<"double" | "half" | "n
   clamp01: (v: number) => Math.min(Math.max(v, 0), 1),
 });
 
+/** The names of the built-in transforms: `double`, `half`, `negate`, `clamp01`. */
 export type VDBValueTransformPreset = keyof typeof VDB_VALUE_TRANSFORM_PRESETS;
 
 /**
@@ -45,6 +46,11 @@ export type VDBValueTransformPreset = keyof typeof VDB_VALUE_TRANSFORM_PRESETS;
  * values, so `gridStats` bins against the old range and `vdbNodeMax` bounds
  * may be stale). Like `replace`, the pool holds the returned array until
  * `settled()`; don't reuse it before then.
+ *
+ * @param pool The pool that holds the grid.
+ * @param gridId The grid's pool id.
+ * @param sourceImage The grid's current image, as given to `pool.add`.
+ * @param transform A per-value function or a preset name.
  */
 export function vdbApplyValueTransform(
   pool: VDBGridPool,

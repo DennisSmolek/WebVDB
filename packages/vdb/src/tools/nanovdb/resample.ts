@@ -82,11 +82,13 @@ import type { LeafInput } from "./tree.js";
 
 type Vec3 = [number, number, number];
 
+/** Resampling filter: nearest source voxel (`point`), mean over the target footprint (`box`), or trilinear. */
 export type VDBResampleFilter = "point" | "box" | "trilinear";
 
 /** A NanoVDB FLOAT/Fp8/FpN grid image, a parsed `.vdb` float grid, or a parsed `.vdb` file. */
 export type VDBResampleSource = Uint32Array | VdbGrid | VdbFile;
 
+/** Options of {@link vdbResampleGrid}: set one of `resolution`, `voxelSize` or `dimensions`. */
 export interface VDBResampleOptions {
   /** Voxels on the longest side of the box; uniform voxels. */
   resolution?: number;
@@ -122,11 +124,13 @@ export interface VDBResampleOptions {
   collapse?: boolean;
 }
 
+/** A resampled grid: the built grid plus the resample's own parameters. */
 export interface VDBResampledGrid extends VDBBuiltGrid {
   /** Target voxels per axis (the index box is `[0, dims - 1]`). */
   dimensions: Vec3;
   /** The world box that was resampled (grown to whole voxels for `resolution`/`voxelSize`). */
   bbox: [Vec3, Vec3];
+  /** The filter that was used. */
   filter: VDBResampleFilter;
   /** Source voxel size per axis. */
   sourceVoxelSize: Vec3;
@@ -431,6 +435,9 @@ function targetRange(t: AxisTable, i0: number, i1: number): [number, number] {
  * Resamples a sparse grid to a new resolution over a world box and builds a
  * NanoVDB FLOAT image (optionally quantized to Fp8/FpN). See the module doc for
  * the conventions, filters and sparsity rule.
+ *
+ * @param source A FLOAT/Fp8/FpN grid image, a parsed `.vdb` float grid, or a parsed `.vdb` file.
+ * @param options Target resolution, filter, box and encoding.
  */
 export function vdbResampleGrid(source: VDBResampleSource, options: VDBResampleOptions = {}): VDBResampledGrid {
   const filter = options.filter ?? "box";
@@ -573,6 +580,7 @@ function filterLeaves(
   return leaves;
 }
 
+/** Options of {@link vdbResampleDense}. */
 export interface VDBResampleDenseOptions {
   /** World box `[min, max]`: target voxel `j` is centred at `min + ((j + 0.5) / dims) * (max - min)`. */
   bbox: [Vec3, Vec3];
@@ -591,6 +599,9 @@ export interface VDBResampleDenseOptions {
  * (the footprint touches no active source voxel) hold the source background.
  * Unlike `vdbResampleGrid`, the box may have zero size on an axis (one voxel
  * thick); that axis samples the nearest source voxel.
+ *
+ * @param source A FLOAT/Fp8/FpN grid image, a parsed `.vdb` float grid, or a parsed `.vdb` file.
+ * @param options The world box, target dimensions and filter.
  */
 export function vdbResampleDense(
   source: VDBResampleSource,
@@ -782,6 +793,7 @@ function filterLeaf(
 // Error metric (docs/dev/research/INDEX comparison)
 // ---------------------------------------------------------------------------
 
+/** Options of {@link vdbResampleError}. */
 export interface VDBResampleErrorOptions {
   /** Use every `stride`-th active source voxel (leaf order). Default 7, as in the comparison report. */
   stride?: number;
@@ -789,6 +801,7 @@ export interface VDBResampleErrorOptions {
   sourceGridName?: string;
 }
 
+/** Result of {@link vdbResampleError}. */
 export interface VDBResampleErrorResult {
   /** Mean |target − source| over the sampled active source voxels. */
   meanAbsError: number;
@@ -806,6 +819,10 @@ export interface VDBResampleErrorResult {
  * mean source value there. The target (any NanoVDB FLOAT/Fp8/FpN image with an
  * axis-aligned Map) is read back with `vdbSampleTrilinear` at each source voxel
  * centre. Active tiles are not sampled (leaves only).
+ *
+ * @param source The full-resolution source (image, `.vdb` grid or file).
+ * @param target The resampled grid image to compare against the source.
+ * @param options Sampling stride and source grid name.
  */
 export function vdbResampleError(
   source: VDBResampleSource,

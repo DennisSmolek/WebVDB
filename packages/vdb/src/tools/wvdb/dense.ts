@@ -34,7 +34,9 @@ import type { WvdbFile, WvdbVolumeGrid, WvdbVolumeLevel } from "./read.js";
 export interface WvdbDenseTexture {
   /** 1 byte per texel (`r8unorm`) or 4 (`rgba8unorm`). */
   readonly data: Uint8Array<ArrayBuffer>;
+  /** Texels per axis. */
   readonly dimensions: WvdbVec3;
+  /** The WebGPU texture format the bytes are laid out for. */
   readonly format: "r8unorm" | "rgba8unorm";
   /** Bytes per texel (1 or 4). */
   readonly texelBytes: 1 | 4;
@@ -44,7 +46,9 @@ export interface WvdbDenseTexture {
 
 /** His `packAtlas` output (frameMipmaps.js L65–88). */
 export interface WvdbMipAtlas {
+  /** The atlas texels, x fastest. */
   readonly data: Uint8Array<ArrayBuffer>;
+  /** Atlas size in texels per axis. */
   readonly dimensions: WvdbVec3;
   /** Levels in the atlas (level 0 is the texture itself). */
   readonly levels: number;
@@ -52,26 +56,35 @@ export interface WvdbMipAtlas {
 
 /** Density statistics as his `getDensityStats` (FrameVolume.js L50–62): sum of non-zero texels / 255, and their count. */
 export interface WvdbTexelStats {
+  /** Sum of the non-zero texels, each divided by 255. */
   readonly sum: number;
+  /** Number of non-zero texels. */
   readonly count: number;
 }
 
 /** A `.wvdb` LOD as the dense textures his renderer uploads (R1 §4.2 `vdbDenseSource` input). */
 export interface WvdbDenseVolume {
+  /** Discriminant: a dense (texture) volume. */
   readonly kind: "dense";
   /** The only dense normalization: 8-bit, `clamp(value / scale, 0, 1)` (R1 §4.3). */
   readonly normalize: "clamp01";
+  /** The LOD these textures were built from (0 is the coarsest). */
   readonly lod: number;
   /** Texels of the density texture; aux textures have the same size. */
   readonly dimensions: WvdbVec3;
   /** World box of the density grid (`grid.bbox`), or null for an empty grid. */
   readonly bbox: WvdbBox | null;
+  /** The density texture (R8). */
   readonly density: WvdbDenseTexture;
+  /** The mask texture (R8), or null without a mask grid. */
   readonly mask: WvdbDenseTexture | null;
+  /** The albedo texture (RGBA8), or null without an albedo grid. */
   readonly albedo: WvdbDenseTexture | null;
+  /** The emission texture (R8), or null without an emission grid. */
   readonly emission: WvdbDenseTexture | null;
   /** The stats his volume ends up with: baked (header) when present and the scale is 1, else from the texels. */
   readonly densityStats: WvdbTexelStats;
+  /** Where `densityStats` came from: the file header (`baked`) or the texels. */
   readonly densityStatsSource: "baked" | "texels";
   /** `getMeanDensity` of the one volume: `sum / count`, 0 when empty. */
   readonly meanDensity: number;
@@ -79,9 +92,11 @@ export interface WvdbDenseVolume {
   readonly maxDensity: number;
   /** Non-zero density texels. */
   readonly activeTexels: number;
+  /** The names of the `.wvdb` grids each texture was read from. */
   readonly gridNames: { readonly density: string; readonly mask?: string; readonly albedo?: string; readonly emission?: string };
 }
 
+/** Options of {@link wvdbDenseVolume}: which grids fill which channel, the LOD, scales and mipmaps. */
 export interface WvdbDenseOptions {
   /** Density grid. Default: the grid named `density`, else the first volume grid (his frame.js L519). */
   density?: string;
@@ -254,6 +269,8 @@ function levelOf(grid: WvdbVolumeGrid, lod: number): WvdbVolumeLevel {
  * `.wvdb` file: density (R8), optional mask (R8), albedo (RGBA8) and emission
  * (R8), each with its CPU box mip atlas, plus the density stats his volume uses
  * for `normalizeDensity` (`meanDensity`).
+ * @param file A decoded `.wvdb` ({@link readWvdb}) with the LOD's levels.
+ * @param o Which grids to read, the LOD, scales and mipmaps.
  */
 export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbDenseVolume {
   const volumeGrids = file.grids.filter((g): g is WvdbVolumeGrid => g.kind === "volume");

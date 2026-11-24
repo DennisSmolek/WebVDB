@@ -10,14 +10,18 @@
  *
  * The framing is NanoVDB's `io::Segment` (IO.h; see `nvdb-file.ts`): a 16-byte
  * FileHeader, then a 176-byte FileMetaData + name per grid, then each grid's
- * data (the image for codec NONE; a u64 size + zlib stream for codec ZIP). A
- * file is one or more segments. Every size the reader allocates is declared
- * up front, so it checks each one before allocating:
+ * data (the image for codec NONE; a u64 size + zlib stream for codec ZIP; one
+ * or more u64 size + Blosc1 frame chunks for codec BLOSC, K7.C). A file is one
+ * or more segments. Every size the reader allocates is declared up front, so it
+ * checks each one before allocating:
  *
  * - `gridSize` must be a safe integer, at least a GridData header, and at most
  *   `maxGridBytes` (default 1 GiB);
  * - a ZIP payload must be at most zlib's `compressBound(gridSize)` (+64), and
  *   inflates into gridSize + 1 bytes at most (`inflateZipGrid`);
+ * - a BLOSC chunk must be at most the grid bytes still missing + its 16-byte
+ *   header (`bloscChunkBound`), and decodes straight into the grid's buffer,
+ *   never past it;
  * - a grid name is at most `maxNameBytes` (default 64 KiB).
  *
  * Memory: the reader holds the current segment's metadata and the grid it is
@@ -25,9 +29,10 @@
  * per grid, 4-byte aligned, so `image` is a zero-copy `Uint32Array`).
  *
  * Errors are `NvdbFormatError` (a `VDBToolsError`) for malformed or
- * truncated data and `VDBUnsupportedError` for valid data out of scope
- * (BLOSC, a raw `NanoVDB1` grid buffer, unsupported grid types). After an
- * error the reader is failed: every later `push` rethrows it.
+ * truncated data and `VDBUnsupportedError` for valid data out of scope (a raw
+ * `NanoVDB1` grid buffer, another NanoVDB major version, unsupported grid
+ * types or Blosc codecs). After an error the reader is failed: every later
+ * `push` rethrows it.
  */
 
 import { NvdbFormatError, VDBToolsError, VDBUnsupportedError } from "./errors.js";
@@ -37,6 +42,8 @@ import {
   FILE_METADATA_SIZE,
   GRID_DATA_SIZE,
   assertSafeGridSize,
+  checkBloscChunkSize,
+  decodeBloscChunk,
   decodeCString,
   finishGridRecord,
   gridClassName,
@@ -52,6 +59,7 @@ import {
 
 export { NvdbFormatError };
 
+/** Options of {@link NvdbStreamReader} and {@link readNvdbStream}. */
 export interface NvdbStreamReaderOptions {
   /** Largest `gridSize` (decoded image bytes) the reader allocates. Default 1 GiB. */
   maxGridBytes?: number;
@@ -101,6 +109,7 @@ export function nvdbResponseLength(response: { headers: { get(name: string): str
 export interface NvdbStreamGrid {
   /** Grid number in the file (counted across segments). */
   index: number;
+  /** The grid's metadata from the file's FileMetaData. */
   metadata: NvdbGridMetadata;
   /** The decoded grid image (zero-copy view of a buffer of its own). */
   image: Uint32Array;
@@ -125,7 +134,12 @@ function zipBound(n: number): number {
 
 const LOD_SUFFIX = /^(.*)\.lod(\d+)$/;
 
-/** The preview name for `name` at `resolution`: `<name>.lod<resolution>` (K4.5). */
+/**
+ * The preview name for `name` at `resolution`: `<name>.lod<resolution>` (K4.5).
+ *
+ * @param name The full grid's name.
+ * @param resolution Preview resolution, a positive integer.
+ */
 export function nvdbLodName(name: string, resolution: number): string {
   if (!Number.isInteger(resolution) || resolution < 1) {
     throw new VDBToolsError("VDB_BAD_OPTION", `nvdbLodName: resolution must be a positive integer, got ${resolution}`);
@@ -139,7 +153,7 @@ export function parseNvdbLodName(name: string): { baseName: string; lod: number 
   return m ? { baseName: m[1]!, lod: Number(m[2]) } : { baseName: name, lod: null };
 }
 
-type Phase = "header" | "meta" | "name" | "zipPrefix" | "grid";
+type Phase = "header" | "meta" | "name" | "zipPrefix" | "grid" | "bloscPrefix" | "bloscChunk";
 
 interface PendingGrid {
   meta: ParsedFileMetaData;
@@ -171,11 +185,15 @@ export class NvdbStreamReader {
   #nextMeta: ParsedFileMetaData | null = null;
   #gridInSegment = 0;
   #received = 0;
+  /** BLOSC: the grid image being filled chunk by chunk, and how much of it is decoded. */
+  #gridBuffer: Uint8Array | null = null;
+  #gridFilled = 0;
   #segments = 0;
   #emitted = 0;
   #failed: Error | null = null;
   readonly #grids: NvdbGridMetadata[] = [];
 
+  /** @param options Size limits, a known total size and a progress callback. */
   constructor(options: NvdbStreamReaderOptions = {}) {
     this.#maxGridBytes = options.maxGridBytes ?? DEFAULT_MAX_GRID_BYTES;
     this.#maxNameBytes = options.maxNameBytes ?? DEFAULT_MAX_NAME_BYTES;
@@ -273,6 +291,10 @@ export class NvdbStreamReader {
         return `name of grid #${this.#grids.length}`;
       case "zipPrefix":
         return `ZIP size prefix of grid #${grid}`;
+      case "bloscPrefix":
+        return `BLOSC chunk size of grid #${grid}, ${this.#gridFilled} of ${this.#gridBuffer?.byteLength ?? 0} bytes decoded`;
+      case "bloscChunk":
+        return `BLOSC chunk of grid #${grid}, ${this.#filled} of ${this.#target.byteLength} bytes`;
       case "grid":
         return `data of grid #${grid}, ${this.#filled} of ${this.#target.byteLength} bytes`;
     }
@@ -303,14 +325,7 @@ export class NvdbStreamReader {
           );
         }
         const view = new DataView(this.#scratch.buffer, 0, FILE_HEADER_SIZE);
-        let header: { gridCount: number; codec: NvdbCodec };
-        try {
-          header = readFileHeader(view, 0);
-        } catch (err) {
-          const msg = (err as Error).message;
-          if (/BLOSC/.test(msg)) throw new VDBUnsupportedError(msg);
-          throw new NvdbFormatError(msg);
-        }
+        const header = readFileHeader(view, 0);
         if (header.gridCount === 0) throw new NvdbFormatError(`segment #${this.#segments} declares 0 grids.`);
         this.#codec = header.codec;
         this.#segmentGrids = header.gridCount;
@@ -383,31 +398,63 @@ export class NvdbStreamReader {
         this.#expect("grid", new Uint8Array(size));
         return;
       }
-      case "grid": {
-        const k = this.#gridInSegment;
-        const index = this.#segmentFirst() + k;
-        const { meta, name } = this.#pending[k]!;
-        const bytes = this.#codec === NvdbCodec.ZIP ? inflateZipGrid(this.#target, meta.gridSize, index, name) : this.#target;
-        const record = finishGridRecord(meta, name, index, bytes);
-        this.#grids[index] = record.metadata;
-        const { baseName, lod } = parseNvdbLodName(name);
-        out.push({ index, metadata: record.metadata, image: record.image, bytesReceived: this.#received, bytesTotal: this.bytesTotal, lod, baseName });
-        this.#emitted++;
-        this.#gridInSegment++;
-        if (this.#gridInSegment < this.#segmentGrids) this.#startGrid();
-        else {
-          this.#pending = [];
-          this.#expect("header", this.#scratch.subarray(0, FILE_HEADER_SIZE));
-        }
+      case "bloscPrefix": {
+        const { name } = this.#pending[this.#gridInSegment]!;
+        const index = this.#segmentFirst() + this.#gridInSegment;
+        const size = Number(new DataView(this.#scratch.buffer, 0, ZIP_PREFIX).getBigUint64(0, true));
+        checkBloscChunkSize(size, this.#gridBuffer!.byteLength - this.#gridFilled, index, name);
+        this.#expect("bloscChunk", new Uint8Array(size));
         return;
       }
+      case "bloscChunk": {
+        const { name } = this.#pending[this.#gridInSegment]!;
+        const index = this.#segmentFirst() + this.#gridInSegment;
+        const grid = this.#gridBuffer!;
+        this.#gridFilled += decodeBloscChunk(this.#target, grid.subarray(this.#gridFilled), index, name);
+        if (this.#gridFilled < grid.byteLength) {
+          this.#expect("bloscPrefix", this.#scratch.subarray(0, ZIP_PREFIX));
+          return;
+        }
+        this.#gridBuffer = null;
+        this.#finishGrid(out, grid);
+        return;
+      }
+      case "grid": {
+        const { meta, name } = this.#pending[this.#gridInSegment]!;
+        const index = this.#segmentFirst() + this.#gridInSegment;
+        this.#finishGrid(out, this.#codec === NvdbCodec.ZIP ? inflateZipGrid(this.#target, meta.gridSize, index, name) : this.#target);
+        return;
+      }
+    }
+  }
+
+  /** Emits the current grid from its decoded image and moves to the next grid or segment. */
+  #finishGrid(out: NvdbStreamGrid[], bytes: Uint8Array): void {
+    const k = this.#gridInSegment;
+    const index = this.#segmentFirst() + k;
+    const { meta, name } = this.#pending[k]!;
+    const record = finishGridRecord(meta, name, index, bytes);
+    this.#grids[index] = record.metadata;
+    const { baseName, lod } = parseNvdbLodName(name);
+    out.push({ index, metadata: record.metadata, image: record.image, bytesReceived: this.#received, bytesTotal: this.bytesTotal, lod, baseName });
+    this.#emitted++;
+    this.#gridInSegment++;
+    if (this.#gridInSegment < this.#segmentGrids) this.#startGrid();
+    else {
+      this.#pending = [];
+      this.#expect("header", this.#scratch.subarray(0, FILE_HEADER_SIZE));
     }
   }
 
   #startGrid(): void {
     const { meta } = this.#pending[this.#gridInSegment]!;
     if (this.#codec === NvdbCodec.ZIP) this.#expect("zipPrefix", this.#scratch.subarray(0, ZIP_PREFIX));
-    else this.#expect("grid", new Uint8Array(meta.gridSize));
+    else if (this.#codec === NvdbCodec.BLOSC) {
+      // gridSize was checked against maxGridBytes with its FileMetaData; chunks decode into this.
+      this.#gridBuffer = new Uint8Array(meta.gridSize);
+      this.#gridFilled = 0;
+      this.#expect("bloscPrefix", this.#scratch.subarray(0, ZIP_PREFIX));
+    } else this.#expect("grid", new Uint8Array(meta.gridSize));
   }
 }
 
@@ -425,6 +472,9 @@ function isResponse(source: NvdbStreamSource): source is Extract<NvdbStreamSourc
  * Reads a byte stream (a `fetch` Response or body, or any async iterable of chunks) through
  * an {@link NvdbStreamReader}, yielding each grid as it completes. Stops
  * reading (and cancels the stream) when the consumer breaks out of the loop.
+ *
+ * @param source A `Response`, a response body, or an async iterable of byte chunks.
+ * @param options Size limits, a known total size and a progress callback.
  */
 export async function* readNvdbStream(
   source: NvdbStreamSource,

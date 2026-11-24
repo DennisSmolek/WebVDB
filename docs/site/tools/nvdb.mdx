@@ -10,8 +10,11 @@ sourcecode: packages/vdb/src/tools/nvdb-file.ts
 
 ## Read
 
-`NvdbFile` parses a file with the NONE and ZIP codecs. A grid image decompressed from a zipped file is a copy; from
-an uncompressed one it may be a view of the source buffer (`isGridImageZeroCopy(i)`).
+`NvdbFile` parses a file with any of NanoVDB's codecs: NONE, ZIP and BLOSC. BLOSC covers what NanoVDB writes
+(`nanovdb_convert -b/--blosc`: LZ4 frames, split at 1 GiB) and what NVIDIA Warp writes (`Volume.save_to_nvdb(codec="blosc")`:
+BloscLZ), as NanoVDB 14 reads both. A grid image decompressed from a ZIP or BLOSC file is a copy; from an uncompressed
+one it may be a view of the source buffer (`isGridImageZeroCopy(i)`). Files from NanoVDB 32.x (OpenVDB 10 to 14) load;
+another major version throws `VDBUnsupportedError`.
 
 {/* snippet: nvdb-read */}
 ```ts
@@ -31,13 +34,14 @@ NanoVDB 13.2+ writes Half grids only from C++, `createNanoGrid<…, nanovdb::Hal
 
 ## Write
 
-`writeNvdb(images, { codec, zipLevel })` writes any number of grid images to one file. `codec` is `'none'` or `'zip'`.
+`writeNvdb(images, { codec, zipLevel })` writes any number of grid images to one file. `codec` is `'none'` or `'zip'`
+(BLOSC is read, not written).
 `build-dense` on [building grids](/tools/build-and-quantize) shows it in use.
 
 ## Stream
 
 `readNvdbStream(source)` takes a `Response`, a `ReadableStream` or any async iterable of byte chunks, and yields each
-grid as soon as its bytes are complete.
+grid as soon as its bytes are complete, whatever the codec (a BLOSC grid decodes chunk by chunk into its own buffer).
 
 {/* snippet: nvdb-stream */}
 ```ts
@@ -103,7 +107,7 @@ Its `code` says what went wrong:
 | `VdbFormatError` | `VDB_BAD_VDB` | The bytes are not a valid `.vdb` (bad magic, truncated, corrupt). |
 | `NvdbFormatError` | `VDB_BAD_NVDB` | The bytes are not a valid `.nvdb` (from `NvdbFile` and the stream reader alike). |
 | `WvdbFormatError` | `VDB_BAD_WVDB` | The bytes break the `.wvdb` spec. |
-| `VDBUnsupportedError` | `VDB_UNSUPPORTED` | Valid data these tools don't handle (BLOSC `.nvdb`, a rotated map, ...). |
+| `VDBUnsupportedError` | `VDB_UNSUPPORTED` | Valid data these tools don't handle (another NanoVDB major version, a Zstd Blosc frame, a rotated map, ...). |
 | `VDBToolsError` | `VDB_BAD_OPTION` | An argument or option is out of range or inconsistent. |
 | `VDBToolsError` | `VDB_BAD_IMAGE` | A `Uint32Array` argument is not a NanoVDB grid image. |
 | `VDBToolsError` | `VDB_UNSUPPORTED_GRID_TYPE` | The operation doesn't take the grid's type (e.g. quantizing a Vec3f grid). |
