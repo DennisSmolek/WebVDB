@@ -27,6 +27,7 @@ import type { CompressionFlags, ValueFormat } from "./compression.js";
 import {
   compressionFromBits,
   FLOAT_FORMAT,
+  HALF_FORMAT,
   PTDATAIDX32_FORMAT,
   VEC3D_FORMAT,
   VEC3I_FORMAT,
@@ -41,7 +42,13 @@ import type { VdbBBox, VdbFile, VdbGrid, VdbValueType } from "./types.js";
 
 const MAGIC_LOW = 0x56444220; // 'V','D','B',' ' read little-endian, low 32 bits
 const MIN_SUPPORTED_VERSION = 213; // OPENVDB_FILE_VERSION_ROOTNODE_MAP
-const MAX_SUPPORTED_VERSION = 225; // OPENVDB_FILE_VERSION: OpenVDB rejects anything newer
+/**
+ * OPENVDB_FILE_VERSION (225, `OPENVDB_FILE_VERSION_HALF_GRID`), still current in OpenVDB v14.0.0.
+ * A newer file fails with `VDBUnsupportedError` before anything after the header is read: a
+ * future layout could misparse silently. OpenVDB 13.2+ warns for 226-299 and rejects 300+
+ * (`OPENVDB_UNSUPPORTED_FILE_VERSION`); we reject from 226 (DIVERGES V71).
+ */
+const MAX_SUPPORTED_VERSION = 225;
 const VERSION_GRID_INSTANCING = 216;
 const VERSION_BOOST_UUID = 218;
 const VERSION_SELECTIVE_COMPRESSION = 220;
@@ -50,16 +57,31 @@ const VERSION_BLOSC_COMPRESSION = 223;
 
 const GRID_TYPE_RE = /^Tree_([A-Za-z0-9]+)_(\d+)_(\d+)_(\d+)$/;
 
-/** Value types this parser reads, and their on-disk layout. */
-const VALUE_FORMATS: Record<VdbValueType, ValueFormat> = {
+/** On-disk value types this parser reads (the `<valueType>` of the grid type), and their layout. */
+const VALUE_FORMATS = {
   float: FLOAT_FORMAT,
   vec3s: VEC3S_FORMAT,
   vec3d: VEC3D_FORMAT,
   vec3i: VEC3I_FORMAT,
   ptdataidx32: PTDATAIDX32_FORMAT,
+  // K7.C: OpenVDB 13+ `HalfGrid`. Values widen exactly to f32, so it parses as a float grid
+  // (`valueType: "float"`, `gridType` keeps `Tree_half_5_4_3`; DIVERGES V70).
+  half: HALF_FORMAT,
+} as const satisfies Record<string, ValueFormat>;
+
+type OnDiskValueType = keyof typeof VALUE_FORMATS;
+
+/** The parsed grid's `valueType` for each on-disk value type. */
+const PARSED_VALUE_TYPE: Record<OnDiskValueType, VdbValueType> = {
+  float: "float",
+  vec3s: "vec3s",
+  vec3d: "vec3d",
+  vec3i: "vec3i",
+  ptdataidx32: "ptdataidx32",
+  half: "float",
 };
 
-function isSupportedValueType(t: string): t is VdbValueType {
+function isSupportedValueType(t: string): t is OnDiskValueType {
   return Object.prototype.hasOwnProperty.call(VALUE_FORMATS, t);
 }
 
@@ -118,7 +140,9 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
 
   if (fileVersion > MAX_SUPPORTED_VERSION) {
     throw new VDBUnsupportedError(
-      `file version ${fileVersion} is newer than the maximum supported version ${MAX_SUPPORTED_VERSION}`,
+      `file version ${fileVersion} is newer than the maximum supported version ${MAX_SUPPORTED_VERSION} ` +
+        `(the file was written by a newer OpenVDB; OpenVDB v14 still writes ${MAX_SUPPORTED_VERSION}). ` +
+        `Re-save it with OpenVDB 14 or earlier.`,
     );
   }
 
@@ -208,7 +232,7 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
       createVdbGrid({
         name,
         gridType,
-        valueType,
+        valueType: PARSED_VALUE_TYPE[valueType],
         transform,
         metadata,
         indexBBox: readBBoxFromMetadata(metadata),

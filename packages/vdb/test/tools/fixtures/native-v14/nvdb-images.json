@@ -1,0 +1,12 @@
+{
+  "sphere_fog_blosc.density": {
+    "bytes": 328672,
+    "sha256": "13133f498e55fbfed8bb7b7e9c8267006d7ff841359bdc4fb8f05e5ff99394e6",
+    "sha256HeaderNormalized": "22f4c0c6be56a58cdc98d933f1ffa9e417d705090fe03dc9d2af69fcbdf88608"
+  },
+  "two_grids_blosc.density_fp8": {
+    "bytes": 310560,
+    "sha256": "4e1a0b66d2cf625080520bb75cbe13c0ce21412c078e392ca05118decafaeec4",
+    "sha256HeaderNormalized": "3738197e941aad884b39afe545bf624bfc608210393bbc6a03686b8ebd17d061"
+  }
+}

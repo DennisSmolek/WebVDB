@@ -61,9 +61,16 @@
  * followed by that many bytes of zlib-format (RFC 1950) compressed data —
  * i.e. exactly what C's `compress()`/`uncompress()` (and fflate's
  * `zlibSync`/`unzlibSync`) produce/consume. The decompressed length must
- * equal the grid's `gridSize` field. BLOSC uses the same 8-byte-prefixed
- * chunk framing but with blosc-compressed chunks; it is not implemented
- * (SPEC §7 non-goal) — callers get an actionable error instead.
+ * equal the grid's `gridSize` field.
+ *
+ * ## BLOSC on-disk framing (K7.C; `io::Internal::write`/`read`, IO.h @ v14.0.0)
+ *
+ * Per grid: one or more chunks, each an 8-byte LE u64 compressed size and one
+ * Blosc1 frame, until the frames' uncompressed bytes add up to `gridSize`.
+ * NanoVDB splits at 1 GiB (`MAX_SIZE`) and writes LZ4 frames (byte shuffle,
+ * typesize 4, 256 KiB blocks); NVIDIA Warp writes one BloscLZ frame per grid
+ * (python-blosc defaults), which NanoVDB 14 reads too. We accept any chunking
+ * whose sizes add up (DIVERGES V69). Frames decode with `tools/vdb/blosc.ts`.
  *
  * ## Raw grid buffer format (magic `NanoVDB1`, no FileHeader)
  *
@@ -77,6 +84,7 @@
 
 import { unzlibSync } from "fflate";
 import { NvdbFormatError, VDBToolsError, VDBUnsupportedError } from "./errors.js";
+import { BLOSC_HEADER_SIZE, decompressBloscInto } from "./vdb/blosc.js";
 
 export { NvdbFormatError } from "./errors.js";
 
@@ -96,7 +104,7 @@ export const GRID_DATA_SIZE = 672;
  */
 export const MAGIC_ASCII = ["NanoVDB0", "NanoVDB1", "NanoVDB2"] as const;
 
-/** File codecs we know about; v1 supports NONE and ZIP (fflate). */
+/** `.nvdb` file codecs: all three are read (ZIP through fflate, BLOSC LZ4/BloscLZ since K7.C). */
 export const NvdbCodec = {
   NONE: 0,
   ZIP: 1,
@@ -265,13 +273,19 @@ function formatVersion(v: ParsedVersion): string {
 /** ABI major version this loader targets (vendor/stride-tables.json `$meta.abi` = "32.9.1"). */
 const NANOVDB_MAJOR_VERSION = 32;
 
+/**
+ * NanoVDB's own rule (`Version::isCompatible`): only the major version must match; a minor
+ * version bump keeps the grid layout (NanoVDB 32.11 of OpenVDB v14 included). A different
+ * major is a layout this loader can't read, so it fails before any field is trusted (K7.C).
+ */
 export function checkVersion(raw: number): ParsedVersion {
   const v = parseVersion(raw);
   if (v.major !== NANOVDB_MAJOR_VERSION) {
-    throw new NvdbFormatError(
-      `NvdbFile: incompatible NanoVDB version ${formatVersion(v)} ` +
-        `(this loader targets NanoVDB ${NANOVDB_MAJOR_VERSION}.x). ` +
-        `Re-export the file with a matching major version of NanoVDB.`,
+    const when = v.major > NANOVDB_MAJOR_VERSION ? "a newer" : "an older";
+    throw new VDBUnsupportedError(
+      `NvdbFile: incompatible NanoVDB version ${formatVersion(v)}, written by ${when} NanoVDB ` +
+        `(this loader reads NanoVDB ${NANOVDB_MAJOR_VERSION}.x, the grid ABI of OpenVDB 10 to 14). ` +
+        `Re-export the file with a NanoVDB whose major version is ${NANOVDB_MAJOR_VERSION}.`,
     );
   }
   return v;
@@ -427,16 +441,108 @@ export function readFileHeader(view: DataView, offset: number): { gridCount: num
   checkVersion(view.getUint32(offset + FILE_HEADER_OFF_VERSION, true));
   const gridCount = view.getUint16(offset + FILE_HEADER_OFF_GRID_COUNT, true);
   const codec = view.getUint16(offset + FILE_HEADER_OFF_CODEC, true);
-  if (codec === NvdbCodec.BLOSC) {
-    throw new VDBUnsupportedError(
-      "NvdbFile: this file uses the BLOSC codec, which is not supported in the browser. " +
-        "Re-export it with codec NONE or ZIP (e.g. `nanovdb_convert --codec=zip`).",
+  if (codec !== NvdbCodec.NONE && codec !== NvdbCodec.ZIP && codec !== NvdbCodec.BLOSC) {
+    throw new NvdbFormatError(
+      `NvdbFile: unknown codec value ${codec} in FileHeader (NanoVDB writes 0 NONE, 1 ZIP or 2 BLOSC; ` +
+        "`nanovdb_convert -z/--zip` or `-b/--blosc`).",
     );
   }
-  if (codec !== NvdbCodec.NONE && codec !== NvdbCodec.ZIP) {
-    throw new NvdbFormatError(`NvdbFile: unknown codec value ${codec} in FileHeader`);
-  }
   return { gridCount, codec: codec as NvdbCodec };
+}
+
+/**
+ * The most a Blosc1 frame from a NanoVDB or Warp writer can expand: LZ4 and BloscLZ add at most
+ * 255 output bytes per input byte (a run-length byte), so a grid larger than this many times the
+ * bytes left in the file can't be in it. Checked before the grid is allocated.
+ */
+export const BLOSC_MAX_EXPANSION = 256;
+
+/**
+ * Largest stored size of a BLOSC chunk that decodes to at most `remaining` bytes: c-blosc stores a
+ * frame raw (memcpy'd, `nbytes` + 16 header bytes) when compressing would not fit in that, and
+ * every writer (`nanovdb_blosc_compress_ctx`, python-blosc) sizes the output so.
+ */
+export function bloscChunkBound(remaining: number): number {
+  return remaining + BLOSC_HEADER_SIZE;
+}
+
+/** Checks a BLOSC chunk's u64 size prefix against what the grid still needs. */
+export function checkBloscChunkSize(size: number, remaining: number, i: number, name: string): void {
+  if (!Number.isSafeInteger(size) || size < BLOSC_HEADER_SIZE || size > bloscChunkBound(remaining)) {
+    throw new NvdbFormatError(
+      `NvdbFile: BLOSC grid #${i} ("${name}") has a ${size}-byte chunk, but a chunk holds a ${BLOSC_HEADER_SIZE}-byte ` +
+        `Blosc header and at most ${bloscChunkBound(remaining)} bytes for the ${remaining} bytes the grid still needs.`,
+    );
+  }
+}
+
+/** Strips the class prefix from an inner tools error's message, to rethrow it in `.nvdb` terms. */
+function innerMessage(err: Error): string {
+  return err.message.replace(/^@pmndrs\/vdb\/tools \[[A-Z_]+\]: (malformed \.vdb: |not supported: )?/, "");
+}
+
+/**
+ * Decodes one BLOSC chunk (a whole Blosc1 frame) into the start of `dest` (the grid bytes still
+ * missing) and returns how many bytes it wrote. As NanoVDB (`count < 1` is a read error), an empty
+ * chunk is rejected; a frame claiming more than `dest` holds fails before decoding.
+ */
+export function decodeBloscChunk(frame: Uint8Array, dest: Uint8Array, i: number, name: string): number {
+  let n: number;
+  try {
+    n = decompressBloscInto(frame, dest, frame.length);
+  } catch (err) {
+    if (err instanceof VDBUnsupportedError) {
+      throw new VDBUnsupportedError(`NvdbFile: BLOSC grid #${i} ("${name}"): ${innerMessage(err)}`);
+    }
+    if (err instanceof VDBToolsError || err instanceof RangeError) {
+      throw new NvdbFormatError(`NvdbFile: BLOSC grid #${i} ("${name}"): ${innerMessage(err)}`);
+    }
+    throw err;
+  }
+  if (n < 1) {
+    throw new NvdbFormatError(`NvdbFile: BLOSC grid #${i} ("${name}") has a chunk that decodes to 0 bytes.`);
+  }
+  return n;
+}
+
+/**
+ * Reads a BLOSC grid's chunks from `src` at `offset` until they hold `gridSize` bytes; returns the
+ * image and the offset after its last chunk.
+ */
+function readBloscGrid(
+  src: Uint8Array,
+  offset: number,
+  gridSize: number,
+  i: number,
+  name: string,
+): { bytes: Uint8Array; end: number } {
+  const available = src.length - offset;
+  if (gridSize > available * BLOSC_MAX_EXPANSION + 1024) {
+    throw new NvdbFormatError(
+      `NvdbFile: BLOSC grid #${i} ("${name}") declares ${gridSize} bytes, but the ${available} bytes left in the file ` +
+        `can't decode to more than ${available * BLOSC_MAX_EXPANSION + 1024} (Blosc expands at most ${BLOSC_MAX_EXPANSION}:1).`,
+    );
+  }
+  const view = new DataView(src.buffer, src.byteOffset, src.byteLength);
+  const out = new Uint8Array(gridSize);
+  let filled = 0;
+  while (filled < gridSize) {
+    if (offset + 8 > src.length) {
+      throw new NvdbFormatError(`NvdbFile: truncated buffer while reading a BLOSC chunk size for grid #${i} ("${name}")`);
+    }
+    const size = Number(view.getBigUint64(offset, true));
+    offset += 8;
+    checkBloscChunkSize(size, gridSize - filled, i, name);
+    if (offset + size > src.length) {
+      throw new NvdbFormatError(
+        `NvdbFile: truncated buffer while reading a ${size}-byte BLOSC chunk of grid #${i} ("${name}") ` +
+          `(${src.length - offset} bytes left)`,
+      );
+    }
+    filled += decodeBloscChunk(src.subarray(offset, offset + size), out.subarray(filled), i, name);
+    offset += size;
+  }
+  return { bytes: out, end: offset };
 }
 
 /**
@@ -479,21 +585,46 @@ export function inflateZipGrid(compressed: Uint8Array, gridSize: number, i: numb
   return decompressed;
 }
 
+/**
+ * NVIDIA Warp's `Volume.save_to_nvdb` leaves FileMetaData's `indexBBox` and `voxelCount` zero
+ * (and its `fileSize` excludes the codec's 8-byte size prefix). When both are zero, the image's
+ * own RootData bbox and TreeData voxel count stand in for them (K7.C; DIVERGES V69).
+ */
+function metadataFromImage(meta: ParsedFileMetaData, gridBytes: Uint8Array): Pick<ParsedFileMetaData, "indexBBox" | "voxelCount"> {
+  const zeroBox = [...meta.indexBBox.min, ...meta.indexBBox.max].every((c) => c === 0);
+  if (!zeroBox || meta.voxelCount !== 0) return meta;
+  const view = new DataView(gridBytes.buffer, gridBytes.byteOffset, gridBytes.byteLength);
+  const treeOffset = GRID_DATA_SIZE;
+  if (treeOffset + TREE_SIZE > gridBytes.byteLength) return meta;
+  const rootOffset = treeOffset + Number(view.getBigUint64(treeOffset + TREE_OFF_NODE_OFFSET_ROOT, true));
+  if (!Number.isSafeInteger(rootOffset) || rootOffset + ROOT_BASE_SIZE > gridBytes.byteLength) return meta;
+  const vec = (at: number): [number, number, number] => [
+    view.getInt32(at, true),
+    view.getInt32(at + 4, true),
+    view.getInt32(at + 8, true),
+  ];
+  return {
+    indexBBox: { min: vec(rootOffset + ROOT_OFF_BBOX_MIN), max: vec(rootOffset + ROOT_OFF_BBOX_MAX) },
+    voxelCount: Number(view.getBigUint64(treeOffset + TREE_OFF_VOXEL_COUNT, true)),
+  };
+}
+
 /** Runs the shared checks on a decoded grid image and builds its record. */
 export function finishGridRecord(meta: ParsedFileMetaData, name: string, i: number, gridBytes: Uint8Array): GridRecord {
   checkInternalGridSize(gridBytes, meta.gridSize, i, name);
   const gridType = gridTypeName(meta.gridTypeId);
   const gridClass = gridClassName(meta.gridClassId);
   validateGridType(gridType, name);
+  const { indexBBox, voxelCount } = metadataFromImage(meta, gridBytes);
   return {
     metadata: {
       name,
       gridType,
       gridClass,
       worldBBox: meta.worldBBox,
-      indexBBox: meta.indexBBox,
+      indexBBox,
       voxelSize: meta.voxelSize,
-      voxelCount: meta.voxelCount,
+      voxelCount,
       gridByteSize: meta.gridSize,
     },
     image: u32View(gridBytes),
@@ -546,6 +677,10 @@ function parseSegments(buffer: ArrayBuffer): GridRecord[] {
         requireBytes(buffer, offset + meta.gridSize, `grid data for grid #${i} ("${name}")`);
         gridBytes = new Uint8Array(buffer, offset, meta.gridSize);
         offset += meta.gridSize;
+      } else if (codec === NvdbCodec.BLOSC) {
+        const { bytes, end } = readBloscGrid(new Uint8Array(buffer), offset, meta.gridSize, i, name);
+        gridBytes = bytes;
+        offset = end;
       } else {
         // Codec.ZIP: 8-byte LE compressed-size prefix, then that many bytes of
         // zlib (RFC 1950) compressed data (io::Internal::write/read, IO.h).
@@ -587,7 +722,18 @@ function parseRawGridBuffer(buffer: ArrayBuffer): GridRecord[] {
     expectedCount ??= gridCount;
     void view.getUint32(offset + GRID_OFF_GRID_INDEX, true); // mGridIndex, unused
 
+    // K7.C: the grid-size walk is NanoVDB's own (`GridHandle::read`), which sums and skips by
+    // mGridSize unchecked (the overflow class OpenVDB 13.2 fixed for segments). Each size must
+    // be a safe integer that holds at least GridData + TreeData and fits in the buffer, so the
+    // walk always moves forward and ends within the buffer.
     const gridSize = Number(view.getBigUint64(offset + GRID_OFF_GRID_SIZE, true));
+    assertSafeGridSize(gridSize, `raw grid #${index}'s GridData.mGridSize`);
+    if (gridSize < GRID_DATA_SIZE + TREE_SIZE) {
+      throw new NvdbFormatError(
+        `NvdbFile: raw grid #${index} declares mGridSize ${gridSize}, smaller than its ${GRID_DATA_SIZE + TREE_SIZE}-byte ` +
+          `GridData + TreeData headers; the buffer is corrupt.`,
+      );
+    }
     requireBytes(buffer, offset + gridSize, `grid image for grid #${index}`);
 
     const name = decodeCString(new Uint8Array(buffer, offset + GRID_OFF_GRID_NAME, GRID_NAME_MAX));

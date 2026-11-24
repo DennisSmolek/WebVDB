@@ -180,18 +180,18 @@ describe("NvdbFile — error handling", () => {
     expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/unrecognized magic/);
   });
 
-  it("throws a helpful error for the BLOSC codec value", () => {
+  it("names the real codec flags for an unknown codec value (K7.C: BLOSC is read now)", () => {
     const buffer = new ArrayBuffer(FILE_HEADER_SIZE);
     const view = new DataView(buffer);
     new Uint8Array(buffer).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
     view.setUint32(8, (32 << 21) | (9 << 10) | 1, true); // version 32.9.1
     view.setUint16(12, 1, true); // gridCount
-    view.setUint16(14, NvdbCodec.BLOSC, true); // codec = BLOSC
-    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/BLOSC/);
-    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/codec NONE or ZIP/);
+    view.setUint16(14, 3, true); // codec 3: no such codec
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(NvdbFormatError);
+    expect(() => NvdbFile.fromArrayBuffer(buffer)).toThrowError(/unknown codec value 3.*-z\/--zip.*-b\/--blosc/);
   });
 
-  it("malformed input is an NvdbFormatError (a VDBToolsError, VDB_BAD_NVDB), BLOSC a VDBUnsupportedError (K4.20, D32)", () => {
+  it("malformed input is an NvdbFormatError (a VDBToolsError, VDB_BAD_NVDB), another NanoVDB major a VDBUnsupportedError (K4.20, D32, K7.C)", () => {
     const garbage = new ArrayBuffer(32);
     new Uint8Array(garbage).set([..."NotANvdb"].map((c) => c.charCodeAt(0)), 0);
     for (const bad of [garbage, new ArrayBuffer(10)]) {
@@ -207,13 +207,27 @@ describe("NvdbFile — error handling", () => {
       expect((err as Error).name).toBe("NvdbFormatError");
       expect((err as Error).message).toMatch(/^@pmndrs\/vdb\/tools \[VDB_BAD_NVDB\]: malformed \.nvdb: NvdbFile: /);
     }
+    // A BLOSC header with nothing after it is truncated, not unsupported (K7.C).
     const blosc = new ArrayBuffer(FILE_HEADER_SIZE);
     new Uint8Array(blosc).set([..."NanoVDB2"].map((c) => c.charCodeAt(0)), 0);
     const v = new DataView(blosc);
     v.setUint32(8, (32 << 21) | (9 << 10) | 1, true);
     v.setUint16(12, 1, true);
     v.setUint16(14, NvdbCodec.BLOSC, true);
-    expect(() => NvdbFile.fromArrayBuffer(blosc)).toThrow(VDBUnsupportedError);
+    expect(() => NvdbFile.fromArrayBuffer(blosc)).toThrow(NvdbFormatError);
+    // NanoVDB 33.x (a future layout) and 31.x fail before any other field is read.
+    for (const major of [33, 31]) {
+      v.setUint32(8, (major << 21) | (0 << 10) | 0, true);
+      let err: unknown;
+      try {
+        NvdbFile.fromArrayBuffer(blosc);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(VDBUnsupportedError);
+      expect((err as VDBToolsError).code).toBe("VDB_UNSUPPORTED");
+      expect((err as Error).message).toMatch(new RegExp(`incompatible NanoVDB version ${major}\\.0\\.0, written by an? (newer|older) NanoVDB`));
+    }
   });
 
   it("throws for a truncated buffer (short FileHeader)", () => {

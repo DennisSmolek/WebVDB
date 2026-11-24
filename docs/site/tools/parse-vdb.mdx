@@ -10,9 +10,15 @@ reads an OpenVDB `.vdb` container and returns a `VdbFile` with its `grids`.
 
 What it reads:
 
-- 5-4-3 trees of **float** grids, **vec3** grids (`vec3s`, `vec3d`, `vec3i`) and **point data** grids (`ptdataidx32`).
-- Uncompressed, zlib and **Blosc** (LZ4 and zlib) data, and half-float storage.
+- 5-4-3 trees of **float** grids, **half** grids (OpenVDB 13+ `HalfGrid`, `Tree_half_5_4_3`), **vec3** grids (`vec3s`,
+  `vec3d`, `vec3i`) and **point data** grids (`ptdataidx32`).
+- Uncompressed, zlib and **Blosc** (LZ4, BloscLZ and zlib) data, and half-float storage (`saveFloatAsHalf`).
 - Active tiles, and the inactive leaf and tile values OpenVDB keeps.
+- Files up to version 225, the version OpenVDB v14 still writes. A newer file throws `VDBUnsupportedError` before any
+  grid is read (OpenVDB itself warns for 226 to 299 and rejects 300 and up).
+
+A half grid parses as a float grid: its `valueType` is `'float'` (every half widens to f32 exactly), and its `gridType`
+stays `Tree_half_5_4_3` if you need to tell. `buildFromVdb` makes a NanoVDB Float grid from it.
 
 Errors are `VdbFormatError` (a malformed file) or `VDBUnsupportedError` (a feature the parser does not read). Every
 error the tools throw on bad input is a `VDBToolsError` with a `code`; see [errors](/tools/nvdb#errors).
