@@ -10,11 +10,11 @@ The npm steps at the end follow the procedure in [First publish](#first-publish-
 
 - [x] G12a `VDBSequence` range and ping-pong.
 - [x] G15a per-axis voxel size from dense.
-- [ ] G16a froxel swap for coarse-first streaming. **[agent]**
-- [ ] G-shell: one gallery shell, CPU ACES in readback. **[agent]**
+- [x] G16a froxel swap for coarse-first streaming. **[agent]**
+- [x] G-shell: one gallery shell, CPU ACES in readback. **[agent]**
 - [x] Independent API review of everything since the K5 GO review (75cc1db): the G12a, G15a and G16a signatures,
       JSDoc, api-surface snapshot, CHANGELOG. **[agent, Opus]** GO-with-fixes; fixes in 0657edb.
-- [ ] CI green on `pmndrs/vdb` `main` at the release commit.
+- [x] CI green on `pmndrs/vdb` `main` at the release commit.
 
 ### 2. Repo cleanup
 
@@ -40,7 +40,7 @@ workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages 
 - [x] Every page builds and renders (19 pages, no console errors or broken links, `llms-full.txt` emitted; checked 2026-11-20). Check locally with `npx @pmndrs/docs@4 build docs/site out --format website`
       and click through the nav; fix any component pmndrs/docs doesn't have. **[agent]**
 - [ ] Icon and logo for the docs header (`icon`, `logo` inputs). **[owner]** picks them.
-- [ ] Repo Settings → Pages → Source: **GitHub Actions**. **[owner]** Then turn on the `push: main` trigger in
+- [x] Repo Settings → Pages → Source: **GitHub Actions**. **[owner]** Then turn on the `push: main` trigger in
       `pages.yml`; it runs only by hand until then, so pushes to `main` don't fail.
 - [ ] Docs link to the live examples (an `<iframe>` or link per relevant page) and the examples link back.
       **[agent]**

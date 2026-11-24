@@ -1,7 +1,9 @@
 # @pmndrs/vdb
 
 Sparse NanoVDB volumes on WebGPU: an engine-free WGSL core, pure-TypeScript CPU tools and a three.js adapter with a
-froxel volume renderer, level sets and points. One package, three subpaths. Full docs: [docs/site](https://github.com/pmndrs/vdb/tree/main/docs/site).
+froxel volume renderer, level sets and points. One package, three subpaths.
+
+[Docs](https://pmndrs.github.io/vdb/) · [Examples](https://pmndrs.github.io/vdb/examples/) · [GitHub](https://github.com/pmndrs/vdb) · [Changelog](./CHANGELOG.md)
 
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|

@@ -1,9 +1,9 @@
 {
   "name": "@pmndrs/vdb",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Sparse NanoVDB volumes on WebGPU: engine-free WGSL core, pure-TS CPU tools, three.js adapter",
   "license": "MIT",
-  "homepage": "https://github.com/pmndrs/vdb#readme",
+  "homepage": "https://pmndrs.github.io/vdb/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pmndrs/vdb.git",
