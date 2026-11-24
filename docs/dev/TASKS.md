@@ -144,7 +144,7 @@ Plan: [docs/dev/research/notes/R1-renderer-port.md](research/notes/R1-renderer-p
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K6.0 | Design: core renderer API (device, host encoder, host targets; camera/lights/shadow maps as plain data), pass graph, resource ownership, renderer WGSL + `vdb` module composition, core-side shadow-map interface, MRT/post-processing seam, parity plan | T3 | ⬜ | `docs/dev/design/K6-core-renderer.md` + DECISIONS entry. Reads R1, the K3 handoffs, the research note on his post-0.26 shadow/MRT fixes. Owner review before K6.1. |
+| K6.0 | Design: core renderer API (device, host encoder, host targets; camera/lights/shadow maps as plain data), pass graph, resource ownership, renderer WGSL + `vdb` module composition, core-side shadow-map interface, MRT/post-processing seam, parity plan | T3 | 🟨 | Design written, awaiting owner review (2026-11-24): [docs/dev/design/K6-core-renderer.md](design/K6-core-renderer.md), with a D34 draft (§10) and owner questions Q1–Q10 (§9). Owner review before K6.1. |
 | K6.1 | Froxel grid, density inject, integrate and 'volume' lighting as core WGSL | T3 | ⬜ | CPU twin; pixel A/B vs the TSL path on the K3 Step 1 scenes. |
 | K6.2 | 'frame' lighting: shadow grid and cascades, transmittance, environment lights | T3 | ⬜ | A/B on Step 3 scenes. |
 | K6.3 | Scattering: phase functions, multiple scattering (diffusion, neural, multi-scale from K7.3) | T3 | ⬜ | After K7.3. Step 4 scenes. |
