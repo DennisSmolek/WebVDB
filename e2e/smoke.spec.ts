@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 // adapter — headless CI often has none).
 test("examples app boots and reports WebGPU capability", async ({ page }) => {
   await page.goto("/");
-  await expect(page).toHaveTitle("WebVDB Examples");
+  await expect(page).toHaveTitle("@pmndrs/vdb examples");
 
   const report = page.getByTestId("webgpu-report");
   // main.ts imported constants from @pmndrs/vdb/tools — proves workspace wiring.
