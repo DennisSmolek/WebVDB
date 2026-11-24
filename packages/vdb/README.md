@@ -30,7 +30,7 @@ knows nothing about three.js or any other engine. Loading `.nvdb` files is in `@
 
 - **`vendor/pnanovdb.wgsl`** — a WGSL module with the NanoVDB root ->
   upper -> lower -> leaf tree traversal, HDDA ray marching, and
-  Float/Fp4/Fp8/Fp16/FpN value decoders. Import it as raw text (`?raw` in Vite,
+  Float/Fp4/Fp8/Fp16/FpN/Half value decoders. Import it as raw text (`?raw` in Vite,
   or read the file yourself) and splice it into your own shader.
 - **`NvdbFile`** (`@pmndrs/vdb/tools`) — parses a `.nvdb` file (header + per-grid metadata +
   grid images), handling the NONE/ZIP codecs.
@@ -89,6 +89,7 @@ module from it. Integrations to copy from instead of re-deriving the binding:
 | `Fp8` | yes | per-leaf min/quantum, 1 byte/voxel |
 | `FpN` | yes | per-leaf variable bit-width (oracle-matched to native) |
 | `Fp4`, `Fp16` | yes | per-leaf min/quantum |
+| `Half` | yes | raw IEEE binary16, 2 bytes/voxel (NanoVDB 13.2+; matches native v14) |
 | other `GridType`s | rejected | `NvdbFile` throws a clear "unsupported grid type" error |
 
 | File codec | Support |
@@ -113,7 +114,7 @@ fixes if the author engages. Full pin/hash/diff-log details:
 
 The CPU half: parse `.vdb` containers, build
 NanoVDB grid images (from a dense array or straight from a parsed `.vdb`),
-quantize to Fp4/Fp8/Fp16/FpN, apply affine transforms, inspect memory layout, and
+quantize to Fp4/Fp8/Fp16/FpN/Half, apply affine transforms, inspect memory layout, and
 write `.nvdb` files — all **pure TypeScript, no WASM** (the one runtime dependency is
 `fflate` for zlib; [decision D3](https://github.com/pmndrs/vdb/blob/main/docs/archive/v1/DECISIONS.md#d3--cpu-half-pure-typescript-first-wasm-as-targeted-escalation)).
 WASM stays an optional escalation rung, adopted only on demonstrated need
@@ -175,7 +176,7 @@ the NanoVDB `Map`.
 | `vdbBuildFromDense` / `vdbBuildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
 | `vdbBuildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `vdbQuantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
-| `vdbQuantize` / `vdbQuantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) |
+| `vdbQuantize` / `vdbQuantizeDetailed` | FLOAT grid image -> Fp4/Fp8/Fp16/FpN (per-leaf min/quantum; FpN bit-width picked per leaf) or Half (binary16) |
 | `vdbTransform` | Metadata-only affine edit (uniform scale + translate) on a copy; throws with a GPU-resample pointer for rotation/shear ([D6](https://github.com/pmndrs/vdb/blob/main/docs/archive/v1/DECISIONS.md#d6--browser-first-companion-service-is-an-interim-crutch-to-eliminate)) |
 | `vdbInspect` | Node counts + memory-by-section breakdown, summing to the grid's total byte size |
 | `writeNvdb` | Serializes one or more grid images into a `.nvdb` file `ArrayBuffer` (NanoVDB2, `io::Segment` layout; `{ codec: 'zip' }` for NanoVDB's ZIP codec) |

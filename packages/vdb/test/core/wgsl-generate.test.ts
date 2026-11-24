@@ -47,9 +47,9 @@ describe("wgslNameProblems (helper)", () => {
 });
 
 describe("vdbModuleWgsl: every variant", () => {
-  it("covers the K1.4a + K1.4b matrix (read/sample/march x 6 type sets x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage + K3.7 levelSet", () => {
-    expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(132);
-    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(72);
+  it("covers the K1.4a + K1.4b matrix (read/sample/march x 8 type sets (K7.H: + half, float+half) x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage + K3.7 levelSet", () => {
+    expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(176);
+    expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(96);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {
@@ -299,7 +299,7 @@ describe("vdbModuleWgsl: options", () => {
       { ...base, group: 0, firstBinding: 1 },
       { ...base, types: [] },
       { ...base, types: "float" },
-      { ...base, types: ["half"] },
+      { ...base, types: ["double"] },
       { ...base, profile: "majorant" },
       { ...base, slot: undefined, buffer: "__vdbPool.value" },
       { ...base, slot: undefined, buffer: "vdbPool.__value" },
@@ -478,7 +478,7 @@ describe("vdbCheckModule", () => {
     expectCode(() => vdbCheckModule(pool, { types: ["float"] }), "VDB_TYPE_NOT_COMPILED");
     expectCode(() => vdbCheckModule(pool, { types: ["float", "fp8"], layoutVersion: VDB_GPU_LAYOUT_VERSION + 1 }), "VDB_LAYOUT_MISMATCH");
     expectCode(() => vdbCheckModule(pool, { types: [] }), "VDB_BAD_OPTION");
-    expectCode(() => vdbCheckModule(pool, { types: ["half"] } as never), "VDB_BAD_OPTION");
+    expectCode(() => vdbCheckModule(pool, { types: ["double"] } as never), "VDB_BAD_OPTION");
     expectCode(() => vdbCheckModule(pool, { types: ["float"], layoutVersion: -1 }), "VDB_BAD_OPTION");
     // The full form is still validated as module options.
     expectCode(() => vdbCheckModule(pool, { types: ["float", "fp8"], profile: "read" } as never), "VDB_BAD_OPTION");
@@ -547,8 +547,43 @@ describe("VENDOR.md generation transforms", () => {
   it("logs every declaration the generator replaces", async () => {
     const doc = await readFile(new URL("../../vendor/VENDOR.md", import.meta.url), "utf8");
     expect(doc).toContain("## Generation transforms");
-    for (const name of ["pnanovdb_buf_read_uint32", "pnanovdb_grid_type_constants", "pnanovdb_read_float_typed", "pnanovdb_sample_trilinear_{float,fp8,fpn}"]) {
+    for (const name of [
+      "pnanovdb_buf_read_uint32",
+      "pnanovdb_grid_type_constants",
+      "pnanovdb_read_float_typed",
+      "pnanovdb_sample_trilinear_{float,fp8,fpn}",
+      "pnanovdb_read_minmax_float",
+      "pnanovdb_leaf_get_minmax_float",
+    ]) {
       expect(doc).toContain(name);
     }
+  });
+});
+
+describe("Half (K7.H): generation transform 8", () => {
+  const HALF_DECLS = ["pnanovdb_read_half", "pnanovdb_read_minmax_float", "pnanovdb_leaf_get_minmax_float"];
+  const march = (types: string[], helpers: string[] = []) => ({ slot: CHECK_SLOT, types, profile: "march", helpers }) as unknown as VDBModuleOptions;
+
+  it("modules without 'half' contain no Half reader (the size snapshot holds their bytes)", () => {
+    for (const types of [["float"], ["fp8"], ["float", "fp8", "fpn"], ["fp4", "fp16"]]) {
+      for (const helpers of [[], ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"]]) {
+        expect(vdbModuleDeclarations(march(types, helpers)).filter((d) => HALF_DECLS.includes(d)), types.join("+")).toEqual([]);
+        expect(vdbModuleWgsl(march(types, helpers))).not.toMatch(/unpack2x16float|minmax|GRID_TYPE_HALF/);
+      }
+    }
+  });
+
+  it("a 'half' module decodes with unpack2x16float and reads binary16 min/max; ave/stddev stay f32", () => {
+    const code = vdbModuleWgsl(march(["half"], ["nodeAverage"]));
+    expect(vdbModuleDeclarations(march(["half"]))).toEqual(expect.arrayContaining(HALF_DECLS));
+    expect(code).toContain("return unpack2x16float(raw >> ((address & 2u) << 3u)).x;");
+    // Half only: no branch, no Fp decoder, no uint16 code path.
+    expect(code).toMatch(/fn vdb_read_float_typed\([^)]*\) -> f32 \{\n {4}return vdb_read_half\(buf, address\);\n\}/);
+    expect(code).toMatch(/fn vdb_read_minmax_float\([^)]*\) -> f32 \{\n {4}return vdb_read_half\(buf, address\);\n\}/);
+    expect(code).toMatch(/fn vdb_leaf_get_stat_float\([^)]*\) -> f32 \{\n {4}return vdb_read_float\(buf, address\);\n\}/);
+    expect(code).not.toMatch(/leaf_fp_read_float|leaf_fp_get_stat_float/);
+    // With other types: one Half branch in each of the three readers.
+    const mixed = vdbModuleWgsl(march(["float", "fp8", "half"]));
+    expect(mixed.match(/grid_type == VDB_GRID_TYPE_HALF/g)?.length).toBe(3);
   });
 });

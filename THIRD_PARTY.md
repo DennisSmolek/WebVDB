@@ -24,6 +24,7 @@ with each port, vendor drop or new test fixture (see CLAUDE.md, "Licences").
 | `.wvdb` test fixtures (JangaFX) | CC0 1.0 | `packages/vdb/test/tools/fixtures/wvdb/` (`ground_explosion_0010.wvdb`, `ground_explosion_0199.wvdb`, `cloud_04_variant_0000.wvdb`) | Byte copies from mjurczyk/openvdb, written by his `wvdb` CLI. The fixtures README records the source paths. |
 | `.wvdb` smoke digest | Derived from CC BY-SA 4.0 sample | `packages/vdb/test/tools/fixtures/wvdb/smoke.wvdb.digest.json` | Header and inflated-chunk SHA-256 sums only. The source file is not committed. `smoke.vdb` is an openvdb.org sample (CC BY-SA 4.0), fetched by `pnpm fixtures:vdb-samples`. |
 | Shipped notices | n/a | `packages/vdb/THIRD_PARTY_NOTICES.md` | The copy of this list that ships in the npm package (MIT notice, file list, Apache-2.0 pointer, citations). Keep it in step with this file; source headers point to it. |
+| OpenVDB `nanovdb/math/HalfLite.h` (v14.0.0), from Imath `half.h` | Apache-2.0; Imath part BSD-3-Clause | `packages/vdb/src/tools/nanovdb/half.ts` | K7.H: `vdbFloatToHalf` / `vdbHalfToFloat` ported so a Half grid we write has native NanoVDB's bits. Header in the file; notice in `packages/vdb/THIRD_PARTY_NOTICES.md`. |
 | fflate | MIT | runtime dependency (`packages/vdb/package.json`) | Inflate and deflate in `tools`. |
 
 ## mjurczyk/openvdb: MIT notice

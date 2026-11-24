@@ -17,6 +17,8 @@
  *     quantization (`LeafData<Fp4|Fp8|Fp16>`).
  *   - {@link vdbMakeFpNLeafCodec} — variable bit-width (`LeafData<FpN>`); a
  *     per-leaf oracle picks the smallest of 1/2/4/8/16 bits meeting a tolerance.
+ *   - {@link VDB_HALF_LEAF_CODEC} — 512 raw IEEE binary16 values
+ *     (`LeafData<Half>`, K7.H); tiles, background and min/max are binary16 too.
  *
  * ## Encode authority
  *
@@ -40,6 +42,7 @@ import {
   FP_LEAF_HEADER_SIZE,
   FPN_LAYOUT,
   type GridTypeLayout,
+  HALF_LAYOUT,
   LEAF_FLAG_HAS_BBOX,
   LEAF_OFF_BBOX_DIF_AND_FLAGS,
   LEAF_OFF_BBOX_MIN,
@@ -54,6 +57,7 @@ import {
   NODE_FLAG_STATS,
 } from "./bytes.js";
 import type { GridImageWriter } from "./bytes.js";
+import { vdbFloatToHalf, vdbRoundToHalf } from "./half.js";
 import { type StatsAccumulator, Vec3StatsAccumulator } from "./stats.js";
 import type { TileValue } from "./tree.js";
 
@@ -87,8 +91,18 @@ export interface VDBLeafCodec {
    * `leafOff`. `plan` is the value returned by {@link planLeaf} for this leaf.
    */
   encodeLeaf(w: GridImageWriter, leafOff: number, leaf: EncodableLeaf, plan: LeafPlan): void;
-  /** Writes a single constant value (an internal-node tile / background). */
+  /**
+   * Writes a single value of the grid's value type: an internal-node tile, the
+   * background, or a root/upper/lower min/max statistic of a scalar grid.
+   */
   writeConstant(w: GridImageWriter, off: number, value: TileValue): void;
+  /**
+   * Rounds a scalar to what the grid stores (Half: the nearest binary16). When
+   * present, `vdbBuildFromLeavesDetailed` passes every leaf value, tile value
+   * and the background through it before computing statistics, so min/max/ave
+   * describe the stored values (as NanoVDB's GridStats does on a Half grid).
+   */
+  readonly roundValue?: (value: number) => number;
 }
 
 /** A scalar codec's constant: tiles and backgrounds of scalar grids are numbers. */
@@ -156,6 +170,39 @@ export const VDB_FLOAT_LEAF_CODEC: VDBLeafCodec = {
   },
   writeConstant(w, off, value) {
     w.setF32(off, scalar(value));
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Half (K7.H)
+// ---------------------------------------------------------------------------
+
+/**
+ * Half leaf codec (`LeafData<Half>`, NanoVDB 13.2): 512 raw IEEE binary16
+ * values, binary16 min/max and f32 ave/stddev. Values convert with
+ * {@link vdbFloatToHalf} (NanoVDB `math::FloatToHalf`, round to nearest even,
+ * overflow to infinity), as `tools::createNanoGrid<FloatGrid, Half>` does.
+ * `roundValue` makes the build's statistics describe the stored halves.
+ */
+export const VDB_HALF_LEAF_CODEC: VDBLeafCodec = {
+  layout: HALF_LAYOUT,
+  roundValue: vdbRoundToHalf,
+  planLeaf() {
+    return { byteSize: HALF_LAYOUT.leafSize };
+  },
+  encodeLeaf(w, leafOff, leaf) {
+    writeLeafHeader(w, leafOff, leaf, NODE_FLAG_STATS);
+    const L = HALF_LAYOUT;
+    const values = leaf.values;
+    for (let n = 0; n < LEAF_TABLE_COUNT; n++) w.setU16(leafOff + L.leafOffTable + n * 2, vdbFloatToHalf(values[n]!));
+    const s = leaf.stats;
+    w.setU16(leafOff + L.leafOffMin, s.isEmpty ? 0 : vdbFloatToHalf(s.min));
+    w.setU16(leafOff + L.leafOffMax, s.isEmpty ? 0 : vdbFloatToHalf(s.max));
+    w.setF32(leafOff + L.leafOffAve, s.average);
+    w.setF32(leafOff + L.leafOffStdDev, s.stdDev);
+  },
+  writeConstant(w, off, value) {
+    w.setU16(off, vdbFloatToHalf(scalar(value)));
   },
 };
 

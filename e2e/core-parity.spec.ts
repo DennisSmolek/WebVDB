@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 // K1.6: the K1 regression gate (docs/dev/design/K1-core.md §7, docs/archive/handoffs/K1-6.md).
-// One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures, two synthetic quantized grids (sphere_fog_fp4 / sphere_fog_fp16, K5.4b) plus
+// One VDBGridPool (4 KiB start, maxGrids 2) holds the nine primitive fixtures, two synthetic quantized grids (sphere_fog_fp4 / sphere_fog_fp16, K5.4b),
+// two Half grids (K7.H: sphere_fog_half against the committed native NanoVDB v14 sidecar, and half_values) plus
 // torus_fog_fp8 again with an instance transform; every generated-module variant of
 // the matrix is dispatched and compared with the CPU twins. The page does the
 // comparing and publishes counts, max deltas and failure lines.
@@ -82,7 +83,7 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
     r.variants.map((v) => v.id),
     detail,
   ).toEqual(r.expected!.variants);
-  expect(r.variants.length).toBe(29); // 21 base + 2 fastTrilinear (K3.2d) + 6 fp4/fp16 (K5.4)
+  expect(r.variants.length).toBe(33); // 21 base + 2 fastTrilinear (K3.2d) + 6 fp4/fp16 (K5.4) + 4 half (K7.H)
 
   for (const v of r.variants) {
     expect(v.compileErrors, `${v.id} compile`).toEqual([]);
@@ -116,7 +117,7 @@ test("core parity: generated modules + VDBGridPool vs the CPU twins (K1 gate)", 
     }
   }
 
-  expect(r.totalMs, "runtime budget").toBeLessThan(180_000); // 29 variants; headroom for loaded machines and small CI runners
+  expect(r.totalMs, "runtime budget").toBeLessThan(200_000); // 33 variants; headroom for loaded machines and small CI runners
   const t = r.totals;
   test.info().annotations.push({
     type: "core-parity",

@@ -1297,10 +1297,11 @@ fn pnanovdb_root_fpn_read_float(buf: pnanovdb_buf_t, address: pnanovdb_address_t
 // --- Typed value read (WebVDB extension) ---
 // Resolve a voxel to a decoded f32. This is the ONE runtime grid_type switch:
 // it wraps the upstream address+level lookup and applies the per-grid-type
-// leaf decode (plain f32 for FLOAT/HALF and all tile/background levels;
-// quantized decode for Fp4/Fp8/Fp16/FpN leaves). Per-type public entry points
-// (the sample_trilinear_* family) are thin wrappers over this — the fork
-// specializes at the public API boundary rather than duplicating traversal.
+// decode (plain f32 for FLOAT and all Fp tile/background levels; binary16 at
+// every level for HALF; quantized decode for Fp4/Fp8/Fp16/FpN leaves).
+// Per-type public entry points (the sample_trilinear_* family) are thin
+// wrappers over this — the fork specializes at the public API boundary rather
+// than duplicating traversal.
 fn pnanovdb_read_float_typed(grid_type: u32, buf: pnanovdb_buf_t, address: pnanovdb_address_t, ijk: vec3i, level: u32) -> f32 {
     if grid_type == PNANOVDB_GRID_TYPE_FP4 {
         return pnanovdb_root_fp4_read_float(buf, address, ijk, level);
@@ -1310,8 +1311,10 @@ fn pnanovdb_read_float_typed(grid_type: u32, buf: pnanovdb_buf_t, address: pnano
         return pnanovdb_root_fp16_read_float(buf, address, ijk, level);
     } else if grid_type == PNANOVDB_GRID_TYPE_FPN {
         return pnanovdb_root_fpn_read_float(buf, address, ijk, level);
+    } else if grid_type == PNANOVDB_GRID_TYPE_HALF {
+        return pnanovdb_read_half(buf, address);
     }
-    // FLOAT (and HALF stored as f32 in these fixtures) read verbatim.
+    // FLOAT reads verbatim.
     return pnanovdb_read_float(buf, address);
 }
 
@@ -1451,12 +1454,14 @@ fn pnanovdb_leaf_get_stddev_address(grid_type: u32, buf: pnanovdb_buf_t, node: p
 // f32 convenience readers over the stats slots (WebVDB: upstream returns the
 // address and lets the caller read a typed value). Root, upper and lower
 // stats are f32 for FLOAT and the Fp types; leaf stats of the Fp types are
-// uint16 codes and are decoded by pnanovdb_leaf_get_stat_float.
+// uint16 codes and are decoded by pnanovdb_leaf_get_stat_float. HALF min/max
+// are binary16 at every level (pnanovdb_read_minmax_float,
+// pnanovdb_leaf_get_minmax_float); its ave/stddev stay f32.
 fn pnanovdb_root_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_root_get_min_address(grid_type, buf, root));
+    return pnanovdb_read_minmax_float(grid_type, buf, pnanovdb_root_get_min_address(grid_type, buf, root));
 }
 fn pnanovdb_root_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_root_get_max_address(grid_type, buf, root));
+    return pnanovdb_read_minmax_float(grid_type, buf, pnanovdb_root_get_max_address(grid_type, buf, root));
 }
 fn pnanovdb_root_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, root: pnanovdb_root_handle_t) -> f32 {
     return pnanovdb_read_float(buf, pnanovdb_root_get_ave_address(grid_type, buf, root));
@@ -1465,10 +1470,10 @@ fn pnanovdb_root_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, root: pna
     return pnanovdb_read_float(buf, pnanovdb_root_get_stddev_address(grid_type, buf, root));
 }
 fn pnanovdb_upper_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_upper_get_min_address(grid_type, buf, node));
+    return pnanovdb_read_minmax_float(grid_type, buf, pnanovdb_upper_get_min_address(grid_type, buf, node));
 }
 fn pnanovdb_upper_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_upper_get_max_address(grid_type, buf, node));
+    return pnanovdb_read_minmax_float(grid_type, buf, pnanovdb_upper_get_max_address(grid_type, buf, node));
 }
 fn pnanovdb_upper_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_upper_handle_t) -> f32 {
     return pnanovdb_read_float(buf, pnanovdb_upper_get_ave_address(grid_type, buf, node));
@@ -1477,10 +1482,10 @@ fn pnanovdb_upper_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pn
     return pnanovdb_read_float(buf, pnanovdb_upper_get_stddev_address(grid_type, buf, node));
 }
 fn pnanovdb_lower_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_lower_get_min_address(grid_type, buf, node));
+    return pnanovdb_read_minmax_float(grid_type, buf, pnanovdb_lower_get_min_address(grid_type, buf, node));
 }
 fn pnanovdb_lower_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
-    return pnanovdb_read_float(buf, pnanovdb_lower_get_max_address(grid_type, buf, node));
+    return pnanovdb_read_minmax_float(grid_type, buf, pnanovdb_lower_get_max_address(grid_type, buf, node));
 }
 fn pnanovdb_lower_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_lower_handle_t) -> f32 {
     return pnanovdb_read_float(buf, pnanovdb_lower_get_ave_address(grid_type, buf, node));
@@ -1526,14 +1531,47 @@ fn pnanovdb_leaf_get_stat_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnano
 }
 
 fn pnanovdb_leaf_get_min_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
-    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_min_address(grid_type, buf, node), true);
+    return pnanovdb_leaf_get_minmax_float(grid_type, buf, node, pnanovdb_leaf_get_min_address(grid_type, buf, node));
 }
 fn pnanovdb_leaf_get_max_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
-    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_max_address(grid_type, buf, node), true);
+    return pnanovdb_leaf_get_minmax_float(grid_type, buf, node, pnanovdb_leaf_get_max_address(grid_type, buf, node));
 }
 fn pnanovdb_leaf_get_ave_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
     return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_ave_address(grid_type, buf, node), true);
 }
 fn pnanovdb_leaf_get_stddev_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t) -> f32 {
     return pnanovdb_leaf_get_stat_float(grid_type, buf, node, pnanovdb_leaf_get_stddev_address(grid_type, buf, node), false);
+}
+
+// --- Half (WebVDB, K7.H) ---
+// NanoVDB GridType::Half (9; implemented in NanoVDB 13.2, OpenVDB PR 2335)
+// stores raw IEEE binary16 voxels (512 x 2 bytes from leaf byte 96), tile and
+// background values in their slots, and binary16 min/max at every level; ave
+// and stddev are f32 (FloatTraits<Half> is float). Offsets: the HALF row of
+// pnanovdb_grid_type_constants (root 28/30/32/36/40, upper 8224/8226/8228/8232,
+// lower 1056/1058/1060/1064, leaf 80/82/84/88, leaf table 96, value stride 16).
+
+// pnanovdb_read_half (PNanoVDB.h, GLSL branch: unpackHalf2x16). The address is
+// 2-byte aligned; the word read truncates it, the shift picks the half.
+fn pnanovdb_read_half(buf: pnanovdb_buf_t, address: pnanovdb_address_t) -> f32 {
+    let raw = pnanovdb_read_uint32(buf, address);
+    return unpack2x16float(raw >> ((address & 2u) << 3u)).x;
+}
+
+// A root/upper/lower min or max stats slot as f32: binary16 for HALF, f32
+// otherwise.
+fn pnanovdb_read_minmax_float(grid_type: u32, buf: pnanovdb_buf_t, address: pnanovdb_address_t) -> f32 {
+    if grid_type == PNANOVDB_GRID_TYPE_HALF {
+        return pnanovdb_read_half(buf, address);
+    }
+    return pnanovdb_read_float(buf, address);
+}
+
+// A leaf min or max stats slot as f32: binary16 for HALF, else the leaf stat
+// dispatch (uint16 code for the Fp types, f32 otherwise).
+fn pnanovdb_leaf_get_minmax_float(grid_type: u32, buf: pnanovdb_buf_t, node: pnanovdb_leaf_handle_t, address: pnanovdb_address_t) -> f32 {
+    if grid_type == PNANOVDB_GRID_TYPE_HALF {
+        return pnanovdb_read_half(buf, address);
+    }
+    return pnanovdb_leaf_get_stat_float(grid_type, buf, node, address, true);
 }

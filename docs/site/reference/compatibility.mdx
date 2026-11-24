@@ -29,8 +29,8 @@ dependency.
 
 | | Supported |
 | --- | --- |
-| Pool and WGSL | Scalar grids: Float, Fp4, Fp8, Fp16, FpN. Generate the module for every type you add, or use `VDB_ALL_SCALAR_TYPES`. |
-| `NvdbFile`, `readValue`, `vdbSampleTrilinear` | Float, Fp4, Fp8, Fp16, FpN. Fp4 and Fp16 are decoded per `PNanoVDB.h`; there are no native Fp4/Fp16 fixtures, so they are tested against `quantize` output (CPU round-trip, bit-exact GPU parity on SwiftShader). |
+| Pool and WGSL | Scalar grids: Float, Fp4, Fp8, Fp16, FpN, Half (NanoVDB 13.2+ `GridType::Half`). Generate the module for every type you add, or use `VDB_ALL_SCALAR_TYPES`. |
+| `NvdbFile`, `readValue`, `vdbSampleTrilinear` | Float, Fp4, Fp8, Fp16, FpN, Half. Half grids written by NanoVDB v14 (`createNanoGrid<…, nanovdb::Half>`) are read bit for bit, and `vdbQuantize(…, 'half')` writes the same values and min/max. Fp4 and Fp16 are decoded per `PNanoVDB.h`; there are no native Fp4/Fp16 fixtures, so they are tested against `quantize` output (CPU round-trip, bit-exact GPU parity on SwiftShader). |
 | Vec3f | Built by `buildFromVdb`, read on the CPU by `vdbReadValueVec3` and `vdbSampleTrilinearVec3`. Not in the pool. |
 | `.vdb` | 5-4-3 float, vec3 and point-data grids; Blosc (LZ4, zlib) and zlib. |
 | Size | Child offsets are read as 32-bit words, so a grid over 4 GiB is not supported. |

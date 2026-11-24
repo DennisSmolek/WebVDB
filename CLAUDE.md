@@ -250,3 +250,13 @@ From v1; details in docs/archive/handoffs/.
 - Every demo entry imports `../webgpu-gate.js` first (top-level await: without WebGPU the page shows a card and the demo never runs). Don't add a demo `main.ts` without it; `e2e/no-webgpu.spec.ts` lists the demos.
 - The hosted build sets `HOSTED` (`import.meta.env.PROD`): `ui.note` is silent there, since the notes name local-only fixtures. Test notes in dev.
 - Links in demo HTML are relative (`../../../` for "all demos", `./src/demos/..` on the home page) and the shell's use `HOME_URL`: never `href="/"`.
+- Half grids (K7.H, `GridType::Half` = 9): values, tile values, the background AND min/max stats are binary16 at
+  2-byte-aligned addresses (root background/min/max at 28/30/32, leaf min/max 80/82, values from 96 at 2 bytes);
+  ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32` /
+  `readImageHeader` or the WGSL readers. Generation transform 8 strips the Half readers from modules without `'half'`.
+- `nanovdb_convert` (even v14) has no Half option: native Half grids come from `createNanoGrid<…, nanovdb::Half>` in
+  C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).
+- NanoVDB v14 stores root tiles in another order than the a532de55 bake: `treeNodes` order differs between a native
+  v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
+- `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
+  and other explicit-type modules are byte-identical).

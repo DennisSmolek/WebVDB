@@ -27,7 +27,7 @@ describe("pnanovdb.chunks.generated.ts (K1.4a declaration table)", () => {
   it("covers every top-level declaration once, in file order", async () => {
     const source = await readFile(wgslUrl, "utf8");
     const chunks: Chunk[] = extractWgslChunks(source);
-    expect(chunks).toHaveLength(296); // design note §3.5: 293 declarations, + 3 from the K1.4b leaf-stats fix
+    expect(chunks).toHaveLength(299); // design note §3.5: 293 declarations, + 3 from the K1.4b leaf-stats fix, + 3 Half readers (K7.H)
     expect(new Set(chunks.map((c) => c.name)).size).toBe(chunks.length);
     // Every declaration the regex can see at column 0 is in the table, in order.
     const topLevel = [...source.matchAll(/^(fn|struct|const|alias)\s+(\w+)/gm)].map((m) => m[2]);

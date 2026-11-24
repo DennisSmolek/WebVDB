@@ -20,6 +20,7 @@ pnpm fixtures:cie          # (not in `pnpm fixtures`) CIE 1931 2° CMF table, te
 | WDAS cloud (quarter; other variants via `WDAS_VARIANTS=`) | [disneyanimation.com/data-sets](https://disneyanimation.com/data-sets/) | CC-BY-SA 3.0, © Walt Disney Animation Studios | Stretch fixture: demo 02 hero cloud, perf gates (D4) |
 | JangaFX EmberGen free VDB packs | [jangafx.com — free VDB downloads](https://jangafx.com/software/embergen/download/free-vdb-animations) | CC0 1.0; tracked terms and credit in [ATTRIBUTION.md](./ATTRIBUTION.md) | Fire temporal playback corpus; Cloud files are independent variants, not animation |
 | Procedural primitives (`sphere/torus/box` fog volumes × Float/Fp8/FpN) | `pnpm fixtures:bake`, see below | Apache-2.0 (ours) | Exact-ground-truth unit fixtures for the traversal suite |
+| Half primitives + edge cases (`*_half`, `half/half_edge`) | `pnpm fixtures:bake-half`, see below | Apache-2.0 (ours) | Native NanoVDB v14 Half grids: the reference for our Half reader and writer (K7.H) |
 | CIE 1931 2° colour matching functions (`CIE_xyz_1931_2deg.csv`, MD5 `17cca777db64b17170f06f67ce9d3ab7`) | [files.cie.co.at](https://files.cie.co.at/Publications-datasets/CIE_xyz_1931_2deg.csv) | CC BY-SA 4.0 (CIE, DOI 10.25039/CIE.DS.xvudnb9b) | Test-only (D33): measures the package's analytic CMF fit (`packages/vdb/test/tools/cmf.test.ts`) and lets the K3 harness render the explosion parity scenes with his exact colours; never shipped. Absent: those tests skip and those scenes report INFO; `WEBVDB_REQUIRE_FIXTURES` does not require it |
 | Classic openvdb.org sample models (`sphere`, `cube`, `smoke`, `utahteapot`) | Pinned commit of [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) | Assets: CC BY-SA 4.0; hosting repo: MIT | Phase 5 parser/parity corpus; exact sizes and SHA-256 values are enforced |
 
@@ -76,6 +77,24 @@ SEQUENCE_TEMPORAL=1 SEQUENCE_GRID=flames SEQUENCE_START_INDEX=1 \
   pnpm fixtures:bake-sequence fixtures/embergen/Fire_01
 ```
 
+### Half grids (K7.H)
+
+```sh
+pnpm fixtures:bake          # first: the float primitives are the source
+pnpm fixtures:bake-half
+```
+
+NanoVDB's Half grid type (`GridType::Half`, raw IEEE binary16) was a placeholder until NanoVDB 13.2 (OpenVDB PR
+2335), and `nanovdb_convert` has no Half option, so `scripts/bake-half-fixtures.mjs` compiles
+`docker/fixture-bake/bake_half.cpp` against the header-only NanoVDB of OpenVDB **v14.0.0** (source tarball fetched
+once into `fixtures/downloads/`; or `NANOVDB_V14_INCLUDE=<dir>`) with any C++17 compiler. It writes
+`createNanoGrid<FloatGrid, nanovdb::Half>` of the three float primitives as `primitives/*_half.nvdb` (+ sidecars:
+the primitive schema with each probe's binary16 `bits`, the root stats and an FNV-1a hash of the leaf value tables),
+and `half/half_edge.nvdb` (+ sidecar), a small grid of rounding ties, subnormals, overflow to infinity and -0 with
+every voxel's input and native bits and every node's stats as raw bits. The `.nvdb` files are git-ignored; the
+sidecars are committed and checked by `packages/vdb/test/tools/half-native.test.ts` (our writer against them) and
+`e2e/core-parity.spec.ts` (`sphere_fog_half`). Re-bakes are deterministic.
+
 Layout convention:
 
 ```
@@ -83,6 +102,7 @@ fixtures/
   downloads/    # raw archives (git-ignored)
   wdas/         # wdas_cloud_quarter.vdb → *.nvdb + *.sidecar.json
   embergen/     # <pack>/frame_####.vdb → *.nvdb sequences
-  primitives/   # baked sphere/torus/box .nvdb + sidecars
+  primitives/   # baked sphere/torus/box .nvdb + sidecars (float/fp8/fpn; half from NanoVDB v14)
+  half/         # half_edge.nvdb + sidecar (Half edge cases, NanoVDB v14)
   vdb-samples/  # sphere.vdb, cube.vdb, smoke.vdb, utahteapot.vdb
 ```

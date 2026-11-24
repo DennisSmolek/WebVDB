@@ -1,5 +1,5 @@
 /**
- * quantize.ts — re-encode a FLOAT NanoVDB grid image as Fp4, Fp8, Fp16 or FpN.
+ * quantize.ts — re-encode a FLOAT NanoVDB grid image as Fp4, Fp8, Fp16, FpN or Half.
  *
  * Quantization is a leaf-value-representation change only: topology, masks,
  * internal-node tables/stats, GridData and the transform are unchanged. So
@@ -16,6 +16,14 @@
  *   by decoder round-trip and GPU parity, not byte-compared to `nanovdb_convert`.
  * - `fpn` — per-leaf variable bit-width, smallest of 1/2/4/8/16 bits whose
  *   dequantized values stay within `tolerance` (default: native's FogVolume 0.01).
+ * - `half` (K7.H) — NanoVDB `GridType::Half` (NanoVDB 13.2): every value (leaf
+ *   voxels, tiles, background) becomes the nearest IEEE binary16 (round to
+ *   nearest even, `|v| > 65504` to infinity; NanoVDB `math::FloatToHalf`), as
+ *   `tools::createNanoGrid<FloatGrid, Half>` writes it; min/max stats are
+ *   binary16, ave/stddev f32 over the stored halves. Relative error <= 2^-11 in
+ *   the normal range (6.1e-5 to 65504); absolute <= 2^-25 below it. `tolerance`
+ *   is ignored. Cross-checked against native NanoVDB v14.0.0
+ *   (`docker/fixture-bake/bake_half.cpp`, `test/tools/half-native.test.ts`).
  *
  * v1 quantizes FLOAT sources only (throws otherwise) — that is the conversion
  * the toolset exposes (`float -> fp8/fpn`), and it is what the native
@@ -46,11 +54,19 @@ import {
   UPPER_OFF_CHILD_MASK,
   UPPER_TABLE_COUNT,
 } from "./bytes.js";
-import { VDB_FLOAT_LEAF_CODEC, VDB_FP4_LEAF_CODEC, VDB_FP8_LEAF_CODEC, VDB_FP16_LEAF_CODEC, vdbMakeFpNLeafCodec, type VDBLeafCodec } from "./leaf-codec.js";
+import {
+  VDB_FLOAT_LEAF_CODEC,
+  VDB_FP4_LEAF_CODEC,
+  VDB_FP8_LEAF_CODEC,
+  VDB_FP16_LEAF_CODEC,
+  VDB_HALF_LEAF_CODEC,
+  vdbMakeFpNLeafCodec,
+  type VDBLeafCodec,
+} from "./leaf-codec.js";
 import { vdbBuildFromLeavesDetailed, type VDBBuiltGrid } from "./serialize.js";
 import type { LeafInput, TileInput } from "./tree.js";
 
-export type VDBQuantizeMode = "fp4" | "fp8" | "fp16" | "fpn";
+export type VDBQuantizeMode = "fp4" | "fp8" | "fp16" | "fpn" | "half";
 
 export interface VDBQuantizeOptions {
   /**
@@ -61,7 +77,7 @@ export interface VDBQuantizeOptions {
   collapse?: boolean;
 }
 
-/** Quantizes a FLOAT grid image (or built grid) to Fp8/FpN. Returns a new image. */
+/** Quantizes a FLOAT grid image (or built grid) to Fp4/Fp8/Fp16/FpN or Half. Returns a new image. */
 export function vdbQuantize(
   input: Uint32Array | VDBBuiltGrid,
   mode: VDBQuantizeMode,
@@ -84,7 +100,9 @@ export function vdbQuantizeDetailed(
     mode === "fp4" ? VDB_FP4_LEAF_CODEC
     : mode === "fp8" ? VDB_FP8_LEAF_CODEC
     : mode === "fp16" ? VDB_FP16_LEAF_CODEC
-    : vdbMakeFpNLeafCodec(tolerance);
+    : mode === "half" ? VDB_HALF_LEAF_CODEC
+    : mode === "fpn" ? vdbMakeFpNLeafCodec(tolerance)
+    : badMode(mode);
   return vdbBuildFromLeavesDetailed(src.leaves, codec, {
     voxelSize: src.voxelSize,
     worldOrigin: src.translation,
@@ -95,6 +113,10 @@ export function vdbQuantizeDetailed(
     tiles: src.tiles,
     collapse: options.collapse === true,
   });
+}
+
+function badMode(mode: unknown): never {
+  throw new VDBToolsError("VDB_BAD_OPTION", `quantize: mode must be 'fp4', 'fp8', 'fp16', 'fpn' or 'half', got ${JSON.stringify(mode)}`);
 }
 
 /**

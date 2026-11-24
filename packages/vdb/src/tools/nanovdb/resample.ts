@@ -57,6 +57,7 @@
 
 import { VDBToolsError, VDBUnsupportedError } from "../errors.js";
 import { vdbReadValueCpu } from "../cpu/read-value.js";
+import { vdbHalfToFloat } from "./half.js";
 import { gridTypeConstantsForId } from "../cpu/stride-tables.js";
 import { leafVoxels, treeNodes } from "../cpu/march.js";
 import type { VdbFile, VdbFloatGrid, VdbGrid } from "../vdb/types.js";
@@ -66,6 +67,7 @@ import {
   GRID_OFF_GRID_CLASS,
   GRID_OFF_GRID_NAME,
   GRID_OFF_GRID_TYPE,
+  GRID_TYPE_HALF,
   GRID_OFF_MAP,
   GRID_SIZE,
   MAP_OFF_INVMATD,
@@ -210,7 +212,9 @@ function fieldFromNanoVdb(image: Uint32Array): SourceField {
     throw new VDBUnsupportedError(`vdbResampleGrid: grid "${name}" has a rotated, sheared or flipped Map; only positive axis-aligned maps are supported`);
   }
   const root = GRID_SIZE + Number(view.getBigUint64(GRID_SIZE + TREE_OFF_NODE_OFFSET_ROOT, true));
-  const background = view.getFloat32(root + gridTypeConstantsForId(gridType).root_off_background, true);
+  const bgAddress = root + gridTypeConstantsForId(gridType).root_off_background;
+  // Half (K7.H) stores a binary16 background; every other scalar type an f32.
+  const background = gridType === GRID_TYPE_HALF ? vdbHalfToFloat(view.getUint16(bgAddress, true)) : view.getFloat32(bgAddress, true);
 
   const leaves = new Map<number, SourceLeaf>();
   const tiles: SourceField["tiles"] = [];

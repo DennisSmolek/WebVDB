@@ -26,8 +26,14 @@
  * Fp leaf stats (NanoVDB.h `LeafFnBase`, OpenVDB a532de55): uint16 codes at
  * leaf bytes 88/90/92/94; min/max/ave = code * quantum + minimum, stddev =
  * code * quantum, with the leaf's own mMinimum (byte 80) and mQuantum (84).
+ *
+ * Half grids (K7.H, NanoVDB `GridType::Half`): voxels, tiles, the background
+ * and min/max stats are IEEE binary16 at every level (2-byte aligned), decoded
+ * exactly as the fork's `pnanovdb_read_half` (`unpack2x16float`) does;
+ * ave/stddev are f32.
  */
 import { VDBToolsError } from "../errors.js";
+import { vdbHalfToFloat } from "../nanovdb/half.js";
 import { defineBigInt, defineNumber, gridTypeConstantsForId, gridTypeIds, type GridTypeConstants } from "./stride-tables.js";
 
 export type Vec3 = [number, number, number];
@@ -62,7 +68,7 @@ const FORWARD_SCALE = f(0.999999);
 const FORWARD_BIAS = f(1.0e-6);
 
 const FP_TYPES = new Set([gridTypeIds.FP4, gridTypeIds.FP8, gridTypeIds.FP16, gridTypeIds.FPN]);
-const SUPPORTED_TYPES = new Set([gridTypeIds.FLOAT, ...FP_TYPES]);
+const SUPPORTED_TYPES = new Set([gridTypeIds.FLOAT, gridTypeIds.HALF, ...FP_TYPES]);
 
 // ---------------------------------------------------------------------------
 // Grid access
@@ -73,6 +79,8 @@ interface Grid {
   readonly gridType: number;
   readonly gt: GridTypeConstants;
   readonly fp: boolean;
+  /** Half grid: values and min/max stats are binary16. */
+  readonly half: boolean;
   readonly hasStats: boolean;
   readonly root: number;
 }
@@ -90,7 +98,7 @@ function grid(words: Uint32Array): Grid {
   const magic = (BigInt(u32(words, GRID_OFF_MAGIC + 4)) << 32n) | BigInt(u32(words, GRID_OFF_MAGIC));
   if (magic !== MAGIC_GRID) throw new VDBToolsError("VDB_BAD_IMAGE", "march: gridWords does not start with a NanoVDB GridData block");
   const gridType = u32(words, GRID_OFF_GRID_TYPE);
-  if (!SUPPORTED_TYPES.has(gridType)) throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", `march: grid type ${gridType} is not Float/Fp4/Fp8/Fp16/FpN`);
+  if (!SUPPORTED_TYPES.has(gridType)) throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", `march: grid type ${gridType} is not Float/Half/Fp4/Fp8/Fp16/FpN`);
   const root = GRID_SIZE + u32(words, GRID_SIZE + TREE_OFF_NODE_OFFSET_ROOT);
   g = {
     words,
@@ -98,6 +106,7 @@ function grid(words: Uint32Array): Grid {
     gridType,
     gt: gridTypeConstantsForId(gridType),
     fp: FP_TYPES.has(gridType),
+    half: gridType === gridTypeIds.HALF,
     hasStats: (u32(words, GRID_OFF_FLAGS) & GRID_FLAGS_HAS_MIN_MAX) !== 0,
     root,
   };
@@ -112,6 +121,14 @@ function readF32(g: Grid, address: number): number {
 /** pnanovdb_read_uint16 (fork, K1.4b): the u16 at a 2-byte-aligned address. */
 function readU16(g: Grid, address: number): number {
   return (u32(g.words, address & ~3) >>> ((address & 2) << 3)) & 0xffff;
+}
+
+/**
+ * A value slot (voxel, tile, background) or a min/max stats slot, as the
+ * grid stores it: binary16 for Half (the fork's `pnanovdb_read_half`), f32 otherwise.
+ */
+function readValueSlot(g: Grid, address: number): number {
+  return g.half ? vdbHalfToFloat(readU16(g, address)) : readF32(g, address);
 }
 
 function maskBit(g: Grid, base: number, n: number): boolean {
@@ -245,8 +262,8 @@ export function nodeStats(gridWords: Uint32Array, level: NodeLevel, address: num
           ? [gt.upper_off_min, gt.upper_off_max, gt.upper_off_ave, gt.upper_off_stddev]
           : [gt.root_off_min, gt.root_off_max, gt.root_off_ave, gt.root_off_stddev];
   return {
-    min: readF32(g, address + off[0]!),
-    max: readF32(g, address + off[1]!),
+    min: readValueSlot(g, address + off[0]!),
+    max: readValueSlot(g, address + off[1]!),
     ave: readF32(g, address + off[2]!),
     stddev: readF32(g, address + off[3]!),
   };
@@ -261,7 +278,7 @@ export function gridHasStats(gridWords: Uint32Array): boolean {
 export function defaultValueMax(gridWords: Uint32Array): number {
   const g = grid(gridWords);
   if (!g.hasStats) return Infinity;
-  return Math.max(readF32(g, g.root + g.gt.root_off_max), readF32(g, g.root + g.gt.root_off_background));
+  return Math.max(readValueSlot(g, g.root + g.gt.root_off_max), readValueSlot(g, g.root + g.gt.root_off_background));
 }
 
 export interface NodeMaxOptions {
@@ -282,7 +299,7 @@ export function nodeMax(gridWords: Uint32Array, ijk: Vec3, dim: number, options:
   const g = grid(gridWords);
   const path = locate(g, ijk);
   const a = DIM_OF_LEVEL[path.level]!;
-  if (a > 1 && dim <= a) return readF32(g, path.valueAddress);
+  if (a > 1 && dim <= a) return readValueSlot(g, path.valueAddress);
   if (!g.hasStats) return options.valueMax ?? defaultValueMax(gridWords);
   if (dim <= 8) return nodeStats(gridWords, 0, path.leaf).max;
   if (dim <= 128) return nodeStats(gridWords, 1, path.lower).max;
@@ -296,7 +313,7 @@ export function isActive(gridWords: Uint32Array, ijk: Vec3): boolean {
 }
 
 /**
- * Twin of `vdbReadValue` (f32 decode in WGSL order; any of Float/Fp4/Fp8/Fp16/FpN).
+ * Twin of `vdbReadValue` (f32 decode in WGSL order; any of Float/Half/Fp4/Fp8/Fp16/FpN).
  *
  * This matches the GPU's evaluation order (f32 arithmetic), so it is the right
  * oracle for GPU parity checks. `readValue` instead returns the exact f64
@@ -305,14 +322,14 @@ export function isActive(gridWords: Uint32Array, ijk: Vec3): boolean {
 export function vdbReadValueF32(gridWords: Uint32Array, ijk: Vec3): number {
   const g = grid(gridWords);
   const path = locate(g, ijk);
-  if (path.level !== 0) return readF32(g, path.valueAddress);
+  if (path.level !== 0) return readValueSlot(g, path.valueAddress);
   const n = ((ijk[0] & 7) << 6) + ((ijk[1] & 7) << 3) + (ijk[2] & 7);
   return leafValue(g, path.leaf, n);
 }
 
 function leafValue(g: Grid, leaf: number, n: number): number {
   const table = leaf + g.gt.leaf_off_table;
-  if (!g.fp) return readF32(g, table + ((g.gt.value_stride_bits * n) >> 3));
+  if (!g.fp) return readValueSlot(g, table + ((g.gt.value_stride_bits * n) >> 3));
   let logBits: number;
   if (g.gridType === gridTypeIds.FP4) logBits = 2;
   else if (g.gridType === gridTypeIds.FP8) logBits = 3;
@@ -364,7 +381,7 @@ export function treeNodes(gridWords: Uint32Array): TreeNode[] {
     ];
     const child = childOffset(g, t + ROOT_TILE_OFF_CHILD);
     if (child === 0 && u32(g.words, t + ROOT_TILE_OFF_CHILD + 4) === 0) {
-      if (u32(g.words, t + ROOT_TILE_OFF_STATE) !== 0) rootNode.activeTiles.push({ value: readF32(g, t + gt.root_tile_off_value), origin, dim: 4096 });
+      if (u32(g.words, t + ROOT_TILE_OFF_STATE) !== 0) rootNode.activeTiles.push({ value: readValueSlot(g, t + gt.root_tile_off_value), origin, dim: 4096 });
       continue;
     }
     const upper = g.root + child;
@@ -373,7 +390,7 @@ export function treeNodes(gridWords: Uint32Array): TreeNode[] {
       const uo: Vec3 = [origin[0] + ((un >> 10) & 31) * 128, origin[1] + ((un >> 5) & 31) * 128, origin[2] + (un & 31) * 128];
       const ut = upper + gt.upper_off_table + gt.table_stride * un;
       if (!maskBit(g, upper + UPPER_OFF_CHILD_MASK, un)) {
-        if (maskBit(g, upper + UPPER_OFF_VALUE_MASK, un)) out[ui]!.activeTiles.push({ value: readF32(g, ut), origin: uo, dim: 128 });
+        if (maskBit(g, upper + UPPER_OFF_VALUE_MASK, un)) out[ui]!.activeTiles.push({ value: readValueSlot(g, ut), origin: uo, dim: 128 });
         continue;
       }
       const lower = upper + childOffset(g, ut);
@@ -382,7 +399,7 @@ export function treeNodes(gridWords: Uint32Array): TreeNode[] {
         const lo3: Vec3 = [uo[0] + ((ln >> 8) & 15) * 8, uo[1] + ((ln >> 4) & 15) * 8, uo[2] + (ln & 15) * 8];
         const lt = lower + gt.lower_off_table + gt.table_stride * ln;
         if (!maskBit(g, lower + LOWER_OFF_CHILD_MASK, ln)) {
-          if (maskBit(g, lower + LOWER_OFF_VALUE_MASK, ln)) out[li]!.activeTiles.push({ value: readF32(g, lt), origin: lo3, dim: 8 });
+          if (maskBit(g, lower + LOWER_OFF_VALUE_MASK, ln)) out[li]!.activeTiles.push({ value: readValueSlot(g, lt), origin: lo3, dim: 8 });
           continue;
         }
         out.push({ level: 0, address: lower + childOffset(g, lt), origin: lo3, parent: li, activeTiles: [] });

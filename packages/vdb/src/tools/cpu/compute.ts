@@ -14,6 +14,7 @@
  * so GPU parity compares with a tolerance and reports the bit-exact count.
  */
 import { VDBToolsError } from "../errors.js";
+import { vdbHalfToFloat } from "../nanovdb/half.js";
 import { indexBBox, isActive, vdbReadValueF32, treeNodes, type Vec3 } from "./march.js";
 import { defineNumber, gridTypeConstantsFor, gridTypeConstantsForId, gridTypeIds } from "./stride-tables.js";
 
@@ -46,10 +47,15 @@ export function atlasDims(bbox: IndexBBox, maxDim: number): [number, number, num
   return [Math.min(sx, maxDim), Math.min(sy, maxDim), Math.min(sz, maxDim)];
 }
 
-/** The root node's stored min/max statistics (f32), meaningful when the grid has stats. */
+/** The root node's stored min/max statistics (f32; binary16 decoded for Half), meaningful when the grid has stats. */
 export function rootStats(gridWords: Uint32Array): { min: number; max: number } {
-  const gt = gridTypeConstantsForId(gridWords[GRID_OFF_GRID_TYPE >>> 2]!);
+  const gridType = gridWords[GRID_OFF_GRID_TYPE >>> 2]!;
+  const gt = gridTypeConstantsForId(gridType);
   const root = GRID_SIZE + gridWords[(GRID_SIZE + TREE_OFF_NODE_OFFSET_ROOT) >>> 2]!;
+  if (gridType === gridTypeIds.HALF) {
+    const half = (address: number) => vdbHalfToFloat(gridWords[address >>> 2]! >>> ((address & 2) << 3));
+    return { min: half(root + gt.root_off_min), max: half(root + gt.root_off_max) };
+  }
   const f32 = new Float32Array(gridWords.buffer, gridWords.byteOffset, gridWords.length);
   return { min: f32[(root + gt.root_off_min) >>> 2]!, max: f32[(root + gt.root_off_max) >>> 2]! };
 }

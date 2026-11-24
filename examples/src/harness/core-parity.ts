@@ -3,7 +3,9 @@
  *
  * One `VDBGridPool` (started at 4 KiB with `maxGrids: 2`, so the buffer and the
  * table both grow) holds the nine primitive fixtures, two synthetic grids (`sphere_fog_fp4` / `sphere_fog_fp16`, the sphere
- * float fixture run through `quantize`; no native Fp4/Fp16 fixtures exist, K5.4b), a throwaway grid that is
+ * float fixture run through `quantize`; no native Fp4/Fp16 fixtures exist, K5.4b), two Half grids (K7.H:
+ * `sphere_fog_half`, `quantize(sphere_fog_float, 'half')` checked against the committed native NanoVDB v14 sidecar,
+ * and `half_values`, a small grid of subnormal, large, negative and -0 halves), a throwaway grid that is
  * removed (a dead id in the middle of the table) and `torus_fog_fp8` a second
  * time with an instance transform. For every generated-module variant of the
  * matrix below the page dispatches compute kernels that call only the public
@@ -29,6 +31,7 @@ import {
   nodeMax,
   nodeStats,
   probeCoords,
+  vdbBuildFromDense,
   vdbQuantize,
   rayClip,
   rayClipSupport,
@@ -63,7 +66,27 @@ const SYNTH = [
   { name: "sphere_fog_fp4", mode: "fp4" },
   { name: "sphere_fog_fp16", mode: "fp16" },
 ] as const;
-const NAMES = [...FILE_NAMES, ...SYNTH.map((s) => s.name)];
+/**
+ * Half grids (K7.H). `sphere_fog_half` is `vdbQuantize(sphere_fog_float, 'half')` with the committed NATIVE sidecar
+ * (`pnpm fixtures:bake-half`: OpenVDB v14 createNanoGrid<FloatGrid, Half>, bit-identical at its probes), so the GPU
+ * read is checked against native NanoVDB too. `half_values` exercises the binary16 decode (`unpack2x16float`) on
+ * subnormals, large and negative values and -0; no infinities (WGSL leaves them to the implementation).
+ */
+const HALF_SYNTH = ["sphere_fog_half", "half_values"] as const;
+const NAMES = [...FILE_NAMES, ...SYNTH.map((s) => s.name), ...HALF_SYNTH];
+
+/** A 20^3 block of values that stress the binary16 decode; quantized to Half in the page. */
+function halfValuesGrid(): Uint32Array {
+  const dim = 20;
+  const special = [6e-8, -6e-8, 1e-5, -3.1e-5, 6.1035e-5, 60000, -65504, 65504, -0, 2049, -1000.1, 0.1, 1 / 3, 1e-7, 4.5e-6];
+  const values = new Float32Array(dim * dim * dim);
+  const r = rng(77);
+  for (let k = 0; k < values.length; k++) {
+    // Mostly special values, some smooth ones; zeros are inactive (the background).
+    values[k] = r() < 0.6 ? special[Math.floor(r() * special.length)]! : (r() - 0.3) * 50;
+  }
+  return vdbBuildFromDense(values, [dim, dim, dim], { origin: [-7, 3, 120], background: 0, collapse: false, gridName: "half_values" });
+}
 const INSTANCE_SOURCE = NAMES.indexOf("torus_fog_fp8"); // the fixture added a second time
 const SLOT = { group: 1, firstBinding: 3 } as const;
 const BUFFER_EXPR = "vdbPool.value";
@@ -320,7 +343,7 @@ interface Spec {
   tests: Test[];
 }
 
-const ALL: VDBGridTypeName[] = ["float", "fp4", "fp8", "fp16", "fpn"];
+const ALL: VDBGridTypeName[] = ["float", "fp4", "fp8", "fp16", "fpn", "half"];
 const BASE: Test[] = ["read", "meta", "dead"];
 const SAMPLE: Test[] = [...BASE, "sample"];
 const SAMPLE_X: Test[] = [...SAMPLE, "xform", "world", "clip"];
@@ -333,6 +356,7 @@ const SPECS: Spec[] = [
   { id: "read/fp4", profile: "read", types: ["fp4"], mode: "slot", tests: BASE },
   { id: "read/fp16", profile: "read", types: ["fp16"], mode: "slot", tests: BASE },
   { id: "read/fpn", profile: "read", types: ["fpn"], mode: "slot", tests: BASE },
+  { id: "read/half", profile: "read", types: ["half"], mode: "slot", tests: BASE },
   { id: "read/all", profile: "read", types: ALL, mode: "slot", tests: BASE },
   { id: "read/all/isActive=false", profile: "read", types: ALL, mode: "slot", isActive: false, tests: BASE },
   { id: "read/all/buffer", profile: "read", types: ALL, mode: "buffer", tests: BASE },
@@ -341,6 +365,7 @@ const SPECS: Spec[] = [
   { id: "sample/fp4", profile: "sample", types: ["fp4"], mode: "slot", tests: SAMPLE },
   { id: "sample/fp16", profile: "sample", types: ["fp16"], mode: "slot", tests: SAMPLE },
   { id: "sample/fpn", profile: "sample", types: ["fpn"], mode: "slot", tests: SAMPLE },
+  { id: "sample/half", profile: "sample", types: ["half"], mode: "slot", tests: SAMPLE },
   { id: "sample/all", profile: "sample", types: ALL, mode: "slot", tests: SAMPLE_X },
   { id: "sample/all/nearest", profile: "sample", types: ALL, mode: "slot", sampler: "nearest", tests: SAMPLE },
   { id: "sample/all/outside=zero", profile: "sample", types: ALL, mode: "slot", outside: "zero", tests: SAMPLE },
@@ -350,6 +375,8 @@ const SPECS: Spec[] = [
   { id: "march/fp4", profile: "march", types: ["fp4"], mode: "slot", tests: MARCH },
   { id: "march/fp16", profile: "march", types: ["fp16"], mode: "slot", tests: MARCH },
   { id: "march/fpn", profile: "march", types: ["fpn"], mode: "slot", tests: MARCH },
+  { id: "march/half", profile: "march", types: ["half"], mode: "slot", tests: MARCH },
+  { id: "march/float+half/buffer", profile: "march", types: ["float", "half"], mode: "buffer", tests: MARCH },
   { id: "march/all", profile: "march", types: ALL, mode: "slot", tests: MARCH_X },
   { id: "march/all/buffer", profile: "march", types: ALL, mode: "buffer", tests: MARCH_X },
   { id: "march/all/outside=zero", profile: "march", types: ALL, mode: "slot", outside: "zero", tests: MARCH },
@@ -1070,6 +1097,10 @@ async function run(): Promise<CoreParity> {
   if (missing.length > 0) return { ...result, done: true, missing };
   const sphereFloat = loaded[FILE_NAMES.indexOf("sphere_fog_float")]!.image!;
   for (const s of SYNTH) loaded.push({ image: vdbQuantize(sphereFloat, s.mode), sidecar: null });
+  const halfSidecar = await fetch("/fixtures/primitives/sphere_fog_half.sidecar.json");
+  if (!halfSidecar.ok) return { ...result, done: true, missing: ["sphere_fog_half.sidecar.json (committed)"] };
+  loaded.push({ image: vdbQuantize(sphereFloat, "half"), sidecar: (await halfSidecar.json()) as Sidecar });
+  loaded.push({ image: vdbQuantize(halfValuesGrid(), "half"), sidecar: null });
 
   device.pushErrorScope("validation");
   const pool = await VDBGridPool.create(device, { initialBytes: 4096, maxGrids: 2, label: "core parity" });

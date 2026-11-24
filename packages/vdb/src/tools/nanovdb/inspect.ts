@@ -41,7 +41,10 @@ const GRID_TYPE_NAMES: Record<number, string> = {
   1: "Float",
   2: "Double",
   6: "Vec3f",
+  9: "Half",
+  13: "Fp4",
   14: "Fp8",
+  15: "Fp16",
   16: "FpN",
 };
 

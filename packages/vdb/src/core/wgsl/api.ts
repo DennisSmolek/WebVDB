@@ -41,6 +41,7 @@ export const GRID_TYPE_CONSTANT: Readonly<Record<VDBGridTypeName, string>> = {
   fp8: "VDB_GRID_TYPE_FP8",
   fp16: "VDB_GRID_TYPE_FP16",
   fpn: "VDB_GRID_TYPE_FPN",
+  half: "VDB_GRID_TYPE_HALF",
 };
 
 /** Whether the accessor carries the index bbox (only `sample`+ with `outside: 'zero'`). */

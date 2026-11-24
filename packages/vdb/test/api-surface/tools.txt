@@ -52,6 +52,7 @@ value VDB_FLOAT_LEAF_CODEC
 value VDB_FP16_LEAF_CODEC
 value VDB_FP4_LEAF_CODEC
 value VDB_FP8_LEAF_CODEC
+value VDB_HALF_LEAF_CODEC
 value VDB_POINTS_DEFAULT_MAX
 value VDB_VEC3F_LEAF_CODEC
 type VdbBBox
@@ -138,12 +139,14 @@ value vdbBuildFromLeavesDetailed
 value vdbCie1931Fit
 value vdbCollapseGrid
 value vdbDecodeToAtlasCpu
+value vdbFloatToHalf
 value vdbFrameBlackbodyColor
 value vdbFrameMediumFromMeasurements
 value vdbFrameMediumNames
 value vdbFrameMediumPresets
 value vdbFrameMediumProps
 value vdbGridStatsCpu
+value vdbHalfToFloat
 value vdbInspect
 value vdbMakeFpNLeafCodec
 value vdbPointRenderData
@@ -155,6 +158,7 @@ value vdbReadValueVec3
 value vdbResampleDense
 value vdbResampleError
 value vdbResampleGrid
+value vdbRoundToHalf
 value vdbSampleNearest
 value vdbSampleTrilinear
 value vdbSampleTrilinearVec3

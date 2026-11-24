@@ -54,7 +54,7 @@ export type { BuildFromVdbOptions } from "./nanovdb/index.js";
 
 /**
  * NanoVDB serializer (Phase 5b): build grid images from dense arrays or your own
- * leaves through a leaf codec (Float, Fp4/Fp8/Fp16/FpN, Vec3f).
+ * leaves through a leaf codec (Float, Fp4/Fp8/Fp16/FpN, Half, Vec3f).
  */
 export {
   vdbBuildFromDense,
@@ -64,13 +64,19 @@ export {
   VDB_FP4_LEAF_CODEC,
   VDB_FP8_LEAF_CODEC,
   VDB_FP16_LEAF_CODEC,
+  VDB_HALF_LEAF_CODEC,
   vdbMakeFpNLeafCodec,
   VDB_VEC3F_LEAF_CODEC,
 } from "./nanovdb/index.js";
 export type { VDBBuildFromDenseOptions, VDBBuildFromLeavesOptions, VDBBuiltGrid, VDBLeafCodec } from "./nanovdb/index.js";
 
-/** Quantize a FLOAT grid image to Fp4/Fp8/Fp16/FpN (per-leaf min/quantum + packed codes); fold constant leaves. */
+/**
+ * Quantize a FLOAT grid image to Fp4/Fp8/Fp16/FpN (per-leaf min/quantum + packed codes) or Half (raw IEEE
+ * binary16, NanoVDB 13.2); fold constant leaves.
+ */
 export { vdbCollapseGrid, vdbQuantize, vdbQuantizeDetailed } from "./nanovdb/index.js";
+/** IEEE binary16 conversions as NanoVDB's `math::HalfLite.h` does them (Half grids, K7.H). */
+export { vdbFloatToHalf, vdbHalfToFloat, vdbRoundToHalf } from "./nanovdb/index.js";
 export type { VDBQuantizeMode, VDBQuantizeOptions } from "./nanovdb/index.js";
 
 /**

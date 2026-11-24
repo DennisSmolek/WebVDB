@@ -76,7 +76,7 @@ voxel past its base voxel, into the neighbour cells.
 
 The shader decodes only the types its module was generated for. A grid of any other type **reads as 0**. So a module
 must be generated for every type the host may ever add: the known set, or `VDB_ALL_SCALAR_TYPES` (`float`, `fp4`,
-`fp8`, `fp16`, `fpn`) to never rebuild a pipeline, at the price of the largest module. `pool.types` lists only the
+`fp8`, `fp16`, `fpn`, `half`) to never rebuild a pipeline, at the price of the largest module. `pool.types` lists only the
 grids present now. After each `add`, call `vdbCheckModule(pool, options)`: it throws `VDB_TYPE_NOT_COMPILED` or
 `VDB_LAYOUT_MISMATCH`. It also takes just `{ types, layoutVersion? }`.
 

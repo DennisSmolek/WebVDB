@@ -3,8 +3,12 @@
  * (`wgsl/`). One home so the two cannot drift (K1 integration).
  */
 
-/** Grid value types the pool can hold and the generated WGSL can decode (NanoVDB `GridType` ids 1, 13-16). */
-export type VDBGridTypeName = "float" | "fp4" | "fp8" | "fp16" | "fpn";
+/**
+ * Grid value types the pool can hold and the generated WGSL can decode (NanoVDB
+ * `GridType` ids 1, 13-16 and 9). `half` is NanoVDB's `GridType::Half` (raw IEEE
+ * binary16 values, implemented in NanoVDB 13.2; K7.H).
+ */
+export type VDBGridTypeName = "float" | "fp4" | "fp8" | "fp16" | "fpn" | "half";
 
 /**
  * NanoVDB `GridType` id per name (`PNANOVDB_GRID_TYPE_*` in the vendored module).
@@ -17,10 +21,14 @@ export const VDB_GRID_TYPE_IDS: Readonly<Record<VDBGridTypeName, number>> = {
   fp8: 14,
   fp16: 15,
   fpn: 16,
+  half: 9,
 };
 
-/** Canonical order; the generator sorts `types` into it so equal sets give equal bytes. */
-export const VDB_GRID_TYPE_NAMES: readonly VDBGridTypeName[] = ["float", "fp4", "fp8", "fp16", "fpn"];
+/**
+ * Canonical order; the generator sorts `types` into it so equal sets give equal
+ * bytes. `half` came last (K7.H), so the order of the older types is unchanged.
+ */
+export const VDB_GRID_TYPE_NAMES: readonly VDBGridTypeName[] = ["float", "fp4", "fp8", "fp16", "fpn", "half"];
 
 /**
  * Every scalar grid type the pool can hold, for

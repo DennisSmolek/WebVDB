@@ -20,13 +20,14 @@ import { NvdbFile } from '@pmndrs/vdb/tools';
 const file = await NvdbFile.fromURL(url); // or NvdbFile.fromArrayBuffer(bytes)
 for (const meta of file.grids) console.log(meta.name, meta.gridType, meta.gridClass, meta.voxelSize);
 
-// The grid image is what VDBGridPool.add() takes, byte for byte. Float, Fp4, Fp8, Fp16 and FpN grids load.
+// The grid image is what VDBGridPool.add() takes, byte for byte. Float, Fp4, Fp8, Fp16, FpN and Half grids load.
 const image = file.gridImage(0); // decompressed when the file is zipped
 ```
 
-`NvdbFile` loads Float, Fp4, Fp8, Fp16 and FpN grids. It is the one reader: there is no separate `readNvdb`, so use
+`NvdbFile` loads Float, Fp4, Fp8, Fp16, FpN and Half grids. It is the one reader: there is no separate `readNvdb`, so use
 `NvdbFile` for bytes you already hold (`fromArrayBuffer`, or `fromURL` for a fetch) and `readNvdbStream` for a stream.
-Native `nanovdb_convert` writes Float, Fp8 and FpN; `vdbQuantize(image, 'fp4' | 'fp16')` makes the other two.
+Native `nanovdb_convert` writes Float, Fp8 and FpN; `vdbQuantize(image, 'fp4' | 'fp16' | 'half')` makes the others (native
+NanoVDB 13.2+ writes Half grids only from C++, `createNanoGrid<…, nanovdb::Half>`).
 
 ## Write
 
@@ -75,7 +76,7 @@ console.log(parseNvdbLodName(nvdbLodName('cloud', 48))); // { baseName: 'cloud',
 
 `vdbReadValueCpu` and the sampling functions are the WGSL module's tree descent in TypeScript, so you can check GPU results
 or read voxels with no GPU. They take a grid image and **index-space** coordinates. `vdbReadValueCpu` is the exact f64 decode;
-`vdbReadValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16 and FpN
+`vdbReadValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16, FpN and Half
 grids (and `vdbReadValueVec3` / `vdbSampleTrilinearVec3` read Vec3f).
 
 {/* snippet: cpu-reads */}
@@ -83,7 +84,7 @@ grids (and `vdbReadValueVec3` / `vdbSampleTrilinearVec3` read Vec3f).
 import { vdbReadValueCpu, vdbSampleTrilinear } from '@pmndrs/vdb/tools';
 
 // The same tree descent as the WGSL module, in TypeScript: an oracle for GPU results, no GPU needed.
-// Index space: the integer coordinates are voxels. (Float, Fp4, Fp8, Fp16 and FpN grids.)
+// Index space: the integer coordinates are voxels. (Float, Fp4, Fp8, Fp16, FpN and Half grids.)
 console.log(vdbReadValueCpu(image, [10, 20, 30])); // { value, active }
 console.log(vdbSampleTrilinear(image, [10.5, 20.25, 30])); // continuous index-space sample
 ```

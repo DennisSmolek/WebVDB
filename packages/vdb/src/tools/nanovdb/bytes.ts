@@ -40,6 +40,8 @@ export const GRID_TYPE_FP4 = 13;
 export const GRID_TYPE_FP8 = 14;
 export const GRID_TYPE_FP16 = 15;
 export const GRID_TYPE_FPN = 16;
+/** NanoVDB `GridType::Half`: raw IEEE binary16 values (NanoVDB 13.2, K7.H). */
+export const GRID_TYPE_HALF = 9;
 export const GRID_TYPE_VEC3F = 6;
 export const GRID_CLASS_UNKNOWN = 0;
 export const GRID_CLASS_LEVEL_SET = 1;
@@ -286,6 +288,47 @@ export const FP4_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP4, 352);
 export const FP16_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FP16, 1120);
 /** FpN: variable bit-width. `leafSize` is the 96-byte base (see codec). */
 export const FPN_LAYOUT: GridTypeLayout = quantizedLayout(GRID_TYPE_FPN, FP_LEAF_HEADER_SIZE);
+
+/**
+ * Half (K7.H, NanoVDB `GridType::Half`): every value is a raw IEEE binary16
+ * (2 bytes) at every level (leaf table, tiles, background); `mMinimum` /
+ * `mMaximum` are binary16 too and `mAverage` / `mStdDevi` stay f32
+ * (`FloatTraits<Half>` is float). Table slots stay 8 bytes (the value in the
+ * low 2 bytes of the union with the i64 child offset); the leaf table is at 96
+ * (512 x 2 bytes, leaf 1120). Values from `PNANOVDB_GRID_TYPE_HALF` in the
+ * vendored stride tables (unchanged in NanoVDB v14.0.0's PNanoVDB.h).
+ */
+export const HALF_LAYOUT: GridTypeLayout = {
+  gridType: GRID_TYPE_HALF,
+  rootSize: 64,
+  rootTileSize: 32,
+  rootTileOffValue: 20,
+  rootOffBackground: 28,
+  rootOffMin: 30,
+  rootOffMax: 32,
+  rootOffAve: 36,
+  rootOffStdDev: 40,
+  tableStride: 8,
+  valueStrideBits: 16,
+  upperSize: 270400,
+  upperOffTable: 8256,
+  upperOffMin: 8224,
+  upperOffMax: 8226,
+  upperOffAve: 8228,
+  upperOffStdDev: 8232,
+  lowerSize: 33856,
+  lowerOffTable: 1088,
+  lowerOffMin: 1056,
+  lowerOffMax: 1058,
+  lowerOffAve: 1060,
+  lowerOffStdDev: 1064,
+  leafSize: 1120,
+  leafOffTable: 96,
+  leafOffMin: 80,
+  leafOffMax: 82,
+  leafOffAve: 84,
+  leafOffStdDev: 88,
+};
 
 /**
  * Vec3f (K4.2): every value is 3 f32 (12 bytes); `mMinimum`/`mMaximum` are

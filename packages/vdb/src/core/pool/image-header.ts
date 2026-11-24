@@ -7,6 +7,7 @@
  */
 
 import { VDBError } from "../errors.js";
+import { halfBitsToNumber } from "../half.js";
 import { VDB_GRID_TYPE_IDS, type VDBGridTypeName } from "../types.js";
 import type { VDBVec3 } from "./layout.js";
 
@@ -40,6 +41,10 @@ export const NANOVDB_OFFSETS = {
   rootBackground: 28,
   rootMin: 32,
   rootMax: 36,
+  /** Half (K7.H): background, min and max are binary16 at 28/30/32 (`pnanovdb_grid_type_constants` row 9). */
+  rootHalfBackground: 28,
+  rootHalfMin: 30,
+  rootHalfMax: 32,
   /** Smallest `RootData` for the supported types (stride table `root_size`). */
   rootSize: 64,
 } as const;
@@ -105,7 +110,7 @@ export interface VDBImageHeader {
   indexBBoxMax: VDBVec3;
   voxelSize: VDBVec3;
   background: number;
-  /** Root min statistic (f32 as stored); meaningful only when `hasStats`. */
+  /** Root min statistic (f32 as stored; a Half grid's binary16 decoded exactly); meaningful only when `hasStats`. */
   rootMin: number;
   /** Root max statistic; meaningful only when `hasStats`. */
   rootMax: number;
@@ -166,7 +171,7 @@ export function readImageHeader(image: Uint32Array, what = "image"): VDBImageHea
   if (gridType === null) {
     throw new VDBError(
       "VDB_UNSUPPORTED_GRID_TYPE",
-      `${what} has NanoVDB GridType ${gridTypeId}; the pool holds Float (1), Fp4 (13), Fp8 (14), Fp16 (15) and FpN (16). ` +
+      `${what} has NanoVDB GridType ${gridTypeId}; the pool holds Float (1), Half (9), Fp4 (13), Fp8 (14), Fp16 (15) and FpN (16). ` +
         `Convert it, e.g. quantize() from @pmndrs/vdb/tools or nanovdb_convert --fp8.`,
     );
   }
@@ -220,8 +225,16 @@ export function readImageHeader(image: Uint32Array, what = "image"): VDBImageHea
     indexBBoxMin: i3(root + O.rootBBoxMin),
     indexBBoxMax: i3(root + O.rootBBoxMax),
     voxelSize,
-    background: view.getFloat32(root + O.rootBackground, true),
-    rootMin: view.getFloat32(root + O.rootMin, true),
-    rootMax: view.getFloat32(root + O.rootMax, true),
+    ...(gridType === "half"
+      ? {
+          background: halfBitsToNumber(view.getUint16(root + O.rootHalfBackground, true)),
+          rootMin: halfBitsToNumber(view.getUint16(root + O.rootHalfMin, true)),
+          rootMax: halfBitsToNumber(view.getUint16(root + O.rootHalfMax, true)),
+        }
+      : {
+          background: view.getFloat32(root + O.rootBackground, true),
+          rootMin: view.getFloat32(root + O.rootMin, true),
+          rootMax: view.getFloat32(root + O.rootMax, true),
+        }),
   };
 }

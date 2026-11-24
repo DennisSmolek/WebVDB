@@ -5,7 +5,8 @@
 
 import { gzipSync } from "node:zlib";
 
-export const TYPE_SETS = [["float"], ["fp4"], ["fp8"], ["fp16"], ["fpn"], ["float", "fp8", "fpn"]];
+// K7.H appended ["half"] and ["float", "half"]: the ids of the older sets, and their snapshot entries, are unchanged.
+export const TYPE_SETS = [["float"], ["fp4"], ["fp8"], ["fp16"], ["fpn"], ["float", "fp8", "fpn"], ["half"], ["float", "half"]];
 
 /** The slot the check kernels use for `slot` mode, and the host binding for `buffer` mode. */
 export const CHECK_SLOT = { group: 1, firstBinding: 3 };

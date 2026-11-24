@@ -6,6 +6,18 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- NanoVDB **Half** grids (`GridType::Half` = 9, raw IEEE binary16 values; implemented in NanoVDB 13.2, OpenVDB PR 2335), end
+  to end (K7.H). Core: grid type `'half'` (`VDBGridTypeName`, `VDB_GRID_TYPE_IDS.half`, in `VDB_ALL_SCALAR_TYPES`); the pool
+  holds Half images (binary16 background and root min/max decoded); `vdbModuleWgsl({ types: ['half'] })` decodes them
+  with `unpack2x16float` at every level and reads binary16 min/max stats. Modules without `'half'` are byte-identical to
+  0.1.0's. Tools: `vdbQuantize(image, 'half')`, `VDB_HALF_LEAF_CODEC`, `vdbFloatToHalf` / `vdbHalfToFloat` /
+  `vdbRoundToHalf` (NanoVDB `math/HalfLite.h` rounding), `NvdbFile` loads Half grids (`NVDB_SUPPORTED_GRID_TYPES`), and
+  the CPU readers and samplers decode them. Three: `VDBGridNode` and `vdbSparseSource` take `types: ['half']`. Values and
+  min/max match native NanoVDB v14.0.0 (`createNanoGrid<…, nanovdb::Half>`) bit for bit on the fixtures
+  (`pnpm fixtures:bake-half`).
+
 ## [0.1.0] - 2026-11-24
 
 First public release (0.1.0). Our earlier v1 unscoped packages were never published (the npm `webvdb` package is mjurczyk's, not ours);

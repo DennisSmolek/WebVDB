@@ -141,6 +141,18 @@ copyright and attribution are in [vendor/NOTICE](./vendor/NOTICE), the licence t
 [vendor/LICENSE](./vendor/LICENSE), and every local change is logged in [vendor/VENDOR.md](./vendor/VENDOR.md).
 These files must stay with any redistribution of the WGSL.
 
+## NanoVDB `math/HalfLite.h` (Apache-2.0; derived from Imath, BSD-3-Clause)
+
+`src/tools/nanovdb/half.ts` (`vdbFloatToHalf`, `vdbHalfToFloat`) ports the binary16 conversions of OpenVDB's
+`nanovdb/nanovdb/math/HalfLite.h` (v14.0.0; Copyright Contributors to the OpenVDB Project, Apache-2.0), which derive
+from Imath's `imath_half_to_float` / `imath_float_to_half` (`Imath/half.h`; Copyright Contributors to the OpenEXR
+Project, BSD-3-Clause; primary original authors Florian Kainz and Rod Bogart). The Apache-2.0 text is
+[vendor/LICENSE](./vendor/LICENSE). The BSD-3-Clause terms: redistributions must retain the copyright notice above,
+this list of conditions and the disclaimer; neither the name of the copyright holder nor the names of its contributors
+may be used to endorse or promote products derived from this software without prior written permission; the software
+is provided "as is", without any express or implied warranties, and in no event shall the copyright holder or
+contributors be liable for any damages arising from its use.
+
 ## fflate (MIT, runtime dependency)
 
 [fflate](https://github.com/101arrowz/fflate), Copyright (c) 2023 Arjun Barrett, provides zlib in

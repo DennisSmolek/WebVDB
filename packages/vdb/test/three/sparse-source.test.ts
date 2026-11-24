@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { VDBFrameRenderer, VDBFrameVolume, vdbSparseSource, vdbVolumeUniforms, type VDBGridNode } from "../../src/three/index.js";
-import { readWvdb, wvdbDenseToNvdb, wvdbDenseVolume } from "../../src/tools/index.js";
+import { readWvdb, vdbQuantize, vdbRoundToHalf, wvdbDenseToNvdb, wvdbDenseVolume } from "../../src/tools/index.js";
 import { fixture } from "../tools/wvdb-helpers.js";
 
 const dense = wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")), { mipmaps: false });
@@ -247,6 +247,33 @@ describe("vdbSparseSource", () => {
     pool.image = { type: "fp8", imageRevision: 2, resident: true };
     expect(ok.version).toBe(2);
     expect(ok.layoutUpdates).toBe(1);
+  });
+
+  it("K7.H: a Half density grid: compiled for 'half' it is accepted (stats and the CPU pyramid read the binary16 values); a float-only node refuses it", () => {
+    const half = vdbQuantize(grid.image, "half");
+    const pool = {
+      revision: 1,
+      info: () => ({ indexBBox: grid.indexBBox, indexToWorld: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), hasStats: true, capacity: 64, type: "half", imageRevision: 1, resident: true }),
+    };
+    const node = (types: string[]) =>
+      ({ module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"], types }, pool }) as unknown as VDBGridNode;
+    const code = (fn: () => unknown): string | undefined => {
+      try {
+        fn();
+      } catch (e) {
+        return (e as { code?: string }).code;
+      }
+      return undefined;
+    };
+    expect(code(() => vdbSparseSource(node(["float"]), { density: 0 }, { lod: "none", images: { density: half } }))).toBe("VDB_TYPE_NOT_COMPILED");
+    const s = vdbSparseSource(node(["half"]), { density: 0 }, { pyramidBuild: "cpu", images: { density: half }, indexBox: grid.textureIndexBox });
+    const f = vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { pyramidBuild: "cpu", images: { density: grid.image }, indexBox: grid.textureIndexBox });
+    expect(s.lod).toBe("coarse-pyramid");
+    expect(s.texels).toEqual(f.texels);
+    expect(s.stats.activeVoxels).toBe(f.stats.activeVoxels);
+    expect(s.stats.max).toBe(vdbRoundToHalf(f.stats.max));
+    // Every value moves by at most half a binary16 ulp (relative 2^-11): so does the mean.
+    expect(Math.abs(s.stats.meanNonZero / f.stats.meanNonZero - 1)).toBeLessThan(2 ** -11);
   });
 
   it("RV: uniforms dispose their listeners; volumes made and disposed over one source leave its listener counts flat", () => {

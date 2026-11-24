@@ -66,6 +66,70 @@
       "gz": 5520,
       "min": 30731
     },
+    "march/float+half/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
+      "gz": 5523,
+      "min": 30924
+    },
+    "march/float+half/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5791,
+      "min": 32131
+    },
+    "march/float+half/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
+      "gz": 5383,
+      "min": 29989
+    },
+    "march/float+half/buffer/helpers=levelSet": {
+      "gz": 6100,
+      "min": 31781
+    },
+    "march/float+half/buffer/isActive=false": {
+      "gz": 4914,
+      "min": 25782
+    },
+    "march/float+half/buffer/isActive=true": {
+      "gz": 5237,
+      "min": 29368
+    },
+    "march/float+half/buffer/outside=zero": {
+      "gz": 5225,
+      "min": 28993
+    },
+    "march/float+half/buffer/outside=zero,sampler=nearest": {
+      "gz": 5109,
+      "min": 28532
+    },
+    "march/float+half/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
+      "gz": 5565,
+      "min": 30974
+    },
+    "march/float+half/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5831,
+      "min": 32181
+    },
+    "march/float+half/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
+      "gz": 5424,
+      "min": 30039
+    },
+    "march/float+half/slot/helpers=levelSet": {
+      "gz": 6140,
+      "min": 31831
+    },
+    "march/float+half/slot/isActive=false": {
+      "gz": 4956,
+      "min": 25832
+    },
+    "march/float+half/slot/isActive=true": {
+      "gz": 5279,
+      "min": 29418
+    },
+    "march/float+half/slot/outside=zero": {
+      "gz": 5266,
+      "min": 29043
+    },
+    "march/float+half/slot/outside=zero,sampler=nearest": {
+      "gz": 5150,
+      "min": 28582
+    },
     "march/float/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5367,
       "min": 30003
@@ -386,6 +450,70 @@
       "gz": 5425,
       "min": 29877
     },
+    "march/half/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
+      "gz": 5458,
+      "min": 30454
+    },
+    "march/half/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5726,
+      "min": 31661
+    },
+    "march/half/buffer/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
+      "gz": 5273,
+      "min": 29252
+    },
+    "march/half/buffer/helpers=levelSet": {
+      "gz": 5990,
+      "min": 31044
+    },
+    "march/half/buffer/isActive=false": {
+      "gz": 4807,
+      "min": 25045
+    },
+    "march/half/buffer/isActive=true": {
+      "gz": 5128,
+      "min": 28631
+    },
+    "march/half/buffer/outside=zero": {
+      "gz": 5113,
+      "min": 28256
+    },
+    "march/half/buffer/outside=zero,sampler=nearest": {
+      "gz": 4997,
+      "min": 27795
+    },
+    "march/half/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
+      "gz": 5500,
+      "min": 30504
+    },
+    "march/half/slot/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage+fastTrilinear": {
+      "gz": 5767,
+      "min": 31711
+    },
+    "march/half/slot/helpers=cellBoundTrilinear+hddaCellEnd+rayClipSupport": {
+      "gz": 5315,
+      "min": 29302
+    },
+    "march/half/slot/helpers=levelSet": {
+      "gz": 6030,
+      "min": 31094
+    },
+    "march/half/slot/isActive=false": {
+      "gz": 4847,
+      "min": 25095
+    },
+    "march/half/slot/isActive=true": {
+      "gz": 5169,
+      "min": 28681
+    },
+    "march/half/slot/outside=zero": {
+      "gz": 5154,
+      "min": 28306
+    },
+    "march/half/slot/outside=zero,sampler=nearest": {
+      "gz": 5040,
+      "min": 27845
+    },
     "read/float+fp8+fpn/buffer/isActive=false": {
       "gz": 3214,
       "min": 16165
@@ -401,6 +529,22 @@
     "read/float+fp8+fpn/slot/isActive=true": {
       "gz": 3581,
       "min": 19801
+    },
+    "read/float+half/buffer/isActive=false": {
+      "gz": 2911,
+      "min": 14318
+    },
+    "read/float+half/buffer/isActive=true": {
+      "gz": 3248,
+      "min": 17904
+    },
+    "read/float+half/slot/isActive=false": {
+      "gz": 2951,
+      "min": 14368
+    },
+    "read/float+half/slot/isActive=true": {
+      "gz": 3286,
+      "min": 17954
     },
     "read/float/buffer/isActive=false": {
       "gz": 2817,
@@ -482,6 +626,22 @@
       "gz": 3504,
       "min": 19053
     },
+    "read/half/buffer/isActive=false": {
+      "gz": 2849,
+      "min": 13916
+    },
+    "read/half/buffer/isActive=true": {
+      "gz": 3183,
+      "min": 17502
+    },
+    "read/half/slot/isActive=false": {
+      "gz": 2890,
+      "min": 13966
+    },
+    "read/half/slot/isActive=true": {
+      "gz": 3223,
+      "min": 17552
+    },
     "sample/float+fp8+fpn/buffer/helpers=fastTrilinear": {
       "gz": 4467,
       "min": 23615
@@ -537,6 +697,62 @@
     "sample/float+fp8+fpn/slot/sampler=nearest": {
       "gz": 4053,
       "min": 21512
+    },
+    "sample/float+half/buffer/helpers=fastTrilinear": {
+      "gz": 4172,
+      "min": 21768
+    },
+    "sample/float+half/buffer/helpers=rayClipSupport": {
+      "gz": 3912,
+      "min": 20831
+    },
+    "sample/float+half/buffer/isActive=false": {
+      "gz": 3552,
+      "min": 16975
+    },
+    "sample/float+half/buffer/isActive=true": {
+      "gz": 3889,
+      "min": 20561
+    },
+    "sample/float+half/buffer/outside=zero": {
+      "gz": 3872,
+      "min": 20186
+    },
+    "sample/float+half/buffer/outside=zero,sampler=nearest": {
+      "gz": 3758,
+      "min": 19725
+    },
+    "sample/float+half/buffer/sampler=nearest": {
+      "gz": 3717,
+      "min": 19615
+    },
+    "sample/float+half/slot/helpers=fastTrilinear": {
+      "gz": 4213,
+      "min": 21818
+    },
+    "sample/float+half/slot/helpers=rayClipSupport": {
+      "gz": 3952,
+      "min": 20881
+    },
+    "sample/float+half/slot/isActive=false": {
+      "gz": 3591,
+      "min": 17025
+    },
+    "sample/float+half/slot/isActive=true": {
+      "gz": 3929,
+      "min": 20611
+    },
+    "sample/float+half/slot/outside=zero": {
+      "gz": 3912,
+      "min": 20236
+    },
+    "sample/float+half/slot/outside=zero,sampler=nearest": {
+      "gz": 3798,
+      "min": 19775
+    },
+    "sample/float+half/slot/sampler=nearest": {
+      "gz": 3757,
+      "min": 19665
     },
     "sample/float/buffer/helpers=fastTrilinear": {
       "gz": 4079,
@@ -817,6 +1033,62 @@
     "sample/fpn/slot/sampler=nearest": {
       "gz": 3974,
       "min": 20764
+    },
+    "sample/half/buffer/helpers=fastTrilinear": {
+      "gz": 4112,
+      "min": 21366
+    },
+    "sample/half/buffer/helpers=rayClipSupport": {
+      "gz": 3851,
+      "min": 20429
+    },
+    "sample/half/buffer/isActive=false": {
+      "gz": 3490,
+      "min": 16573
+    },
+    "sample/half/buffer/isActive=true": {
+      "gz": 3828,
+      "min": 20159
+    },
+    "sample/half/buffer/outside=zero": {
+      "gz": 3811,
+      "min": 19784
+    },
+    "sample/half/buffer/outside=zero,sampler=nearest": {
+      "gz": 3697,
+      "min": 19323
+    },
+    "sample/half/buffer/sampler=nearest": {
+      "gz": 3656,
+      "min": 19213
+    },
+    "sample/half/slot/helpers=fastTrilinear": {
+      "gz": 4152,
+      "min": 21416
+    },
+    "sample/half/slot/helpers=rayClipSupport": {
+      "gz": 3891,
+      "min": 20479
+    },
+    "sample/half/slot/isActive=false": {
+      "gz": 3530,
+      "min": 16623
+    },
+    "sample/half/slot/isActive=true": {
+      "gz": 3868,
+      "min": 20209
+    },
+    "sample/half/slot/outside=zero": {
+      "gz": 3850,
+      "min": 19834
+    },
+    "sample/half/slot/outside=zero,sampler=nearest": {
+      "gz": 3737,
+      "min": 19373
+    },
+    "sample/half/slot/sampler=nearest": {
+      "gz": 3695,
+      "min": 19263
     }
   }
 }
