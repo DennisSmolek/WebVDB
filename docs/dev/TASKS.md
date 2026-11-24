@@ -140,11 +140,59 @@ Plan: [docs/dev/research/notes/R1-renderer-port.md](research/notes/R1-renderer-p
 | G14a | `vdbPointRenderData` takes only `Cd` and a stride: no other attributes (`v`), no progress, no prefix-subsample order, so demo 14 reads `VdbPointDataGrid.points()` itself. Consider `{ attributes: [...], order: "prefix" }` and a worker-friendly decode | T2 | ⬜ | Test: prefix 10 % equals every 10th point; attribute arrays follow the order. |
 | RV | Pre-publish API review fixes (review verdict GO-with-fixes) | T3 | ✅ | (1) `VDBSequence` ping-pong stores the anchor's direction: `frameAt` puts a backward anchor at phase `period − o`; direction is kept by `resume()`, `seek()`, `setRange()` (and by `setLoopMode()` only to `'pingpong'`); the prefetch ring is filled in the shown frame's direction. (2) `vdbSparseSource` throws `VDB_TYPE_NOT_COMPILED` (naming `VDBCoarseFirstEvent.types`) when a channel grid's type is not in the node's `options.types`, at creation and when `followImage` re-reads a new image. (3) `stop()` drops a pending frame the clock made due; a frame asked for (`start` / `seek` / `setRange` / `setLoopMode`) still lands (demo 12 does `seek(30)` then `stop()`: dropping every pending frame broke its paused start, caught by `e2e/demo-12.spec.ts`). (4) `VDBVolumeUniforms.dispose()` (sparse: drops its stats/layout listeners), called by `VDBFrameVolume.dispose()`. (5) Old pyramid textures retire after `setTimeout` + `queue.onSubmittedWorkDone()`. (6) `loop` removed; `loopMode: 'once' \| 'repeat' \| 'pingpong'` (demos 05/12, docs, snippets, README). (7) `VDBCoarseFirstEvent.types` doc: `VDB_GRID_TYPE_NAMES` order. (8) Dense box suspicion **confirmed** (unit test: same texels, other `.wvdb` box, matrix unchanged); his `WVDBAnimationLoader` gives each frame `bbox: densityGrid.bbox` and his instance reads the shown frame's matrix, so a dense frame with another box now bumps `version` and the volume's box follows unless a `bbox` prop was given. K3 parity is untouched (the harness builds the pinned frame's volume directly; the explosion's 200 frames share one box). (9) `nvdb-file.test.ts` fixture tests skip when the primitives are absent. Tests: `sequence.test.ts`, `sparse-source.test.ts`, `frame-api.test.ts`. No export-list change. |
 
-## After 0.1
+## K6 — Renderer in the core (pure WebGPU)
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| P1 | Pathtracer integration: point-sample API, the `majorant` profile + brick builder (D22), majorant DDA two ways (node-max HDDA vs 8³ bricks), several grids per kernel, landed behind a setting | owner | ⬜ | D19. Update its importer (`bench/scenes/volumes/vdb-grid.ts`) to the K0 layout first. |
+| K6.0 | Design: core renderer API (device, host encoder, host targets; camera/lights/shadow maps as plain data), pass graph, resource ownership, renderer WGSL + `vdb` module composition, core-side shadow-map interface, MRT/post-processing seam, parity plan | T3 | ⬜ | `docs/dev/design/K6-core-renderer.md` + DECISIONS entry. Reads R1, the K3 handoffs, the research note on his post-0.26 shadow/MRT fixes. Owner review before K6.1. |
+| K6.1 | Froxel grid, density inject, integrate and 'volume' lighting as core WGSL | T3 | ⬜ | CPU twin; pixel A/B vs the TSL path on the K3 Step 1 scenes. |
+| K6.2 | 'frame' lighting: shadow grid and cascades, transmittance, environment lights | T3 | ⬜ | A/B on Step 3 scenes. |
+| K6.3 | Scattering: phase functions, multiple scattering (diffusion, neural, multi-scale from K7.3) | T3 | ⬜ | After K7.3. Step 4 scenes. |
+| K6.4 | Spectral media | T2 | ⬜ | Step 5 scenes. |
+| K6.5 | Mesh shadows and the emission light through the core shadow-map interface | T3 | ⬜ | Step 6 scenes. |
+| K6.6 | Level-set tracer and points in the core | T3 | ⬜ | Step 7 IoU and point counts. |
+| K6.7 | Dense and sparse volume sources in the core (the GPU pyramid and `followImage` already are) | T2 | ⬜ | Lifts K3.2b. |
+| K6.8 | `./three` becomes a thin adapter over the core passes | T3 | ⬜ | K3 parity 48/48, demo goldens, demos 10–16 unchanged. Closes K3.8. |
+| K6.9 | Raw-WebGPU renderer demo (no three) + docs page "Rendering without three" | T2 | ⬜ | Exit-gate demo: WDAS, 'frame' lighting, mesh shadows, emission. |
+| K6.10 | Gate review by a separate agent | T3 | ⬜ | |
+
+## K7 — Upstream sync
+
+Research 2026-11-24: mjurczyk/openvdb 0.26 → 0.29 (`75e7345` → `b6dfc6b`, plus `0979e8f`); OpenVDB 13.1, 13.2, 14.0;
+emcfarlane/webgpu-nanovdb unchanged since our fork base.
+
+| ID | Task | Owner | Status | Notes |
+|---|---|---|---|---|
+| K7.1 | Port his volume-shadow fixes: spot/point lookup from the light state the map was drawn with ([62a6e3e](https://github.com/mjurczyk/openvdb/commit/62a6e3e)); shadow-update budget only for lights in the rendered scene ([c13f2d5](https://github.com/mjurczyk/openvdb/commit/c13f2d5)) | T2 | ⬜ | `three/frame/volume-shadows.ts` (L599–618, L358, L939). Repro first; DIVERGES row (past the `75e7345` pin). |
+| K7.2 | Post-processing / MRT: the froxel passes under a three `pass()` with MRT ([720c38f](https://github.com/mjurczyk/openvdb/commit/720c38f)) | T3 | ⬜ | Reproduce with GTAO or pixelation first; `renderer.ts`, `volume-shadows.ts`, `emission-light.ts`, `integrate-material.ts`. Informs the K6.0 MRT seam. |
+| K7.3 | `'multi-scale'` multiple scattering ([4e2d46f](https://github.com/mjurczyk/openvdb/commit/4e2d46f), Disney "Deep Scattering" §4.2): binomial grid mips + 5 taps per level | T3 | ⬜ | Write it as core WGSL + compute mips (next to `core/compute/pyramid.ts`); A/B vs `'neural'` (no weights, so a candidate default without the training-data caveat). Before K6.3. |
+| K7.4 | His new defaults (dual-lobe, spectral on, resolution 200, surface/points, no jitter) | owner | ⬜ | Keep v0.26 defaults and baseline for now (V67). Follow-up: [issue #1](https://github.com/pmndrs/vdb/issues/1). |
+| K7.H | NanoVDB Half grids (GridType 9, 13.2): WGSL decode, CPU twin, stats, quantize output, three types | T3 | 🟨 | Started 2026-11-24. Native cross-check wanted. |
+| K7.C | Codecs and parser for v14: `.nvdb` Blosc (LZ4, BloscLZ), `.vdb` HalfGrid, v14 PointDataGrid checks, NanoVDB io size-sum overflow, file-version policy, the `-z/--zip` hint | T3 | 🟨 | Started 2026-11-24. |
+| K7.5 | Re-pin the reference `PNanoVDB.h` to v14 (ABI 32.11.0; macros and version only) | T1 | ⬜ | `vendor/upstream/`, VENDOR.md. |
+| K7.6 | Upstream watch: a scheduled workflow that checks OpenVDB releases, mjurczyk/openvdb tags and npm, emcfarlane commits, and opens an issue when something moves | T2 | ⬜ | Home-for-VDB-on-the-web goal: we hear about format changes before users do. |
+| K7.7 | Native v14 fixture pipeline: Docker image with OpenVDB/NanoVDB 14 tools; Half, Blosc and HalfGrid fixtures; `pnpm parity:native` covers them | owner | ⬜ | Needs Docker. Exit-gate evidence for K7.H/K7.C. |
+| K7.8 | Watch his open PR #112 (points as foam/liquid) | — | ⬜ | Research only. |
+
+## P1 — Pathtracer integration
+
+Inputs: pmndrs/pathtracer read 2026-11-24 (see PHASES P1). "pathtracer" rows are the owner's, in that repo.
+
+| ID | Task | Side | Size | Status | Acceptance |
+|---|---|---|---|---|---|
+| P1.1 | Point-sample contract: `vdbSample` with `outside: 'zero'` against its dense trilinear (voxel centres at integer index, zero outside `[0, n−1]`) | ours | S | ⬜ | 10k random index points on a `vdbBuildFromDense` image of `vdb-smoke.f32` (transposed: it is x-fastest) equal its dense trilinear to ≤ 1e-6; GPU parity green. Fog grids with inactive 0 only (native-background trap). |
+| P1.2 | `vdbBrickMajorant(image, { brickLog2, minima, align: 'support' \| 'pathtracer' })` CPU builder | ours | M | ⬜ | K1-core §5.4 property test (1000 rays × 256 samples ≤ bound + 1e-6, nine fixtures); `align: 'pathtracer'` (cell c covers `[8c−1, 8c+7)`, `floor((n+8)/8)` cells) equals its `brickMajorants` on the same array. |
+| P1.3 | `majorant` WGSL profile: `vdbMajorantInit/Next`, `global` and `brick`, optional minima; wire `setMajorant` | ours | M | ⬜ | GPU parity vs the CPU walk (\|Δt\| ≤ 1e-5·t, bound exact); size within the K1-core §3.6 budget. A one-segment `global` mode (its VSPG and emission need a scalar μ). D22. |
+| P1.4 | `nodeMax` HDDA majorant variant (dilated 8-leaf support, `HAS_MIN_MAX`) | ours | M–L | ⬜ | Same property and parity tests; lookup and collision counters per ray. |
+| P1.5 | Lean reader (= K1.8): ≤ 4 KB `read` for Float, plus a lean `sample` | ours | M | ⬜ | Its media kernels are 46.9–50.1 KB against a ~50 KB DXC cap; our `sample` module is 19.8 KB. Parity on Float/Fp8/FpN. |
+| P1.6 | Several grids at one binding: test and example (grid id per medium, `setTransform`) | ours | S | ⬜ | Three grids in one kernel equal their per-grid CPU twins. |
+| P1.7 | `volumes.gridSource: 'nanovdb'` setting in its kernels (pool at one group-2 binding) | pathtracer | M | ⬜ | Its default kernels byte-identical; `vol-grid-slab` closed form; same-seed `vol-cl-cloud256` vs dense relMSE ≤ 1e-5; ≤ 10 storage buffers per wavefront kernel. |
+| P1.8 | NanoVDB `vdb-smoke` asset that keeps its pbrt references valid | pathtracer + ours | S | ⬜ | Density at every voxel centre bit-equal to `vdb-smoke.f32` (via `vdbBuildFromDense`). |
+| P1.9 | Gate `vol-vdb-smoke` | pathtracer | M | ⬜ | 4096 spp relMSE vs pbrt ≤ 4.84e-5, mean within 2 SE, one storage binding for grid data; wavefront agrees per pixel ≤ 7e-5. |
+| P1.10 | A/B: brick vs nodeMax majorants, and NanoVDB vs its atlas, on wdas, bunny, cloud256 | both | M | ⬜ | Counters first, timing in its quiet pass; DECISIONS only after. |
+| P1.11 | It consumes `@pmndrs/vdb/tools` from npm instead of the sibling path; fix its stale `CLAUDE.md` trap naming `vdb-web-tools` | pathtracer | S | ⬜ | Its `vdb-grid.test.ts` and `vdb-browser` pass without `WEBVDB_DIR`. Its `convertVdbFile` reads `voxelSize[0]` only (assumes cubic). |
+| P1.12 | Optional "B" path: tools builder from NanoVDB leaves to its V3.2 brick atlas + indirection | ours | M | ⬜ | Bit-identical to its `buildBrickAtlas(dense)` on `vdb-smoke` and cloud256. |
+| P1.13 | DXC compile of the NanoVDB media kernels on its Windows machine | pathtracer | S | ⬜ | Its `kernel-compile` cold/warm within its W18 class. |
 
 ## Research
 

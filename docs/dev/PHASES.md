@@ -12,11 +12,17 @@ Status: ⬜ not started · 🟨 in progress · ✅ done. Each phase ends at a ma
 handoff in `docs/archive/handoffs/K<n>.md`. Task IDs (`K1.3`, `R2`) live in [TASKS.md](TASKS.md).
 
 ```
-K0 re-foundation ──► K1 core ──► K2 three adapter ──► K3 renderer ──► K5 release 0.1 ──► after 0.1:
-                                  (v1 parity)       (port + extend)                     pathtracer, other adapters
-        └──► K4 tools + interop  (CPU only, runs in parallel from K0)
+K0 re-foundation ──► K1 core ──► K2 three adapter ──► K3 renderer ──► K5 release 0.1 ─┬─► K6 renderer in the core (pure WebGPU)
+                                  (v1 parity)       (port + extend)                    ├─► K7 upstream sync (OpenVDB 14, mjurczyk 0.29)
+        └──► K4 tools + interop  (CPU only, runs in parallel from K0)                  └─► P1 pathtracer integration
 Research: R1 (renderer port plan) runs during K1/K2 and feeds K3.
 ```
+
+**After 0.1 (planned 2026-11-24).** Three tracks run side by side: K6 moves the renderer out of three.js into the
+engine-free core, K7 keeps us current with OpenVDB/NanoVDB and mjurczyk/openvdb (the goal: every file native tools
+write opens here), and P1 brings the grid pool into pmndrs/pathtracer. They touch different code: K6 adds renderer
+passes to `core`, K7 the tools and the WGSL type table, P1 a `majorant` profile and a lean reader. K7.3 (multi-scale
+scattering) lands before K6.3 so it is written once, in the core.
 
 ## K0 — Re-foundation ✅
 
@@ -159,14 +165,55 @@ then the Pages workflow; RELEASING §3–4). K5.3 cloud-system showcase moves to
 
 **Exit gate:** `@pmndrs/vdb@0.1.0` published from `pmndrs/vdb`, with docs live and the examples linked.
 
-## After 0.1
+## K6 — Renderer in the core (pure WebGPU) ⬜
 
-- **Pathtracer integration (owner-led, D19).** Point sampling in its convention (voxel centres, trilinear, zero
-  outside); the majorant DDA built two ways and A/B-tested (NanoVDB node-max HDDA against its 8³ brick
-  majorants); several grids per kernel through the grid table; landed behind a setting next to its dense path.
-  Its gate: `vol-vdb-smoke` agrees with the pbrt-v4 reference at the noise floor using exactly one storage
-  binding.
-- **Other adapters** (R6): babylon, pixi.
+The froxel renderer, level-set tracer and points live in `./three` as TSL today. K6 moves them into the engine-free
+core as WGSL passes, as D8 intended: the core takes the host's `GPUDevice`, records into the host's encoder and
+renders into host targets; cameras, lights and shadow maps come in as plain data. `./three` becomes a thin adapter
+over those passes, and other engines (R6: babylon, pixi) can follow.
+
+- Design first (K6.0): the pass graph, resource ownership, how the `vdb` module composes with renderer WGSL (one
+  module per shader), a core-side shadow-map interface (the host gives the light's view-projection and depth; this
+  also removes the class of three-specific shadow bugs K7.1 fixes), and the seam for host post-processing (MRT).
+- Port pass by pass, each with a CPU twin and a pixel A/B against today's TSL path, in the K3 step order.
+- The K3 parity captures (his renderer at `75e7345`) keep gating: the three adapter over core passes must still pass
+  48/48.
+
+**Exit gate:** a raw-WebGPU demo renders the WDAS cloud with 'frame' lighting, mesh shadows and emission without
+importing three; `./three` draws through the core passes with the K3 parity suite and demo goldens unchanged; every
+core pass has CPU-twin parity; `test/boundaries.test.ts` still holds.
+
+## K7 — Upstream sync ⬜
+
+Since 0.1 OpenVDB shipped 13.1, 13.2 and 14.0, and mjurczyk/openvdb 0.27–0.29 (research 2026-11-24, TASKS K7). The
+NanoVDB file format and PNanoVDB layout are unchanged, but NanoVDB 13.2 added Half grids, Blosc is on by default in
+NanoVDB builds, and v14 tightened point-attribute checks. His releases fixed volume shadows and post-processing and
+added `'multi-scale'` multiple scattering; his new defaults stay out for now (issue #1, V67).
+
+**Exit gate:** files written by native OpenVDB/NanoVDB 14 tools (a Half `.nvdb`, a Blosc `.nvdb`, a HalfGrid `.vdb`)
+read and render here with native parity; his post-0.26 fixes ported with tests; an upstream watch opens an issue
+when OpenVDB, NanoVDB or mjurczyk/openvdb release.
+
+## P1 — Pathtracer integration ⬜
+
+Owner-led on the pathtracer side (D19); our side builds what it needs in the core. Inputs read from pmndrs/pathtracer
+on 2026-11-24 (`docs/internal/design/volumes-plan.md`, its V244/V308): its volume phase (V0–V6) is closing; it
+renders grids from a dense texture or its own sparse brick atlas, with `global` and 8³ `brick` majorants (with
+minima), one grid per kernel, compute only, at most 10 storage buffers per stage on Apple, and a ~50 KB kernel cap
+for DXC. It imports only our `parseVdb` today, by path; 0.1.0 breaks nothing.
+
+So NanoVDB has to earn its place in its kernel: several grids at one binding, direct `.nvdb`, Fp8/FpN compression,
+multi-level sparsity. Build both (the rule) and A/B: NanoVDB in its kernel against our tools building its atlas.
+Prerequisites on our side: the point-sample contract, a brick-majorant builder and the `majorant` profile (D22), and
+the lean reader (K1.8), since our 19.8 KB `sample` module would push its media kernels past the DXC cap.
+
+**Exit gate:** `vol-vdb-smoke` through `@pmndrs/vdb` agrees with the pbrt-v4 reference at the noise floor (4096 spp
+relMSE ≤ 4.84e-5) with exactly one storage binding for grid data, behind a setting next to its dense path; the
+majorant A/B recorded in DECISIONS.
+
+## Later
+
+- **Other adapters** (R6): babylon, pixi, on the K6 core passes.
 
 ## Research track (R)
 
