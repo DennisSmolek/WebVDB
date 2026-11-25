@@ -53,7 +53,8 @@ const MANIFEST = JSON.parse(readFileSync(path.join(CAPTURES, "manifest.json"), "
 
 // --- the groups: one reference geometry each, several TSL renders and captures compared with it ---------------------
 // 'volume' lighting uses the volume's phase (k3-frame: his frame.js dual-lobe 0.8 / −0.3 / 0.2); 'frame' lighting the
-// renderer's settings phase (read from the TSL run's `settings`).
+// renderer's settings phase (read from the TSL run's `settings`; k3-frame sets his demos' dual-lobe 0.8 / −0.3 / 0.2 too).
+// k3-frame's Step 3 scenes default to multipleScattering true (diffusion), as his captures of them; 'neural' needs ?ms=neural.
 const VOLUME_PHASE = [0.8, -0.3, 0.2];
 const GROUP_DEFS = {
   volume: {
@@ -71,17 +72,17 @@ const GROUP_DEFS = {
     lighting: "frame",
     tsl: [
       { label: "TSL ms off", query: "scene=step3-default-dir-isolated&ms=0", vsSingle: true },
-      { label: "TSL ms diffusion", query: "scene=step3-default-dir-isolated&ms=1" },
+      { label: "TSL ms diffusion", query: "scene=step3-default-dir-isolated&ms=1", capture: "step3-default-dir-isolated" },
       { label: "TSL ms two-sided", query: "scene=step3-default-dir-isolated&ms=two-sided", capture: "step4-multiple-scattering-two-sided-dir-isolated" },
       { label: "TSL ms octaves", query: "scene=step3-default-dir-isolated&ms=octaves", capture: "step4-multiple-scattering-octaves-dir-isolated" },
-      { label: "TSL ms neural (his default)", query: "scene=step3-default-dir-isolated", capture: "step3-default-dir-isolated" },
+      { label: "TSL ms neural (his v0.26 default)", query: "scene=step3-default-dir-isolated&ms=neural", capture: "step4-default-neural-dir-isolated" },
     ],
   },
   two: {
     title: "two overlapping bunnies, 'frame' lighting (draw-order 'over' mixing in the TSL path)",
     scenario: "step3-two-bunnies-dir-isolated",
     lighting: "frame",
-    tsl: [{ label: "TSL neural, over", query: "scene=step3-two-bunnies-dir-isolated", capture: "step3-two-bunnies-dir-isolated" }],
+    tsl: [{ label: "TSL diffusion, over", query: "scene=step3-two-bunnies-dir-isolated", capture: "step3-two-bunnies-dir-isolated" }],
   },
 };
 
@@ -237,7 +238,6 @@ const browser = await chromium.launch({
 });
 const report = { at: new Date().toISOString(), browser: browser.version(), size: [W, H], scale: SCALE, budgetSeconds: BUDGET, maxBounces: MAX_BOUNCES, groups: [] };
 mkdirSync(OUT, { recursive: true });
-const md = [];
 try {
   for (const key of GROUPS) {
     const g = GROUP_DEFS[key];
@@ -287,6 +287,7 @@ try {
     add("reference single scattering", single, "reference");
     const group = { key, title: g.title, scenario: g.scenario, phase, reference: { full: { ...refFull.report, mean: undefined, stderr: undefined, noise: full.noise, volumePixels: full.volumePixels }, single: { ...refSingle.report, mean: undefined, stderr: undefined, noise: single.noise } }, rows };
     report.groups.push(group);
+    const md = (group.md = []);
     md.push(`## ${key}: ${g.title}`, "", `Scenario \`${g.scenario}\`, phase (g, back g, back weight) = ${phase.join(", ")}. Reference ${W}×${H}: multiple scattering ${refFull.report.batches} × ${SPP} spp (noise ${(full.noise * 100).toFixed(2)} %), single scattering ${refSingle.report.batches} × ${SPP} spp (noise ${(single.noise * 100).toFixed(2)} %).`, "");
     md.push("| Image | vs reference (MS): PSNR dB | > 8/255 | RMSE lin | median rel. lum. err | mean rel. lum. err | lum. bias | vs single scattering: median rel. lum. err | lum. bias |", "|---|---|---|---|---|---|---|---|---|");
     const f = (x, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : String(x));
@@ -306,6 +307,10 @@ const header = [
   `${SCALE}× the size, box-downsampled in linear light; his captures likewise. All composited with his sRGB blend over 0x598eff.`,
   "",
 ];
+// A partial run (--groups) keeps the other groups of the previous report.
+const previous = existsSync(path.join(OUT, "report.json")) ? JSON.parse(readFileSync(path.join(OUT, "report.json"), "utf8")) : null;
+const kept = (previous?.groups ?? []).filter((g) => !report.groups.some((n) => n.key === g.key));
+report.groups = [...kept, ...report.groups].sort((a, b) => Object.keys(GROUP_DEFS).indexOf(a.key) - Object.keys(GROUP_DEFS).indexOf(b.key));
 writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 2));
-writeFileSync(path.join(OUT, "report.md"), [...header, ...md].join("\n"));
+writeFileSync(path.join(OUT, "report.md"), [...header, ...report.groups.flatMap((g) => [...(g.md ?? []), ...(kept.includes(g) ? [`(from the run of ${previous.at})`, ""] : [])])].join("\n"));
 console.log(`wrote ${path.relative(ROOT, path.join(OUT, "report.md"))}`);
