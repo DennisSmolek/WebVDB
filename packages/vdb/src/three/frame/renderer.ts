@@ -105,6 +105,7 @@ import type { VDBFrameLight, VDBFrameVolumeGpu, VDBFrameVolumeParams } from "../
 import { getDevice } from "../device.js";
 import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
 import { VDBFrameCoreIntegrateMaterial } from "./core-integrate-material.js";
+import { VDBCoreEnvironment } from "./core-environment.js";
 
 const { outputStruct, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
@@ -475,6 +476,8 @@ export class VDBFrameRenderer {
   private coreSparseSlots = new WeakMap<object, VDBSparseVolumeGpu>();
   private coreVolumes = new Map<VDBFrameVolume, VDBFrameVolumeGpu>();
   private coreFrameId = 0;
+  /** K6.2b: `scene.environment` as the core's environment input (its own texture; a lat-long draw for PMREM atlases). */
+  private readonly coreEnvironment = new VDBCoreEnvironment();
 
   /**
    * Timing/debug hook: proxies draw the integrate pass over the last froxel atlas without rendering
@@ -2268,7 +2271,6 @@ export class VDBFrameRenderer {
     }
     const core = this.core;
     Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
-    if (scene.environment) this.warnOnce("core-environment", "backend 'core': the scene environment (GPU prefilter, SH, environment lights) is K6.2b; it is ignored.");
 
     const seen = new Set<VDBFrameVolumeGpu>();
     scene.traverseVisible((object) => {
@@ -2311,6 +2313,7 @@ export class VDBFrameRenderer {
       },
       viewport: { drawingBuffer: [buffer.x, buffer.y], canvas: [canvas.x, canvas.y] },
       lights: this.coreLights(scene, camera),
+      environment: this.coreEnvironment.input(renderer as never, scene),
     });
     device.queue.submit([encoder.finish()]);
     if (u.recorded && u.outputs.froxels) {
@@ -2541,6 +2544,7 @@ export class VDBFrameRenderer {
     // K6.1 backend 'core': the core renderer and its stand-ins (the core sources die with their WeakMap)
     this.core?.dispose();
     this.core = null;
+    this.coreEnvironment.dispose();
     this.coreDevice = null;
     this.corePrefix.dispose();
     this.coreMaterial?.dispose();

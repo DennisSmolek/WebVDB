@@ -416,3 +416,57 @@ for (const p of GATHER_ENV_PROBES) {
     expect(errors).toEqual([]);
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// K6.2b gate 2 (design §7.2): the environment scenes through `?backend=core` vs `?backend=tsl`, same bar (PSNR ≥ 45 dB,
+// ≤ 0.2 % pixels > 4/255). The TSL path reads its lights back from the GPU (they arrive frames later); its harness waits
+// for them, so both images are settled frames. Extra rows exercise the slot (single scattering), SH lights, 'outward'
+// and three's PMREM atlas as scene.environment (the core's lat-long fallback). Opt in with K6_CORE_AB=1; the
+// environment needs his map in fixtures/k3/sky-midday-HDR.jpg. Images and JSON (with both backends' lights) go to
+// artifacts/k6/ab-env/; the his-capture scenes' images to artifacts/k6/ours-{core,tsl}/.
+// ---------------------------------------------------------------------------------------------------------------
+const AB_ENV = [
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "", capture: true },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&source=sparse", capture: false },
+  { scene: "step5-lighting-volume-sky-midday-env-isolated", extra: "", capture: true },
+  { scene: "step5-lighting-volume-medium-cloud-sky-midday-env-isolated", extra: "", capture: true },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&ms=false", capture: false },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envMode=spherical-harmonics", capture: false },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envMode=outward", capture: false },
+  { scene: "step5-lighting-volume-sky-midday-env-isolated", extra: "&envMode=outward", capture: false },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envPmrem=1", capture: false },
+] as const;
+const AB_ENV_DIR = path.join(REPO, "artifacts", "k6", "ab-env");
+
+for (const { scene, extra, capture } of AB_ENV) {
+  test(`K6.2b A/B core vs TSL: ${scene}${extra}`, async ({ page }) => {
+    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb and sky-midday-HDR.jpg)");
+    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "sky-midday-HDR.jpg")), "fixtures/k3/sky-midday-HDR.jpg missing");
+    test.setTimeout(1_800_000);
+    const base = `?scene=${scene}${extra}`;
+    const tsl = await k3(page, `${base}&backend=tsl`);
+    const core = await k3(page, `${base}&backend=core`);
+    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
+    expect(core.error, k3Detail(core)).toBeUndefined();
+    expect(core.uncaptured, k3Detail(core)).toEqual([]);
+    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
+    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
+    const name = `${scene}${extra.replace(/[&=]/g, "-")}`;
+    mkdirSync(AB_ENV_DIR, { recursive: true });
+    writeFileSync(path.join(AB_ENV_DIR, `${name}-tsl.png`), encodePng(k3Image(tsl)));
+    writeFileSync(path.join(AB_ENV_DIR, `${name}-core.png`), encodePng(k3Image(core)));
+    writeFileSync(path.join(AB_ENV_DIR, `${name}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
+    const lights = (r: K3Result) => (r as unknown as { environment?: unknown }).environment ?? null;
+    writeFileSync(path.join(AB_ENV_DIR, `${name}.json`), JSON.stringify({ scene, extra, ...cmp, coreEnvironment: lights(core), tslEnvironment: lights(tsl), coreWarnings: core.warnings }, null, 2));
+    if (capture) {
+      for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
+        mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
+        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
+        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
+      }
+    }
+    console.log(`[k6-ab-env] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
+    // Rows that exercise an intentional divergence ('outward' SH irradiance vs PMREM roughness 1, DIVERGES) report only
+    if (!extra.includes("outward")) expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
+  });
+}

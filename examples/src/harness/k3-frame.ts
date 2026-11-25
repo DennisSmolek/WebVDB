@@ -56,7 +56,8 @@
  * Results: `window.__VDB_K3_FRAME__` (e2e/k3-frame.spec.ts writes PNGs to artifacts/k3/ours/).
  */
 import * as THREE from "three";
-import { NodeMaterial, WebGPURenderer } from "three/webgpu";
+import { NodeMaterial, PMREMGenerator, WebGPURenderer } from "three/webgpu";
+import { VDB_FRAME_ENVIRONMENT, vdbFrameRendererEnvironment } from "../../../packages/vdb/src/core/internal.js";
 import * as TSL from "three/tsl";
 import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
 import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "../../../packages/vdb/src/three/internal.js";
@@ -964,6 +965,8 @@ async function main(): Promise<void> {
           });
     envTexture.mapping = THREE.EquirectangularReflectionMapping;
     scene.environment = envTexture;
+    // K6.2b `?envPmrem=1`: scene.environment as three's PMREM (CUBE_UV) atlas, both backends (the core then draws its lat-long)
+    if (params.get("envPmrem") === "1") scene.environment = new PMREMGenerator(renderer).fromEquirectangular(envTexture).texture;
     // His furnace: the uniform environment is the background too (the volume must vanish against it).
     if (FURNACE) scene.background = new THREE.Color().setRGB(FURNACE_RADIANCE, FURNACE_RADIANCE, FURNACE_RADIANCE, THREE.LinearSRGBColorSpace);
     const captured = manifest?.metadata?.environment;
@@ -1033,8 +1036,30 @@ async function main(): Promise<void> {
     return out;
   }
 
+  // K6.2b: the core reduces the environment on the GPU (no readback): its lights exist in the first frame; read the
+  // environment buffer once for the report
+  if (ENV && frameRenderer.backend === "core") {
+    await frame();
+    const core = frameRenderer.core!;
+    const env = vdbFrameRendererEnvironment(core);
+    const read = (renderer as unknown as { backend: { device: GPUDevice } }).backend.device;
+    const buf = read.createBuffer({ size: VDB_FRAME_ENVIRONMENT.size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = read.createCommandEncoder();
+    enc.copyBufferToBuffer(env.buffer, 0, buf, 0, VDB_FRAME_ENVIRONMENT.size);
+    read.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const u32 = new Uint32Array(buf.getMappedRange().slice(0));
+    buf.unmap();
+    const f32 = new Float32Array(u32.buffer);
+    const at = (name: string, i: number) => {
+      const o = VDB_FRAME_ENVIRONMENT.fields.get(name)!.offset / 4 + i * 4;
+      return [f32[o]!, f32[o + 1]!, f32[o + 2]!];
+    };
+    const count = u32[0]!;
+    result.environment = { mode: ["outward", "directional", "spherical-harmonics"][u32[1]!] ?? "outward", count, directions: Array.from({ length: count }, (_, i) => at("direction", i)), colors: Array.from({ length: count }, (_, i) => at("color", i)), frames: 1 };
+  }
   // K3.5: 'volume' lighting reads the environment lights too
-  if (ENV && ENV_MODE !== "outward") {
+  if (ENV && ENV_MODE !== "outward" && frameRenderer.backend !== "core") {
     // K3.4 furnace / any environment: wait for the 'directional' lights (async readback).
     let tries = 0;
     while (!frameRenderer.environment && tries++ < 60) {

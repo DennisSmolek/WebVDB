@@ -36,9 +36,10 @@ export const ENV_REDUCE_BINDINGS = { work: 0, map: 1, environment: 2 } as const;
 export const ENV_GRID_BINDINGS = { grid: 0, out: 1 } as const;
 
 const f = (x: number) => (Number.isInteger(x) ? `${x}.0` : `${x}`);
+// an f32 literal: 9 significant digits round-trip every f32
 const f32 = (x: number) => {
-  const v = Math.fround(x);
-  return v === 0 ? "0.0" : Number.isInteger(v) ? `${v}.0` : `${v}`;
+  const v = String(Number(Math.fround(x).toPrecision(9)));
+  return /[.e]/.test(v) ? v : `${v}.0`;
 };
 
 /**

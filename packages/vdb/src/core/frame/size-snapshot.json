@@ -97,24 +97,24 @@
       "gz": 1866
     },
     "vdb frame environment prefilter (equirect)": {
-      "raw": 2621,
-      "min": 1959,
-      "gz": 875
+      "raw": 2349,
+      "min": 1759,
+      "gz": 824
     },
     "vdb frame environment prefilter (cube)": {
-      "raw": 2939,
-      "min": 2130,
-      "gz": 939
+      "raw": 2667,
+      "min": 1930,
+      "gz": 886
     },
     "vdb frame environment blur": {
-      "raw": 3024,
-      "min": 2278,
-      "gz": 913
+      "raw": 14339,
+      "min": 12801,
+      "gz": 2693
     },
     "vdb frame environment reduce": {
-      "raw": 11189,
-      "min": 8223,
-      "gz": 2551
+      "raw": 24085,
+      "min": 19679,
+      "gz": 4584
     },
     "vdb frame environment grid": {
       "raw": 8345,
