@@ -316,7 +316,8 @@ From v1; details in docs/archive/handoffs/.
 - The froxel renderer's punctual lights are 4× three's Lambert convention: 'volume' lighting adds `color · phasê · T`
   (phasê = phase / (1/4π)) and divides by π, so a directional light of colour C is irradiance 4C to a physical
   renderer; point and spot lights have no distance falloff in 'volume' lighting ('frame' lighting applies three's getDistanceAttenuation, as his lighting pass, K6.2). Ambient C is a uniform radiance C/π (unshadowed in the
-  renderer). Map lights with `vdbReferenceLightsFromFrame` (K6.R) or a comparison shows a 4× "error".
+  renderer). Map lights with `vdbReferenceLightsFromFrame(lights, { lighting })` (K6.R; K6.R1 made the point / spot
+  falloff follow the lighting mode) or a comparison shows a 4× "error" (or a distance-squared one).
 - A GPU path tracer and its CPU twin agree path for path only if they draw random numbers in the same order (K6.R:
   > 99 % of values equal). When they drift, diff the draw order before the maths; f32 vs f64 flips a few branches.
 - Statistical gates on batch means: σ from a few batches has few degrees of freedom and grazing pixels are rare-event
@@ -328,3 +329,17 @@ From v1; details in docs/archive/handoffs/.
   scattering carries most of its light, a path tracer needs hundreds of bounces (512: no path reached the cap), and
   its noise per pixel stays at several % after thousands of 1-spp batches. Compare aggregates (luminance bias,
   median relative error), not single pixels.
+- K6.R1: parallel agents of one lead session share its scratchpad directory: a fixed log name (`test.log`) can be
+  overwritten by another worktree's run (one `pnpm test` log showed another worktree's root). Log to a subfolder
+  named after your worktree, and check the log's first lines name your root.
+- A white furnace cannot see phase-sampling bugs: any direction distribution conserves energy at albedo 1. Check
+  sampling with E[w] = 1 and E[w cos θ] = g, and in a render with a non-uniform environment; compare twins per channel
+  (per-channel biases cancel in the image sum).
+- Ratio tracking stays unbiased with a too-small majorant wherever it is > 0 (negative weights), so Beer–Lambert sees a
+  wrong majorant cell only where it is 0 (a skipped cell); delta tracking is biased by any violation. Count violations
+  (the CPU twin does) and test with a medium whose cells differ along every axis.
+- Node stats are per leaf (8³ voxels): a sparse majorant grid from them gains nothing below 8-voxel cells, and stats
+  bound ACTIVE values only (`vdbReferenceMajorantGridSparse(…, { from: 'voxels' })` checks a grid).
+- His sRGB blend is not linear: the K6.R report's "composite − (1 − α)·background" goes negative where a volume is darker
+  than the background (the luminance bias then reads 0). The K6.R1 report inverts the blend at the reference's α.
+- `froxelMix` acts in 'volume' lighting only ('frame' sums densities, V90): the V79 A/B is `?lighting=volume`.
