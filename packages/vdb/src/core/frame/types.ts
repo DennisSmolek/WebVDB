@@ -1,8 +1,8 @@
 /**
  * Plain-data types of the core frame renderer (K6.1, design §2.1–§2.5). Matrices are column-major
  * `ArrayLike<number>` (three's `Matrix4.elements` order); colours are linear RGB. K6.1 implements
- * 'volume' lighting on dense sources (K6.2: 'frame' lighting, K6.2b: the environment); occluders and shadow requests
- * are typed here and ignored with a one-time warning until K6.5 / K6.5b.
+ * 'volume' lighting on dense sources (K6.2: 'frame' lighting, K6.2b: the environment, K6.5: volume shadow maps and
+ * emission, K6.5b: host occluder maps).
  */
 
 import type { VDBVolumeSlot } from "../source/types.js";
@@ -200,14 +200,33 @@ export interface VDBFrameEnvironment {
   intensity: number;
 }
 
-/** A host depth shadow map (K6.5b; typed, ignored in K6.1). */
+/**
+ * A host depth shadow map (K6.5b, design §3.7): the meshes the host drew from one light, so they shadow the volumes
+ * (mesh → volume shadows; `settings.occlusion`). The core tests a world position against the first layer whose clip
+ * volume holds it (2 × 2 PCF, or one texel), as the host's own receivers do; outside every layer it is lit. At most 4
+ * maps are bound per kernel (fixed slots; more are warned about and ignored); the core reads, never writes or frees, it.
+ */
 export interface VDBFrameOccluder {
-  light: number | string;
-  depth: GPUTextureView;
-  viewProjection: Float32Array[];
-  orthographic: boolean;
-  bias: number;
-  reversedDepth: boolean;
+  /** The {@link VDBFrameLight} `id` the map belongs to (a directional, point or spot light of this frame). */
+  readonly light: number | string;
+  /**
+   * A `'2d-array'` view of the map: a depth texture (`'depth-only'` aspect for a depth-stencil format) or an `r32float`
+   * texture, `TEXTURE_BINDING`; one layer per cascade or cube face (≤ 6). Read with `textureLoad` (no sampler).
+   */
+  readonly depth: GPUTextureView;
+  /** Per layer: the view-projection the layer was drawn with (column-major, WebGPU depth [0, 1]); ≤ 6. */
+  readonly viewProjection: readonly ArrayLike<number>[];
+  /** Added to the position's depth before the test (three's `shadow.bias` sign; reversed depth: subtracted). Default 0. */
+  readonly bias?: number;
+  /** The map stores 1 at the near plane. Default false. */
+  readonly reversedDepth?: boolean;
+  /** `'bilinear'` (default): 2 × 2 percentage-closer filtering with bilinear weights; `'nearest'`: one texel. */
+  readonly filter?: "bilinear" | "nearest";
+  /**
+   * Bump when the map's texels or matrices changed (the 'frame' transmittance redraws then); omitted: the map is taken
+   * to change every update.
+   */
+  readonly revision?: number;
 }
 
 /** What one `update()` gets from the host. */
@@ -220,6 +239,7 @@ export interface VDBFrameInput {
   /** Only the lights of the rendered scene. */
   readonly lights: readonly VDBFrameLight[];
   readonly environment?: VDBFrameEnvironment | null;
+  /** K6.5b: the host's depth shadow maps (mesh → volume shadows), at most 4 used. */
   readonly occluders?: readonly VDBFrameOccluder[];
   /** K6.5: the scene has an emission light: draw the emission probes with these settings (null: none). */
   readonly emissionLight?: VDBFrameEmissionLightSettings | null;

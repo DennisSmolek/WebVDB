@@ -126,6 +126,10 @@ export const VDB_FRAME_MAX_HEMISPHERE_LIGHTS = 4;
 export const VDB_FRAME_MAX_CASCADES = 4;
 /** Light slots of the 'frame' transmittance (his `frameShadowLightSlots`). */
 export const VDB_FRAME_SHADOW_SLOTS = 6;
+/** K6.5b: host occluder maps bound per kernel (fixed slots; placeholders fill the empty ones). */
+export const VDB_FRAME_MAX_OCCLUDERS = 4;
+/** K6.5b: layers per occluder map (cascades or a cube's 6 faces). */
+export const VDB_FRAME_OCCLUDER_LAYERS = 6;
 
 /** Group 0 binding 0: camera, froxel layout, areas, jitter, fade, temporal and composite values. */
 export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
@@ -179,7 +183,7 @@ export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
 export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   // ambient rgb, hemisphere count
   { name: "ambient", type: "vec4f" },
-  // scene light count, spare
+  // scene light count, K6.5b occluder maps bound (0: occlusion off), spare
   { name: "counts", type: "vec4u" },
   // light probe SH9 (rgb in xyz)
   { name: "probe", type: "vec4f", count: 9 },
@@ -187,7 +191,7 @@ export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   { name: "hemiGround", type: "vec4f", count: VDB_FRAME_MAX_HEMISPHERE_LIGHTS },
   { name: "hemiUp", type: "vec4f", count: VDB_FRAME_MAX_HEMISPHERE_LIGHTS },
   // his records: position (w 1 directional: xyz toward the light, 2 point, 3 spot), colour (w penumbra cos),
-  // spot (xyz target → light, w cone cos), falloff (distance, decay)
+  // spot (xyz target → light, w cone cos), falloff (distance, decay, K6.5b occluder slot + 1 (0: none))
   { name: "position", type: "vec4f", count: VDB_FRAME_MAX_LIGHTS },
   { name: "color", type: "vec4f", count: VDB_FRAME_MAX_LIGHTS },
   { name: "spot", type: "vec4f", count: VDB_FRAME_MAX_LIGHTS },
@@ -197,6 +201,10 @@ export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   { name: "sky", type: "vec4f" },
   { name: "hemiSkySum", type: "vec4f" },
   { name: "hemiGroundSum", type: "vec4f" },
+  // K6.5b occluder maps (slot k): layers, bias, reversed depth (0/1), nearest filter (0/1)
+  { name: "occluderInfo", type: "vec4f", count: VDB_FRAME_MAX_OCCLUDERS },
+  // the view-projection of layer l of slot k at [6k + l] (column-major, WebGPU depth)
+  { name: "occluderMatrix", type: "mat4x4f", count: VDB_FRAME_MAX_OCCLUDERS * VDB_FRAME_OCCLUDER_LAYERS },
 ]);
 
 /** One volume record (512 B) in the `VdbFrameVolumes` array (group 1). */

@@ -60,9 +60,14 @@ export interface VDBFrameSettings {
    * for the A/B against the TSL path (K6.R decides; K6.8 deletes the loser). One volume per froxel: the same values.
    */
   froxelMix: "mixture" | "over";
+  /**
+   * K6.5b: the host's depth shadow maps (`VDBFrameInput.occluders`) shadow the volumes (mesh → volume shadows: the
+   * 'frame' transmittance and gather, the 'volume' march). Default true; it does nothing without maps.
+   */
+  occlusion: boolean;
 }
 
-/** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`. */
+/** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`, `occlusion: true`. */
 export function vdbFrameDefaultSettings(): VDBFrameSettings {
   return {
     width: 512,
@@ -103,5 +108,6 @@ export function vdbFrameDefaultSettings(): VDBFrameSettings {
     castShadowUpdatesPerFrame: 1,
     castShadowCoarse: false,
     froxelMix: "mixture",
+    occlusion: true,
   };
 }
