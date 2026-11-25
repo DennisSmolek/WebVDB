@@ -39,6 +39,10 @@ import {
   vdbFrameResolveSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameEnvPrefilterSpec,
+  vdbFrameEnvBlurSpec,
+  vdbFrameEnvReduceSpec,
+  vdbFrameEnvironmentGridSpec,
   vdbSparseSourceGpu,
   type VDBFrameLight,
   type VDBFrameVolumeGpu,
@@ -1503,6 +1507,12 @@ async function probeCompile(device: GPUDevice): Promise<void> {
     vdbFrameResolveSpec({ temporal: false }),
     vdbFrameResolveSpec({ temporal: true }),
     vdbFrameChunkProbeSpec(),
+    // K6.2b: the environment kernels
+    vdbFrameEnvPrefilterSpec("equirect"),
+    vdbFrameEnvPrefilterSpec("cube"),
+    vdbFrameEnvBlurSpec(),
+    vdbFrameEnvReduceSpec(),
+    vdbFrameEnvironmentGridSpec(),
   ];
   const errors: string[] = [];
   for (const spec of specs) {
