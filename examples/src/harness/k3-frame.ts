@@ -749,6 +749,10 @@ async function main(): Promise<void> {
   // K6.3 `?msEdge=zero|clamp`, `?msLevels=`: the core's 'multi-scale' settings (with `?ms=multi-scale`, backend core)
   if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
   if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.Q1 `?ao=1`, `?aoPairs=`, `?aoSteps=`: the core's shadowed ambient (backend core)
+  if (params.has("ao")) frameRenderer.coreSettings.ambientOcclusion = params.get("ao") === "1";
+  if (params.has("aoPairs")) frameRenderer.coreSettings.ambientOcclusionPairs = Number(params.get("aoPairs"));
+  if (params.has("aoSteps")) frameRenderer.coreSettings.ambientOcclusionSteps = Number(params.get("aoSteps"));
   // K6.3 `?occlusion=0`: no mesh → volume shadows in the core (K6.5b; his renderer has none) for core vs TSL A/Bs
   if (params.get("occlusion") === "0") frameRenderer.occlusion = false;
   result.backend = frameRenderer.backend;

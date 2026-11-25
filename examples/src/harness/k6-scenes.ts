@@ -22,6 +22,10 @@ export type K6Lighting = "volume" | "frame";
 export type K6Light =
   | { kind: "sun"; toLight: K6Vec3; color: K6Vec3; intensity: number }
   | { kind: "ambient"; color: K6Vec3; intensity: number }
+  /** K6.Q1: three's HemisphereLight (sky colour above the plane ⟂ up, ground below). */
+  | { kind: "hemisphere"; sky: K6Vec3; ground: K6Vec3; intensity: number }
+  /** K6.Q1: three's LightProbe (SH9 radiance, three's order, RGB). */
+  | { kind: "probe"; sh: number[]; intensity: number }
   /** `offset` from the volume centre in box diagonals; `irradiance` at the centre (see the file comment). */
   | { kind: "point"; offset: K6Vec3; color: K6Vec3; irradiance: number };
 
@@ -42,6 +46,14 @@ export interface K6Scene {
 
 const SUN: K6Light = { kind: "sun", toLight: [100, 200, 100], color: [1, 1, 1], intensity: 1 };
 const AMBIENT: K6Light = { kind: "ambient", color: [1, 1, 1], intensity: 0.4 };
+// K6.Q1: a blue sky over a brown ground; a probe brighter and bluer above, warm toward +x (L1 + a little L2)
+const HEMI: K6Light = { kind: "hemisphere", sky: [0.35, 0.55, 1], ground: [0.45, 0.3, 0.15], intensity: 0.5 };
+const PROBE: K6Light = {
+  kind: "probe",
+  intensity: 1,
+  // three's SphericalHarmonics3 coefficients (radiance): c0 grey-blue, c1 (y) blue up, c3 (x) warm, c6 (3z² − 1) small
+  sh: [0.6, 0.65, 0.8, 0.15, 0.2, 0.35, 0, 0, 0, 0.2, 0.1, 0, 0, 0, 0, 0, 0, 0, 0.05, 0.05, 0.05, 0, 0, 0, 0, 0, 0],
+};
 const PHASE: K6Vec3 = [0.8, -0.3, 0.2];
 const VIEW = { dir: [0.9, 0.35, 1.1] as K6Vec3, dist: 0.8 };
 
@@ -58,6 +70,9 @@ export const K6_SCENES: Record<string, K6Scene> = Object.fromEntries(
     scene("bunny-absorbing-ambient", "absorbing bunny, sun + ambient 0.4", { asset: "bunny", extinction: 100, albedo: [0.5, 0.5, 0.5], lights: [SUN, AMBIENT] }),
     scene("bunny-thin", "his bunny, thin (extinction 5, albedo 1), sun", { asset: "bunny", extinction: 5, albedo: [1, 1, 1], lights: [SUN] }),
     scene("bunny-thin-ambient", "thin bunny, sun + ambient 0.4", { asset: "bunny", extinction: 5, albedo: [1, 1, 1], lights: [SUN, AMBIENT] }),
+    scene("smoke-hemi", "openvdb.org smoke, sun + hemisphere light (K6.Q1)", { asset: "smoke", extinction: 40, albedo: [1, 1, 1], lights: [SUN, HEMI] }),
+    scene("wdas-probe", "WDAS cloud, sun + light probe (K6.Q1)", { asset: "wdas", extinction: 40, albedo: [1, 1, 1], lights: [SUN, PROBE] }),
+    scene("bunny-absorbing-hemi", "absorbing bunny, sun + hemisphere light (K6.Q1)", { asset: "bunny", extinction: 100, albedo: [0.5, 0.5, 0.5], lights: [SUN, HEMI] }),
     scene("bunny-point", "his bunny (extinction 20), a point light above-left (E = 1 at the centre in both mappings)", {
       asset: "bunny",
       extinction: 20,
@@ -140,7 +155,7 @@ export interface K6Frame {
   /** The lights in renderer units for the lighting mode (three colour × intensity, positions in the world). */
   lights: VDBReferenceFrameLight[];
   /** The same lights as three objects take them (position, colour, intensity, decay). */
-  three: { kind: "sun" | "ambient" | "point"; position: K6Vec3; color: K6Vec3; intensity: number; decay: number }[];
+  three: { kind: "sun" | "ambient" | "point" | "hemisphere" | "probe"; position: K6Vec3; color: K6Vec3; intensity: number; decay: number; ground?: K6Vec3; sh?: number[] }[];
 }
 
 export function k6SceneFrame(s: K6Scene, a: K6Asset, aspect: number, lighting: K6Lighting): K6Frame {
@@ -161,7 +176,7 @@ export function k6SceneFrame(s: K6Scene, a: K6Asset, aspect: number, lighting: K
   const lights: VDBReferenceFrameLight[] = [];
   const three: K6Frame["three"] = [];
   for (const l of s.lights) {
-    const c = l.color.map((v) => v * ("intensity" in l ? l.intensity : 1)) as K6Vec3;
+    const c = ("color" in l ? l.color : [1, 1, 1]).map((v) => v * ("intensity" in l ? l.intensity : 1)) as K6Vec3;
     if (l.kind === "sun") {
       const p = norm(l.toLight);
       lights.push({ kind: "directional", direction: p, color: c });
@@ -169,6 +184,13 @@ export function k6SceneFrame(s: K6Scene, a: K6Asset, aspect: number, lighting: K
     } else if (l.kind === "ambient") {
       lights.push({ kind: "ambient", color: c });
       three.push({ kind: "ambient", position: center, color: l.color, intensity: l.intensity, decay: 0 });
+    } else if (l.kind === "hemisphere") {
+      // three's HemisphereLight: up = its position (default +y), colours × intensity
+      lights.push({ kind: "hemisphere", sky: l.sky.map((v) => v * l.intensity) as K6Vec3, ground: l.ground.map((v) => v * l.intensity) as K6Vec3, up: [0, 1, 0] });
+      three.push({ kind: "hemisphere", position: [0, 1, 0], color: l.sky, ground: l.ground, intensity: l.intensity, decay: 0 });
+    } else if (l.kind === "probe") {
+      lights.push({ kind: "probe", sh: l.sh.map((v) => v * l.intensity) });
+      three.push({ kind: "probe", position: center, color: [1, 1, 1], intensity: l.intensity, decay: 0, sh: l.sh });
     } else {
       const position: K6Vec3 = [center[0] + l.offset[0] * diag, center[1] + l.offset[1] * diag, center[2] + l.offset[2] * diag];
       const dc = Math.hypot(l.offset[0] * diag, l.offset[1] * diag, l.offset[2] * diag);

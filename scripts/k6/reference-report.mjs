@@ -53,6 +53,12 @@ const SPP = Number(arg("spp", 1));
 const MAX_BOUNCES = Number(arg("maxBounces", 512));
 const PORT = Number(arg("port", 5461));
 let BASE = arg("base", "");
+// K6.Q1: --reuse keeps a group's reference renders (artifacts/k6-reference/<group>/reference-*.json, same query) across
+// runs; --rows=<regex> renders only the frame rows whose label matches (A/B iterations on one setting).
+const REUSE = arg("reuse", false) === true;
+const ROWS = arg("rows", "") ? new RegExp(String(arg("rows", "")), "i") : null;
+// K6.Q1: --query=<a=b&c=d> appends to every frame row's query (core settings A/Bs, e.g. --query=ao=1)
+const EXTRA_QUERY = arg("query", "") ? `&${String(arg("query", ""))}` : "";
 
 const need = {
   bunny: path.join(ROOT, "fixtures", "k3", "bunny_cloud.wvdb"),
@@ -216,6 +222,10 @@ const GROUP_DEFS = {
       ["bunny-thin", "thin bunny (extinction 5), sun", "bunny"],
       ["bunny-thin-ambient", "thin bunny, sun + ambient", "bunny"],
       ["bunny-point", "bunny, point light (falloff per lighting mode)", "bunny", true],
+      // K6.Q1: the other distant lights (hemisphere, light probe)
+      ["smoke-hemi", "smoke, sun + hemisphere light", "smoke"],
+      ["wdas-probe", "WDAS cloud, sun + light probe", "wdas"],
+      ["bunny-absorbing-hemi", "absorbing bunny, sun + hemisphere light", "bunny"],
     ].map(([scene, title, asset, falloff]) => [scene, { kind: "scene", title, scene, asset, falloff: !!falloff, rows: sceneRows(scene) }]),
   ),
 };
@@ -446,12 +456,13 @@ try {
     // Frames first ('frame' lighting: their settings give the his-group reference its phase).
     const frames = [];
     for (const t of g.rows) {
+      if (ROWS && !ROWS.test(t.label)) continue;
       if (t.slot) {
         frames.push({ ...t });
         continue;
       }
       process.stdout.write(`  ${t.label} … `);
-      const r = await runPage(browser, t.page, `${t.query}&w=${gw * scale}&h=${gh * scale}`, STATE[t.page]);
+      const r = await runPage(browser, t.page, `${t.query}${EXTRA_QUERY}&w=${gw * scale}&h=${gh * scale}`, STATE[t.page]);
       const img = fromRgba8(new Uint8Array(Buffer.from(r.rgba, "base64")), r.width, r.height, scale);
       frames.push({ ...t, img, settings: r.settings, adapter: r.adapter, backend: r.backend, froxelMix: r.froxelMix });
       console.log(`${r.width}x${r.height} ${r.backend ?? ""} (${r.adapter})`);
@@ -471,10 +482,14 @@ try {
       const entry = {};
       for (const [kind, bounces] of g.singleOnly ? [["single", 1]] : [["full", MAX_BOUNCES], ["single", 1]]) {
         process.stdout.write(`  reference ${lighting} ${kind === "full" ? `(multiple scattering, ≤ ${MAX_BOUNCES} bounces)` : "(single scattering)"} … `);
-        const r = await runPage(browser, "k6-reference", `${query}${common}&maxBounces=${bounces}`, "__VDB_K6_REFERENCE__");
+        const refQuery = `${query}${common}&maxBounces=${bounces}`;
+        const cacheFile = path.join(dir, `reference-${lighting}-${kind}.json`);
+        const cached = REUSE && existsSync(cacheFile) ? JSON.parse(readFileSync(cacheFile, "utf8")) : null;
+        const r = cached?.query === refQuery ? { ...cached.result, reused: true } : await runPage(browser, "k6-reference", refQuery, "__VDB_K6_REFERENCE__");
+        if (!r.reused) writeFileSync(cacheFile, JSON.stringify({ query: refQuery, result: { report: r.report, adapter: r.adapter } }));
         const img = referenceImage(r.report);
         entry[kind] = { img, report: { ...r.report, mean: undefined, stderr: undefined, overlap: undefined }, adapter: r.adapter };
-        console.log(`${r.report.batches} batches in ${r.report.seconds.toFixed(0)} s, noise ${(img.noise * 100).toFixed(2)} % (p90 ${(img.noiseP90 * 100).toFixed(1)} %, ${r.report.stop}) (${r.adapter})`);
+        console.log(`${r.reused ? "(reused) " : ""}${r.report.batches} batches in ${r.report.seconds.toFixed(0)} s, noise ${(img.noise * 100).toFixed(2)} % (p90 ${(img.noiseP90 * 100).toFixed(1)} %, ${r.report.stop}) (${r.adapter})`);
         writeFileSync(path.join(dir, `reference-${lighting}-${kind}.png`), encodePng(toRgba8(img)));
       }
       refs[lighting] = entry;

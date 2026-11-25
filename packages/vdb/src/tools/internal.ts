@@ -242,6 +242,15 @@ export {
 } from "./frame/environment-gpu.js";
 export type { VDBFrameEnvRotation, VDBFrameEnvImage, VDBFrameEnvironmentGpuResult, VDBFrameEnvironmentReduceSettings, VDBFrameEnvironmentFlags } from "./frame/environment-gpu.js";
 export type { VDBFrameStackLayout, VDBFrameTexture3d, VDBFrameGridCaster } from "./frame/stack.js";
+// K6.Q1 shadowed ambient (twins of the core's ambient occlusion)
+export {
+  VDB_FRAME_AMBIENT_MAX_PAIRS,
+  vdbFrameAmbientDirections,
+  vdbFrameAmbientIrradiance,
+  vdbFrameAmbientPairTotals,
+  vdbFrameAmbientVisibility,
+  type VDBFrameDistantLight,
+} from "./frame/ambient.js";
 // K6.5b: mesh → volume shadows (host occluder maps)
 export { vdbFrameOccluderVisibility, vdbFrameOccluderLayer, vdbFrameOccludedTotal, VDB_FRAME_MAX_OCCLUDERS, VDB_FRAME_OCCLUDER_MAX_LAYERS } from "./frame/occluders.js";
 export type { VDBFrameOccluderCpu } from "./frame/occluders.js";

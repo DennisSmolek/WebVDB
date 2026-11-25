@@ -473,7 +473,7 @@ export class VDBFrameRenderer {
   /** @internal K6.1 A/B: the core's froxel mix (`'mixture'` default; `'over'` is his blend). */
   froxelMix: "mixture" | "over" = "mixture";
   /** @internal K6.3 A/B: core-only settings over `settings` (`multiScaleLevels`, `multiScaleEdge`). */
-  coreSettings: Partial<Pick<VDBFrameSettings, "multiScaleLevels" | "multiScaleEdge">> = {};
+  coreSettings: Partial<Pick<VDBFrameSettings, "multiScaleLevels" | "multiScaleEdge" | "ambientOcclusion" | "ambientOcclusionPairs" | "ambientOcclusionSteps">> = {};
   /** @internal K6.3: `neuralNetwork` as the core's MLP (kept per network object). */
   private coreMlp: { network: VDBFrameNeuralNetwork | null; mlp: VDBFrameMlp | null } | null = null;
   /**

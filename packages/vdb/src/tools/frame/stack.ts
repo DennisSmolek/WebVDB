@@ -29,6 +29,7 @@ import {
   type Vec4,
 } from "./index.js";
 import { vdbFrameOccludedTotal } from "./occluders.js";
+import { vdbFrameAmbientPairTotals, vdbFrameAmbientVisibility } from "./ambient.js";
 
 /** Where the sub-volumes of a stack sit. */
 export interface VDBFrameStackLayout {
@@ -154,6 +155,11 @@ export interface VDBFrameTransmittanceModes3d {
    * to the light, the direct optical depth and the march length (e.g. direct + `vdbFrameMlpForward(...)`).
    */
   slotTotal?: ((direct: number, world: Vec3, direction: Vec3, opticalDepth: number, maxDistance: number) => number) | null;
+  /**
+   * K6.Q1 shadowed ambient: the pairs' upper directions (`vdbFrameAmbientDirections`; [0] the sky direction): the
+   * fourth target's z, w become the hemispherical visibilities (V up, V down). Default none (1, 1).
+   */
+  ambientDirections?: readonly Vec3[] | null;
 }
 
 /**
@@ -230,6 +236,18 @@ export function vdbFrameTransmittanceVoxel3d(
   out[1] = [ls[2]![1], ls[3]![1], ls[4]![1], ls[5]![1]];
   out[2] = [ls[0]![0], ls[1]![0], ls[2]![0], ls[3]![0]];
   out[3] = [ls[4]![0], ls[5]![0], 1, 1];
+  // K6.Q1: each pair's isotropic-light totals (pair 0: the sky up / down marches), averaged per side
+  const dirs = modes.ambientDirections;
+  if (dirs && dirs.length > 0) {
+    const totals = dirs.map((d, k) => {
+      const front = k === 0 ? up : vdbFrameGridMarch(extinctionAt, grid, world, d, 1e20, noise, multipleScattering, octaves);
+      const back = k === 0 ? down : vdbFrameGridMarch(extinctionAt, grid, world, [-d[0], -d[1], -d[2]], 1e20, noise, multipleScattering, octaves);
+      return vdbFrameAmbientPairTotals(front, back, multipleScattering > 0, octaves);
+    });
+    const v = vdbFrameAmbientVisibility(totals);
+    out[3][2] = v[0];
+    out[3][3] = v[1];
+  }
   return out;
 }
 

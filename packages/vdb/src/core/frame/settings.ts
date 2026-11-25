@@ -76,9 +76,22 @@ export interface VDBFrameSettings {
    * 'frame' transmittance and gather, the 'volume' march). Default true; it does nothing without maps.
    */
   occlusion: boolean;
+  /**
+   * K6.Q1 (V85): shadowed ambient. Ambient, hemisphere and light-probe light (and 'frame' lighting's 'outward'
+   * environment) is attenuated by the medium: transmittance marched along `ambientOcclusionPairs` opposite direction
+   * pairs, averaged per hemisphere around the sky direction, each the lighting mode's isotropic-light total (white
+   * furnace with multiple scattering). 'frame' lighting marches them in the transmittance pass (a grid lookup in the
+   * gather); 'volume' lighting per froxel through the volume's shadow march. Default false: the unshadowed light of
+   * his renderer (the K6.R reference: +35 to +148 % too bright in single scattering).
+   */
+  ambientOcclusion: boolean;
+  /** K6.Q1: direction pairs of the shadowed ambient (1–8; 1: ± the sky direction only). */
+  ambientOcclusionPairs: number;
+  /** K6.Q1: march steps of each 'volume'-lighting ambient direction (0: the volume's `shadowSteps`). */
+  ambientOcclusionSteps: number;
 }
 
-/** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`, `occlusion: true`. */
+/** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`, `occlusion: true` and the K6.Q1 ambient occlusion (off). */
 export function vdbFrameDefaultSettings(): VDBFrameSettings {
   return {
     width: 512,
@@ -122,5 +135,8 @@ export function vdbFrameDefaultSettings(): VDBFrameSettings {
     multiScaleLevels: 6,
     multiScaleEdge: "zero",
     occlusion: true,
+    ambientOcclusion: false,
+    ambientOcclusionPairs: 4,
+    ambientOcclusionSteps: 0,
   };
 }
