@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { MeshStandardNodeMaterial, PointsNodeMaterial } from "three/webgpu";
 import { VDB_GPU_LAYOUT_VERSION, VDBError } from "../../src/core/index.js";
+import { vdbPointPixelScale } from "../../src/core/internal.js";
 import { VDB_LEVEL_SET_SAMPLES_CAP, VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbAttenuatedPointSize, vdbPointDiscTexture } from "../../src/three/internal.js";
 import { fakeRenderer } from "./fake-three.js";
 
@@ -51,10 +52,11 @@ describe("VDBLevelSetMaterial (K3.7)", () => {
     expect(m.normalStep.value).toBe(1);
     // No pool info: one index voxel per SDF unit.
     expect(m.sdfToIndex.value).toBe(1);
-    // The entry only calls the public API and compiles the sample cap in.
-    expect(m.traceSource).toContain("vdbLevelSetHit(grid_id, o, d, &span, sdf_to_index, n)");
-    expect(m.traceSource).toContain(`clamp(max_samples, 1.0, ${VDB_LEVEL_SET_SAMPLES_CAP}.0)`);
-    expect(m.traceSource).not.toMatch(/pnanovdb|vdb_[a-z]/);
+    // K6.6: the entry calls the core's surface functions (the raw pass's WGSL) and compiles the sample cap in.
+    expect(m.traceSource).toContain("vdbLevelSetViewRay(uv, projection_inverse, camera_world, orthographic != 0u)");
+    expect(m.traceSource).toContain(`vdbLevelSetSurface(grid_id, ray, view_projection, sdf_to_index, u32(clamp(max_samples, 1.0, ${VDB_LEVEL_SET_SAMPLES_CAP}.0)), normal_step)`);
+    expect(m.traceSource).not.toMatch(/pnanovdb|vdb_[a-z]|vdbLevelSetHit/);
+    expect(m.surfaceNode).toBeDefined();
   });
 
   it("takes sdfToIndex from the pool's voxel size, or the parameter", () => {
@@ -98,6 +100,21 @@ describe("VDBPoints (K3.7)", () => {
     expect(new VDBPoints({ positions }, { size: 3 }).diameter).toBe(3);
     expect(new VDBPoints({ positions, count: 2 }).pointCount).toBe(2);
     expect(new VDBPoints({ positions }).colorAttribute).toBeNull();
+    // K6.6: the clip position comes from the core sprite WGSL through the vertex node.
+    expect((p.material as unknown as { vertexNode: unknown }).vertexNode).toBeTruthy();
+    expect((p.material as unknown as { sizeNode: unknown }).sizeNode).toBeNull();
+  });
+
+  it("K6.6: the core's vdbPointPixelScale (projection[5]) equals the pixel scale VDBPoints sets for a perspective camera", () => {
+    const p = new VDBPoints({ positions, spacing: 2 });
+    p.scale.set(1, 3, 2);
+    p.updateMatrixWorld(true);
+    const camera = new THREE.PerspectiveCamera(47, 1.7, 0.1, 100);
+    camera.zoom = 1.6;
+    camera.updateProjectionMatrix();
+    p.updatePixelScale({ getSize: (v) => v.set(640, 360), getRenderTarget: () => null }, camera);
+    const core = vdbPointPixelScale(p.diameter, camera.projectionMatrix.elements, 360, p.matrixWorld.elements);
+    expect(core / p.pixelScale.value).toBeCloseTo(1, 12);
   });
 
   it("sizes in pixels as his getAttenuatedPointSize, from the render target height when one is set", () => {

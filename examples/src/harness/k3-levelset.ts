@@ -20,6 +20,14 @@
  *   lights are not reproduced; ours use his sun + hemisphere). 1280x720; the camera and object matrices come
  *   from `?manifest=` (default `/fixtures/k3-reference/75e7345/manifest.json`) when it has the scenario.
  *
+ * K6.6 (`?backend=core`): the level-set scenes render through the core's raw pass (`vdbCreateLevelSetPassGpu`,
+ * G-buffer + shade, no three objects) and are compared with the K6.6 surface twins (`levelSetPixelUv`,
+ * `levelSetViewRay`, `levelSetSurface`): the same Stats plus NDC depth and shade; `&vsThree=1` also renders
+ * three's `VDBLevelSetMaterial` probe on the same device and compares the two (IoU, hits, normals). The point
+ * scenes render through `vdbCreatePointPassGpu` (analytic disc: strays judged against the disc). `sprite-probe`:
+ * the sprite WGSL in a compute kernel vs the f32 twin. `?mutate=` breaks one twin term (pixel-corner,
+ * ray-ortho, normal-view, depth-linear, shade-sign; sprite-half, sprite-min, sprite-w): the gate must fail.
+ *
  * Query: `?w=&h=`, `?twin=1`, `?aniso=1` (a rotated, non-uniformly scaled instance transform on top of his placement), `?timing=N` (N shaded frames, median submit-to-done ms; provisional, D25),
  * `?maxSamples=`, `?normalStep=`, `?file=` (another level set or point `.vdb` under /fixtures/).
  * Results: `window.__VDB_K3_LEVELSET__` (e2e/k3-levelset.spec.ts writes PNGs to artifacts/k3/ours-step7/).
@@ -28,7 +36,22 @@ import * as THREE from "three";
 import { Mesh, WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbProxyGeometry, type VDBTslNode } from "@pmndrs/vdb/three";
-import { buildFromVdb, levelSetHit, levelSetNormal, parseVdb, vdbPointRenderData, vdbSrgbOetf, type VdbGrid, type VdbPointDataGrid } from "../../../packages/vdb/src/tools/internal.js";
+import {
+  buildFromVdb,
+  levelSetHit,
+  levelSetNdcDepth,
+  levelSetNormal,
+  levelSetPixelUv,
+  levelSetSurface,
+  levelSetViewRay,
+  parseVdb,
+  vdbPointRenderData,
+  vdbSrgbOetf,
+  type VdbGrid,
+  type VdbPointDataGrid,
+} from "../../../packages/vdb/src/tools/internal.js";
+import { vdbPointPixelScale } from "../../../packages/vdb/src/core/internal.js";
+import { renderLevelSetCore, renderPointsCore, spriteProbe, type SpriteMutation } from "./k6-surface-core.js";
 
 type V3 = [number, number, number];
 
@@ -51,6 +74,10 @@ interface Stats {
   analytic?: { meanDeg: number; maxDeg: number; radiusSpreadVoxels: number };
   twinMs: number;
   avgSamples: number;
+  /** K6.6 core: GPU frag_depth vs the twin's NDC depth of the GPU hit, max |difference| (pixels both hit). */
+  depthMaxAbs?: number;
+  /** K6.6 core: shade output vs color · (ambient + light · max(n · −L, 0)) of the GPU normal, max |difference|. */
+  shadeMaxAbs?: number;
 }
 
 interface Result {
@@ -71,6 +98,12 @@ interface Result {
   points?: { count: number; totalCount: number; spacing: number; covered: number; centresCovered: number; centresTotal: number; stray: number };
   colors?: { checked: number; bad: number; firstBad?: unknown };
   timing?: { frames: number; medianMs: number; minMs: number; note: string };
+  backend?: "three" | "core";
+  mutate?: string;
+  /** K6.6 `&vsThree=1`: the core pass vs three's material on the same device. */
+  vsThree?: { coreHits: number; threeHits: number; iou: number; hitMaxVoxels: number; normalMaxDeg: number };
+  sprite?: { compared: number; maxUlp: number; over: number; bound: number; first?: unknown };
+  pixelScale?: { core: number; three: number };
   warnings: string[];
   uncaptured: string[];
 }
@@ -90,7 +123,7 @@ const MANIFEST = params.get("manifest") ?? "/fixtures/k3-reference/75e7345/manif
 
 interface SceneDef {
   name: string;
-  kind: "levelset" | "points" | "points-color";
+  kind: "levelset" | "points" | "points-color" | "sprite";
   file: string;
   output: "probe" | "normals" | "shaded" | "points";
   width: number;
@@ -108,6 +141,7 @@ const E2E: Record<string, SceneDef> = {
   ...Object.fromEntries(Object.entries(MODELS).map(([k, file]) => [k, { name: k, kind: "levelset", file, output: "probe", width: 384, height: 216, parityExpected: false } as SceneDef])),
   points: { name: "points", kind: "points", file: "/fixtures/vdb-samples/sphere_points.vdb", output: "points", width: 384, height: 216, parityExpected: false },
   "points-color": { name: "points-color", kind: "points-color", file: "", output: "points", width: 128, height: 128, parityExpected: false },
+  "sprite-probe": { name: "sprite-probe", kind: "sprite", file: "", output: "probe", width: 1, height: 1, parityExpected: false },
 };
 const PARITY: Record<string, SceneDef> = {
   "step7-utah-teapot-surface-normals": { name: "", kind: "levelset", file: MODELS.teapot!, output: "normals", width: 1280, height: 720, parityExpected: true },
@@ -124,6 +158,11 @@ const W = Number(params.get("w") ?? def?.width ?? 192);
 const H = Number(params.get("h") ?? def?.height ?? 108);
 const TWIN = params.get("twin") === "1";
 const TIMING = Number(params.get("timing") ?? 0);
+const BACKEND: "three" | "core" = params.get("backend") === "core" ? "core" : "three";
+const MUTATE = params.get("mutate") ?? "none";
+const VS_THREE = params.get("vsThree") === "1";
+result.backend = BACKEND;
+result.mutate = MUTATE;
 /** His examples page background (main.jsx). */
 const HIS_BACKGROUND = new THREE.Color(0x598eff);
 /** Added to the probe pass's hit positions (three's output clamps negative colours). */
@@ -305,6 +344,7 @@ async function levelSetScene(renderer: WebGPURenderer, device: GPUDevice): Promi
   pool.flush();
   info = pool.info(id);
   result.grid = { name: grid.name, indexBBox: { min: [...info.indexBBox.min], max: [...info.indexBBox.max] }, voxelSize: info.voxelSize[0], imageBytes: info.imageBytes };
+  if (BACKEND === "core") return coreLevelSetScene(renderer, device, pool, id, image, info, camera, objectToWorld);
 
   const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["levelSet"] });
   grids.update();
@@ -382,6 +422,167 @@ async function levelSetScene(renderer: WebGPURenderer, device: GPUDevice): Promi
   return display;
 }
 
+/** three's probe (world normal, world hit) of the same grid, for `&vsThree=1` (the current path on the same device). */
+async function threeProbe(renderer: WebGPURenderer, pool: VDBGridPool, id: number, camera: THREE.Camera): Promise<{ normal: Float32Array; hit: Float32Array }> {
+  const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["levelSet"] });
+  grids.update();
+  const geometry = vdbProxyGeometry(pool.info(id), { pad: 1 });
+  const unlit = (color: (m: VDBLevelSetMaterial) => VDBTslNode) => {
+    const m = new VDBLevelSetMaterial(renderer, grids, id, { color: 0x000000, toneMapped: false });
+    m.emissiveNode = color(m);
+    return m;
+  };
+  const float = new THREE.RenderTarget(W, H, { type: THREE.FloatType, depthBuffer: true, samples: 0 });
+  renderer.setClearColor(0x000000, 0);
+  const normalScene = new THREE.Scene();
+  normalScene.add(new Mesh(geometry, unlit((m) => m.normalWorldNode.mul(0.5).add(0.5))));
+  await renderTo(renderer, normalScene, camera, float);
+  const normal = await readFloat(renderer, float);
+  for (let i = 0; i < normal.length; i += 4) for (let c = 0; c < 3; c++) normal[i + c] = normal[i + c]! * 2 - 1;
+  const hitScene = new THREE.Scene();
+  hitScene.add(new Mesh(geometry, unlit((m) => m.hitWorldNode.add(HIT_OFFSET))));
+  await renderTo(renderer, hitScene, camera, float);
+  const hit = await readFloat(renderer, float);
+  for (let i = 0; i < hit.length; i += 4) for (let c = 0; c < 3; c++) hit[i + c] = hit[i + c]! - HIT_OFFSET;
+  return { normal, hit };
+}
+
+/** His 'sunHemi' lights as the raw pass's one light + ambient (INFO scenes only). */
+const SUN_DIRECTION: [number, number, number] = [-100, -200, -100];
+const HEMI_AMBIENT = (() => {
+  const sky = new THREE.Color(0x88aaff);
+  const ground = new THREE.Color(0x443322);
+  return [0, 1, 2].map((k) => 0.5 * 0.5 * ([sky.r, sky.g, sky.b][k]! + [ground.r, ground.g, ground.b][k]!)) as [number, number, number];
+})();
+/** The probe's shade check: a coloured albedo under a coloured light and ambient. */
+const PROBE_COLOR: [number, number, number] = [0.9, 0.7, 0.5];
+const PROBE_LIGHT = { direction: [-0.4, -0.8, -0.45] as [number, number, number], color: [1, 0.95, 0.9] as [number, number, number] };
+const PROBE_AMBIENT: [number, number, number] = [0.15, 0.2, 0.25];
+
+/**
+ * K6.6 `?backend=core`: the level set through the core's raw pass (G-buffer and shade pipelines, no three
+ * objects), compared with the K6.6 surface twins; `&vsThree=1` also against three's material.
+ */
+async function coreLevelSetScene(
+  renderer: WebGPURenderer,
+  device: GPUDevice,
+  pool: VDBGridPool,
+  id: number,
+  image: Uint32Array,
+  info: ReturnType<VDBGridPool["info"]>,
+  camera: THREE.PerspectiveCamera,
+  objectToWorld: THREE.Matrix4,
+): Promise<Uint8Array> {
+  // three's renderer switches a camera to WebGPU's depth range before it renders; the raw pass needs the same.
+  if (camera.coordinateSystem !== THREE.WebGPUCoordinateSystem) {
+    camera.coordinateSystem = THREE.WebGPUCoordinateSystem;
+    camera.updateProjectionMatrix();
+  }
+  const sdfToIndex = 1 / info.voxelSize[0]!;
+  const frame = { view: camera.matrixWorldInverse.elements, projection: camera.projectionMatrix.elements, viewport: [0, 0, W, H] as const };
+  const draw = {
+    grid: id,
+    sdfToIndex,
+    ...(params.get("maxSamples") ? { maxSamples: Number(params.get("maxSamples")) } : {}),
+    ...(params.get("normalStep") ? { normalStep: Number(params.get("normalStep")) } : {}),
+  };
+  const g = await renderLevelSetCore(device, pool, "gbuffer", frame, [draw], W, H);
+  const again = await renderLevelSetCore(device, pool, "gbuffer", frame, [draw], W, H);
+  result.inPageIdentical = g.color.every((v, i) => Object.is(v, again.color[i])) && g.depth.every((v, i) => v === again.depth[i]);
+
+  // The G-buffer as the three probe's arrays: (normal, mask) and (world hit, 1), the hit from the pixel's ray + t.
+  const projectionInverse = camera.projectionMatrixInverse.elements;
+  const cameraWorld = camera.matrixWorld.elements;
+  const viewProjection = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements;
+  const gpuNormal = new Float32Array(W * H * 4);
+  const gpuHit = new Float32Array(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const n = g.color.subarray(i * 4, i * 4 + 3);
+      if (!(Math.hypot(n[0]!, n[1]!, n[2]!) > 0.5)) continue;
+      const ray = levelSetViewRay(levelSetPixelUv([x + 0.5, y + 0.5], [0, 0, W, H]), projectionInverse, cameraWorld, false);
+      const t = g.color[i * 4 + 3]!;
+      gpuNormal.set([n[0]!, n[1]!, n[2]!, 1], i * 4);
+      gpuHit.set([ray.origin[0] + ray.dir[0] * t, ray.origin[1] + ray.dir[1] * t, ray.origin[2] + ray.dir[2] * t, 1], i * 4);
+    }
+  }
+
+  let display: Uint8Array;
+  if (def!.output === "normals") {
+    // His isolate: 'normals' encoding: view-space normal * 0.5 + 0.5, black where nothing was hit.
+    const linear = new Float32Array(W * H * 4);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < W * H; i++) {
+      linear[i * 4 + 3] = 1;
+      if (!gpuNormal[i * 4 + 3]) continue;
+      v.fromArray(gpuNormal, i * 4).transformDirection(camera.matrixWorldInverse);
+      linear.set([v.x * 0.5 + 0.5, v.y * 0.5 + 0.5, v.z * 0.5 + 0.5], i * 4);
+    }
+    display = toDisplay(linear);
+  } else {
+    const asis = def!.output === "shaded";
+    const lit = { ...frame, light: asis ? { direction: SUN_DIRECTION, color: [1, 1, 1] as [number, number, number] } : PROBE_LIGHT, ambient: asis ? HEMI_AMBIENT : PROBE_AMBIENT };
+    const shade = await renderLevelSetCore(device, pool, "shade", lit, [{ ...draw, color: asis ? [1, 1, 1] : PROBE_COLOR }], W, H);
+    let shadeMax = 0;
+    if (!asis) {
+      // The shade output against the Lambert + ambient of the G-buffer's normal (the same trace, another pipeline).
+      const L = new THREE.Vector3(...PROBE_LIGHT.direction).normalize();
+      for (let i = 0; i < W * H; i++) {
+        if (!gpuNormal[i * 4 + 3] || shade.color[i * 4 + 3]! !== 1) continue;
+        const ndl = Math.max(0, -(gpuNormal[i * 4]! * L.x + gpuNormal[i * 4 + 1]! * L.y + gpuNormal[i * 4 + 2]! * L.z) * (MUTATE === "shade-sign" ? -1 : 1));
+        for (let c = 0; c < 3; c++) {
+          const expected = PROBE_COLOR[c]! * (PROBE_AMBIENT[c]! + PROBE_LIGHT.color[c]! * ndl);
+          shadeMax = Math.max(shadeMax, Math.abs(shade.color[i * 4 + c]! - expected));
+        }
+      }
+    }
+    const linear = shade.color;
+    for (let i = 0; i < W * H; i++) {
+      if (linear[i * 4 + 3] === 1) continue;
+      linear.set(asis ? [HIS_BACKGROUND.r, HIS_BACKGROUND.g, HIS_BACKGROUND.b, 1] : [0, 0, 0, 1], i * 4);
+    }
+    display = toDisplay(linear);
+    if (def!.output === "probe" && TWIN) {
+      const stats = compareTwin(image, info, camera, gpuNormal, gpuHit, sdfToIndex, objectToWorld, true);
+      // frag_depth vs the twin's NDC depth of the GPU's own hit (isolates the depth formula from the hit noise).
+      const vp = new THREE.Matrix4().fromArray(viewProjection);
+      let depthMax = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (!gpuNormal[i * 4 + 3]) continue;
+        const p = gpuHit.subarray(i * 4, i * 4 + 3);
+        const twin = MUTATE === "depth-linear" ? new THREE.Vector4(p[0]!, p[1]!, p[2]!, 1).applyMatrix4(vp).z : levelSetNdcDepth([...p], viewProjection);
+        depthMax = Math.max(depthMax, Math.abs(g.depth[i]! - twin));
+      }
+      result.twin = { ...stats, depthMaxAbs: depthMax, shadeMaxAbs: shadeMax };
+    }
+  }
+
+  if (VS_THREE) {
+    const three = await threeProbe(renderer, pool, id, camera);
+    const worldPerVoxel = info.voxelSize[0]! * objectToWorld.getMaxScaleOnAxis();
+    let coreHits = 0;
+    let threeHits = 0;
+    let both = 0;
+    let union = 0;
+    let hitMax = 0;
+    let normalMax = 0;
+    for (let i = 0; i < W * H; i++) {
+      const a = gpuNormal[i * 4 + 3]! > 0.5;
+      const b = three.normal[i * 4 + 3]! > 0.5;
+      coreHits += a ? 1 : 0;
+      threeHits += b ? 1 : 0;
+      if (a || b) union++;
+      if (!(a && b)) continue;
+      both++;
+      hitMax = Math.max(hitMax, Math.hypot(gpuHit[i * 4]! - three.hit[i * 4]!, gpuHit[i * 4 + 1]! - three.hit[i * 4 + 1]!, gpuHit[i * 4 + 2]! - three.hit[i * 4 + 2]!) / worldPerVoxel);
+      normalMax = Math.max(normalMax, angleDeg([...gpuNormal.subarray(i * 4, i * 4 + 3)], [...three.normal.subarray(i * 4, i * 4 + 3)]));
+    }
+    result.vsThree = { coreHits, threeHits, iou: union ? both / union : 1, hitMaxVoxels: hitMax, normalMaxDeg: normalMax };
+  }
+  return display;
+}
+
 function compareTwin(
   image: Uint32Array,
   info: { worldToIndex: Float64Array; voxelSize: readonly number[] },
@@ -390,8 +591,13 @@ function compareTwin(
   gpuHit: Float32Array,
   sdfToIndex: number,
   objectToWorld: THREE.Matrix4,
+  core = false,
 ): Stats {
   const t0 = performance.now();
+  // K6.6 core: the surface twins (pixel uv, view ray, surface), with ?mutate= breaking one term.
+  const projectionInverse = camera.projectionMatrixInverse.elements;
+  const cameraWorld = camera.matrixWorld.elements;
+  const viewProjection = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements;
   const gpuMask = new Uint8Array(W * H);
   const cpuMask = new Uint8Array(W * H);
   const cpuNormal = new Float32Array(W * H * 3);
@@ -403,6 +609,22 @@ function compareTwin(
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       gpuMask[i] = gpuNormal[i * 4 + 3]! > 0.5 ? 1 : 0;
+      if (core) {
+        const uv = levelSetPixelUv(MUTATE === "pixel-corner" ? [x, y] : [x + 0.5, y + 0.5], [0, 0, W, H]);
+        const ray = levelSetViewRay(uv, projectionInverse, cameraWorld, MUTATE === "ray-ortho");
+        const s = levelSetSurface(image, ray, info.worldToIndex, viewProjection, {
+          sdfToIndex,
+          maxSamples: Number(params.get("maxSamples") ?? 512),
+          normalStep: Number(params.get("normalStep") ?? 1),
+        });
+        samples += s.samples;
+        if (!s.hit) continue;
+        cpuMask[i] = 1;
+        cpuHit.set(s.world, i * 3);
+        const n = MUTATE === "normal-view" ? new THREE.Vector3(...s.normal).transformDirection(camera.matrixWorldInverse).toArray() : s.normal;
+        cpuNormal.set(n, i * 3);
+        continue;
+      }
       const { o, d } = pixelRay(camera, x, y);
       const oi = affine(info.worldToIndex, o, 1);
       const di = affine(info.worldToIndex, d, 0);
@@ -507,7 +729,7 @@ function project(camera: THREE.Camera, p: THREE.Vector3): { x: number; y: number
   return { x: ((ndc.x + 1) / 2) * W, y: ((1 - ndc.y) / 2) * H, depth: -view.z };
 }
 
-async function pointsScene(renderer: WebGPURenderer): Promise<Uint8Array> {
+async function pointsScene(renderer: WebGPURenderer, device: GPUDevice): Promise<Uint8Array> {
   const manifest = def!.kind === "points" && def!.output !== "points" ? await loadManifest(def!.name) : def!.parityExpected ? await loadManifest(def!.name) : null;
   let points: VDBPoints;
   let camera: THREE.PerspectiveCamera;
@@ -550,12 +772,37 @@ async function pointsScene(renderer: WebGPURenderer): Promise<Uint8Array> {
   scene.updateMatrixWorld(true);
   (points.material as unknown as { toneMapped: boolean }).toneMapped = false;
   renderer.setClearColor(0x000000, 1);
-  const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
-  await renderTo(renderer, scene, camera, rt);
-  const linear = await readHalf(renderer, rt);
-  await renderTo(renderer, scene, camera, rt);
-  const again = await readHalf(renderer, rt);
-  result.inPageIdentical = linear.every((v, i) => v === again[i]);
+  let linear: Float32Array;
+  let drawn = (points as unknown as { count: number }).count;
+  if (BACKEND === "core") {
+    // K6.6: the raw sprite pass (core WGSL), the same points, camera and placement; the pixel scale from the
+    // projection (vdbPointPixelScale), checked against VDBPoints' own.
+    if (camera.coordinateSystem !== THREE.WebGPUCoordinateSystem) {
+      camera.coordinateSystem = THREE.WebGPUCoordinateSystem;
+      camera.updateProjectionMatrix();
+    }
+    const pixelScale = vdbPointPixelScale(points.diameter, camera.projectionMatrix.elements, H, points.matrixWorld.elements);
+    points.updatePixelScale(renderer as never, camera);
+    result.pixelScale = { core: pixelScale, three: points.pixelScale.value };
+    points.pixelScale.value = pixelScale;
+    const data = { positions: points.positionAttribute.array as Float32Array, colors: (points.colorAttribute?.array as Float32Array | undefined) ?? null, count: points.pointCount };
+    const frame = { view: camera.matrixWorldInverse.elements, projection: camera.projectionMatrix.elements, model: points.matrixWorld.elements, viewport: [0, 0, W, H] as const, pixelScale };
+    const first = await renderPointsCore(device, data, frame, W, H);
+    const second = await renderPointsCore(device, data, frame, W, H);
+    linear = first.rgba;
+    drawn = first.count;
+    result.inPageIdentical = linear.every((v, i) => Object.is(v, second.rgba[i]));
+    if (asis) {
+      for (let i = 0; i < W * H; i++) if (!(linear[i * 4]! + linear[i * 4 + 1]! + linear[i * 4 + 2]! > 0)) linear.set([HIS_BACKGROUND.r, HIS_BACKGROUND.g, HIS_BACKGROUND.b, 1], i * 4);
+    }
+  } else {
+    const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+    await renderTo(renderer, scene, camera, rt);
+    linear = await readHalf(renderer, rt);
+    await renderTo(renderer, scene, camera, rt);
+    const again = await readHalf(renderer, rt);
+    result.inPageIdentical = linear.every((v, i) => v === again[i]);
+  }
   if (asis) return toDisplay(linear);
 
   const covered = (x: number, y: number) => {
@@ -598,8 +845,11 @@ async function pointsScene(renderer: WebGPURenderer): Promise<Uint8Array> {
           const dist = Math.hypot(x + 0.5 - q.x, y + 0.5 - q.y);
           // The disc map is mipmapped (his texture defaults), so a sprite of a few pixels reads a blurred disc
           // whose alpha-0.5 edge moves toward the quad: strays are judged against the sprite's square quad.
-          const margin = Math.max(0.05, (2 * r) / 64);
-          if (Math.max(Math.abs(x + 0.5 - q.x), Math.abs(y + 0.5 - q.y)) <= r + margin) near[y * W + x] = 1;
+          // K6.6 core: the raw pass cuts an analytic disc, so strays are judged against the disc itself; the margin
+          // covers the rasterizer's vertex snapping (SwiftShader: measured edges up to ~0.03 px off the f64 disc).
+          const margin = BACKEND === "core" ? 0.05 : Math.max(0.05, (2 * r) / 64);
+          const inside = BACKEND === "core" ? dist <= r + margin : Math.max(Math.abs(x + 0.5 - q.x), Math.abs(y + 0.5 - q.y)) <= r + margin;
+          if (inside) near[y * W + x] = 1;
           if (dist <= r - margin) {
             centresTotal++;
             if (covered(x, y)) centresCovered++;
@@ -627,7 +877,7 @@ async function pointsScene(renderer: WebGPURenderer): Promise<Uint8Array> {
         }
       }
     }
-    Object.assign(result.points!, { covered: coveredCount, centresCovered, centresTotal, stray, firstStray, drawn: (points as unknown as { count: number }).count });
+    Object.assign(result.points!, { covered: coveredCount, centresCovered, centresTotal, stray, firstStray, drawn });
   }
   return toDisplay(linear);
 }
@@ -649,7 +899,14 @@ async function main(): Promise<void> {
   await renderer.init();
   renderer.setPixelRatio(1);
   renderer.setSize(W, H, false);
-  const display = def.kind === "levelset" ? await levelSetScene(renderer, device) : await pointsScene(renderer);
+  if (def.kind === "sprite") {
+    result.sprite = await spriteProbe(device, MUTATE as SpriteMutation);
+    result.width = 1;
+    result.height = 1;
+    log(`sprite probe${MUTATE !== "none" ? ` (mutate ${MUTATE})` : ""}: ${JSON.stringify(result.sprite)}`, result.sprite.over === 0 ? "ok" : "fail");
+    return;
+  }
+  const display = def.kind === "levelset" ? await levelSetScene(renderer, device) : await pointsScene(renderer, device);
   result.width = W;
   result.height = H;
   result.rgba = toBase64(display);
