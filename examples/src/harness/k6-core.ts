@@ -21,6 +21,7 @@
 import {
   CHUNK_PROBE_INPUTS,
   CHUNK_PROBE_OUTPUTS,
+  VDB_FRAME_ENVIRONMENT,
   VDB_FRAME_LIGHTS,
   VDB_FRAME_UNIFORMS,
   VDBUniformWriter,
@@ -33,6 +34,8 @@ import {
   vdbFrameGatherSpec,
   vdbFrameRendererGrid,
   vdbFrameRendererTextures,
+  vdbFrameRendererEnvironment,
+  VDBFrameEnvironmentState,
   vdbFrameResolveSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
@@ -86,6 +89,19 @@ import {
   vdbFrameStackSample,
   vdbFrameStackShadows,
   vdbFrameTransmittanceVoxel3d,
+  vdbFrameEnvironmentGridVoxel3d,
+  vdbFrameEnvironmentAreaTexel,
+  vdbFrameEnvironmentCubeTexel,
+  vdbFrameEnvironmentBlurTexel,
+  vdbFrameEnvironmentIrradianceSh,
+  vdbFrameEnvironmentReduce,
+  vdbFrameEnvironmentDensityTerm,
+  vdbFrameEnvironmentMapWidth,
+  vdbFrameEnvironmentMapHeight,
+  VDB_FRAME_ENV_WORK_WIDTH,
+  VDB_FRAME_ENV_WORK_HEIGHT,
+  type VDBFrameEnvImage,
+  type VDBFrameEnvironmentGpuResult,
   type VDBFrameGridLayout,
   type VDBFrameTexture3d,
   type VDBSparseVolumeCpu,
@@ -132,6 +148,13 @@ interface Result {
   builds?: { first: number; second: number };
   /** `?probe=frame`: the shadow grid and the transmittance stacks vs their twins (`stats` is the scatter texture). */
   gridStats?: Stats;
+  /** K6.2b `?probe=environment`: the work map, his map and the environment buffer vs their twins; `?probe=frame&env=`: the environment grid. */
+  workStats?: Stats;
+  mapStats?: Stats;
+  bufferStats?: Stats;
+  environmentGridStats?: Stats;
+  /** K6.2b: kernel runs after identical / intensity / rotation updates, and the lights the GPU found. */
+  environment?: { runs: unknown[]; count: number; mode: number; valid: number; directions: number[][]; colors: number[][] };
   transmittanceStats?: Stats;
   /** `?probe=frame`: live cascades, redraw counters after a second identical update. */
   frame?: { cascades: number; redraw: unknown };
@@ -356,7 +379,7 @@ async function probeView(device: GPUDevice): Promise<void> {
   const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(built.pipeline);
-  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frameBuffer } }, { binding: 1, resource: { buffer: lightsBuffer } }, { binding: 2, resource: device.createSampler() }] }));
+  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frameBuffer } }, { binding: 1, resource: { buffer: lightsBuffer } }, { binding: 2, resource: device.createSampler() }, envEntry(device)] }));
   pass.setBindGroup(1, device.createBindGroup({ layout: built.layouts[1]!, entries: [{ binding: 0, resource: { buffer: storage } }] }));
   pass.dispatchWorkgroups(Math.ceil(rows / 64));
   pass.end();
@@ -993,6 +1016,11 @@ function countBuilds(device: GPUDevice): { readonly count: number; restore(): vo
   };
 }
 
+/** Group 0 binding 3 (K6.2b): an empty environment buffer for the probes that run one kernel by hand. */
+function envEntry(device: GPUDevice): GPUBindGroupEntry {
+  return { binding: 3, resource: { buffer: device.createBuffer({ size: VDB_FRAME_ENVIRONMENT.size, usage: GPUBufferUsage.UNIFORM }) } };
+}
+
 function frameUniforms(device: GPUDevice, values: Record<string, number | ArrayLike<number>>): { frame: GPUBuffer; lights: GPUBuffer } {
   const w = new VDBUniformWriter(VDB_FRAME_UNIFORMS.size);
   for (const [k, v] of Object.entries(values)) w.set(VDB_FRAME_UNIFORMS, 0, k, v);
@@ -1060,7 +1088,7 @@ async function probeResolve(device: GPUDevice): Promise<void> {
   const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(built.pipeline);
-  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }] }));
+  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }, envEntry(device)] }));
   pass.setBindGroup(
     1,
     device.createBindGroup({
@@ -1161,7 +1189,7 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
   const enc = device.createCommandEncoder();
   const pass = enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: "clear", clearValue: [0, 0, 0, 0], storeOp: "store" }] });
   pass.setPipeline(built.pipeline);
-  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }] }));
+  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }, envEntry(device)] }));
   pass.setBindGroup(
     1,
     device.createBindGroup({
@@ -1190,6 +1218,190 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
       compare(stats, [x, py], [out[i * 4]!, out[i * 4 + 1]!, out[i * 4 + 2]!, out[i * 4 + 3]!], alpha > 0 ? cpu : [0, 0, 0, 0]);
     }
   result.stats = stats;
+}
+
+// ------------------------------------------------------------------ K6.2b environment
+
+/** |gpu − cpu| ≤ rel · |cpu| + abs per value (f32 outputs); `maxUlp` holds the largest relative error. */
+function compareRel(stats: Stats, at: number[], gpu: readonly number[], cpu: readonly number[], rel: number, abs: number): void {
+  stats.compared++;
+  if (cpu.some((v) => v !== 0) || gpu.some((v) => v !== 0)) stats.covered++;
+  let bad = false;
+  for (let i = 0; i < cpu.length; i++) {
+    const d = Math.abs(gpu[i]! - cpu[i]!);
+    stats.maxAbs = Math.max(stats.maxAbs, d);
+    if (Math.abs(cpu[i]!) > abs) stats.maxUlp = Math.max(stats.maxUlp, d / Math.abs(cpu[i]!));
+    if (!(d <= rel * Math.abs(cpu[i]!) + abs)) bad = true;
+  }
+  if (bad) {
+    stats.over++;
+    stats.firstBad ??= { at, gpu: [...gpu], cpu: [...cpu] };
+  }
+}
+
+/** The synthetic host environment of the probes: a sky with a sun and a red blob (equirect) or six graded faces (cube). */
+function synthEnvironment(device: GPUDevice, projection: "equirect" | "cube", format: "rgba16float" | "rgba32float"): { texture: GPUTexture; cpu: VDBFrameEnvImage[]; size: number } {
+  const round = format === "rgba16float" ? roundHalf : (x: number) => Math.fround(x);
+  const upload = (texture: GPUTexture, data: Float64Array, w: number, h: number, layer: number) => {
+    const bytes = format === "rgba16float" ? Uint16Array.from(data, (v) => vdbFloatToHalf(v)) : Float32Array.from(data);
+    device.queue.writeTexture({ texture, origin: [0, 0, layer] }, bytes, { bytesPerRow: w * (format === "rgba16float" ? 8 : 16), rowsPerImage: h }, [w, h, 1]);
+  };
+  if (projection === "equirect") {
+    const [w, h] = [300, 150];
+    const data = new Float64Array(w * h * 4);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const u = (x + 0.5) / w;
+        const v = (y + 0.5) / h;
+        let c = v < 0.5 ? [0.2 + 0.3 * (1 - v), 0.3 + 0.4 * (1 - v), 0.6 + 0.3 * (1 - v)] : [0.15 * v, 0.12 * v, 0.1 * v];
+        if (Math.hypot((u - 0.7) * w, (v - 0.3) * h) < 2.2) c = [40, 36, 30];
+        if (Math.hypot((u - 0.2) * w, (v - 0.45) * h) < 8) c = [2, 0.3, 0.2];
+        for (let k = 0; k < 3; k++) data[(y * w + x) * 4 + k] = round(c[k]!);
+        data[(y * w + x) * 4 + 3] = 1;
+      }
+    const texture = device.createTexture({ size: [w, h], format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    upload(texture, data, w, h, 0);
+    return { texture, cpu: [{ data, width: w, height: h }], size: w };
+  }
+  const size = 40;
+  const texture = device.createTexture({ size: [size, size, 6], format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  const cpu: VDBFrameEnvImage[] = [];
+  for (let f = 0; f < 6; f++) {
+    const data = new Float64Array(size * size * 4);
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        let c = [0.2 + 0.1 * f, 0.3 + (0.4 * y) / size, 0.5 + (0.3 * x) / size];
+        if (f === 0 && Math.hypot(x - 12, y - 15) < 1.6) c = [30, 28, 25];
+        for (let k = 0; k < 3; k++) data[(y * size + x) * 4 + k] = round(c[k]!);
+        data[(y * size + x) * 4 + 3] = 1;
+      }
+    upload(texture, data, size, size, f);
+    cpu.push({ data, width: size, height: size });
+  }
+  return { texture, cpu, size };
+}
+
+/** A world → map 3x3 (column-major): a reflection of y (three's flipY equirect) times rotations about y and x. */
+function probeEnvRotation(): number[] {
+  const [a, b] = [0.7, 0.3];
+  const ry = [Math.cos(a), 0, Math.sin(a), 0, 1, 0, -Math.sin(a), 0, Math.cos(a)];
+  const rx = [1, 0, 0, 0, Math.cos(b), -Math.sin(b), 0, Math.sin(b), Math.cos(b)];
+  const mul = (p: number[], q: number[]) => [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => p[r * 3]! * q[c]! + p[r * 3 + 1]! * q[3 + c]! + p[r * 3 + 2]! * q[6 + c]!));
+  const m = mul([1, 0, 0, 0, -1, 0, 0, 0, 1], mul(ry, rx)); // row-major
+  return [0, 1, 2].flatMap((c) => [0, 1, 2].map((r) => m[r * 3 + c]!));
+}
+
+async function readBuffer(device: GPUDevice, buffer: GPUBuffer, size: number): Promise<ArrayBuffer> {
+  const read = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(buffer, 0, read, 0, size);
+  device.queue.submit([enc.finish()]);
+  await read.mapAsync(GPUMapMode.READ);
+  const out = read.getMappedRange().slice(0);
+  read.unmap();
+  read.destroy();
+  return out;
+}
+
+/** The environment buffer as plain values. */
+function parseEnvironment(bytes: ArrayBuffer): VDBFrameEnvironmentGpuResult & { info: number[] } {
+  const u32 = new Uint32Array(bytes);
+  const f32 = new Float32Array(bytes);
+  const at = (name: string) => VDB_FRAME_ENVIRONMENT.fields.get(name)!.offset / 4;
+  const vec = (name: string, i: number): VDBFrameVec3 => [f32[at(name) + i * 4]!, f32[at(name) + i * 4 + 1]!, f32[at(name) + i * 4 + 2]!];
+  const info = [u32[0]!, u32[1]!, u32[2]!, u32[3]!];
+  const count = info[0]!;
+  return {
+    info,
+    valid: info[2] === 1,
+    mode: info[1]!,
+    count,
+    sh: Array.from({ length: 9 }, (_, k) => vec("sh", k)),
+    directions: Array.from({ length: count }, (_, i) => vec("direction", i)),
+    colors: Array.from({ length: count }, (_, i) => vec("color", i)),
+  };
+}
+
+/** Compares the environment buffer with its twin (lights by index: same count, directions, colours; the SH). */
+function compareEnvironment(stats: Stats, gpu: VDBFrameEnvironmentGpuResult, cpu: VDBFrameEnvironmentGpuResult): void {
+  compareRel(stats, [-1], [gpu.valid ? 1 : 0, gpu.mode, gpu.count], [cpu.valid ? 1 : 0, cpu.mode, cpu.count], 0, 0);
+  const scale = Math.max(1e-6, ...cpu.colors.flat().map(Math.abs), ...cpu.sh.flat().map(Math.abs));
+  for (let i = 0; i < Math.min(gpu.count, cpu.count); i++) {
+    compareRel(stats, [0, i], gpu.directions[i]!, cpu.directions[i]!, 0, 2e-3);
+    compareRel(stats, [1, i], gpu.colors[i]!, cpu.colors[i]!, 2e-3, 1e-5 * scale);
+  }
+  for (let k = 0; k < 9; k++) compareRel(stats, [2, k], gpu.sh[k]!, cpu.sh[k]!, 2e-3, 1e-5 * scale);
+}
+
+/** Reads the environment state's maps and buffer and compares them with the twins (`?probe=environment`). */
+async function checkEnvironment(
+  device: GPUDevice,
+  maps: { work: GPUTexture; map: GPUTexture },
+  buffer: GPUBuffer,
+  o: { projection: "equirect" | "cube"; source: VDBFrameEnvImage[]; size: number; rotation: number[]; settings: { environmentLighting: string; environmentSamples: number; environmentShOrder: number; pairs: boolean; intensity: number } },
+): Promise<VDBFrameEnvironmentGpuResult> {
+  const WW = VDB_FRAME_ENV_WORK_WIDTH;
+  const WH = VDB_FRAME_ENV_WORK_HEIGHT;
+  const work = new Float32Array((await readTexture(device, maps.work, [WW, WH, 1], 16)).buffer);
+  const map = new Float32Array((await readTexture(device, maps.map, [vdbFrameEnvironmentMapWidth, vdbFrameEnvironmentMapHeight, 1], 16)).buffer);
+  const gpu = parseEnvironment(await readBuffer(device, buffer, VDB_FRAME_ENVIRONMENT.size));
+  // (a) the work map from the host texture (f16-rounded source as uploaded)
+  const ws = newStats("1e-3 relative + 1e-6 (rgba32float work map vs vdbFrameEnvironmentArea/CubeTexel)");
+  const workW = MUTATE === "env-area" ? WW + 1 : WW;
+  for (let y = 0; y < WH; y++)
+    for (let x = 0; x < WW; x++) {
+      const cpu = o.projection === "cube" ? vdbFrameEnvironmentCubeTexel(o.source, MUTATE === "env-area" ? o.size + 8 : o.size, x, y) : vdbFrameEnvironmentAreaTexel(o.source[0]!, x, y, workW);
+      const i = (y * WW + x) * 4;
+      compareRel(ws, [x, y], [work[i]!, work[i + 1]!, work[i + 2]!], cpu.slice(0, 3), 1e-3, 1e-6);
+    }
+  result.workStats = ws;
+  // (b) his 64 x 32 map from the read-back work map
+  const workImage: VDBFrameEnvImage = { data: work, width: WW, height: WH };
+  const ms = newStats("1e-3 relative + 1e-6 (rgba32float map vs vdbFrameEnvironmentBlurTexel on the read-back work map)");
+  for (let y = 0; y < vdbFrameEnvironmentMapHeight; y++)
+    for (let x = 0; x < vdbFrameEnvironmentMapWidth; x++) {
+      const cpu = vdbFrameEnvironmentBlurTexel(workImage, o.rotation, x, y, MUTATE === "env-blur" ? 0.3 : 0.4);
+      const i = (y * vdbFrameEnvironmentMapWidth + x) * 4;
+      compareRel(ms, [x, y], [map[i]!, map[i + 1]!, map[i + 2]!], cpu.slice(0, 3), 1e-3, 1e-6);
+    }
+  result.mapStats = ms;
+  // (c) the buffer from the read-back maps
+  const sh = vdbFrameEnvironmentIrradianceSh(workImage, MUTATE === "env-sh" ? [0, 0, -1, 0, 1, 0, 1, 0, 0] : o.rotation);
+  const cpu = vdbFrameEnvironmentReduce(map, sh, { ...o.settings, pairs: MUTATE === "env-seeds" ? !o.settings.pairs : o.settings.pairs });
+  const bs = newStats("count exact; directions 2e-3; colours and SH 2e-3 relative (environment buffer vs vdbFrameEnvironmentReduce on the read-back maps)");
+  compareEnvironment(bs, gpu, cpu);
+  result.bufferStats = bs;
+  return gpu;
+}
+
+async function probeEnvironment(device: GPUDevice): Promise<void> {
+  const projection: "equirect" | "cube" = params.get("projection") === "cube" ? "cube" : "equirect";
+  const format = params.get("format") === "rgba32float" ? "rgba32float" : "rgba16float";
+  const mode = (params.get("mode") ?? "directional") as "directional" | "spherical-harmonics" | "outward";
+  const pairs = params.get("pairs") === "1";
+  const order = Number(params.get("order") ?? 2);
+  const rotation = params.get("rotate") === "1" ? probeEnvRotation() : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const src = synthEnvironment(device, projection, format);
+  const state = new VDBFrameEnvironmentState(device, "k6 probe");
+  const settings = { environmentLighting: mode, environmentSamples: Number(params.get("samples") ?? 8), environmentShOrder: order, multipleScattering: pairs };
+  const env = { id: 1, revision: 0, texture: src.texture, projection, rotation: Float32Array.from(rotation), intensity: 0.7 };
+  const run = (e: typeof env, s: typeof settings) => {
+    state.prepare(e, s);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    state.record(pass);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+    return { ...state.runs };
+  };
+  const runs: unknown[] = [run(env, settings)];
+  const gpu = await checkEnvironment(device, state.maps!, state.buffer, { projection, source: src.cpu, size: src.size, rotation: Array.from(Float32Array.from(rotation)), settings: { ...settings, pairs, intensity: 0.7 } });
+  // the stages rerun only for their inputs: identical (nothing), intensity (reduce), rotation (blur + reduce), revision (all)
+  runs.push(run(env, settings), run({ ...env, intensity: 0.5 }, settings), run({ ...env, intensity: 0.5, rotation: Float32Array.from([0, 0, 1, 0, 1, 0, -1, 0, 0]) }, settings), run({ ...env, revision: 1 }, settings));
+  result.environment = { runs, count: gpu.count, mode: gpu.mode, valid: gpu.valid ? 1 : 0, directions: gpu.directions, colors: gpu.colors };
+  result.stats = result.workStats!;
+  state.dispose();
+  src.texture.destroy();
 }
 
 async function probeCompile(device: GPUDevice): Promise<void> {
@@ -1270,6 +1482,7 @@ async function main(): Promise<void> {
   else if (PROBE === "integrate") await probeIntegrate(device);
   else if (PROBE === "compile") await probeCompile(device);
   else if (PROBE === "frame") await probeFrame(device);
+  else if (PROBE === "environment") await probeEnvironment(device);
   else throw new Error(`unknown ?probe=${PROBE}`);
   await device.queue.onSubmittedWorkDone();
   const s = result.stats;

@@ -54,7 +54,16 @@ export type TwinMutation =
   | "diffusion"
   | "slots"
   | "sky"
-  | "partials";
+  | "partials"
+  // K6.2b environment
+  | "env-area"
+  | "env-blur"
+  | "env-sh"
+  | "env-seeds"
+  | "env-slot"
+  | "env-grid"
+  | "env-outward"
+  | "env-lights";
 
 /** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
 export interface TwinSampler {

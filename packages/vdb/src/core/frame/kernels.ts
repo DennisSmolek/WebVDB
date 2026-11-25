@@ -3,7 +3,8 @@
  * of each pipeline and its bind-group layouts (groups 0–2, no gaps). The renderer records them; the
  * `k6-core` harness runs each alone against its CPU twin; tests check their limits and bytes.
  *
- * Group 0 (every kernel): `VdbFrameUniforms`, `VdbFrameLights`, a linear clamp sampler.
+ * Group 0 (every kernel): `VdbFrameUniforms`, `VdbFrameLights`, a linear clamp sampler, the environment buffer
+ * (K6.2b; the environment kernels have their own group 0: `VdbFrameEnvParams`).
  * Group 1: the kernel's volumes / group records and textures. Group 2: the source (gather only).
  */
 
@@ -21,6 +22,17 @@ import {
   vdbFrameTransmittanceWgsl,
 } from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS, vdbFrameResolveWgsl } from "./wgsl/resolve.js";
+import {
+  ENV_BLUR_BINDINGS,
+  ENV_GRID_BINDINGS,
+  ENV_PREFILTER_BINDINGS,
+  ENV_REDUCE_BINDINGS,
+  vdbFrameEnvAreaWgsl,
+  vdbFrameEnvBlurWgsl,
+  vdbFrameEnvCubeWgsl,
+  vdbFrameEnvironmentGridWgsl,
+  vdbFrameEnvReduceWgsl,
+} from "./wgsl/environment.js";
 import { VDB_FRAME_COMPOSITE_COLOR_WGSL, VDB_FRAME_INTEGRATE_TAPS_WGSL, VDB_FRAME_SLICE_COORD_WGSL, vdbFrameCompositeWgsl } from "./wgsl/integrate.js";
 import { VDB_FRAME_MAX_VOLUMES, vdbFrameUniformsWgsl } from "./uniforms.js";
 import type { VDBComputeSpec, VDBRenderSpec } from "./pipelines.js";
@@ -37,7 +49,14 @@ export const GROUP0_LAYOUT: GPUBindGroupLayoutDescriptor = {
     { binding: 0, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
     { binding: 1, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
     { binding: 2, visibility: COMPUTE_FRAGMENT, sampler: { type: "filtering" } },
+    // K6.2b: the environment buffer (written by envReduce, read as a uniform by the kernels after it)
+    { binding: 3, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
   ],
+};
+
+/** Group 0 of the environment kernels: their parameters (`VdbFrameEnvParams`). */
+export const ENV_GROUP0_LAYOUT: GPUBindGroupLayoutDescriptor = {
+  entries: [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } }],
 };
 
 /** Pipeline-key options of the gather kernel. */
@@ -50,7 +69,7 @@ export interface VDBFrameGatherKey {
 }
 
 /** The source's VDB module (sparse, K6.7) and its `vdbSrc*` WGSL at group 2, then the frame uniforms. */
-function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined): string {
+function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined, environment = false): string {
   // One VDB module per shader (design §5.1): a sparse source (K6.7) gives it; a dense source has none.
   const withModule = source as VDBVolumeSource & { moduleWgsl?: (slot: VDBSlot) => string };
   if (source.kind !== "dense" && typeof withModule.moduleWgsl !== "function") {
@@ -59,7 +78,7 @@ function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined):
   return [
     ...(typeof withModule.moduleWgsl === "function" ? [withModule.moduleWgsl(SOURCE_SLOT)] : []),
     source.wgsl({ slot: SOURCE_SLOT, profile: "march" }),
-    vdbFrameUniformsWgsl(maxVolumes ?? VDB_FRAME_MAX_VOLUMES),
+    vdbFrameUniformsWgsl(maxVolumes ?? VDB_FRAME_MAX_VOLUMES, { environment }),
   ].join("\n");
 }
 
@@ -69,7 +88,7 @@ export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameG
     key.lighting === "frame"
       ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels })
       : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels });
-  return `${sourcePrelude(source, key.maxVolumes)}\n${body}`;
+  return `${sourcePrelude(source, key.maxVolumes, true)}\n${body}`;
 }
 
 /** The source layout part of a label: its kind, channels and LOD levels. */
@@ -86,7 +105,10 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
     { binding: b.scatter, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
   ];
   if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
-  if (frame) group1.push({ binding: FRAME_GATHER_BINDINGS.transmittance, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
+  if (frame) {
+    group1.push({ binding: FRAME_GATHER_BINDINGS.transmittance, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
+    group1.push({ binding: FRAME_GATHER_BINDINGS.environmentGrid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
+  }
   return {
     label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}; ${sourceChannels(source)})`,
     code: vdbFrameGatherKernelWgsl(source, key),
@@ -124,7 +146,7 @@ export function vdbFrameTransmittanceSpec(): VDBComputeSpec {
   const b = TRANSMITTANCE_BINDINGS;
   return {
     label: "vdb frame transmittance",
-    code: `${vdbFrameUniformsWgsl()}\n${vdbFrameTransmittanceWgsl()}`,
+    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameTransmittanceWgsl()}`,
     entryPoint: "vdbFrameTransmittanceCs",
     groups: [
       GROUP0_LAYOUT,
@@ -132,6 +154,84 @@ export function vdbFrameTransmittanceSpec(): VDBComputeSpec {
         entries: [
           { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
           { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** `envPrefilter` (K6.2b): the host equirect (2D) or cube (a 6-layer 2D array view) texture → the work map. */
+export function vdbFrameEnvPrefilterSpec(projection: "equirect" | "cube"): VDBComputeSpec {
+  const b = ENV_PREFILTER_BINDINGS;
+  const cube = projection === "cube";
+  return {
+    label: `vdb frame environment prefilter (${projection})`,
+    code: cube ? vdbFrameEnvCubeWgsl() : vdbFrameEnvAreaWgsl(),
+    entryPoint: cube ? "vdbFrameEnvCubeCs" : "vdbFrameEnvAreaCs",
+    groups: [
+      ENV_GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.source, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: cube ? "2d-array" : "2d" } },
+          { binding: b.work, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** `envPrefilter`'s GGX (roughness 0.4) convolution of the work map into his 64 × 32 map (K6.2b). */
+export function vdbFrameEnvBlurSpec(): VDBComputeSpec {
+  const b = ENV_BLUR_BINDINGS;
+  return {
+    label: "vdb frame environment blur",
+    code: vdbFrameEnvBlurWgsl(),
+    entryPoint: "vdbFrameEnvBlurCs",
+    groups: [
+      ENV_GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.work, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+          { binding: b.map, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** `envReduce` (K6.2b): the environment buffer (lights, SH) from the maps; one workgroup. */
+export function vdbFrameEnvReduceSpec(): VDBComputeSpec {
+  const b = ENV_REDUCE_BINDINGS;
+  return {
+    label: "vdb frame environment reduce",
+    code: vdbFrameEnvReduceWgsl(),
+    entryPoint: "vdbFrameEnvReduceCs",
+    groups: [
+      ENV_GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.work, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+          { binding: b.map, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+          { binding: b.environment, visibility: STAGE.COMPUTE, buffer: { type: "storage" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** The environment grid kernel's spec (K6.2b; source-free, the last cascade). */
+export function vdbFrameEnvironmentGridSpec(): VDBComputeSpec {
+  const b = ENV_GRID_BINDINGS;
+  return {
+    label: "vdb frame environment grid",
+    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameEnvironmentGridWgsl()}`,
+    entryPoint: "vdbFrameEnvironmentGridCs",
+    groups: [
+      GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+          { binding: b.out, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
         ],
       },
     ],

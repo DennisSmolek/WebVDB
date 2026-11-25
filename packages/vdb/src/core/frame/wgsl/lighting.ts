@@ -8,8 +8,9 @@
 // are sub-volumes of one 3D texture each, read with hardware trilinear (his 2D slice atlases with a manual z lerp);
 // the density and lighting passes are one kernel (the density sums live in registers while a thread loops its
 // source group; his 4 rgba16float density targets are gone); several source groups accumulate in packed partials.
-// The environment terms ('outward', environment grid, environment light slot), octaves, two-sided, neural and
-// spectral wait for K6.2b / K6.3 / K6.4. CPU twins: tools/frame (grid.ts, stack.ts). Divergences: DIVERGES.md.
+// The environment terms (K6.2b) read the GPU environment buffer: the dominant 'directional' light in the next free
+// slot, the environment grid, or the 'outward' SH irradiance. Octaves, two-sided, neural and spectral wait for
+// K6.3 / K6.4. CPU twins: tools/frame (grid.ts, stack.ts). Divergences: DIVERGES.md.
 
 /**
  * The 'frame' lighting kernels of the core renderer (K6.2):
@@ -32,7 +33,7 @@ export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 
 /** Group-1 bindings of the transmittance kernel. */
 export const TRANSMITTANCE_BINDINGS = { grid: 0, transmittance: 1 } as const;
 /** Group-1 bindings of the 'frame' gather kernel. */
-export const FRAME_GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, transmittance: 4 } as const;
+export const FRAME_GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, transmittance: 4, environmentGrid: 5 } as const;
 
 /** Values per froxel the 'frame' gather sums (4 × vec4f), packed as 8 `pack2x16float` words in the partials. */
 export const VDB_FRAME_SUM_WORDS = 8;
@@ -159,6 +160,8 @@ ${GRID_CELL}
     let jitter = vdbFrameNoise(vdbFrame.jitterFade.x, vdbFrameGridFragCoord(cascade, cell));
     let sky = normalize(vdbFrameLights.sky.xyz);
     let slots = u32(vdbFrame.gridLayout.w);
+    // K6.2b: the dominant 'directional' environment light takes the next free slot (its direction from the buffer)
+    let envSlot = vdbFrame.environment.x > 0.5;
     // marches 0..5: the light slots; 6, 7: sky up and down (one march call site)
     var results: array<vec4f, 8>;
     for (var m = 0u; m < 8u; m++) {
@@ -166,14 +169,21 @@ ${GRID_CELL}
       var maxDistance = 1e20;
       results[m] = vec4f(1.0, 1.0, 0.0, 0.0);
       if (m < 6u) {
-        if (m >= slots) {
+        if (m >= slots + select(0u, 1u, envSlot)) {
           continue;
         }
-        let light = vdbFrameLights.position[m];
-        let toLight = light.xyz - world;
-        let isDirection = light.w < 1.5;
-        direction = select(normalize(toLight), normalize(light.xyz), isDirection);
-        maxDistance = select(length(toLight), 1e20, isDirection);
+        if (m == slots) {
+          if (vdbFrameEnv.info.z == 0u || vdbFrameEnv.info.x == 0u) {
+            continue;
+          }
+          direction = normalize(vdbFrameEnv.direction[0].xyz);
+        } else {
+          let light = vdbFrameLights.position[m];
+          let toLight = light.xyz - world;
+          let isDirection = light.w < 1.5;
+          direction = select(normalize(toLight), normalize(light.xyz), isDirection);
+          maxDistance = select(length(toLight), 1e20, isDirection);
+        }
       } else if (m == 7u) {
         direction = -sky;
       }
@@ -241,11 +251,12 @@ export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVol
   }
   textureStore(vdbFrameScatter, cell, out);`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "sh", "grid"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "sh", "envSh", "grid"])}
 @group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
 @group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
 @group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;
 ${o.multi ? `@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;\n` : ""}@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceStack: texture_3d<f32>;
+@group(1) @binding(${b.environmentGrid}) var vdbFrameEnvGrid: texture_3d<f32>;
 
 ${vdbFrameSourceFunctionsWgsl(o.channels)}
 ${VDB_FRAME_SLICE_WGSL}
@@ -288,6 +299,23 @@ fn vdbFrameShadowsAt(world: vec3f) -> array<vec4f, 4> {
   return out;
 }
 
+// K6.2b: the environment of his density pass. 0: none (no environment, or only the slot light, which the lighting
+// adds), 1: 'outward' (SH irradiance along the outward direction), 2: the environment grid.
+fn vdbFrameEnvDensityMode() -> u32 {
+  if (vdbFrameEnv.info.z == 0u) {
+    return 0u;
+  }
+  let useShadows = vdbFrame.lighting.z > 0.5;
+  let count = vdbFrameEnv.info.x;
+  if (useShadows && vdbFrame.environment.z > 0.5 && count > u32(vdbFrame.environment.y)) {
+    return 2u;
+  }
+  if (useShadows && vdbFrame.environment.x > 0.5 && count > 0u) {
+    return 0u;
+  }
+  return 1u;
+}
+
 // His density pass for one volume in one froxel: the slice's mean extinction σ (over the whole slice), the
 // visibility-weighted position, albedo and emission there, and the shadow slots at that world position (scene
 // light slots: green phase × direct + scattered); σ-weighted. Zero when σ ≤ 0.
@@ -301,9 +329,41 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
   let visibleT = select(0.5, s.visibleT, s.visibleT >= 0.0);
   let local = mix(s.localNear, s.localFar, vec3f(visibleT));
   let albedo = vdbFrameAlbedo(vi, local, s.readLod);
-  let emission = vdbFrameEmission(vi, local, s.readLod) + vdbFrameVolumes.v[vi].scatterOpacity.xyz;
+  var emission = vdbFrameEmission(vi, local, s.readLod) + vdbFrameVolumes.v[vi].scatterOpacity.xyz;
   let world = (vdbFrame.cameraWorld * vec4f(mix(f.viewNear, f.viewFar, vec3f(visibleT)), 1.0)).xyz;
   let shadows = vdbFrameShadowsAt(world);
+  let envMode = vdbFrameEnvDensityMode();
+  if (envMode == 1u) {
+    // along the outward direction from the volume centre; its shadow between the sky down and up totals
+    let skyDirection = normalize(vdbFrameLights.sky.xyz);
+    var outward = skyDirection;
+    if (length(local) > 1e-4) {
+      outward = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (vdbFrameMat3(vdbFrameVolumes.v[vi].localToView) * local));
+    }
+    let skyBlend = dot(outward, skyDirection) * 0.5 + 0.5;
+    let envShadow = mix(shadows[0].y, shadows[0].x, skyBlend);
+    if (vdbFrame.lighting.w > 0.5) {
+      // diffusion: the outward and the inward irradiance, each with its two-sided total
+      let inward = mix(shadows[0].x, shadows[0].y, skyBlend);
+      emission += albedo * ((vdbFrameEnvIrradiance(outward) * envShadow + vdbFrameEnvIrradiance(-outward) * inward) * 0.5) * (1.0 / VDB_FRAME_PI);
+    } else {
+      emission += albedo * vdbFrameEnvIrradiance(outward) * envShadow * (1.0 / VDB_FRAME_PI);
+    }
+  } else if (envMode == 2u) {
+    // the environment grid at the visible position; outside it the unshadowed light of its lights
+    let cascade = u32(vdbFrame.gridLayout.x) - 1u;
+    let uvw = vdbFrameGridUvw(cascade, world);
+    var environment = vec3f(0.0);
+    if (vdbFrameInsideGrid(uvw)) {
+      environment = vdbFrameStackSample(vdbFrameEnvGrid, vec3f(0.0), uvw).xyz;
+    } else {
+      for (var i = u32(vdbFrame.environment.y); i < vdbFrameEnv.info.x; i++) {
+        environment += vdbFrameEnv.color[i].xyz;
+      }
+      environment = max(environment, vec3f(0.0));
+    }
+    emission += albedo * environment * (1.0 / VDB_FRAME_PI);
+  }
   let ray = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (f.viewFar - f.viewNear));
   var slot = array<f32, 6>(shadows[0].z, shadows[0].w, shadows[1].x, shadows[1].y, shadows[1].z, shadows[1].w);
   var direct = array<f32, 6>(shadows[2].x, shadows[2].y, shadows[2].z, shadows[2].w, shadows[3].x, shadows[3].y);
@@ -378,6 +438,10 @@ fn vdbFrameLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> vec4f {
       }
     }
     irradiance += color.rgb * factor * spotAttenuation * distanceAttenuation;
+  }
+  // K6.2b: the dominant 'directional' environment light in its slot (isotropic, no phase)
+  if (vdbFrame.lighting.z > 0.5 && vdbFrame.environment.x > 0.5 && vdbFrameEnv.info.z != 0u && vdbFrameEnv.info.x > 0u) {
+    irradiance += vdbFrameEnv.color[0].xyz * slot[min(shadowLights, 5u)];
   }
   let albedo = sums.a.rgb / extinction;
   let emission = sums.e.rgb / extinction;

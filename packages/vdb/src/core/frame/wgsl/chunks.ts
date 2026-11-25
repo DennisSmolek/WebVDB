@@ -267,6 +267,30 @@ fn vdbFrameShIrradiance(normal: vec3f) -> vec3f {
     },
   ],
   [
+    "envSh",
+    {
+      deps: [],
+      code: `// K6.2b: irradiance of the environment buffer's SH9 along a unit normal (three's getShIrradianceAt; the
+// Ramamoorthi-Hanrahan cosine convolution), clamped at 0
+fn vdbFrameEnvIrradiance(normal: vec3f) -> vec3f {
+  let x = normal.x;
+  let y = normal.y;
+  let z = normal.z;
+  var result = vdbFrameEnv.sh[0].xyz * 0.886227;
+  result += vdbFrameEnv.sh[1].xyz * (2.0 * 0.511664) * y;
+  result += vdbFrameEnv.sh[2].xyz * (2.0 * 0.511664) * z;
+  result += vdbFrameEnv.sh[3].xyz * (2.0 * 0.511664) * x;
+  result += vdbFrameEnv.sh[4].xyz * (2.0 * 0.429043) * x * y;
+  result += vdbFrameEnv.sh[5].xyz * (2.0 * 0.429043) * y * z;
+  result += vdbFrameEnv.sh[6].xyz * (z * z * 0.743125 - 0.247708);
+  result += vdbFrameEnv.sh[7].xyz * (2.0 * 0.429043) * x * z;
+  result += vdbFrameEnv.sh[8].xyz * 0.429043 * (x * x - y * y);
+  return max(result, vec3f(0.0));
+}
+`,
+    },
+  ],
+  [
     "grid",
     {
       deps: [],
@@ -326,7 +350,7 @@ fn vdbFrameSrgbEotf(color: vec3f) -> vec3f {
 const BY_NAME = new Map(CHUNKS);
 
 /** Names of the chunks {@link frameChunksWgsl} knows. */
-export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "sh" | "grid" | "srgb";
+export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "sh" | "envSh" | "grid" | "srgb";
 
 /** The closure of `roots` (with dependencies), in the fixed chunk order. */
 export function frameChunksWgsl(roots: Iterable<VDBFrameChunk>): string {

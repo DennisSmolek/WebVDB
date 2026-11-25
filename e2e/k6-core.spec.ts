@@ -30,6 +30,11 @@ interface Result {
   renderStats?: Stats;
   gridStats?: Stats;
   transmittanceStats?: Stats;
+  workStats?: Stats;
+  mapStats?: Stats;
+  bufferStats?: Stats;
+  environmentGridStats?: Stats;
+  environment?: { runs: { prefilter: number; blur: number; reduce: number }[]; count: number; mode: number; valid: number; directions: number[][]; colors: number[][] };
   frame?: { cascades: number; redraw: unknown };
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
@@ -296,5 +301,55 @@ for (const lighting of ["volume", "frame"] as const) {
     writeFileSync(path.join(AB_FRAME_DIR, `${name}.json`), JSON.stringify({ lighting, ...cmp, coreWarnings: core.warnings }, null, 2));
     console.log(`[k6-ab-wdas] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
     expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
+  });
+}
+
+// K6.2b (design §3.5, Q3): the environment reduction on the GPU, each stage against its twin from the read-back input of
+// the stage before it: the work map (exact-area equirect / supersampled cube), his 64 x 32 map (the GGX roughness-0.4
+// convolution) and the environment buffer (his lights and the SH9). f32 outputs: 1e-3 relative (SwiftShader's
+// transcendental and division precision; the twins are f64). The stages rerun only for their inputs.
+type EnvKey = "workStats" | "mapStats" | "bufferStats";
+const ENV_PROBES: { name: string; query: string; count: number; mutations: Record<string, EnvKey> }[] = [
+  { name: "equirect rgba16float, 'directional'", query: "?probe=environment&mode=directional", count: 8, mutations: { "env-area": "workStats", "env-blur": "mapStats", "env-seeds": "bufferStats", "env-sh": "bufferStats" } },
+  { name: "equirect, rotated and reflected, 'directional' pairs", query: "?probe=environment&mode=directional&pairs=1&rotate=1", count: 8, mutations: { "env-seeds": "bufferStats", "env-sh": "bufferStats" } },
+  { name: "equirect rgba32float, rotated, SH L2 lights", query: "?probe=environment&mode=spherical-harmonics&order=2&rotate=1&format=rgba32float", count: 12, mutations: { "env-blur": "mapStats" } },
+  { name: "equirect, SH L1 lights, 3 samples", query: "?probe=environment&mode=spherical-harmonics&order=1&samples=3", count: 6, mutations: {} },
+  { name: "cube rgba16float, 'directional'", query: "?probe=environment&projection=cube&mode=directional&samples=5", count: 5, mutations: { "env-area": "workStats" } },
+  { name: "equirect, 'outward' (SH only)", query: "?probe=environment&mode=outward", count: 0, mutations: { "env-sh": "bufferStats" } },
+];
+
+for (const p of ENV_PROBES) {
+  test(`K6.2b probe: environment (${p.name}) matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(600_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    for (const key of ["workStats", "mapStats", "bufferStats"] as const) console.log(`[k6-core] environment ${p.name} ${key}: ${JSON.stringify(r[key])}`);
+    expect(r.environment!.valid, detail(r)).toBe(1);
+    expect(r.environment!.count, detail(r)).toBe(p.count);
+    for (const key of ["workStats", "mapStats", "bufferStats"] as const) {
+      const s = r[key]!;
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "bufferStats" ? 10 : 2048);
+      // cube: a sub-sample near a face texel edge may pick the neighbour texel (its direction comes from WGSL sin / cos,
+      // 2^-11 absolute): one sub-sample of k^2 per flipped texel, a few % of the work texels at most
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(key === "workStats" && p.query.includes("cube") ? Math.floor(s.compared * 0.02) : 0);
+      console.log(`[k6-core] environment ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toExponential(2)} relative, ${s.over} over`);
+    }
+    // identical update: nothing; intensity: reduce; rotation: blur + reduce; revision: all three
+    const runs = r.environment!.runs;
+    expect(runs, detail(r)).toEqual([
+      { prefilter: 1, blur: 1, reduce: 1 },
+      { prefilter: 1, blur: 1, reduce: 1 },
+      { prefilter: 1, blur: 1, reduce: 2 },
+      { prefilter: 1, blur: 2, reduce: 3 },
+      { prefilter: 2, blur: 3, reduce: 4 },
+    ]);
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(0);
+    }
+    expect(errors).toEqual([]);
   });
 }
