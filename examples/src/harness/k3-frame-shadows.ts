@@ -29,6 +29,11 @@
  * the waiting frame's ground equals the frame before the move, pixel for pixel; the frame after (the map drawn) does not.
  * Then the main light alone moves (its map drawn in that render): that frame equals the next one, nothing changed.
  *
+ * `?backend=core` (K6.5): the same scenes through the core renderer (`VDBFrameRenderer.backend`, the emission light's
+ * `backend`): the core's volume shadow maps and emission probes, received by three. The TSL twins (`?twins=1`) read
+ * three targets and do not run then; the core kernels have their twins in the k6-core harness, and the e2e A/B compares
+ * the two backends' frames.
+ *
  * `?timing=N` (hardware): median ms of N forced volume shadow map redraws (pass timer; D25: provisional).
  * Results: `window.__VDB_K3_SHADOWS__` (e2e/k3-frame-shadows.spec.ts).
  */
@@ -89,6 +94,10 @@ interface Result {
   warnings: string[];
   uncaptured: string[];
   settings?: Record<string, unknown>;
+  /** K6.5: the volume's screen coverage dilated by 2 px (W × H bytes, 1 = volume), for A/Bs of the terms on meshes. */
+  coverage?: string;
+  /** K6.5: which backend drew (the core renderer exists, its maps and probes). */
+  backend?: { requested: string; core: boolean; maps: number; probes: boolean };
   sourceKind?: string;
   // shadow case
   entry?: { size: number; cascades: number; breaks: number[]; far: number[]; drawn: number; waiting: number } | null;
@@ -147,7 +156,8 @@ const CAST = params.get("cast") !== "0";
 const CASCADES = Number(params.get("cascades") ?? 1);
 const MAP_SIZE = Number(params.get("mapSize") ?? 512);
 const STEPS = Number(params.get("steps") ?? 32);
-const TWINS = params.get("twins") === "1";
+const BACKEND = (params.get("backend") ?? "tsl") as "tsl" | "core";
+const TWINS = params.get("twins") === "1" && BACKEND === "tsl";
 const EMIT = params.get("emit") !== "0";
 const PROBES = Number(params.get("probes") ?? 16);
 const SPECTRUM = params.get("spectrum") ?? "planck";
@@ -313,6 +323,7 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   const source = await makeSource(renderer, device, dense, false);
 
   const fr = new VDBFrameRenderer();
+  fr.backend = BACKEND;
   Object.assign(fr.settings, {
     width: 96,
     height: 64,
@@ -399,6 +410,7 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   result.width = W;
   result.height = H;
   result.rgba = toBase64(display);
+  result.backend = { requested: BACKEND, core: !!fr.core, maps: fr.core?.outputs.volumeShadows.size ?? 0, probes: false };
 
   const entry = fr.volumeShadows.entries.get(light) ?? null;
   result.entry = entry
@@ -426,6 +438,7 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++)
       if (covered[y * W + x]) for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (x + dx >= 0 && x + dx < W && y + dy >= 0 && y + dy < H) coveredWide[(y + dy) * W + x + dx] = 1;
+  result.coverage = toBase64(coveredWide);
 
   // castShadows off: the shadow-only reference (three's own shadow of the light stays: no mesh casts, so 1)
   fr.settings.castShadows = false;
@@ -608,6 +621,7 @@ async function runStale(renderer: WebGPURenderer, device: GPUDevice): Promise<vo
   const source = await makeSource(renderer, device, dense, false);
 
   const fr = new VDBFrameRenderer();
+  fr.backend = BACKEND;
   Object.assign(fr.settings, {
     width: 96,
     height: 64,
@@ -746,6 +760,7 @@ async function runStale(renderer: WebGPURenderer, device: GPUDevice): Promise<vo
       if (!same(moved, settled, i)) movedChanged++;
     }
   }
+  result.backend = { requested: BACKEND, core: !!fr.core, maps: fr.core?.outputs.volumeShadows.size ?? 0, probes: false };
   result.stale = { groundPixels, shadowedBefore, staleChanged, staleShadowedChanged, afterChanged, movedChanged, order, staleUpdate, afterUpdate, movedUpdate, mainDrawnAtStale };
   result.width = W;
   result.height = H;
@@ -837,6 +852,7 @@ async function runEmission(renderer: WebGPURenderer, device: GPUDevice): Promise
   const source = await makeSource(renderer, device, dense, true);
 
   const fr = new VDBFrameRenderer();
+  fr.backend = BACKEND;
   Object.assign(fr.settings, { width: 96, height: 64, depth: 24, temporal: false, jitter: false, lighting: "volume", multipleScattering: true });
   result.settings = { ...fr.settings };
 
@@ -881,6 +897,7 @@ async function runEmission(renderer: WebGPURenderer, device: GPUDevice): Promise
   scene.add(ground);
 
   const light = new VDBFrameEmissionLight({ intensity: 25, resolution: PROBES, cascades: Number(params.get("emissionCascades") ?? 1) });
+  light.backend = BACKEND;
   light.visible = EMIT;
   scene.add(light);
 
@@ -908,6 +925,7 @@ async function runEmission(renderer: WebGPURenderer, device: GPUDevice): Promise
   result.height = H;
   result.rgba = toBase64(display);
   result.emitters = light.emitterCount;
+  result.backend = { requested: BACKEND, core: !!fr.core, maps: 0, probes: !!fr.core?.outputs.emissionProbes };
   result.probeGrid = {
     resolution: light.probeResolution,
     count: light.cascadeCount,
@@ -1100,6 +1118,15 @@ async function runEmission(renderer: WebGPURenderer, device: GPUDevice): Promise
     if (offNoVolume[i * 4]! !== 0 || offNoVolume[i * 4 + 1]! !== 0 || offNoVolume[i * 4 + 2]! !== 0) nonBlack++;
   }
   result.lightOff = { groundPixels, nonBlack };
+  // K6.5: the volume's screen coverage (it emits: it differs from black), dilated by 2 px (the composite's soft edge)
+  const coverage = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (off[i * 4] === offNoVolume[i * 4] && off[i * 4 + 1] === offNoVolume[i * 4 + 1] && off[i * 4 + 2] === offNoVolume[i * 4 + 2]) continue;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (x + dx >= 0 && x + dx < W && y + dy >= 0 && y + dy < H) coverage[(y + dy) * W + x + dx] = 1;
+    }
+  result.coverage = toBase64(coverage);
   light.visible = EMIT;
 
   const canvas = document.createElement("canvas");

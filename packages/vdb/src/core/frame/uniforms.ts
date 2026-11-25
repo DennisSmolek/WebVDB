@@ -224,7 +224,7 @@ export const VDB_FRAME_VOLUME = vdbUniformStruct(
     { name: "density", type: "vec4f" },
     // emissiveIntensity, temperature min, max, lod levels the read may use (mipmaps ? levels : 0)
     { name: "emission", type: "vec4f" },
-    // shadow steps, mipmaps (0/1), hdda (0/1), spare
+    // shadow steps, mipmaps (0/1), hdda (0/1), K6.5 emission colour code (bits 0-1: 0 white, 1 LUT row, 2 user hook; bits 2+: row)
     { name: "march", type: "vec4u" },
     // K6.4: extinction spectrum (rgb), spare
     { name: "extinctionSpectrum", type: "vec4f" },

@@ -38,22 +38,29 @@ interface Result {
   frame?: { cascades: number; redraw: unknown };
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
+  receiverStats?: Stats;
+  shadow?: { light: string; layers: number; shadowed: number; receiverShadowed: number; same: { drawn: number; waiting: number }; moved: { drawn: number; waiting: number }; cascades: number; enabled: boolean };
+  reduceStats?: Stats;
+  probeStats?: Stats;
+  irradianceStats?: Stats;
+  emission?: { state: { count: number; resolution: number; emitters: number }; first: { directions: number; probes: boolean }; second: { directions: number; probes: boolean }; hookErrors: string[]; outside: number };
   warnings: string[];
   uncaptured: string[];
 }
 
-async function run(page: Page, query: string): Promise<Result> {
+async function run(page: Page, query: string, timeout = 300_000): Promise<Result> {
   await page.goto(`${PAGE_URL}${query}`);
-  await page.waitForFunction(() => (window as { __VDB_K6_CORE__?: { done: boolean } }).__VDB_K6_CORE__?.done === true, undefined, { timeout: 300_000 });
+  await page.waitForFunction(() => (window as { __VDB_K6_CORE__?: { done: boolean } }).__VDB_K6_CORE__?.done === true, undefined, { timeout });
   return (await page.evaluate(() => (window as { __VDB_K6_CORE__?: unknown }).__VDB_K6_CORE__)) as Result;
 }
 
 const detail = (r: Result) => JSON.stringify(r, null, 2);
 
 test("K6.1 every frame pipeline variant compiles", async ({ page }) => {
-  test.setTimeout(300_000);
+  // K6.5 added the shadow and emission kernels (with hooks): ~43 variants, minutes on SwiftShader under load
+  test.setTimeout(900_000);
   const errors = collectErrors(page);
-  const r = await run(page, "?probe=compile");
+  const r = await run(page, "?probe=compile", 900_000);
   expect(r.error, detail(r)).toBeUndefined();
   expect(r.compile!.errors, detail(r)).toEqual([]);
   expect(r.compile!.variants).toBeGreaterThanOrEqual(15);
@@ -139,6 +146,68 @@ for (const p of FRAME_PROBES) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
       expect(bad.error, detail(bad)).toBeUndefined();
       expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.5 (design §2.6, §3.8): volume shadow maps (each light kind) and the emission kernels, each against its twin from
+// the read-back input of the kernel before it (grid → map → receivers; directions → reduce → probes → receivers).
+type K65Key = "stats" | "receiverStats" | "reduceStats" | "probeStats" | "irradianceStats";
+const K65_PROBES: { name: string; query: string; keys: K65Key[]; mutations: Record<string, K65Key> }[] = [
+  { name: "shadow map, directional (2 cascades), dense", query: "?probe=shadow&light=dir&cascades=2", keys: ["stats", "receiverStats"], mutations: { "map-steps": "stats", "map-far": "stats", "receiver-far": "receiverStats", "receiver-layer": "receiverStats" } },
+  { name: "shadow map, spot, dense", query: "?probe=shadow&light=spot", keys: ["stats", "receiverStats"], mutations: { "map-far": "stats", "receiver-far": "receiverStats" } },
+  { name: "shadow map, point (cube), dense", query: "?probe=shadow&light=point", keys: ["stats", "receiverStats"], mutations: { "map-steps": "stats", "receiver-far": "receiverStats" } },
+  { name: "shadow map, directional (4 cascades), sparse", query: "?probe=shadow&light=dir&cascades=4&source=sparse", keys: ["stats", "receiverStats"], mutations: { "receiver-layer": "receiverStats" } },
+  {
+    name: "emission, dense, soot LUT",
+    query: "?probe=emission",
+    keys: ["stats", "reduceStats", "probeStats", "irradianceStats"],
+    mutations: { "emission-direction": "stats", "emission-color": "stats", "emission-reduce": "reduceStats", "emission-probe": "probeStats", "emission-irradiance": "irradianceStats" },
+  },
+  { name: "emission, sparse, 2 probe cascades", query: "?probe=emission&source=sparse&cascades=2", keys: ["stats", "reduceStats", "probeStats", "irradianceStats"], mutations: { "emission-color": "stats" } },
+  { name: "emission, dense, user WGSL hook", query: "?probe=emission&hook=1", keys: ["stats", "reduceStats", "probeStats", "irradianceStats"], mutations: { "emission-color": "stats" } },
+];
+
+for (const p of K65_PROBES) {
+  test(`K6.5 probe: ${p.name} matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.warnings, detail(r)).toEqual([]);
+    for (const key of p.keys) {
+      const s = r[key]!;
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "reduceStats" ? 2 : key === "stats" && p.query.includes("emission") ? 32 : 512);
+      expect(s.over, `${key}: ${detail(r)}`).toBe(0);
+      console.log(`[k6-core] K6.5 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toExponential(2)} (${s.bound}), max |d| ${s.maxAbs.toExponential(2)}, ${s.over} over`);
+    }
+    if (r.shadow) {
+      console.log(`[k6-core] K6.5 ${p.name}: ${JSON.stringify(r.shadow)}`);
+      expect(r.shadow.enabled, detail(r)).toBe(true);
+      expect(r.shadow.shadowed, detail(r)).toBeGreaterThan(20);
+      expect(r.shadow.receiverShadowed, detail(r)).toBeGreaterThan(20);
+      // nothing changed: no piece; the light moved: one piece (a directional layout draws its cascades in one piece)
+      expect(r.shadow.same, detail(r)).toEqual({ drawn: 0, waiting: 0 });
+      expect(r.shadow.moved.drawn, detail(r)).toBeGreaterThanOrEqual(1);
+    }
+    if (r.emission) {
+      console.log(`[k6-core] K6.5 ${p.name}: ${JSON.stringify(r.emission)}`);
+      expect(r.emission.first, detail(r)).toEqual({ directions: 1, probes: true });
+      expect(r.emission.second, detail(r)).toEqual({ directions: 0, probes: false });
+      expect(r.emission.outside, detail(r)).toBeGreaterThan(20);
+      if (p.query.includes("hook=1")) {
+        expect(r.emission.hookErrors.length, detail(r)).toBe(3);
+        expect(r.emission.hookErrors[0], detail(r)).toMatch(/VDB_BAD_WGSL.*line 1: top-level name 'emissionColour'/);
+        expect(r.emission.hookErrors[1], detail(r)).toMatch(/VDB_BAD_WGSL.*line 3/);
+        expect(r.emission.hookErrors[2], detail(r)).toMatch(/VDB_BAD_WGSL.*vdbUserEmissionColor\(f32, f32\)/);
+      }
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(0);
     }
     expect(errors).toEqual([]);
   });

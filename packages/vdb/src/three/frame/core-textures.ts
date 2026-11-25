@@ -31,11 +31,16 @@ const mismatch = (what: string) =>
       "(written against three r187); this three version is unsupported for backend 'core'.",
   );
 
-/** A three stand-in for a core 3D texture. */
-export function vdbCoreTextureStandIn(gpu: GPUTexture): ExternalTexture {
+/** How three views a core texture: a 3D texture (froxels, probes), a 2d-array (volume shadow maps) or a cube (point maps). */
+export type VDBCoreTextureKind = "3d" | "2d-array" | "cube";
+
+/** A three stand-in for a core texture (K6.1: 3D; K6.5: 2d-array and cube views of the volume shadow maps). */
+export function vdbCoreTextureStandIn(gpu: GPUTexture, kind: VDBCoreTextureKind = "3d"): ExternalTexture {
   const t = new ExternalTexture(gpu);
   const f = t as unknown as Record<string, unknown>;
-  f.is3DTexture = true;
+  if (kind === "3d") f.is3DTexture = true;
+  else if (kind === "2d-array") f.isArrayTexture = true;
+  else f.isCubeTexture = true;
   f.wrapR = ClampToEdgeWrapping;
   t.wrapS = t.wrapT = ClampToEdgeWrapping;
   t.minFilter = t.magFilter = LinearFilter;
@@ -85,6 +90,11 @@ export function vdbCoreTextureSelfTest(renderer: RendererLike, device: GPUDevice
 export class VDBCoreTextureBinding {
   #gpu: GPUTexture | null = null;
   #standIn: ExternalTexture | null = null;
+  readonly #kind: VDBCoreTextureKind;
+
+  constructor(kind: VDBCoreTextureKind = "3d") {
+    this.#kind = kind;
+  }
 
   /** The current stand-in (null before the first {@link set}). */
   get texture(): ExternalTexture | null {
@@ -97,7 +107,7 @@ export class VDBCoreTextureBinding {
     // ExternalTexture.dispose never destroys the core texture (the self-test checked it); the core retires it.
     this.#standIn?.dispose();
     this.#gpu = gpu;
-    this.#standIn = vdbCoreTextureStandIn(gpu);
+    this.#standIn = vdbCoreTextureStandIn(gpu, this.#kind);
     return true;
   }
 
