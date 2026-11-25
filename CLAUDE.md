@@ -430,7 +430,7 @@ From v1; details in docs/archive/handoffs/.
 - K6.Q1 `ambientOcclusion` is a no-op for multiple scattering at albedo 1 by design (white furnace: the diffusion pair
   totals sum to 2), so the MS rows of albedo-1 scenes don't move; judge it on ms-off rows and absorbing media.
 - His octave total of isotropic light exceeds 1 for an open direction (`frameShadowTotal(1, octaves)` = 1 + Σ bⁿ); the
-  ambient pairs divide by it (V142). The fourth transmittance target's z, w are the ambient visibilities (V up, V down)
+  ambient pairs divide by it (V127). The fourth transmittance target's z, w are the ambient visibilities (V up, V down)
   with the setting on, not constant 1.
 - The report's `his` groups render through `k3-frame`, the scene groups through `k6-scene`: a `--query` core setting
   must be parsed by both pages (K6.Q1 added `?ao=` to each).

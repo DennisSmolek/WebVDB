@@ -1,5 +1,5 @@
 /**
- * K6.Q1 shadowed ambient (V85; DIVERGES V140–): the CPU twins of the core renderer's ambient occlusion. Ambient,
+ * K6.Q1 shadowed ambient (V85; DIVERGES V125–V128): the CPU twins of the core renderer's ambient occlusion. Ambient,
  * hemisphere and light-probe light (distant light with no shadow slot) is attenuated by the medium: transmittance is
  * marched along `pairs` opposite direction pairs, (ω_k, −ω_k) with ω_k in the hemisphere around the sky direction, and
  * averaged into two hemispherical visibilities (V_up over the ω_k, V_down over the −ω_k). Each direction's value is the
