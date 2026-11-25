@@ -70,7 +70,7 @@ test("K6.1 every frame pipeline variant compiles", async ({ page }) => {
 });
 
 const PROBES: { name: string; query: string; minCovered: number; mutations: string[] }[] = [
-  { name: "view chunks", query: "?probe=view", minCovered: 512, mutations: ["coverage"] },
+  { name: "view chunks", query: "?probe=view", minCovered: 512, mutations: ["coverage", "mie", "octaves", "two-sided"] },
   { name: "gather (mixture, one group)", query: "?probe=gather&mix=mixture&groups=1", minCovered: 300, mutations: ["mix", "phase", "extinction", "fade"] },
   { name: "gather (over, one group)", query: "?probe=gather&mix=over&groups=1", minCovered: 300, mutations: ["mix"] },
   { name: "gather (mixture, two groups)", query: "?probe=gather&mix=mixture&groups=2", minCovered: 300, mutations: ["mix"] },
@@ -396,6 +396,62 @@ for (const { scene, source } of AB_FRAME) {
       }
     }
     console.log(`[k6-ab-frame] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
+    expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// K6.3 gate 2 (design §7.2): his K3 Step 4 scenes (phase functions, multiple scattering modes, octave settings, his
+// 'neural' default) through `?backend=core` vs `?backend=tsl`, same device, same bar (PSNR ≥ 45 dB, ≤ 0.2 % pixels >
+// 4/255). Opt in with K6_CORE_AB=1; images and JSON go to artifacts/k6/ab-step4/ and the core / TSL frames to
+// artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs (his captures: the regression report).
+// ---------------------------------------------------------------------------------------------------------------
+const AB_STEP4 = [
+  "step4-default-neural-dir-isolated",
+  "step4-frame-phase-dual-lobe-dir-isolated",
+  "step4-frame-phase-dual-lobe-back-g-high-dir-isolated",
+  "step4-frame-phase-dual-lobe-back-weight-high-dir-isolated",
+  "step4-frame-phase-g-exponent-dir-isolated",
+  "step4-frame-phase-g-low-dir-isolated",
+  "step4-frame-phase-isotropic-dir-isolated",
+  "step4-frame-phase-lorenz-mie-dir-isolated",
+  "step4-frame-phase-lorenz-mie-rgb-dir-isolated",
+  "step4-lighting-volume-phase-g-low-dir-isolated",
+  "step4-multiple-scattering-octaves-dir-isolated",
+  "step4-multiple-scattering-two-sided-dir-isolated",
+  "step4-octave-contribution-high-dir-isolated",
+  "step4-octave-extinction-high-dir-isolated",
+  "step4-octave-phase-low-dir-isolated",
+  "step4-octaves-1-dir-isolated",
+  "step4-octaves-8-dir-isolated",
+];
+const AB_STEP4_DIR = path.join(REPO, "artifacts", "k6", "ab-step4");
+
+for (const scene of AB_STEP4) {
+  test(`K6.3 A/B core vs TSL: ${scene}`, async ({ page }) => {
+    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
+    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
+    test.setTimeout(1_800_000);
+    const tsl = await k3(page, `?scene=${scene}&backend=tsl`);
+    const core = await k3(page, `?scene=${scene}&backend=core`);
+    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
+    expect(core.error, k3Detail(core)).toBeUndefined();
+    expect(core.uncaptured, k3Detail(core)).toEqual([]);
+    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
+    // K6.3: no 'not in the core yet' warnings (phase, multiple scattering)
+    expect(core.warnings.filter((w) => /K6\.3/.test(w)), k3Detail(core)).toEqual([]);
+    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
+    mkdirSync(AB_STEP4_DIR, { recursive: true });
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-tsl.png`), encodePng(k3Image(tsl)));
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-core.png`), encodePng(k3Image(core)));
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}.json`), JSON.stringify({ scene, ...cmp, coreWarnings: core.warnings }, null, 2));
+    for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
+      mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
+      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
+      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
+    }
+    console.log(`[k6-ab-step4] ${scene}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
     expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
   });
 }

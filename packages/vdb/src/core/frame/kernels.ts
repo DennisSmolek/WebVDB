@@ -458,7 +458,7 @@ export function vdbFrameCompositeSpec(key: VDBFrameCompositeKey): VDBRenderSpec 
 
 /** Values per row of the chunk probe: inputs, then outputs. */
 export const CHUNK_PROBE_INPUTS = 12;
-export const CHUNK_PROBE_OUTPUTS = 24;
+export const CHUNK_PROBE_OUTPUTS = 29;
 const ROW = CHUNK_PROBE_INPUTS + CHUNK_PROBE_OUTPUTS;
 
 /**
@@ -469,7 +469,7 @@ const ROW = CHUNK_PROBE_INPUTS + CHUNK_PROBE_OUTPUTS;
  */
 export function vdbFrameChunkProbeSpec(): VDBComputeSpec {
   const code = `${vdbFrameUniformsWgsl()}
-${frameChunksWgsl(["constants", "froxel", "noise", "fade", "box", "lod", "phase", "shadow"])}
+${frameChunksWgsl(["constants", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves"])}
 ${VDB_FRAME_SLICE_COORD_WGSL}
 ${VDB_FRAME_INTEGRATE_TAPS_WGSL}
 ${VDB_FRAME_COMPOSITE_COLOR_WGSL}
@@ -508,7 +508,7 @@ fn vdbFrameChunkProbeCs(@builtin(global_invocation_id) gid: vec3u) {
   vdbFrameProbe[o + 13u] = st.z;
   let depths = st * 3.0;
   vdbFrameProbe[o + 14u] = vdbFrameShadowDepth(depths, x[9]);
-  let tr = vdbFrameShadowTransmittance(depths, x[9]);
+  let tr = vdbFrameShadowTransmittance(depths, x[9], vec4f(0.0));
   vdbFrameProbe[o + 15u] = tr.x;
   vdbFrameProbe[o + 16u] = tr.y;
   vdbFrameProbe[o + 17u] = vdbFrameIsotropicDiffusion(st.z, x[8], st.y);
@@ -521,6 +521,13 @@ fn vdbFrameChunkProbeCs(@builtin(global_invocation_id) gid: vec3u) {
   let composite = vdbFrameCompositeColor(vec4f(x[1] * 0.5, x[2] * 0.5, x[6] * 0.5, 1.0 - x[11]), vec4f(x[0], x[5] * 0.5 + 0.5, x[10], 1.0), 1u, 1u);
   vdbFrameProbe[o + 22u] = composite.x;
   vdbFrameProbe[o + 23u] = composite.w;
+  // K6.3: the Lorenz-Mie phases (the LUT), two-sided diffusion, the octave total and phased octave light (count 3, a 0.6, b 0.45, c 0.7)
+  vdbFrameProbe[o + 24u] = vdbFramePhaseWeight(vec4f(x[6], -0.3, 0.2, 0.5), x[5]);
+  vdbFrameProbe[o + 25u] = vdbFramePhaseColor(vec4f(0.0, 0.0, 0.0, 2.0), vec3f(1.0), x[5]).x;
+  vdbFrameProbe[o + 26u] = vdbFrameTwoSidedDiffusion(tr.x, depths.z, depths.y, x[8]);
+  let octaves = vec4f(3.0, 0.6, 0.45, 0.7);
+  vdbFrameProbe[o + 27u] = vdbFrameShadowTotal(x[11], octaves);
+  vdbFrameProbe[o + 28u] = vdbFrameOctaveLight(octaves, x[7], vec4f(x[6], -0.3, 0.2, 0.0), x[5]);
 }
 `;
   return {

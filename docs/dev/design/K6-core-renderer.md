@@ -435,6 +435,23 @@ flipY / cube reflection); a CUBE_UV atlas is drawn once into a 1024 × 512 lat-l
   weights, V48, credit kept), documented as experimental. Twin: `vdbFrameMlpForward` (generalises
   `vdbFrameNeuralForward`).
 
+*K6.3 as built (handoff K6-3.md):* the Lorenz-Mie tables are one 2048 × 1 rgba32float LUT at **group 0 binding 4**
+(every frame kernel's layout has it; the `phase` chunk declares it; `textureLoad` + linear blend, his frameMieTexel).
+Octaves and `'two-sided'` are uniforms (`VdbFrameUniforms.octaves`, `lighting.y`) in both lightings; the transmittance's
+scattered-light term is a pipeline key (`VDBFrameScatteringKernel`: `'none'` | `'mlp'` | `'multi-scale'`) whose resources
+sit in the transmittance kernel's **group 2** (it is source-free): `'mlp'` = weights (`read-only-storage`, its one
+storage buffer), the shape uniform (`VdbFrameMlp`: layer count, feature levels, output transform; per layer inputs,
+outputs, activation, weight offset) and the feature mips; `'multi-scale'` = K7.3's `VdbFrameMultiScale` uniform and
+`mips.view` (the sampler is group 0's linear clamp, the base the shadow grid stack at the last cascade's origin). The
+MLP's feature mips (`gridMips`, `vdbFrameGridMipSpec`) are one rgba16float 3D texture of side R/2 with ≤ 5 mips
+(mip j = his level j + 1 = max(1, R >> (j + 1)); a level past the chain reads the last mip, which equals his), drawn
+in the update's pass after the grid; K7.3's chain records its own pass, so the update ends its pass, records the chain,
+and begins a new one. Both redraw with the shadow grid (a draw counter, not the grid version: a new grid texture with
+the same version redraws too). `'neural'` and `'mlp'` are the same kernel; `renderer.mlp` (`VDBFrameMlp`, default
+`vdbFrameMlpFromNeural(vdbFrameNeuralWeights)`, null → 1D diffusion) is data; the `./three` adapter passes
+`neuralNetwork`. New settings: `multiScaleLevels` (6), `multiScaleEdge` (`'zero'`), core-only (`./three`
+`coreSettings`). The default stays `'neural'` until K6.R1's report decides (owner).
+
 ### 3.7 Shadows (K6.5, K6.5b)
 
 - **Volume → mesh (K6.5).** `volumeShadow` writes Beer maps from the last cascade per requested light piece,
