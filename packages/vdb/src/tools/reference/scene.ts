@@ -18,7 +18,10 @@
 
 export type VDBRefVec3 = [number, number, number];
 
-/** Henyey-Greenstein (`backWeight` 0) or dual-lobe HG: (1 − w)·HG(g) + w·HG(backG). */
+/**
+ * Henyey-Greenstein (`backWeight` 0) or dual-lobe HG: (1 − w)·HG(g) + w·HG(backG); or, with `table`, a tabulated
+ * phase (Lorenz-Mie, Mie RGB: {@link vdbReferenceMiePhaseTable}) that replaces the lobes.
+ */
 export interface VDBReferencePhase {
   /** Forward lobe asymmetry, (−1, 1). */
   g: number;
@@ -26,6 +29,42 @@ export interface VDBReferencePhase {
   backG?: number;
   /** Weight of the back lobe, [0, 1]. Default 0 (plain HG). */
   backWeight?: number;
+  /** K6.R1: a tabulated phase per channel; `g`, `backG`, `backWeight` are then ignored. */
+  table?: VDBReferencePhaseTable;
+}
+
+/**
+ * K6.R1: a phase function per RGB channel tabulated as phase / isotropic (his Lorenz-Mie texel layout): `size`
+ * angles θ = π u², u = i / (size − 1), read with linear blending in u (`vdbFrameMieTexel`). `cdf` is the sampling
+ * table ({@link vdbReferencePhaseTableCdf}): sampling picks u from the piecewise-constant marginal of the channel
+ * mean and weights each channel by its phase over that density, so the estimate is unbiased per channel.
+ */
+export interface VDBReferencePhaseTable {
+  size: number;
+  /** RGB per angle (`size` × 3). */
+  values: Float32Array;
+  /** Cumulative distribution of u at the `size` table angles (0 … 1). */
+  cdf: Float32Array;
+}
+
+/** K6.R1: an emission colour table over log temperature (the renderer's blackbody LUT, `vdbReferenceBlackbodyTable`). */
+export interface VDBReferenceColorTable {
+  size: number;
+  /** RGB per column (`size` × 3); column i at T = minTemperature · (max/min)^(i / (size − 1)). */
+  values: Float32Array;
+  minTemperature: number;
+  maxTemperature: number;
+}
+
+/**
+ * K6.R1: a per-cell bound of the density value (density × mask, before σ) over the volume's unit box: cell
+ * (i, j, k) covers uvw ∈ [i/nx, (i+1)/nx] × … (x fastest). Tracking uses σ · bound of the cell the ray is in
+ * (piecewise-constant majorants: empty and thin cells cost few null collisions). Built from the sparse pool's node
+ * stats ({@link vdbReferenceMajorantGridSparse}) or the dense texels ({@link vdbReferenceMajorantGridDense}).
+ */
+export interface VDBReferenceMajorantGrid {
+  dims: [number, number, number];
+  values: Float32Array;
 }
 
 /** The renderer's emission model (volume-source.ts `sampleEmission`), white unless `color` is given. */
@@ -36,6 +75,8 @@ export interface VDBReferenceEmission {
   intensity?: number;
   /** `temperatureRange` in kelvin. Default [0, 6500]. */
   temperatureRange?: [number, number];
+  /** K6.R1: the colour hook as a table over temperature (blackbody), multiplied with `color`. Default white. */
+  colorTable?: VDBReferenceColorTable;
 }
 
 /** One volume of the reference scene. */
@@ -63,6 +104,8 @@ export interface VDBReferenceVolume {
   shape?: "box" | "sphere";
   /** The volume's slot in its source (`VDBVolumeSlot.v`; GPU only). Default 0. */
   v?: number;
+  /** K6.R1: per-cell majorants (replace `majorant` inside the box). */
+  majorantGrid?: VDBReferenceMajorantGrid;
 }
 
 /** A directional light: `direction` points toward the light (world, any length); `irradiance` in W/m². */
@@ -72,12 +115,26 @@ export interface VDBReferenceDirectionalLight {
   irradiance: VDBRefVec3;
 }
 
-/** A point light. Without `inverseSquare` the irradiance is `intensity` at any distance (the renderer's model). */
+/**
+ * K6.R1: three's `getDistanceAttenuation` (the renderer's 'frame' lighting): 1 / max(d^decay, 0.01), times
+ * (clamp(1 − (d / cutoff)⁴))² when `cutoff` > 0.
+ */
+export interface VDBReferenceFalloff {
+  decay: number;
+  /** three's `light.distance` (0: no window). */
+  cutoff?: number;
+}
+
+/**
+ * A point light. Without `inverseSquare` or `falloff` the irradiance is `intensity` at any distance (the renderer's
+ * 'volume' lighting); `inverseSquare` is 1/d², `falloff` three's attenuation ('frame' lighting).
+ */
 export interface VDBReferencePointLight {
   kind: "point";
   position: VDBRefVec3;
   intensity: VDBRefVec3;
   inverseSquare?: boolean;
+  falloff?: VDBReferenceFalloff;
 }
 
 /** A spot light: `direction` from the light toward its target; smoothstep(cosOuter, cosInner, cos) attenuation. */
@@ -89,6 +146,7 @@ export interface VDBReferenceSpotLight {
   cosOuter: number;
   cosInner: number;
   inverseSquare?: boolean;
+  falloff?: VDBReferenceFalloff;
 }
 
 export type VDBReferenceLight = VDBReferenceDirectionalLight | VDBReferencePointLight | VDBReferenceSpotLight;
@@ -120,6 +178,12 @@ export interface VDBReferenceEnvironment {
   hemispheres?: VDBReferenceHemisphere[];
   /** An equirect map (summed). */
   equirect?: VDBReferenceEquirect;
+  /**
+   * K6.R1: a light probe: radiance as 9 RGB spherical-harmonic coefficients in three's `SphericalHarmonics3` order and
+   * basis (27 numbers, coefficient-major), L(d) = Σ cᵢ Yᵢ(d), not clamped (the renderer's irradiance is the cosine
+   * convolution of the same function). Summed.
+   */
+  sh?: ArrayLike<number>;
 }
 
 /** The camera: rays from the view origin through each pixel (perspective) or parallel (orthographic). */
@@ -136,7 +200,11 @@ export interface VDBReferenceCamera {
 export interface VDBReferenceSettings {
   width: number;
   height: number;
-  /** Scattering events per path (1 = single scattering). Default 256; paths longer than this are cut (bias). */
+  /**
+   * Scattering events per path (1 = single scattering, of the lights and of the environment: the last event still
+   * samples a direction and gathers the environment if the path escapes). Default 256; a collision past it ends the
+   * path (bias).
+   */
   maxBounces?: number;
   /** Russian roulette on the path throughput from this depth on (survival = min(max(β), 1)). Default 4. */
   rrStart?: number;
@@ -200,22 +268,39 @@ export function vdbReferenceSigma(o: { localToWorld: ArrayLike<number>; extincti
   return (density * o.extinction) / scale;
 }
 
-/** A renderer light (design K6-core-renderer.md §2.3 `VDBFrameLight`, without ids, masks or shadow requests). */
+/**
+ * A renderer light (design K6-core-renderer.md §2.3 `VDBFrameLight`, without ids, masks or shadow requests). Point and
+ * spot lights carry three's `distance` (0: no window) and `decay` (default 2), used by 'frame' lighting only.
+ */
 export type VDBReferenceFrameLight =
   | { kind: "ambient"; color: VDBRefVec3 }
   | { kind: "hemisphere"; sky: VDBRefVec3; ground: VDBRefVec3; up: VDBRefVec3 }
   | { kind: "directional"; direction: VDBRefVec3; color: VDBRefVec3 }
-  | { kind: "point"; position: VDBRefVec3; color: VDBRefVec3 }
-  | { kind: "spot"; position: VDBRefVec3; direction: VDBRefVec3; color: VDBRefVec3; cosAngle: number; cosPenumbra: number };
+  | { kind: "point"; position: VDBRefVec3; color: VDBRefVec3; distance?: number; decay?: number }
+  | { kind: "spot"; position: VDBRefVec3; direction: VDBRefVec3; color: VDBRefVec3; cosAngle: number; cosPenumbra: number; distance?: number; decay?: number }
+  | { kind: "probe"; sh: ArrayLike<number> };
+
+/** Options of {@link vdbReferenceLightsFromFrame}. */
+export interface VDBReferenceLightMapping {
+  /**
+   * The renderer's lighting mode the reference stands for (K6.R1). 'volume' (default): point and spot lights have no
+   * distance falloff (inject-material.ts, core gather; V84). 'frame': three's `getDistanceAttenuation` with the
+   * light's `distance` and `decay` (lighting-material.ts, core lighting.ts `vdbFrameDistanceAttenuation`).
+   */
+  lighting?: "volume" | "frame";
+}
 
 /**
  * The renderer's lights in reference units: punctual lights × {@link VDB_REFERENCE_DIRECT_LIGHT_SCALE}; ambient C is
  * a uniform radiance C/π and a hemisphere light's sky / ground are radiances S/π, G/π (three: an up-facing Lambert
- * surface gets irradiance C, and the renderer's isotropic light gives albedo · C / π). `direction` of a directional
- * light points toward the light (his `position − target`), of a spot from the light toward its target.
+ * surface gets irradiance C, and the renderer's isotropic light gives albedo · C / π); a light probe's SH are radiance
+ * coefficients already (three's `shGetIrradianceAt` is their cosine convolution). `direction` of a directional light
+ * points toward the light (his `position − target`), of a spot from the light toward its target. Point and spot
+ * falloff follows the lighting mode ({@link VDBReferenceLightMapping}).
  */
-export function vdbReferenceLightsFromFrame(lights: readonly VDBReferenceFrameLight[]): { lights: VDBReferenceLight[]; environment: VDBReferenceEnvironment } {
+export function vdbReferenceLightsFromFrame(lights: readonly VDBReferenceFrameLight[], o: VDBReferenceLightMapping = {}): { lights: VDBReferenceLight[]; environment: VDBReferenceEnvironment } {
   const k = VDB_REFERENCE_DIRECT_LIGHT_SCALE;
+  const frame = (o.lighting ?? "volume") === "frame";
   const scale = (c: VDBRefVec3, s: number) => c.map((x) => x * s) as VDBRefVec3;
   const out: VDBReferenceLight[] = [];
   const environment: VDBReferenceEnvironment = {};
@@ -225,15 +310,37 @@ export function vdbReferenceLightsFromFrame(lights: readonly VDBReferenceFrameLi
       environment.uniform = u.map((x, i) => x + l.color[i]! / Math.PI) as VDBRefVec3;
     } else if (l.kind === "hemisphere") {
       (environment.hemispheres ??= []).push({ sky: scale(l.sky, 1 / Math.PI), ground: scale(l.ground, 1 / Math.PI), up: l.up });
+    } else if (l.kind === "probe") {
+      if (l.sh.length !== 27) throw new RangeError(`vdbReferenceLightsFromFrame: a probe needs 27 SH numbers, got ${l.sh.length}`);
+      environment.sh = Array.from({ length: 27 }, (_, i) => (environment.sh?.[i] ?? 0) + l.sh[i]!);
     } else if (l.kind === "directional") {
       out.push({ kind: "directional", direction: l.direction, irradiance: scale(l.color, k) });
-    } else if (l.kind === "point") {
-      out.push({ kind: "point", position: l.position, intensity: scale(l.color, k) });
     } else {
-      out.push({ kind: "spot", position: l.position, direction: l.direction, intensity: scale(l.color, k), cosOuter: l.cosAngle, cosInner: l.cosPenumbra });
+      const falloff = frame ? { falloff: { decay: l.decay ?? 2, cutoff: l.distance ?? 0 } } : {};
+      if (l.kind === "point") out.push({ kind: "point", position: l.position, intensity: scale(l.color, k), ...falloff });
+      else out.push({ kind: "spot", position: l.position, direction: l.direction, intensity: scale(l.color, k), cosOuter: l.cosAngle, cosInner: l.cosPenumbra, ...falloff });
     }
   }
   return { lights: out, environment };
+}
+
+/** three's `getDistanceAttenuation` (Frostbite window; the renderer's 'frame' point and spot lights). */
+export function vdbRefDistanceAttenuation(distance: number, falloff: VDBReferenceFalloff): number {
+  const f = 1 / Math.max(Math.pow(distance, falloff.decay), 0.01);
+  const cutoff = falloff.cutoff ?? 0;
+  if (cutoff > 0) {
+    const x = Math.min(Math.max(1 - Math.pow(distance / cutoff, 4), 0), 1);
+    return f * x * x;
+  }
+  return f;
+}
+
+/** three's `SphericalHarmonics3` basis (Yᵢ, i = 0 … 8) at the unit direction `d`. */
+export function vdbRefShBasis(d: readonly number[]): number[] {
+  const x = d[0]!;
+  const y = d[1]!;
+  const z = d[2]!;
+  return [0.282095, 0.488603 * y, 0.488603 * z, 0.488603 * x, 1.092548 * x * y, 1.092548 * y * z, 0.315392 * (3 * z * z - 1), 1.092548 * x * z, 0.546274 * (x * x - y * y)];
 }
 
 // ── Small maths shared by the twin and the uniform packer ─────────────────────────────────────────────
