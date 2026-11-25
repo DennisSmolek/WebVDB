@@ -30,6 +30,11 @@ interface Result {
   renderStats?: Stats;
   gridStats?: Stats;
   transmittanceStats?: Stats;
+  workStats?: Stats;
+  mapStats?: Stats;
+  bufferStats?: Stats;
+  environmentGridStats?: Stats;
+  environment?: { runs: { prefilter: number; blur: number; reduce: number }[]; count: number; mode: number; valid: number; directions: number[][]; colors: number[][] };
   frame?: { cascades: number; redraw: unknown };
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
@@ -365,5 +370,172 @@ for (const lighting of ["volume", "frame"] as const) {
     writeFileSync(path.join(AB_FRAME_DIR, `${name}.json`), JSON.stringify({ lighting, ...cmp, coreWarnings: core.warnings }, null, 2));
     console.log(`[k6-ab-wdas] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
     expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
+  });
+}
+
+// K6.2b (design §3.5, Q3): the environment reduction on the GPU, each stage against its twin from the read-back input of
+// the stage before it: the work map (exact-area equirect / supersampled cube), his 64 x 32 map (the GGX roughness-0.4
+// convolution) and the environment buffer (his lights and the SH9). f32 outputs: 1e-3 relative (SwiftShader's
+// transcendental and division precision; the twins are f64). The stages rerun only for their inputs.
+type EnvKey = "workStats" | "mapStats" | "bufferStats";
+const ENV_PROBES: { name: string; query: string; count: number; mutations: Record<string, EnvKey> }[] = [
+  { name: "equirect rgba16float, 'directional'", query: "?probe=environment&mode=directional", count: 8, mutations: { "env-area": "workStats", "env-blur": "mapStats", "env-seeds": "bufferStats", "env-sh": "bufferStats" } },
+  { name: "equirect, rotated and reflected, 'directional' pairs", query: "?probe=environment&mode=directional&pairs=1&rotate=1", count: 8, mutations: { "env-seeds": "bufferStats", "env-sh": "bufferStats" } },
+  { name: "equirect rgba32float, rotated, SH L2 lights", query: "?probe=environment&mode=spherical-harmonics&order=2&rotate=1&format=rgba32float", count: 12, mutations: { "env-blur": "mapStats" } },
+  { name: "equirect, SH L1 lights, 3 samples", query: "?probe=environment&mode=spherical-harmonics&order=1&samples=3", count: 6, mutations: {} },
+  { name: "cube rgba16float, 'directional'", query: "?probe=environment&projection=cube&mode=directional&samples=5", count: 5, mutations: { "env-area": "workStats" } },
+  { name: "equirect, 'outward' (SH only)", query: "?probe=environment&mode=outward", count: 0, mutations: { "env-sh": "bufferStats" } },
+];
+
+for (const p of ENV_PROBES) {
+  test(`K6.2b probe: environment (${p.name}) matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(600_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    for (const key of ["workStats", "mapStats", "bufferStats"] as const) console.log(`[k6-core] environment ${p.name} ${key}: ${JSON.stringify(r[key])}`);
+    expect(r.environment!.valid, detail(r)).toBe(1);
+    expect(r.environment!.count, detail(r)).toBe(p.count);
+    for (const key of ["workStats", "mapStats", "bufferStats"] as const) {
+      const s = r[key]!;
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "bufferStats" ? 10 : 2048);
+      // cube: a sub-sample near a face texel edge may pick the neighbour texel (its direction comes from WGSL sin / cos,
+      // 2^-11 absolute): one sub-sample of k^2 per flipped texel, a few % of the work texels at most
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(key === "workStats" && p.query.includes("cube") ? Math.floor(s.compared * 0.02) : 0);
+      console.log(`[k6-core] environment ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toExponential(2)} relative, ${s.over} over`);
+    }
+    // identical update: nothing; intensity: reduce; rotation: blur + reduce; revision: all three
+    const runs = r.environment!.runs;
+    expect(runs, detail(r)).toEqual([
+      { prefilter: 1, blur: 1, reduce: 1 },
+      { prefilter: 1, blur: 1, reduce: 1 },
+      { prefilter: 1, blur: 1, reduce: 2 },
+      { prefilter: 1, blur: 2, reduce: 3 },
+      { prefilter: 2, blur: 3, reduce: 4 },
+    ]);
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(0);
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.2b: 'frame' lighting with an environment (a synthetic sky, rotated and reflected): the dominant 'directional' light in
+// the next free slot (single scattering), the environment grid (vdbFrameEnvironmentGridVoxel3d on the read-back grid and
+// buffer) and the 'outward' SH term of the fused gather; 'volume' lighting marches every environment light.
+type FrameEnvKey = "stats" | "transmittanceStats" | "environmentGridStats";
+const FRAME_ENV_PROBES: { name: string; query: string; grid: boolean; mutations: Record<string, FrameEnvKey> }[] = [
+  { name: "'directional', single scattering (slot + grid)", query: "?probe=frame&env=directional&ms=0", grid: true, mutations: { "env-slot": "transmittanceStats", "env-grid": "environmentGridStats" } },
+  { name: "'directional', diffusion (grid only), sparse", query: "?probe=frame&env=directional&source=sparse", grid: true, mutations: { "env-grid": "environmentGridStats" } },
+  { name: "SH lights, single scattering, two groups", query: "?probe=frame&env=spherical-harmonics&ms=0&groups=2", grid: true, mutations: { "env-grid": "environmentGridStats" } },
+  { name: "'outward' SH irradiance", query: "?probe=frame&env=outward", grid: false, mutations: { "env-outward": "stats" } },
+];
+
+for (const p of FRAME_ENV_PROBES) {
+  test(`K6.2b probe: 'frame' lighting with an environment (${p.name}) matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.environment!.valid, detail(r)).toBe(1);
+    const redraw = r.frame!.redraw as { environmentGrid: { drawn: number; skipped: number } };
+    expect(redraw.environmentGrid, detail(r)).toEqual(p.grid ? { drawn: 1, skipped: 1 } : { drawn: 0, skipped: 0 });
+    for (const key of ["transmittanceStats", "stats", ...(p.grid ? (["environmentGridStats"] as const) : [])] as const) {
+      const s = r[key]!;
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(200);
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] frame env ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+const GATHER_ENV_PROBES: { name: string; query: string; mutations: string[] }[] = [
+  { name: "'directional' lights, diffusion", query: "?probe=gather&env=directional", mutations: ["env-lights", "env-outward"] },
+  { name: "SH lights, single scattering, sparse", query: "?probe=gather&env=spherical-harmonics&ms=0&source=sparse&lod=none", mutations: ["env-lights"] },
+  { name: "'outward' SH irradiance", query: "?probe=gather&env=outward", mutations: [] },
+];
+
+for (const p of GATHER_ENV_PROBES) {
+  test(`K6.2b probe: 'volume' gather with an environment (${p.name}) matches its CPU twin; mutations fail`, async ({ page }) => {
+    test.setTimeout(600_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.environment!.valid, detail(r)).toBe(1);
+    expect(r.stats!.covered, detail(r)).toBeGreaterThanOrEqual(200);
+    expect(r.stats!.over, detail(r)).toBeLessThanOrEqual(Math.floor(r.stats!.compared * 0.001));
+    console.log(`[k6-core] gather env ${p.name} on ${r.adapter}: ${r.stats!.compared} texels, ${r.stats!.covered} non-zero, max ${r.stats!.maxUlp.toFixed(2)} f16 ulp, ${r.stats!.over} over`);
+    for (const m of p.mutations) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad.stats!.over, `mutation ${m} must fail: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad.stats!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// K6.2b gate 2 (design §7.2): the environment scenes through `?backend=core` vs `?backend=tsl`, same bar (PSNR ≥ 45 dB,
+// ≤ 0.2 % pixels > 4/255). The TSL path reads its lights back from the GPU (they arrive frames later); its harness waits
+// for them, so both images are settled frames. Extra rows exercise the slot (single scattering), SH lights, 'outward'
+// and three's PMREM atlas as scene.environment (the core's lat-long fallback). Opt in with K6_CORE_AB=1; the
+// environment needs his map in fixtures/k3/sky-midday-HDR.jpg. Images and JSON (with both backends' lights) go to
+// artifacts/k6/ab-env/; the his-capture scenes' images to artifacts/k6/ours-{core,tsl}/.
+// ---------------------------------------------------------------------------------------------------------------
+const AB_ENV = [
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "", capture: true },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&source=sparse", capture: false },
+  { scene: "step5-lighting-volume-sky-midday-env-isolated", extra: "", capture: true },
+  { scene: "step5-lighting-volume-medium-cloud-sky-midday-env-isolated", extra: "", capture: true },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&ms=false", capture: false },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envMode=spherical-harmonics", capture: false },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envMode=outward", capture: false },
+  { scene: "step5-lighting-volume-sky-midday-env-isolated", extra: "&envMode=outward", capture: false },
+  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envPmrem=1", capture: false },
+] as const;
+const AB_ENV_DIR = path.join(REPO, "artifacts", "k6", "ab-env");
+
+for (const { scene, extra, capture } of AB_ENV) {
+  test(`K6.2b A/B core vs TSL: ${scene}${extra}`, async ({ page }) => {
+    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb and sky-midday-HDR.jpg)");
+    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "sky-midday-HDR.jpg")), "fixtures/k3/sky-midday-HDR.jpg missing");
+    test.setTimeout(1_800_000);
+    const base = `?scene=${scene}${extra}`;
+    const tsl = await k3(page, `${base}&backend=tsl`);
+    const core = await k3(page, `${base}&backend=core`);
+    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
+    expect(core.error, k3Detail(core)).toBeUndefined();
+    expect(core.uncaptured, k3Detail(core)).toEqual([]);
+    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
+    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
+    const name = `${scene}${extra.replace(/[&=]/g, "-")}`;
+    mkdirSync(AB_ENV_DIR, { recursive: true });
+    writeFileSync(path.join(AB_ENV_DIR, `${name}-tsl.png`), encodePng(k3Image(tsl)));
+    writeFileSync(path.join(AB_ENV_DIR, `${name}-core.png`), encodePng(k3Image(core)));
+    writeFileSync(path.join(AB_ENV_DIR, `${name}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
+    const lights = (r: K3Result) => (r as unknown as { environment?: unknown }).environment ?? null;
+    writeFileSync(path.join(AB_ENV_DIR, `${name}.json`), JSON.stringify({ scene, extra, ...cmp, coreEnvironment: lights(core), tslEnvironment: lights(tsl), coreWarnings: core.warnings }, null, 2));
+    if (capture) {
+      for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
+        mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
+        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
+        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
+      }
+    }
+    console.log(`[k6-ab-env] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
+    // Rows that exercise an intentional divergence ('outward' SH irradiance vs PMREM roughness 1, DIVERGES) report only
+    if (!extra.includes("outward")) expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
   });
 }

@@ -3,6 +3,7 @@ import { Camera, Matrix4, PerspectiveCamera, Quaternion, Vector3, Vector4, WebGP
 import { describe, expect, it } from "vitest";
 import { vdbDenseSource } from "../../../src/core/source/dense.js";
 import {
+  ENV_GROUP0_LAYOUT,
   GROUP0_LAYOUT,
   VDB_FRAME_GROUP,
   VDB_FRAME_LIGHTS,
@@ -14,6 +15,10 @@ import {
   vdbFrameChunkProbeSpec,
   vdbFrameCompositeSpec,
   vdbFrameDefaultSettings,
+  vdbFrameEnvBlurSpec,
+  vdbFrameEnvPrefilterSpec,
+  vdbFrameEnvReduceSpec,
+  vdbFrameEnvironmentGridSpec,
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
@@ -99,6 +104,8 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
     }
   }
   compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
+  // K6.2b: the environment kernels (source-free)
+  compute.push(vdbFrameEnvPrefilterSpec("equirect"), vdbFrameEnvPrefilterSpec("cube"), vdbFrameEnvBlurSpec(), vdbFrameEnvReduceSpec(), vdbFrameEnvironmentGridSpec());
   compute.push(vdbFrameVolumeShadowSpec(), vdbFrameEmissionReduceSpec(), vdbFrameEmissionProbeSpec());
   const render: VDBRenderSpec[] = [];
   for (const depth of ["depth", "r32float"] as const) for (const srgb of [false, true]) render.push(vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb }));
@@ -177,7 +184,9 @@ describe("K6.1 device limits (design §1)", () => {
     expect(all.filter((e) => e.buffer?.type === "storage" || e.buffer?.type === "read-only-storage").length).toBeLessThanOrEqual(1);
     expect(all.filter((e) => e.buffer?.type === "uniform").length).toBeLessThanOrEqual(5);
     expect(all.filter((e) => e.sampler).length).toBeLessThanOrEqual(16);
-    expect(spec.groups[0]).toBe(GROUP0_LAYOUT);
+    // the environment prefilter / blur / reduce kernels have their own group 0 (their parameters; K6.2b)
+    expect([GROUP0_LAYOUT, ENV_GROUP0_LAYOUT]).toContain(spec.groups[0]);
+    if (!/environment (prefilter|blur|reduce)/.test(spec.label)) expect(spec.groups[0]).toBe(GROUP0_LAYOUT);
     for (const g of spec.groups) {
       const bindings = [...g.entries].map((e) => e.binding).sort((a, b) => a - b);
       expect(new Set(bindings).size).toBe(bindings.length);

@@ -14,7 +14,7 @@
  */
 
 import { vdbFrameFindCascade, vdbFrameGridMarch, vdbFrameGridUvw, vdbFrameIsotropicDiffusion, type VDBFrameGridLayout, type VDBFrameShadowLight } from "./grid.js";
-import { vdbFrameNoise, vdbFrameShadowAbsorption, type Vec2, type Vec3, type Vec4 } from "./index.js";
+import { vdbFrameNoise, vdbFrameShadowAbsorption, vdbFrameShadowDepth, vdbFrameShadowStep, vdbFrameShadowTransmittance, type Vec2, type Vec3, type Vec4 } from "./index.js";
 
 /** Where the sub-volumes of a stack sit. */
 export interface VDBFrameStackLayout {
@@ -214,4 +214,57 @@ export function vdbFrameStackShadows(targetAt: (cascade: number, k: number, uvw:
     }
   }
   return out;
+}
+
+/**
+ * The environment grid pass (grey, octaves off; K6.2b) at voxel `cell` of the last cascade, through a grid sampled by
+ * `gridAt(cascade, uvw)`: `unshadowed` (the colour sum of `lights`, ≥ 0) where no extinction is within half a voxel,
+ * else Σ colour × total of one-voxel-step marches that stay in the last cascade (with diffusion the two-sided total of
+ * the march and the opposite one), ≥ 0. His FrameEnvironmentGridMaterial on a 3D grid.
+ */
+export function vdbFrameEnvironmentGridVoxel3d(
+  gridAt: (cascade: number, uvw: Vec3) => Vec2,
+  grid: VDBFrameGridLayout,
+  cell: Vec3,
+  lights: readonly { direction: Vec3; color: Vec3 }[],
+  multipleScattering: number,
+): Vec4 {
+  const cascade = grid.count - 1;
+  const world = vdbFrameGridVoxelWorld(grid, cascade, cell);
+  const voxel = grid.gridVoxel[cascade]!;
+  const uvwOf = (p: Vec3) => vdbFrameGridUvw(grid, cascade, p);
+  const unshadowed: Vec3 = [0, 0, 0];
+  for (const l of lights) for (let c = 0; c < 3; c++) unshadowed[c] = unshadowed[c]! + l.color[c]!;
+  let near = 0;
+  for (let i = 0; i < 8; i++) {
+    const c: Vec3 = [(i & 1) - 0.5, ((i >> 1) & 1) - 0.5, ((i >> 2) & 1) - 0.5];
+    near += gridAt(cascade, uvwOf([world[0] + c[0] * voxel[0], world[1] + c[1] * voxel[1], world[2] + c[2] * voxel[2]]))[0];
+  }
+  if (!(near > 0)) return [Math.max(unshadowed[0], 0), Math.max(unshadowed[1], 0), Math.max(unshadowed[2], 0), 1];
+  const marchDepths = (dir: Vec3): Vec3 => {
+    const step = 1 / Math.max(Math.abs(dir[0]) / voxel[0], Math.abs(dir[1]) / voxel[1], Math.abs(dir[2]) / voxel[2]);
+    const probe: Vec3 = [world[0] + dir[0] * step * 0.5, world[1] + dir[1] * step * 0.5, world[2] + dir[2] * step * 0.5];
+    const depths: Vec3 = [0, 0, 0];
+    for (let i = 0; i < 1024; i++) {
+      const uvw = uvwOf(probe);
+      if (uvw.some((v) => v < 0 || v > 1) || vdbFrameShadowDepth(depths, multipleScattering) > 6) break;
+      const s = gridAt(cascade, uvw);
+      const d = vdbFrameShadowStep(s[0], s[1], multipleScattering);
+      for (let c = 0; c < 3; c++) {
+        depths[c] = depths[c]! + d[c]! * step;
+        probe[c] = probe[c]! + dir[c]! * step;
+      }
+    }
+    return depths;
+  };
+  const irradiance: Vec3 = [0, 0, 0];
+  for (const l of lights) {
+    const depths = marchDepths(l.direction);
+    const total =
+      multipleScattering > 0
+        ? vdbFrameIsotropicDiffusion(depths[2], marchDepths([-l.direction[0], -l.direction[1], -l.direction[2]])[2], depths[1])
+        : vdbFrameShadowTransmittance(depths, multipleScattering)[1];
+    for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + l.color[c]! * total;
+  }
+  return [Math.max(irradiance[0], 0), Math.max(irradiance[1], 0), Math.max(irradiance[2], 0), 1];
 }

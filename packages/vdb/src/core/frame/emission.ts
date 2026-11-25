@@ -33,6 +33,7 @@ import {
   VDB_FRAME_EMISSION_LUT_SIZE,
   VDB_FRAME_EMISSION_MAX_CASCADES,
   VDB_FRAME_EMITTERS,
+  VDB_FRAME_EMITTERS_STRIDE,
   VDB_FRAME_MAX_EMITTERS,
 } from "./wgsl/emission.js";
 
@@ -263,8 +264,8 @@ export interface VDBFrameEmitterInput {
 
 /** The probe work of one update. */
 export interface VDBFrameEmissionPlan {
-  /** Per source group index: the first item of the emitter list and its count (direction passes). */
-  readonly groups: ReadonlyMap<number, { first: number; count: number }>;
+  /** Per source group index: its segment of the emitter list and the count of its changed emitters (direction passes). */
+  readonly groups: ReadonlyMap<number, { segment: number; count: number }>;
   readonly reduce: boolean;
   readonly probes: boolean;
 }
@@ -286,8 +287,8 @@ export class VDBFrameEmissionProbeSet {
   #probes: GPUTexture | null = null;
   #layout: VDBFrameStackLayout | null = null;
   #resolution = 0;
-  readonly #listBuffer: GPUBuffer;
-  readonly #listWriter = new VDBUniformWriter(VDB_FRAME_EMITTERS.size);
+  #listBuffer: GPUBuffer;
+  #listWriter = new VDBUniformWriter(VDB_FRAME_EMITTERS_STRIDE);
   readonly #gridBuffer: GPUBuffer;
   readonly #gridWriter = new VDBUniformWriter(VDB_EMISSION_GRID.size);
 
@@ -295,7 +296,7 @@ export class VDBFrameEmissionProbeSet {
     this.#device = device;
     this.#label = label;
     this.#retire = retire;
-    this.#listBuffer = device.createBuffer({ label: `${label} emitter list`, size: VDB_FRAME_EMITTERS.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
+    this.#listBuffer = device.createBuffer({ label: `${label} emitter list`, size: VDB_FRAME_EMITTERS_STRIDE, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
     this.#gridBuffer = device.createBuffer({ label: `${label} emission grid`, size: VDB_EMISSION_GRID.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
   }
 
@@ -388,26 +389,37 @@ export class VDBFrameEmissionProbeSet {
     }
     this.#probeKey = probeKey;
 
-    // The emitter list: changed emitters by source group (direction passes run per group)
-    changed.sort((a, b) => a.item.group - b.item.group);
-    const groups = new Map<number, { first: number; count: number }>();
+    // The emitter list: one segment per source group with changed emitters (a direction pass each, at a dynamic offset)
+    const byGroup = new Map<number, { item: VDBFrameEmitterInput; slot: number }[]>();
+    for (const c of changed) {
+      const list = byGroup.get(c.item.group);
+      if (list) list.push(c);
+      else byGroup.set(c.item.group, [c]);
+    }
+    const segments = Math.max(1, byGroup.size);
+    if (this.#listBuffer.size < segments * VDB_FRAME_EMITTERS_STRIDE) {
+      this.#retire.retire(this.#listBuffer);
+      this.#listBuffer = this.#device.createBuffer({ label: `${this.#label} emitter list`, size: segments * VDB_FRAME_EMITTERS_STRIDE, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
+      this.#listWriter = new VDBUniformWriter(segments * VDB_FRAME_EMITTERS_STRIDE);
+      this.version++;
+    }
+    const groups = new Map<number, { segment: number; count: number }>();
     const w = this.#listWriter;
     const L = VDB_FRAME_EMITTERS;
-    w.clear(0, L.size);
-    w.set(L, 0, "header", [changed.length, Math.max(1, Math.round(steps)), this.#slotCount, 0]);
-    const info: number[] = [];
-    const sphere: number[] = [];
-    changed.forEach(({ item, slot }, i) => {
-      const g = groups.get(item.group);
-      if (g) g.count++;
-      else groups.set(item.group, { first: i, count: 1 });
-      const b = boxes[list.indexOf(item)]!;
-      info.push(item.record, slot, 0, 0);
-      sphere.push(...b.center, b.radius);
+    w.clear(0, segments * VDB_FRAME_EMITTERS_STRIDE);
+    // segment 0 always holds the slot count (the reduce reads it)
+    w.set(L, 0, "header", [0, Math.max(1, Math.round(steps)), this.#slotCount, 0]);
+    [...byGroup.entries()].forEach(([group, items], segment) => {
+      const base = segment * VDB_FRAME_EMITTERS_STRIDE;
+      groups.set(group, { segment, count: items.length });
+      w.set(L, base, "header", [items.length, Math.max(1, Math.round(steps)), this.#slotCount, 0]);
+      w.set(L, base, "info", items.flatMap(({ item, slot }) => [item.record, slot, 0, 0]));
+      w.set(L, base, "sphere", items.flatMap(({ item }) => {
+        const bb = boxes[list.indexOf(item)]!;
+        return [...bb.center, bb.radius];
+      }));
     });
-    w.set(L, 0, "info", info);
-    w.set(L, 0, "sphere", sphere);
-    this.#device.queue.writeBuffer(this.#listBuffer, 0, w.buffer);
+    this.#device.queue.writeBuffer(this.#listBuffer, 0, w.buffer, 0, segments * VDB_FRAME_EMITTERS_STRIDE);
     this.#writeGrid(grid, count);
     lastUpdate.directions = changed.length;
     lastUpdate.probes = true;

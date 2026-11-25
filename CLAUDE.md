@@ -328,6 +328,20 @@ From v1; details in docs/archive/handoffs/.
   scattering carries most of its light, a path tracer needs hundreds of bounces (512: no path reached the cap), and
   its noise per pixel stays at several % after thousands of 1-spp batches. Compare aggregates (luminance bias,
   median relative error), not single pixels.
+- WGSL `sin`/`cos` are only accurate to 2^-11 (absolute; SwiftShader shows ~1e-4). Anything that amplifies a direction
+  error (a GGX lobe at roughness 0.4, Voronoi cell boundaries, nearest-texel picks) then differs from an f64 twin by
+  %: the K6.2b environment kernels read texel directions and solid angles from f32 tables in the WGSL (and turn the
+  horizon ring by a table); near-ties in the 'directional' extraction use a 1e-5 tolerance (`VDB_FRAME_ENV_TIE`).
+- A buffer one dispatch writes as storage and later dispatches bind as a uniform is fine in one compute pass, but not
+  in the same dispatch: the writer's pipeline layout must not include it. The core's `envReduce` has its own group 0
+  (`ENV_GROUP0_LAYOUT`); every other frame kernel's group 0 has the environment buffer at binding 3.
+- three's `flipY` equirect (HDR / UltraHDR loaders) is uploaded bottom row first: GPU row 0 is the nadir. The core's
+  equirect has row 0 at the zenith, so `./three` passes `diag(1, −1, 1) · Rᵀ` as the environment rotation (R: three's
+  `environmentRotation` matrix; three looks up `Rᵀ d`). Its WebGPU cube lookups negate x: `diag(−1, 1, 1) · Rᵀ`.
+- Point-sampling three's PMREM (a `CUBE_UV` `scene.environment`) at roughness 0 into a coarse lat-long loses a small
+  sun between samples (256 × 128: 5× less sun energy); the `./three` core fallback draws 1024 × 512 (≈ PMREM mip 0).
+- k3-frame `?backend=core` reads the environment lights from the core's buffer after one frame (no readback wait); the
+  TSL path still waits for its readback, so core-vs-TSL env A/Bs compare settled frames.
 - Another worktree's Vite server may already listen on your `WEBVDB_E2E_PORT` (5307 was taken during K6.5): Playwright
   reuses it and serves that worktree's sources (an "unknown ?probe=", or a `?backend=core` that silently runs TSL).
   Check `lsof -iTCP:<port> -sTCP:LISTEN` first, pick an unusual port, and assert in the harness which backend drew

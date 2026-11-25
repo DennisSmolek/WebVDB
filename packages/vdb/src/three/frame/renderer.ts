@@ -107,6 +107,7 @@ import { vdbFrameEmissionLutRow } from "../../tools/frame/blackbody.js";
 import { getDevice } from "../device.js";
 import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
 import { VDBFrameCoreIntegrateMaterial } from "./core-integrate-material.js";
+import { VDBCoreEnvironment } from "./core-environment.js";
 
 const { outputStruct, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
@@ -481,6 +482,8 @@ export class VDBFrameRenderer {
   private coreFrameId = 0;
   /** K6.5: the render the last core update ran for (one update per render). */
   private coreFrameKey: { renderId: number; camera: THREE.Camera; scene: object; result: VDBFrameUpdate } | null = null;
+  /** K6.2b: `scene.environment` as the core's environment input (its own texture; a lat-long draw for PMREM atlases). */
+  private readonly coreEnvironment = new VDBCoreEnvironment();
 
   /**
    * Timing/debug hook: proxies draw the integrate pass over the last froxel atlas without rendering
@@ -2297,7 +2300,6 @@ export class VDBFrameRenderer {
     }
     const core = this.core;
     Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
-    if (scene.environment) this.warnOnce("core-environment", "backend 'core': the scene environment (GPU prefilter, SH, environment lights) is K6.2b; it is ignored.");
     // K6.5: the volume shadow filter on each shadow light (receivers build with it from the next render)
     this.volumeShadows.update(renderer, scene);
 
@@ -2344,6 +2346,7 @@ export class VDBFrameRenderer {
       viewport: { drawingBuffer: [buffer.x, buffer.y], canvas: [canvas.x, canvas.y] },
       lights,
       emissionLight,
+      environment: this.coreEnvironment.input(renderer as never, scene),
     });
     device.queue.submit([encoder.finish()]);
     // K6.5: the receivers read the maps with the state they were drawn with (copied to their uniforms now, before they draw)
@@ -2619,6 +2622,7 @@ export class VDBFrameRenderer {
     // K6.1 backend 'core': the core renderer and its stand-ins (the core sources die with their WeakMap)
     this.core?.dispose();
     this.core = null;
+    this.coreEnvironment.dispose();
     this.coreDevice = null;
     this.corePrefix.dispose();
     this.coreMaterial?.dispose();

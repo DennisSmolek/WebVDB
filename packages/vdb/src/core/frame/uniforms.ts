@@ -170,6 +170,9 @@ export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
   // the renderer's 'frame' phase (forward g, back g, back weight, Lorenz-Mie mode) and its spectrum (red, blue g scale, flag)
   { name: "framePhase", type: "vec4f" },
   { name: "framePhaseSpectrum", type: "vec4f" },
+  // K6.2b: environment slot in use (0/1), first environment-grid light (= the slot flag), the environment grid holds
+  // this frame's lights (0/1), an environment is given (0/1)
+  { name: "environment", type: "vec4f" },
 ]);
 
 /** Group 0 binding 1: the scene lights (his light uniforms), in slot order directional, point, spot. */
@@ -235,17 +238,49 @@ export const VDB_FRAME_GROUP = vdbUniformStruct("VdbFrameGroup", [
   { name: "range", type: "vec4u" },
   // K6.2: the group's shadow casters (first record, count, role among the caster groups, caster group index)
   { name: "casters", type: "vec4u" },
-  // K6.5: the group's emitters whose direction pass runs (first item of the emitter list, count)
-  { name: "emitters", type: "vec4u" },
 ]);
 
-/** The WGSL of the frame structs and the group-0 bindings every frame kernel declares. */
-export function vdbFrameUniformsWgsl(maxVolumes = VDB_FRAME_MAX_VOLUMES): string {
+/** Most environment lights in the environment buffer (his `frameMaxEnvironmentLights`). */
+export const VDB_FRAME_MAX_ENVIRONMENT_LIGHTS = 12;
+
+/**
+ * Group 0 binding 3 (K6.2b): the environment buffer. `envReduce` writes it as storage; every later kernel binds it as
+ * a uniform (design §3.1, §3.5). No CPU readback.
+ */
+export const VDB_FRAME_ENVIRONMENT = vdbUniformStruct("VdbFrameEnvironment", [
+  // light count, mode (0 'outward', 1 'directional', 2 'spherical-harmonics'), valid (an environment with finite,
+  // positive energy: 0/1), spare
+  { name: "info", type: "vec4u" },
+  // SH9 radiance coefficients of the environment × intensity (three's basis; irradiance by vdbFrameEnvIrradiance)
+  { name: "sh", type: "vec4f", count: 9 },
+  // the lights: world direction toward the light, colour (his energy / 4 × intensity)
+  { name: "direction", type: "vec4f", count: VDB_FRAME_MAX_ENVIRONMENT_LIGHTS },
+  { name: "color", type: "vec4f", count: VDB_FRAME_MAX_ENVIRONMENT_LIGHTS },
+]);
+
+/** Group 0 binding 0 of the environment kernels (`envPrefilter`, `envBlur`, `envReduce`; K6.2b). */
+export const VDB_FRAME_ENV_PARAMS = vdbUniformStruct("VdbFrameEnvParams", [
+  // the rows of R (world → map; a rotation, or a rotation with a reflection)
+  { name: "rotation", type: "vec4f", count: 3 },
+  // source width, height, projection (0 equirect, 1 cube), cube sub-samples per axis
+  { name: "source", type: "vec4u" },
+  // mode code, environmentSamples, environmentShOrder, pairs (0/1)
+  { name: "settings", type: "vec4f" },
+  // intensity, spare
+  { name: "scale", type: "vec4f" },
+]);
+
+/**
+ * The WGSL of the frame structs and the group-0 bindings every frame kernel declares; `environment` adds the
+ * environment buffer (binding 3; the layout always has it).
+ */
+export function vdbFrameUniformsWgsl(maxVolumes = VDB_FRAME_MAX_VOLUMES, o: { environment?: boolean } = {}): string {
+  const env = o.environment ? `${VDB_FRAME_ENVIRONMENT.wgsl}@group(0) @binding(3) var<uniform> vdbFrameEnv: VdbFrameEnvironment;\n` : "";
   return `${VDB_FRAME_UNIFORMS.wgsl}${VDB_FRAME_LIGHTS.wgsl}${VDB_FRAME_VOLUME.wgsl}struct VdbFrameVolumes {
   v: array<VdbFrameVolume, ${maxVolumes}>,
 };
 ${VDB_FRAME_GROUP.wgsl}@group(0) @binding(0) var<uniform> vdbFrame: VdbFrameUniforms;
 @group(0) @binding(1) var<uniform> vdbFrameLights: VdbFrameLights;
 @group(0) @binding(2) var vdbFrameLinear: sampler;
-`;
+${env}`;
 }

@@ -213,7 +213,34 @@ export {
   vdbFrameGridDensityVoxel,
   vdbFrameTransmittanceVoxel3d,
   vdbFrameStackShadows,
+  vdbFrameEnvironmentGridVoxel3d,
 } from "./frame/stack.js";
+export {
+  VDB_FRAME_ENV_WORK_WIDTH,
+  VDB_FRAME_ENV_WORK_HEIGHT,
+  VDB_FRAME_ENV_ROUGHNESS,
+  VDB_FRAME_ENV_MAX_SPAN,
+  VDB_FRAME_ENV_MAX_SUPERSAMPLE,
+  VDB_FRAME_ENV_TIE,
+  VDB_FRAME_ENV_IDENTITY,
+  VDB_FRAME_ENV_MODE,
+  vdbFrameEnvToMap,
+  vdbFrameEnvToWorld,
+  vdbFrameEquirectDirection,
+  vdbFrameEnvWorkSolidAngle,
+  vdbFrameEnvironmentAreaTexel,
+  vdbFrameCubeTexel,
+  vdbFrameEnvCubeSupersample,
+  vdbFrameEnvironmentCubeTexel,
+  vdbFrameEnvGgxWeight,
+  vdbFrameEnvironmentBlurTexel,
+  vdbFrameSh9Basis,
+  vdbFrameEnvironmentIrradianceSh,
+  vdbFrameEnvironmentIrradiance,
+  vdbFrameEnvironmentReduce,
+  vdbFrameEnvironmentDensityTerm,
+} from "./frame/environment-gpu.js";
+export type { VDBFrameEnvRotation, VDBFrameEnvImage, VDBFrameEnvironmentGpuResult, VDBFrameEnvironmentReduceSettings, VDBFrameEnvironmentFlags } from "./frame/environment-gpu.js";
 export type { VDBFrameStackLayout, VDBFrameTexture3d, VDBFrameGridCaster } from "./frame/stack.js";
 export {
   VDBFrameEnvironmentLights,

@@ -46,11 +46,14 @@ import { vdbFrameStackLayout, type VDBFrameStackLayout } from "../../tools/frame
 import { GATHER_BINDINGS } from "./wgsl/gather.js";
 import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS } from "./wgsl/resolve.js";
+import { ENV_GRID_BINDINGS } from "./wgsl/environment.js";
+import { VDBFrameEnvironmentState } from "./environment.js";
 import {
   vdbFrameCompositeSpec,
   vdbFrameEmissionDirectionSpec,
   vdbFrameEmissionProbeSpec,
   vdbFrameEmissionReduceSpec,
+  vdbFrameEnvironmentGridSpec,
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
   vdbFrameResolveSpec,
@@ -61,7 +64,7 @@ import {
 } from "./kernels.js";
 import { VDBFrameShadowMaps } from "./shadows.js";
 import { VDBFrameEmissionColors, VDBFrameEmissionProbeSet, type VDBFrameEmissionPlan, type VDBFrameEmitterInput } from "./emission.js";
-import { EMISSION_DIRECTION_BINDINGS, EMISSION_PROBE_BINDINGS, EMISSION_REDUCE_BINDINGS, VDB_FRAME_EMISSION_DIRECTIONS } from "./wgsl/emission.js";
+import { EMISSION_DIRECTION_BINDINGS, EMISSION_PROBE_BINDINGS, EMISSION_REDUCE_BINDINGS, VDB_FRAME_EMISSION_DIRECTIONS, VDB_FRAME_EMITTERS, VDB_FRAME_EMITTERS_STRIDE } from "./wgsl/emission.js";
 import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "./pipelines.js";
 import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
 import { vdbFrameDefaultSettings, type VDBFrameSettings } from "./settings.js";
@@ -202,6 +205,8 @@ interface GridTextures {
   transmittance: GPUTexture;
   transmittanceLayout: VDBFrameStackLayout;
   partials: GPUTexture | null;
+  /** K6.2b: the environment grid (the last cascade, R³ rgba16float). */
+  environment: GPUTexture;
 }
 
 class FrameRenderer implements VDBFrameRendererGpu {
@@ -256,6 +261,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
   /** The grid version the shadow grid texture holds (−1: none). */
   #gridDrawn = -1;
   #transmittanceSignature: unknown[] = [];
+  // K6.2b: the GPU environment (buffer, maps, kernels) and the environment grid's signature
+  readonly #env: VDBFrameEnvironmentState;
+  #envGridSignature: unknown[] = [];
   readonly #sourceIds = new WeakMap<object, number>();
   #nextSourceId = 1;
   // K6.5: volume shadow maps, emission colours (LUT, hooks) and the emission probes
@@ -284,6 +292,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       addressModeV: "clamp-to-edge",
       addressModeW: "clamp-to-edge",
     });
+    this.#env = new VDBFrameEnvironmentState(device, this.#label);
     this.#shadows = new VDBFrameShadowMaps(device, this.#label, this.#retire);
     this.#colors = new VDBFrameEmissionColors(device, this.#label, this.#retire);
     this.#probes = new VDBFrameEmissionProbeSet(device, this.#label, this.#retire);
@@ -337,7 +346,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       }
       if (shadows) for (const multi of [false, true]) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes })));
     }
-    if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec()));
+    if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec()), prepareCompute(this.device, vdbFrameEnvironmentGridSpec()));
+    for (const spec of this.#env.specs(["equirect", "cube"])) jobs.push(prepareCompute(this.device, spec));
     if (this.settings.castShadows) jobs.push(prepareCompute(this.device, vdbFrameVolumeShadowSpec()));
     if ([...sources].some((s) => s.channels.emission)) jobs.push(prepareCompute(this.device, vdbFrameEmissionReduceSpec()), prepareCompute(this.device, vdbFrameEmissionProbeSpec()));
     jobs.push(prepareCompute(this.device, vdbFrameResolveSpec({ temporal: this.settings.temporal })));
@@ -353,7 +363,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#retire.advance();
     const s = this.settings;
     const frameLighting = s.lighting === "frame";
-    if (frame.environment) this.#warnOnce("environment", "the environment input (GPU prefilter, SH and environment lights) is K6.2b; this build ignores it.");
     if (frame.occluders && frame.occluders.length > 0) this.#warnOnce("occluders", "occluder maps (mesh → volume shadows) are K6.5b; they are ignored.");
     if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; the core renders grey.");
     if (s.multipleScattering === "two-sided") this.#warnOnce("two-sided", "multipleScattering 'two-sided' is K6.3; it runs as true (1D diffusion).");
@@ -533,6 +542,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "jitterFade", [jitter, fade, Math.min(1, Math.max(0.01, s.temporalBlend)), useHistory ? 1 : 0]);
     fw.set(U, 0, "flags", [Math.max(1, Math.round(s.subSteps)), s.temporal ? 1 : 0, (cam.reversedDepth ? 1 : 0) | (cam.orthographic ? 2 : 0), 0]);
     fw.set(U, 0, "camera", [cam.near, cam.far, 0, 0]);
+    // K6.2b: the environment kernels this update runs (reduced on the GPU; no readback)
+    this.#env.prepare(frame.environment, s);
     const lightInfo = this.#packLights(frame.lights);
     const grid = usesGrid ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter, frameLighting && froxelWork) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
@@ -570,7 +581,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const emission = this.#probes.plan(emissionLight, emitters, [cameraWorld[12]!, cameraWorld[13]!, cameraWorld[14]!], emissionLight?.steps ?? 24);
 
     this.#packVolumes(ordered, codes);
-    this.#packGroups(groups, gatherGroups, casterGroups, emission?.groups ?? null);
+    this.#packGroups(groups, gatherGroups, casterGroups);
 
     // Sparse sources (K6.7) record their own work after the host's pool.update(encoder); group 2 follows their version.
     for (const g of groups) (g.source as VDBVolumeSource & { update?: (e: GPUCommandEncoder) => unknown }).update?.(encoder);
@@ -578,6 +589,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     // Record: [shadow grid per caster group, volume shadow maps, transmittance], [emission], gather per source group,
     // then resolve
     const pass = encoder.beginComputePass({ label: `${this.#label} froxels` });
+    this.#env.record(pass);
     const group0 = this.#group0Bind();
     if (grid?.drawGrid) {
       const gt = this.#grid!;
@@ -600,6 +612,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
       pass.setBindGroup(0, group0);
       pass.setBindGroup(1, this.#transmittanceBind(built.layouts[1]!, gt));
       pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
+    }
+    if (grid?.drawEnvironmentGrid) {
+      const gt = this.#grid!;
+      const r = gt.resolution;
+      const built = computePipeline(this.device, vdbFrameEnvironmentGridSpec());
+      pass.setPipeline(built.pipeline);
+      pass.setBindGroup(0, group0);
+      pass.setBindGroup(1, this.#environmentGridBind(built.layouts[1]!, gt));
+      pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil(r / 4));
     }
     if (emission) this.#recordEmission(pass, group0, groups, emission, lut);
     if (tex && area) {
@@ -652,20 +673,19 @@ class FrameRenderer implements VDBFrameRendererGpu {
       const b = EMISSION_DIRECTION_BINDINGS;
       pass.setPipeline(built.pipeline);
       pass.setBindGroup(0, group0);
-      const group1 = this.#cached("emission-direction", [built.layouts[1]!, this.#groupsBuffer, lut, P.directionTexture!], () =>
+      const group1 = this.#cached("emission-direction", [built.layouts[1]!, P.listBuffer, lut, P.directionTexture!], () =>
         this.device.createBindGroup({
           label: `${this.#label} emission direction group 1`,
           layout: built.layouts[1]!,
           entries: [
             { binding: b.volumes, resource: { buffer: this.#volumesBuffer } },
-            { binding: b.group, resource: { buffer: this.#groupsBuffer, size: VDB_FRAME_GROUP.size } },
-            { binding: b.emitters, resource: { buffer: P.listBuffer } },
+            { binding: b.emitters, resource: { buffer: P.listBuffer, size: VDB_FRAME_EMITTERS.size } },
             { binding: b.lut, resource: lut.createView() },
             { binding: b.directions, resource: P.directionTexture!.createView() },
           ],
         }),
       );
-      pass.setBindGroup(1, group1, [index * VDB_FRAME_GROUP_STRIDE]);
+      pass.setBindGroup(1, group1, [range.segment * VDB_FRAME_EMITTERS_STRIDE]);
       pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
       pass.dispatchWorkgroups(VDB_FRAME_EMISSION_DIRECTIONS, range.count, 1);
     }
@@ -676,12 +696,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
       pass.setBindGroup(0, group0);
       pass.setBindGroup(
         1,
-        this.#cached("emission-reduce", [built.layouts[1]!, P.directionTexture!, P.emitterTexture!], () =>
+        this.#cached("emission-reduce", [built.layouts[1]!, P.listBuffer, P.directionTexture!, P.emitterTexture!], () =>
           this.device.createBindGroup({
             label: `${this.#label} emission reduce group 1`,
             layout: built.layouts[1]!,
             entries: [
-              { binding: b.emitters, resource: { buffer: P.listBuffer } },
+              { binding: b.emitters, resource: { buffer: P.listBuffer, size: VDB_FRAME_EMITTERS.size } },
               { binding: b.directions, resource: P.directionTexture!.createView() },
               { binding: b.out, resource: P.emitterTexture!.createView() },
             ],
@@ -731,7 +751,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     lights: { sorted: readonly number[][]; sky: readonly number[] },
     jitter: number,
     transmittance = true,
-  ): { count: number; drawGrid: boolean; drawTransmittance: boolean } {
+  ): { count: number; drawGrid: boolean; drawTransmittance: boolean; drawEnvironmentGrid: boolean } {
     const s = this.settings;
     const fw = this.#frameWriter;
     const U = VDB_FRAME_UNIFORMS;
@@ -786,6 +806,13 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "lighting", [ms, 0, count > 0 ? 1 : 0, diffusion ? 1 : 0]);
     fw.set(U, 0, "framePhase", phase);
     fw.set(U, 0, "framePhaseSpectrum", [...vdbFramePhaseSpectrum(phaseFields), 0]);
+    // K6.2b: his light result. The dominant 'directional' environment light takes the next free slot (not with
+    // diffusion: then every environment light goes to the environment grid, opposite pairs get the same march);
+    // the environment grid holds the others. Its direction and colour are on the GPU only (the buffer).
+    const env = this.#env;
+    const envSlot = env.present && env.mode === "directional" && shadowSlots < VDB_FRAME_SHADOW_SLOTS && !diffusion;
+    const envGrid = env.present && env.mode !== "outward" && count > 0;
+    fw.set(U, 0, "environment", [envSlot ? 1 : 0, envSlot ? 1 : 0, envGrid ? 1 : 0, env.present ? 1 : 0]);
 
     // His redraw skips: the grid when its version or texture changed; the transmittance when its signature did (a
     // jittered grid is drawn every frame)
@@ -796,8 +823,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#gridDrawn = this.#gridState.gridVersion;
     }
     // K6.5: the volume shadow maps alone ('volume' lighting, or no volume in view) need only the grid
-    if (!transmittance) return { count, drawGrid, drawTransmittance: false };
-    const signature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky];
+    if (!transmittance) return { count, drawGrid, drawTransmittance: false, drawEnvironmentGrid: false };
+    const signature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky, envSlot, envSlot ? env.version : -1];
     for (let i = 0; i < shadowSlots; i++) signature.push(...lights.sorted[i]!.slice(0, 4));
     const drawTransmittance = count > 0 && (jitter >= 0 || !vdbSameValues(signature, this.#transmittanceSignature));
     this.#transmittanceSignature = jitter >= 0 ? [] : signature;
@@ -805,7 +832,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
       if (drawTransmittance) this.redrawStats.transmittance.drawn++;
       else this.redrawStats.transmittance.skipped++;
     }
-    return { count, drawGrid, drawTransmittance };
+    // his renderEnvironmentGrid signature: the grid (its version covers the cascades and casters), ms, the lights
+    const envSignature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.environment, count, ms, envSlot, env.version];
+    const drawEnvironmentGrid = envGrid && !vdbSameValues(envSignature, this.#envGridSignature);
+    if (envGrid) {
+      if (drawEnvironmentGrid) this.redrawStats.environmentGrid.drawn++;
+      else this.redrawStats.environmentGrid.skipped++;
+      this.#envGridSignature = envSignature;
+    }
+    return { count, drawGrid, drawTransmittance, drawEnvironmentGrid };
   }
 
   /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */
@@ -821,6 +856,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#retire.retire(g.shadow);
       this.#retire.retire(g.transmittance);
       this.#retire.retire(g.partials);
+      this.#retire.retire(g.environment);
     }
     const shadowLayout = vdbFrameStackLayout(resolution, cascades, maxDim);
     const transmittanceLayout = vdbFrameStackLayout(resolution, 4 * cascades, maxDim);
@@ -832,11 +868,13 @@ class FrameRenderer implements VDBFrameRendererGpu {
       shadow: createFroxelTexture(this.device, `${this.#label} shadow grid`, shadowLayout.size, "rgba16float"),
       transmittance: createFroxelTexture(this.device, `${this.#label} transmittance`, transmittanceLayout.size, "rgba16float"),
       partials: multi ? createFroxelTexture(this.device, `${this.#label} grid partials`, shadowLayout.size, "r32uint", false) : null,
+      environment: createFroxelTexture(this.device, `${this.#label} environment grid`, [resolution, resolution, resolution], "rgba16float"),
     };
     this.#grid = next;
     // A new texture is empty: draw the grid and the transmittance again
     this.#gridDrawn = -1;
     this.#transmittanceSignature = [];
+    this.#envGridSignature = [];
     return next;
   }
 
@@ -890,6 +928,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: 0, resource: { buffer: this.#frameBuffer } },
           { binding: 1, resource: { buffer: this.#lightsBuffer } },
           { binding: 2, resource: this.#linear },
+          { binding: 3, resource: { buffer: this.#env.buffer } },
         ],
       });
     }
@@ -910,8 +949,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
   #gatherBind(layout: GPUBindGroupLayout, tex: Textures, multi: boolean, frameLighting: boolean, lut: GPUTexture | null): GPUBindGroup {
     const b = frameLighting ? FRAME_GATHER_BINDINGS : GATHER_BINDINGS;
     const transmittance = frameLighting ? this.#grid!.transmittance : null;
+    const environment = frameLighting ? this.#grid!.environment : null;
     const name = `gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}${lut ? "-lut" : ""}`;
-    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance] : []), ...(lut ? [lut] : []), this.#groupsBuffer], () =>
+    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance, environment!] : []), ...(lut ? [lut] : []), this.#groupsBuffer], () =>
       this.device.createBindGroup({
         label: `${this.#label} gather group 1`,
         layout,
@@ -920,7 +960,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: b.group, resource: { buffer: this.#groupsBuffer, size: VDB_FRAME_GROUP.size } },
           { binding: b.scatter, resource: tex.scatter.createView({ dimension: "3d" }) },
           ...(multi ? [{ binding: b.partials, resource: tex.partials!.createView({ dimension: "3d" }) }] : []),
-          ...(transmittance ? [{ binding: FRAME_GATHER_BINDINGS.transmittance, resource: transmittance.createView({ dimension: "3d" }) }] : []),
+          ...(transmittance
+            ? [
+                { binding: FRAME_GATHER_BINDINGS.transmittance, resource: transmittance.createView({ dimension: "3d" }) },
+                { binding: FRAME_GATHER_BINDINGS.environmentGrid, resource: environment!.createView({ dimension: "3d" }) },
+              ]
+            : []),
           ...(lut ? [{ binding: b.emissionLut, resource: lut.createView() }] : []),
         ],
       }),
@@ -952,6 +997,20 @@ class FrameRenderer implements VDBFrameRendererGpu {
         entries: [
           { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
           { binding: b.transmittance, resource: gt.transmittance.createView({ dimension: "3d" }) },
+        ],
+      }),
+    );
+  }
+
+  #environmentGridBind(layout: GPUBindGroupLayout, gt: GridTextures): GPUBindGroup {
+    const b = ENV_GRID_BINDINGS;
+    return this.#cached("environment-grid", [layout, gt.shadow, gt.environment], () =>
+      this.device.createBindGroup({
+        label: `${this.#label} environment grid group 1`,
+        layout,
+        entries: [
+          { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
+          { binding: b.out, resource: gt.environment.createView({ dimension: "3d" }) },
         ],
       }),
     );
@@ -1117,7 +1176,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   }
 
   /** One record per source group: its gather range and role among the gather groups, its casters and their role. */
-  #packGroups(groups: readonly SourceGroup[], gatherGroups: readonly SourceGroup[], casterGroups: readonly SourceGroup[], emitters: ReadonlyMap<number, { first: number; count: number }> | null): void {
+  #packGroups(groups: readonly SourceGroup[], gatherGroups: readonly SourceGroup[], casterGroups: readonly SourceGroup[]): void {
     const bytes = Math.max(4, groups.length) * VDB_FRAME_GROUP_STRIDE;
     if (this.#groupsBuffer.size < bytes) {
       this.#retire.retire(this.#groupsBuffer);
@@ -1133,8 +1192,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
       w.clear(i * VDB_FRAME_GROUP_STRIDE, VDB_FRAME_GROUP_STRIDE);
       w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "range", [g.first, g.visible, role(gatherGroups, g), gatherGroups.indexOf(g)]);
       w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "casters", [g.first + g.casterStart, g.casters, role(casterGroups, g), casterGroups.indexOf(g)]);
-      const e = emitters?.get(i);
-      w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "emitters", [e?.first ?? 0, e?.count ?? 0, 0, 0]);
     });
     this.device.queue.writeBuffer(this.#groupsBuffer, 0, w.buffer, 0, groups.length * VDB_FRAME_GROUP_STRIDE);
   }
@@ -1213,12 +1270,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
       g.shadow.destroy();
       g.transmittance.destroy();
       g.partials?.destroy();
+      g.environment.destroy();
     }
     this.#grid = null;
     this.#shadows.dispose();
     this.#probes.dispose();
     this.#colors.dispose();
     this.outputs.emissionProbes = null;
+    this.#env.dispose();
     this.#retire.drain();
     this.#frameBuffer.destroy();
     this.#lightsBuffer.destroy();
@@ -1237,6 +1296,11 @@ class FrameRenderer implements VDBFrameRendererGpu {
   get debugEmission(): { directions: GPUTexture | null; emitters: GPUTexture | null; probes: GPUTexture | null; slots: number } {
     const P = this.#probes;
     return { directions: P.directionTexture, emitters: P.emitterTexture, probes: P.probeTexture, slots: P.slots };
+  }
+
+  /** @internal The environment state (harness probes and tests): the buffer, the maps and the kernel counts. */
+  get debugEnvironment(): VDBFrameEnvironmentState {
+    return this.#env;
   }
 
   /** @internal The 'frame' lighting grid textures and the live cascade layout (harness probes and tests). */
@@ -1275,11 +1339,22 @@ export function vdbFrameRendererEmission(r: VDBFrameRendererGpu): { directions: 
 
 /** @internal The 'frame' lighting grid of a renderer (harness probes): stacks, their layouts and the live cascades. */
 export function vdbFrameRendererGrid(r: VDBFrameRendererGpu): {
-  textures: { resolution: number; cascades: number; shadow: GPUTexture; shadowLayout: VDBFrameStackLayout; transmittance: GPUTexture; transmittanceLayout: VDBFrameStackLayout; partials: GPUTexture | null };
+  textures: { resolution: number; cascades: number; shadow: GPUTexture; shadowLayout: VDBFrameStackLayout; transmittance: GPUTexture; transmittanceLayout: VDBFrameStackLayout; partials: GPUTexture | null; environment: GPUTexture };
   count: number;
   gridMin: number[][];
   gridSize: number[][];
   gridVoxel: number[][];
 } | null {
   return (r as unknown as { debugGrid: ReturnType<typeof vdbFrameRendererGrid> }).debugGrid;
+}
+
+/** @internal The environment of a renderer (harness probes): its buffer, maps and kernel counts (K6.2b). */
+export function vdbFrameRendererEnvironment(r: VDBFrameRendererGpu): {
+  buffer: GPUBuffer;
+  maps: { work: GPUTexture; map: GPUTexture } | null;
+  runs: { prefilter: number; blur: number; reduce: number };
+  version: number;
+  present: boolean;
+} {
+  return (r as unknown as { debugEnvironment: VDBFrameEnvironmentState }).debugEnvironment;
 }

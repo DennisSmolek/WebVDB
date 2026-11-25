@@ -39,15 +39,21 @@ export const VDB_FRAME_EMISSION_LUT_SIZE = 256;
 /** The LUT's temperature range (his blackbody table's). */
 export const VDB_FRAME_EMISSION_LUT_KELVIN = [500, 40000] as const;
 
-/** The emitters a direction pass reads (group 1): per item the volume record and slot, and its bounding sphere. */
+/**
+ * The emitters a direction pass reads (group 1): one segment per source group at a dynamic offset
+ * ({@link VDB_FRAME_EMITTERS_STRIDE}); per item the volume record and slot, and its bounding sphere.
+ */
 export const VDB_FRAME_EMITTERS = vdbUniformStruct("VdbFrameEmitterList", [
-  // items this update, steps per ray, slots, spare
+  // items of this segment, steps per ray, slots, spare
   { name: "header", type: "vec4u" },
   // (volume record, slot, 0, 0)
   { name: "info", type: "vec4u", count: VDB_FRAME_MAX_EMITTERS },
   // (centre xyz, radius)
   { name: "sphere", type: "vec4f", count: VDB_FRAME_MAX_EMITTERS },
 ]);
+
+/** Bytes between the emitter list's per-group segments (256-aligned dynamic offsets). */
+export const VDB_FRAME_EMITTERS_STRIDE = Math.ceil(VDB_FRAME_EMITTERS.size / 256) * 256;
 
 /** The probe grid (group 1 of the probe kernel; the receivers' `grid`). */
 export const VDB_EMISSION_GRID = vdbUniformStruct("VdbEmissionGrid", [
@@ -62,7 +68,7 @@ export const VDB_EMISSION_GRID = vdbUniformStruct("VdbEmissionGrid", [
 ]);
 
 /** Group-1 bindings of the emission kernels. */
-export const EMISSION_DIRECTION_BINDINGS = { volumes: 0, group: 1, emitters: 2, lut: 3, directions: 4 } as const;
+export const EMISSION_DIRECTION_BINDINGS = { volumes: 0, emitters: 2, lut: 3, directions: 4 } as const;
 export const EMISSION_REDUCE_BINDINGS = { emitters: 0, directions: 1, out: 2 } as const;
 export const EMISSION_PROBE_BINDINGS = { grid: 0, emitters: 1, probes: 2 } as const;
 
@@ -118,11 +124,11 @@ var<workgroup> vdbFrameEmissionLanes: array<vec4f, ${2 * R * R}>;
 // adds emission x alpha x the transmittance so far (absorbance scales the transmittance) and stops below 1%.
 @compute @workgroup_size(${R * R}, 1, 1)
 fn vdbFrameEmissionDirectionCs(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) lane: u32) {
-  let items = vdbFrameGroup.emitters;
-  if (wg.y >= items.y || wg.x >= ${D}u) {
+  // the list segment of this source group (a dynamic offset): its items are this dispatch's emitters
+  if (wg.y >= vdbFrameEmitters.header.x || wg.x >= ${D}u) {
     return;
   }
-  let item = items.x + wg.y;
+  let item = wg.y;
   let vi = vdbFrameEmitters.info[item].x;
   let slot = vdbFrameEmitters.info[item].y;
   let sphere = vdbFrameEmitters.sphere[item];
