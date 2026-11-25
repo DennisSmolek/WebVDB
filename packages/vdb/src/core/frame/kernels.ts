@@ -54,6 +54,10 @@ export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameG
   ].join("\n");
 }
 
+/** The source layout part of a label: its channels and LOD levels. */
+const sourceChannels = (s: VDBVolumeSource) =>
+  ["density", ...(["mask", "albedo", "emission"] as const).filter((c) => s.channels[c])].join("+") + (s.lodLevels > 0 ? "+mips" : "");
+
 /** The gather kernel's spec. */
 export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherKey): VDBComputeSpec {
   const b = GATHER_BINDINGS;
@@ -64,7 +68,7 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
   ];
   if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
   return {
-    label: `vdb frame gather (${key.mix}${key.multi ? ", multi-group" : ""})`,
+    label: `vdb frame gather (${key.mix}${key.multi ? ", multi-group" : ""}; ${source.kind} ${sourceChannels(source)})`,
     code: vdbFrameGatherKernelWgsl(source, key),
     entryPoint: "vdbFrameGatherCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
