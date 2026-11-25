@@ -23,6 +23,7 @@
 import type { VDBVolumeChannels } from "../../source/types.js";
 import { frameChunksWgsl } from "./chunks.js";
 import { vdbFrameEmissionColorWgsl } from "./emission.js";
+import { vdbFrameOccluderWgsl } from "./occluders.js";
 
 /** Pipeline-key options of the gather kernel. */
 export interface VDBFrameGatherOptions {
@@ -166,6 +167,8 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
     `@group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;`,
     `@group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;`,
     ...(o.multi ? [`@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;`] : []),
+    // K6.5b: the host occluder maps (bindings 12–15)
+    vdbFrameOccluderWgsl(),
   ].join("\n");
 
   const accumulate =
@@ -359,6 +362,11 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
         spotAttenuation = smoothstep(spot.w, color.w, dot(normalize(position.xyz - worldPosition), spot.xyz));
       }
       if ((lightMask & bit) == 0u || spotAttenuation <= 0.0) {
+        continue;
+      }
+      // K6.5b: a host occluder map; behind an occluder the march toward the light stops at once (both terms)
+      spotAttenuation *= vdbFrameOccluderVisibility(worldPosition, li);
+      if (spotAttenuation <= 0.0) {
         continue;
       }
       let toLight = (worldToLocal * vec4f(position.xyz, 1.0)).xyz - localPosition;

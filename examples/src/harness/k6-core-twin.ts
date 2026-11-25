@@ -75,7 +75,11 @@ export type TwinMutation =
   | "env-slot"
   | "env-grid"
   | "env-outward"
-  | "env-lights";
+  | "env-lights"
+  // K6.5b host occluder maps: the twin without them, the transmittance's scattered part unoccluded, one texel
+  | "occluder"
+  | "occluder-scattered"
+  | "occluder-filter";
 
 /** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
 export interface TwinSampler {
@@ -151,6 +155,8 @@ export interface TwinFrame {
   lights: { position: V4; color: V4; spot: V4 }[];
   /** K6.2b: the environment buffer (read back): its lights, or the 'outward' SH. */
   environment?: VDBFrameEnvironmentGpuResult;
+  /** K6.5b: the host occluder visibility of light `index` (record order) at a world position. */
+  occluder?: ((index: number, world: V3) => number) | null;
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -315,12 +321,13 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
       } else irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), front[1]));
     }
   }
-  for (const l of frame.lights) {
+  for (const [index, l] of frame.lights.entries()) {
     const isDirectional = l.position[3] < 1.5;
     const isSpot = l.position[3] > 2.5;
     const bit = isDirectional ? 8 : isSpot ? 4 : 16;
     const toLightWorld = sub(l.position, world);
-    const spot = isSpot ? smoothstep(l.spot[3], l.color[3], dot(norm(toLightWorld), l.spot)) : 1;
+    // K6.5b: the occluder visibility at the lit position scales both terms (the march stops at the occluder)
+    const spot = (isSpot ? smoothstep(l.spot[3], l.color[3], dot(norm(toLightWorld), l.spot)) : 1) * (frame.occluder ? frame.occluder(index, world) : 1);
     if (!(r.lights & bit) || spot <= 0) continue;
     const toLight = sub(vdbMat4Point(r.worldToLocal, l.position), local);
     const direction = isDirectional ? mat3(r.worldToLocal, l.position) : toLight;
