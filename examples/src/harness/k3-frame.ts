@@ -375,6 +375,9 @@ interface Result {
   gridMipTwin?: TwinStats & { levels: number };
   furnace?: { radiance: number; centerRatio: number[]; corner: number[]; volumePixels: number; meanRatio: number; minRatio: number; maxRatio: number; meanAbsDeviation: number; p05: number; p95: number; environment: { mode: string; count: number } | null };
   temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
+  // K6.1
+  backend?: "tsl" | "core";
+  froxelMix?: "mixture" | "over";
   // K3.5
   spectral?: boolean;
   medium?: string | null;
@@ -737,6 +740,11 @@ async function main(): Promise<void> {
   renderer.setSize(W, H, false);
 
   const frameRenderer = new VDBFrameRenderer();
+  // K6.1: `?backend=core` renders through the core frame renderer (internal A/B); `?froxelMix=mixture|over`
+  frameRenderer.backend = params.get("backend") === "core" ? "core" : "tsl";
+  frameRenderer.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
+  result.backend = frameRenderer.backend;
+  result.froxelMix = frameRenderer.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],

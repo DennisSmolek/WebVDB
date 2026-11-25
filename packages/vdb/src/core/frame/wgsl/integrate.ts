@@ -44,16 +44,25 @@ export const VDB_FRAME_INTEGRATE_TAPS_WGSL = `fn vdbFrameIntegrateTaps(a: vec4f,
 }
 `;
 
-/** sRGB transfer functions (three's) and `fn vdbFrameCompositeColor(r: vec4f, sceneColor, srgb: u32, clampColors: u32) -> vec4f`. */
-export const VDB_FRAME_COMPOSITE_COLOR_WGSL = `fn vdbFrameSrgbOetfColor(color: vec3f) -> vec3f {
+/** three's `sRGBTransferOETF` as `fn vdbFrameSrgbOetfColor(color: vec3f) -> vec3f`. */
+export const VDB_FRAME_SRGB_OETF_WGSL = `fn vdbFrameSrgbOetfColor(color: vec3f) -> vec3f {
   let a = pow(color, vec3f(0.41666)) * 1.055 - 0.055;
   return select(a, color * 12.92, color <= vec3f(0.0031308));
 }
-fn vdbFrameSrgbEotfColor(color: vec3f) -> vec3f {
+`;
+
+/** three's `sRGBTransferEOTF` as `fn vdbFrameSrgbEotfColor(color: vec3f) -> vec3f`. */
+export const VDB_FRAME_SRGB_EOTF_WGSL = `fn vdbFrameSrgbEotfColor(color: vec3f) -> vec3f {
   let a = pow(color * 0.9478672986 + 0.0521327014, vec3f(2.4));
   return select(a, color * 0.0773993808, color <= vec3f(0.04045));
 }
-fn vdbFrameCompositeColor(r: vec4f, sceneColor: vec4f, srgb: u32, clampColors: u32) -> vec4f {
+`;
+
+/**
+ * `fn vdbFrameCompositeColor(r: vec4f, sceneColor: vec4f, srgb: u32, clampColors: u32) -> vec4f` (needs the two
+ * sRGB functions): r = (radiance, T). sRGB: his WebGLRenderer-like blend; else premultiplied (radiance, α).
+ */
+export const VDB_FRAME_COMPOSITE_COLOR_FN_WGSL = `fn vdbFrameCompositeColor(r: vec4f, sceneColor: vec4f, srgb: u32, clampColors: u32) -> vec4f {
   let alpha = 1.0 - r.w;
   if (srgb == 0u) {
     return vec4f(r.rgb, alpha);
@@ -67,6 +76,9 @@ fn vdbFrameCompositeColor(r: vec4f, sceneColor: vec4f, srgb: u32, clampColors: u
   return vec4f(vdbFrameSrgbEotfColor(mix(backgroundColor, volumeColor, vec3f(alpha))), alpha + sceneColor.a * (1.0 - alpha));
 }
 `;
+
+/** The sRGB functions and `vdbFrameCompositeColor`. */
+export const VDB_FRAME_COMPOSITE_COLOR_WGSL = `${VDB_FRAME_SRGB_OETF_WGSL}${VDB_FRAME_SRGB_EOTF_WGSL}${VDB_FRAME_COMPOSITE_COLOR_FN_WGSL}`;
 
 /** The pure integrate functions, keyed by name (one function each, for `wgslFn`). */
 export const VDB_FRAME_INTEGRATE_FUNCTIONS = {
