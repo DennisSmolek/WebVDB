@@ -316,7 +316,8 @@ From v1; details in docs/archive/handoffs/.
 - The froxel renderer's punctual lights are 4× three's Lambert convention: 'volume' lighting adds `color · phasê · T`
   (phasê = phase / (1/4π)) and divides by π, so a directional light of colour C is irradiance 4C to a physical
   renderer; point and spot lights have no distance falloff in 'volume' lighting ('frame' lighting applies three's getDistanceAttenuation, as his lighting pass, K6.2). Ambient C is a uniform radiance C/π (unshadowed in the
-  renderer). Map lights with `vdbReferenceLightsFromFrame` (K6.R) or a comparison shows a 4× "error".
+  renderer). Map lights with `vdbReferenceLightsFromFrame(lights, { lighting })` (K6.R; K6.R1 made the point / spot
+  falloff follow the lighting mode) or a comparison shows a 4× "error" (or a distance-squared one).
 - A GPU path tracer and its CPU twin agree path for path only if they draw random numbers in the same order (K6.R:
   > 99 % of values equal). When they drift, diff the draw order before the maths; f32 vs f64 flips a few branches.
 - Statistical gates on batch means: σ from a few batches has few degrees of freedom and grazing pixels are rare-event
@@ -328,6 +329,20 @@ From v1; details in docs/archive/handoffs/.
   scattering carries most of its light, a path tracer needs hundreds of bounces (512: no path reached the cap), and
   its noise per pixel stays at several % after thousands of 1-spp batches. Compare aggregates (luminance bias,
   median relative error), not single pixels.
+- K6.R1: parallel agents of one lead session share its scratchpad directory: a fixed log name (`test.log`) can be
+  overwritten by another worktree's run (one `pnpm test` log showed another worktree's root). Log to a subfolder
+  named after your worktree, and check the log's first lines name your root.
+- A white furnace cannot see phase-sampling bugs: any direction distribution conserves energy at albedo 1. Check
+  sampling with E[w] = 1 and E[w cos θ] = g, and in a render with a non-uniform environment; compare twins per channel
+  (per-channel biases cancel in the image sum).
+- Ratio tracking stays unbiased with a too-small majorant wherever it is > 0 (negative weights), so Beer–Lambert sees a
+  wrong majorant cell only where it is 0 (a skipped cell); delta tracking is biased by any violation. Count violations
+  (the CPU twin does) and test with a medium whose cells differ along every axis.
+- Node stats are per leaf (8³ voxels): a sparse majorant grid from them gains nothing below 8-voxel cells, and stats
+  bound ACTIVE values only (`vdbReferenceMajorantGridSparse(…, { from: 'voxels' })` checks a grid).
+- His sRGB blend is not linear: the K6.R report's "composite − (1 − α)·background" goes negative where a volume is darker
+  than the background (the luminance bias then reads 0). The K6.R1 report inverts the blend at the reference's α.
+- `froxelMix` acts in 'volume' lighting only ('frame' sums densities, V90): the V79 A/B is `?lighting=volume`.
 - WGSL `sin`/`cos` are only accurate to 2^-11 (absolute; SwiftShader shows ~1e-4). Anything that amplifies a direction
   error (a GGX lobe at roughness 0.4, Voronoi cell boundaries, nearest-texel picks) then differs from an f64 twin by
   %: the K6.2b environment kernels read texel directions and solid angles from f32 tables in the WGSL (and turn the
@@ -362,7 +377,8 @@ From v1; details in docs/archive/handoffs/.
 - Core vs TSL A/Bs of a term on meshes (volume shadows, the emission light): compare on − off per backend outside the
   volume's dilated coverage; inside it the term is seen through the froxel composite, whose silhouette differs by V80
   (30/255 on the explosion's edge otherwise).
-- K6.3: the core's Lorenz-Mie phase LUT is group 0 binding 4 of every frame kernel (`GROUP0_LAYOUT`). A probe that builds
+- K6.3: the core's Lorenz-Mie table is a uniform buffer (binary16 pairs, 16 KiB) at group 0 binding 4 of every frame kernel
+  (`GROUP0_LAYOUT`), not a texture: the dense 'frame' gather has no sampled-texture slot left. A probe that builds
   group 0 by hand needs it too (`mieEntry` in `k6-core.ts`), or the bind group is invalid and the dispatch writes nothing.
 - K6.3: K7.3's `mips.record(encoder, …)` opens its own compute pass. The core renderer ends its update pass, records the
   chain and begins a new pass ('multi-scale' only); anything recorded between them must follow the same order.
@@ -373,3 +389,20 @@ From v1; details in docs/archive/handoffs/.
   border. Mutate something every voxel reads (2 levels, a shifted box).
 - WGSL lets a local shadow a builtin (`let length = …`), and a later `length(v)` in that scope then fails to compile. Don't
   name locals after builtins.
+- three r187 makes a light's shadow node (and draws its map) only for a lit material on a mesh with `receiveShadow`
+  (`AnalyticLightNode.setupShadow`): volumes plus unlit casters give no map, so no mesh → volume shadow (K6.5b). The gate
+  harness keeps a small lit receiver in a corner.
+- The core's occluder maps (K6.5b) bind as `texture_2d_array<f32>` `unfilterable-float` at group-1 bindings 12–15 of the
+  transmittance and both gathers (keep those numbers free). Hosts pass a `'2d-array'` view (`aspect: 'depth-only'` for a
+  depth-stencil format); compat devices fix a texture's view dimension at creation, so a cube depth map made for `'cube'`
+  views cannot be viewed as `'2d-array'` there.
+- `./three` reads three's shadow maps with no lag by calling the light's `ShadowNode.updateBefore` before the core update
+  (three draws and submits the map then, and skips it later in the frame by `_cameraFrameId`). Read a map's matrices from
+  the shadow camera / `shadow.matrix` (they hold the last draw); a point map's light position is `−shadow.matrix`'s
+  translation and its faces follow three's WebGPU table (`three/frame/core-occluders.ts`).
+- The dense 'frame' gather samples 15 textures after K6.5b (16 is the WebGPU default): a pass adding a sampled texture to
+  it must free one (`frame.test.ts` "sampled-texture headroom" pins 15).
+- To shadow a volume from a mesh the view must not show: put the mesh on layer 1 and `light.shadow.camera.layers.enable(1)`
+  (three copies the view camera's layers into the shadow camera only when its mask is just layer 0).
+- A gate mask for "pixels behind an occluder" must weight the view ray by the cloud's visibility (a CPU density march):
+  a dense cloud shows its front, so "every sample of the ray in the shadow" almost never holds (K6.5b's first mask: 0 px).

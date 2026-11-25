@@ -28,6 +28,7 @@ import {
   type Vec3,
   type Vec4,
 } from "./index.js";
+import { vdbFrameOccludedTotal } from "./occluders.js";
 
 /** Where the sub-volumes of a stack sit. */
 export interface VDBFrameStackLayout {
@@ -170,6 +171,7 @@ export function vdbFrameTransmittanceVoxel3d(
   skyDirection: Vec3,
   multipleScattering: number,
   jitter: number,
+  visibility: ((slot: number, world: Vec3) => number) | null = null,
   modes: VDBFrameTransmittanceModes3d = {},
 ): [Vec4, Vec4, Vec4, Vec4] {
   const out: [Vec4, Vec4, Vec4, Vec4] = [
@@ -213,6 +215,14 @@ export function vdbFrameTransmittanceVoxel3d(
     return r;
   };
   const ls = [0, 1, 2, 3, 4, 5].map(slot);
+  // K6.5b: a host occluder map scales the slot's scattered part by the voxel's visibility (the direct stays unoccluded),
+  // after the K6.3 mode's own total; octaves keep 1 / (1 + depth) (the gather occludes their light)
+  if (visibility && !(octaves[0] > 0)) {
+    for (let i = 0; i < Math.min(lights.length, 6); i++) {
+      const s = ls[i]!;
+      s[1] = vdbFrameOccludedTotal(s[0], s[1], visibility(i, world));
+    }
+  }
   const up = vdbFrameGridMarch(extinctionAt, grid, world, sky, 1e20, noise, multipleScattering, octaves);
   const down = vdbFrameGridMarch(extinctionAt, grid, world, [-sky[0], -sky[1], -sky[2]], 1e20, noise, multipleScattering, octaves);
   const skyTotal = (f: Vec4, b: Vec4) => (multipleScattering > 0 ? vdbFrameIsotropicDiffusion(f[2], b[2], f[3]) : f[1]);

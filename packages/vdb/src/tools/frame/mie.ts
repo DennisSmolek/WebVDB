@@ -18,6 +18,7 @@
  */
 
 import { frameMieRgbTable, frameMieTable, frameMieTableSize } from "./mie-table.js";
+import { vdbFloatToHalf, vdbHalfToFloat } from "../nanovdb/half.js";
 
 /** Texels of the tables (his `frameMieTableSize`). */
 export const vdbFrameMieTableSize = frameMieTableSize;
@@ -208,3 +209,21 @@ export const vdbFrameMieRgbPhase = (cosTheta: number): [number, number, number] 
   const t = vdbFrameMieTexel(cosTheta);
   return [t[0], t[1], t[2]];
 };
+
+/**
+ * K6.3: the Lorenz-Mie texels as the core renderer binds them: binary16, two texels per uniform `vec4u` (texel i's rgba at
+ * halves 4i … 4i + 3), 16,384 bytes — a uniform buffer (group 0 binding 4) instead of a sampled texture, so the 'frame'
+ * gather keeps its sampled-texture headroom (K6.5b) and compat's 16 KiB uniform limit holds. `texels` (f32) are
+ * {@link vdbFrameMieTexelsHalf}, the values the GPU reads (each rounded to binary16, nearest even).
+ */
+export function vdbFrameMieLutWords(): Uint32Array {
+  const t = vdbFrameMieTexels();
+  const words = new Uint32Array(t.length / 2);
+  for (let i = 0; i < words.length; i++) words[i] = vdbFloatToHalf(t[2 * i]!) | (vdbFloatToHalf(t[2 * i + 1]!) << 16);
+  return words;
+}
+
+/** The Lorenz-Mie texels rounded to binary16, as the core reads them (pass to {@link vdbFrameMieTexel} in twins). */
+export function vdbFrameMieTexelsHalf(): Float32Array {
+  return Float32Array.from(vdbFrameMieTexels(), (v) => vdbHalfToFloat(vdbFloatToHalf(v)));
+}

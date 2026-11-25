@@ -108,11 +108,11 @@ import {
   vdbFrameStackSample,
   vdbFrameStackShadows,
   vdbFrameTransmittanceVoxel3d,
-  vdbFrameMieTexels,
+  vdbFrameMieLutWords,
+  vdbFrameMieTexelsHalf,
   vdbFrameMieTexel,
   vdbFramePhaseWeight,
   vdbFrameOctaveLight,
-  vdbFrameMieTableSize,
   vdbFrameScatteringOctaves,
   vdbFrameShadowTotal,
   vdbFrameTwoSidedDiffusion,
@@ -133,6 +133,7 @@ import {
   vdbFrameCubeFaceUv,
   vdbFrameVolumeShadowLookup,
   vdbMat4Vec4,
+  vdbFrameOccluderVisibility,
   vdbFrameEmissionLutRow,
   vdbFrameEmissionLutColor,
   vdbFrameEmitterBounds,
@@ -164,6 +165,7 @@ import {
   type WvdbDenseTexture,
   type WvdbDenseVolume,
 } from "../../../packages/vdb/src/tools/internal.js";
+import { synthOccluders, type SynthOccluders } from "./k6-occluders-synth.js";
 import {
   albedoAt,
   denseSampler,
@@ -218,6 +220,8 @@ interface Result {
   /** K6.5 `?probe=shadow`: the receivers vs their twin (`stats` is the map); redraw counts. */
   receiverStats?: Stats;
   shadow?: Record<string, unknown>;
+  /** K6.5b `&occluders=1`: twin lookups that found an occluder (visibility < 1) per kernel, and the maps bound. */
+  occluders?: { maps: number; transmittance: number; density: number; lighting: number; gather: number };
   /** K6.5 `?probe=emission`: the reduce, probes and receiver vs their twins (`stats` is the direction pass). */
   reduceStats?: Stats;
   probeStats?: Stats;
@@ -240,6 +244,8 @@ const MUTATE = (params.get("mutate") ?? "none") as TwinMutation;
 const ENV_MODE = params.get("env");
 // K6.3 `?phase=` (dual-lobe default; isotropic, henyey-greenstein, lorenz-mie, lorenz-mie-rgb) and `?ms=` (1 default, 0,
 // two-sided, octaves, mlp, neural, multi-scale; `&edge=clamp`, `&levels=`) of the gather and frame probes
+/** K6.3: the Lorenz-Mie texels as the core reads them (binary16). */
+const MIE_HALF = vdbFrameMieTexelsHalf();
 const PHASE_NAME = (params.get("phase") ?? "dual-lobe") as VDBFramePhaseName;
 const MS_PARAM = params.get("ms");
 const MS_MODE: VDBFrameMultipleScatteringMode = MS_PARAM === null || MS_PARAM === "1" ? true : MS_PARAM === "0" ? false : (MS_PARAM as VDBFrameMultipleScatteringMode);
@@ -247,6 +253,8 @@ const MS_MODE: VDBFrameMultipleScatteringMode = MS_PARAM === null || MS_PARAM ==
 const OCTAVE_SETTINGS = { scatteringOctaves: 3, scatteringOctaveExtinction: 0.6, scatteringOctaveContribution: 0.45, scatteringOctavePhase: 0.7 };
 const MS_SETTINGS = { multipleScattering: MS_MODE, ...OCTAVE_SETTINGS, multiScaleEdge: (params.get("edge") ?? "zero") as "zero" | "clamp", multiScaleLevels: Number(params.get("levels") ?? 6) };
 const MS_OCTAVES = vdbFrameScatteringOctaves(MS_SETTINGS) as VDBFrameVec4;
+/** K6.5b `?occluders=1`: synthetic host depth maps for the directional, point and spot probe lights (frame and gather probes). */
+const OCCLUDERS = params.get("occluders") === "1";
 const root = document.getElementById("demo-root")!;
 const result: Result = { done: false, warnings: [], uncaptured: [], probe: PROBE, mutate: MUTATE };
 window.__VDB_K6_CORE__ = result;
@@ -511,7 +519,7 @@ async function probeView(device: GPUDevice): Promise<void> {
       x[11]! + 1 * (1 - x[11]!),
       // K6.3 (?mutate=mie: the table off; ?mutate=octaves: one octave fewer; ?mutate=two-sided: no back depth)
       vdbFramePhaseWeight([x[6]!, -0.3, 0.2, MUTATE === "mie" ? 0 : 0.5], [1, 0, 0], [x[5]!, Math.sqrt(Math.max(0, 1 - x[5]! ** 2)), 0]),
-      vdbFrameMieTexel(x[5]!)[0],
+      vdbFrameMieTexel(x[5]!, MIE_HALF)[0],
       vdbFrameTwoSidedDiffusion(tr[0], depths[2], depths[1], MUTATE === "two-sided" ? 0 : x[8]!),
       vdbFrameShadowTotal(x[11]!, [MUTATE === "octaves" ? 2 : 3, 0.6, 0.45, 0.7]),
       vdbFrameOctaveLight([MUTATE === "octaves" ? 2 : 3, 0.6, 0.45, 0.7], x[7]!, [x[6]!, -0.3, 0.2, 0], x[5]!),
@@ -710,6 +718,28 @@ const PROBE_LIGHTS: VDBFrameLight[] = [
 ];
 const PROBE_SH = Array.from({ length: 9 }, (_, i) => [0, 1, 2].map((c) => (i * 3 + c < 3 ? 0.08 : 0.02 * Math.sin(i * 3 + c))) as VDBFrameVec3);
 
+/** K6.5b: the synthetic occluder maps of the probe lights (`?occluders=1`), or null. */
+async function probeOccluders(device: GPUDevice): Promise<SynthOccluders | null> {
+  if (!OCCLUDERS) return null;
+  const at = <K extends VDBFrameLight["kind"]>(kind: K) => PROBE_LIGHTS.find((l) => l.kind === kind) as Extract<VDBFrameLight, { kind: K }>;
+  return synthOccluders(device, at("directional"), at("point"), at("spot"));
+}
+
+/**
+ * K6.5b: the twin's occluder lookup by sorted light index (directional, point, spot; `lightRecords` order), counting
+ * the lookups that found an occluder; `?mutate=occluder-filter` reads one texel everywhere.
+ */
+function occluderTwin(o: SynthOccluders, counter: { n: number }): (index: number, world: VDBFrameVec3) => number {
+  const ids = ["directional", "point", "spot"].map((kind) => PROBE_LIGHTS.find((l) => l.kind === kind)!.id as number);
+  return (index, world) => {
+    const cpu = o.cpu.get(ids[index]!);
+    if (!cpu) return 1;
+    const v = vdbFrameOccluderVisibility(MUTATE === "occluder-filter" ? { ...cpu, filter: "nearest" } : cpu, world);
+    if (v < 1) counter.n++;
+    return v;
+  };
+}
+
 async function probeGather(device: GPUDevice): Promise<void> {
   const mix = (params.get("mix") ?? "mixture") as "mixture" | "over";
   const groups = Number(params.get("groups") ?? 1);
@@ -762,7 +792,9 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
   const lights = PROBE_LIGHTS;
-  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment });
+  const occ = await probeOccluders(device);
+  const occluders = occ?.inputs ?? [];
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment, occluders });
   const counter = countBuilds(device);
   let enc = device.createCommandEncoder();
   const u = renderer.update(enc, frame(0));
@@ -814,7 +846,9 @@ async function probeGather(device: GPUDevice): Promise<void> {
     octaves: MS_OCTAVES,
     twoSided: MS_MODE === "two-sided",
   };
-  const stats = newStats(`2 f16 ulp (rgba16float scatter vs the f64 twin; ${kind} source)`);
+  const gatherCount = { n: 0 };
+  if (occ && MUTATE !== "occluder") twinFrame.occluder = occluderTwin(occ, gatherCount);
+  const stats = newStats(`2 f16 ulp (rgba16float scatter vs the f64 twin; ${kind} source${occ ? ", occluder maps" : ""})`);
   for (let z = 0; z < GD; z++)
     for (let y = 0; y < GH; y++)
       for (let x = 0; x < GW; x++) {
@@ -847,9 +881,11 @@ async function probeGather(device: GPUDevice): Promise<void> {
       compare(rstats, [x, py], [composite[i]!, composite[i + 1]!, composite[i + 2]!, composite[i + 3]!], cpu[3] > 0 ? cpu : [0, 0, 0, 0]);
     }
   result.renderStats = rstats;
+  if (occ) result.occluders = { maps: occ.inputs.length, transmittance: 0, density: 0, lighting: 0, gather: gatherCount.n };
   renderer.dispose();
   scene.dispose();
   envSource?.texture.destroy();
+  occ?.dispose();
 }
 
 /**
@@ -923,7 +959,9 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
   const lights = PROBE_LIGHTS;
-  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment });
+  const occ = await probeOccluders(device);
+  const occluders = occ?.inputs ?? [];
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment, occluders });
   let enc = device.createCommandEncoder();
   const u = renderer.update(enc, frame(0));
   device.queue.submit([enc.finish()]);
@@ -1066,6 +1104,11 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   };
   const envSlotUsed = envFlags.slot && env.count > 0;
   if (envSlotUsed && MUTATE !== "env-slot") slotLights.push([...env.directions[0]!, 1]);
+  // K6.5b: the scene slots' occluder maps scale the scattered part at each voxel (envSlot: no map)
+  const counts = { transmittance: { n: 0 }, density: { n: 0 }, lighting: { n: 0 } };
+  const transmittanceOccluder = occ && MUTATE !== "occluder" && MUTATE !== "occluder-scattered" ? occluderTwin(occ, counts.transmittance) : null;
+  const densityOccluder = occ && MUTATE !== "occluder" ? occluderTwin(occ, counts.density) : null;
+  const lightingOccluder = occ && MUTATE !== "occluder" ? occluderTwin(occ, counts.lighting) : null;
   const tstats = newStats("2 f16 ulp (rgba16float transmittance vs vdbFrameTransmittanceVoxel3d on the read-back grid)");
   const gridAt = (cc: number, uvw: VDBFrameVec3): [number, number] => {
     const s = vdbFrameStackSample(shadowStack, gt.shadowLayout.origins[cc]!, R, uvw);
@@ -1075,7 +1118,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     for (let z = 0; z < R; z++)
       for (let y = 0; y < R; y++)
         for (let x = 0; x < R; x++) {
-          const t = vdbFrameTransmittanceVoxel3d(gridAt, layout, cc, [x, y, z], slotLights, [0, 1, 0], MUTATE === "diffusion" ? 0 : msValue, -1, {
+          const t = vdbFrameTransmittanceVoxel3d(gridAt, layout, cc, [x, y, z], slotLights, [0, 1, 0], MUTATE === "diffusion" ? 0 : msValue, -1, transmittanceOccluder, {
             octaves: MUTATE === "octaves" ? [0, 0, 0, 0] : MS_OCTAVES,
             twoSided: MS_MODE === "two-sided" && MUTATE !== "two-sided",
             slotTotal,
@@ -1155,6 +1198,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             phase,
             phaseSpectrum,
             octaves,
+            occluderAt: densityOccluder,
             environmentAt: environment
               ? (world, local, skyTotals) => {
                   const outward = MUTATE !== "env-outward" && local && Math.hypot(...local) > 1e-4 ? normalizeV(mat3Of(eyeWorld, mat3Of(r.localToView, local))) : ([0, 1, 0] as VDBFrameVec3);
@@ -1187,6 +1231,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
           } : () => [1, 1, 1, 1, 1, 1],
           environmentColors: envFlags.useShadows && envSlotUsed && MUTATE !== "env-slot" ? [env.colors[0]!] : [],
           environmentShadowSlot: sceneSlots,
+          occluderAt: lightingOccluder,
           ...(MUTATE === "sky" ? {} : { probe: PROBE_SH, sky: [0, 1, 0] as VDBFrameVec3 }),
         });
         const i = ((z * GH + y) * GW + x) * 4;
@@ -1194,9 +1239,11 @@ async function probeFrame(device: GPUDevice): Promise<void> {
       }
   result.stats = stats;
   result.environment = { runs: [{ ...vdbFrameRendererEnvironment(renderer).runs }], count: env.count, mode: env.mode, valid: env.valid ? 1 : 0, directions: env.directions, colors: env.colors };
+  if (occ) result.occluders = { maps: occ.inputs.length, transmittance: counts.transmittance.n, density: counts.density.n, lighting: counts.lighting.n, gather: 0 };
   renderer.dispose();
   scene.dispose();
   envSource?.texture.destroy();
+  occ?.dispose();
 }
 
 const normalizeV = (v: readonly number[]): VDBFrameVec3 => {
@@ -1255,15 +1302,15 @@ function envEntry(device: GPUDevice): GPUBindGroupEntry {
   return { binding: 3, resource: { buffer: device.createBuffer({ size: VDB_FRAME_ENVIRONMENT.size, usage: GPUBufferUsage.UNIFORM }) } };
 }
 
-/** Group 0 binding 4 (K6.3): the Lorenz-Mie phase LUT (rgb 'lorenz-mie-rgb', a 'lorenz-mie'), as the renderer makes it. */
-let mieLut: GPUTexture | null = null;
+/** Group 0 binding 4 (K6.3): the Lorenz-Mie table (binary16 pairs in a uniform buffer), as the renderer makes it. */
+let mieLut: GPUBuffer | null = null;
 function mieEntry(device: GPUDevice): GPUBindGroupEntry {
   if (!mieLut) {
-    const texels = vdbFrameMieTexels();
-    mieLut = device.createTexture({ size: [vdbFrameMieTableSize, 1], format: "rgba32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    device.queue.writeTexture({ texture: mieLut }, texels.buffer as ArrayBuffer, { bytesPerRow: vdbFrameMieTableSize * 16 }, [vdbFrameMieTableSize, 1]);
+    const words = vdbFrameMieLutWords();
+    mieLut = device.createBuffer({ size: words.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(mieLut, 0, words.buffer as ArrayBuffer);
   }
-  return { binding: 4, resource: mieLut.createView() };
+  return { binding: 4, resource: { buffer: mieLut } };
 }
 
 function frameUniforms(device: GPUDevice, values: Record<string, number | ArrayLike<number>>): { frame: GPUBuffer; lights: GPUBuffer } {

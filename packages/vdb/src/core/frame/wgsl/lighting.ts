@@ -31,6 +31,7 @@ import type { VDBVolumeChannels } from "../../source/types.js";
 import { frameChunksWgsl } from "./chunks.js";
 import { VDB_FRAME_SLICE_WGSL, vdbFrameSourceFunctionsWgsl } from "./gather.js";
 import { vdbFrameMultiScaleWgsl } from "../../compute/multi-scale.js";
+import { vdbFrameOccluderWgsl } from "./occluders.js";
 
 /** Group-1 bindings of the shadow grid density kernel. */
 export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 3 } as const;
@@ -274,6 +275,7 @@ export function vdbFrameTransmittanceWgsl(o: { scattering?: VDBFrameScatteringKe
 @group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
 @group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceOut: texture_storage_3d<rgba16float, write>;
 ${extra}
+${vdbFrameOccluderWgsl()}
 // gridExtinction: (extinction, absorption) of the finest cascade at the position, 0 outside the grid
 fn vdbFrameGridExtinction(world: vec3f) -> vec2f {
   let c = vdbFrameFindCascade(world, 0u);
@@ -389,7 +391,17 @@ ${local}    for (var i = 0u; i < 6u; i++) {
         // 'two-sided': diffusion of the slab between the light side and the far side
         results[i].y = vdbFrameTwoSidedDiffusion(results[i].x, results[i].z, results[i].w, results[i + 8u].z);
       }
-${slotTerm}    }
+${slotTerm}      // K6.5b: a host occluder map scales the scene slot's scattered part (total − direct) by the voxel's visibility;
+      // the direct part stays unoccluded here (the gather multiplies it by the visibility at its finer position). K6.3:
+      // after the mode's own total (two-sided, the MLP, multi-scale); octaves keep 1 / (1 + depth) here (the gather
+      // occludes their light at the visible position)
+      if (i < slots && vdbFrame.octaves.x <= 0.0) {
+        let visibility = vdbFrameOccluderVisibility(world, i);
+        if (visibility < 1.0) {
+          results[i].y = results[i].x + (results[i].y - results[i].x) * visibility;
+        }
+      }
+    }
     let up = results[6];
     let down = results[7];
     var skyUp = up.y;
@@ -458,7 +470,7 @@ export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVol
 @group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;
 ${o.multi ? `@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;\n` : ""}@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceStack: texture_3d<f32>;
 @group(1) @binding(${b.environmentGrid}) var vdbFrameEnvGrid: texture_3d<f32>;
-
+${vdbFrameOccluderWgsl()}
 ${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
 ${VDB_FRAME_SLICE_WGSL}
 // His density targets as sums: (albedo·σ, σ), (emission·σ, visible t·σ), (sky up, sky down, slot 0, 1)·σ, (slots 2–5)·σ
@@ -575,10 +587,18 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
   let sceneSlots = min(u32(vdbFrame.gridLayout.w), 6u);
   for (var i = 0u; i < 6u; i++) {
     if (i < sceneSlots) {
-      // frameShadowedLight(...).g: the green phase x direct + the scattered light (octaves: their phased sum)
+      // frameShadowedLight(...).g: the green phase x direct + the scattered light (octaves: their phased sum). K6.5b: the
+      // direct part x the host occluder visibility at the visible position (sharp at froxel resolution); the scattered
+      // part was occluded in the transmittance, except the octaves' (1 / (1 + depth) there): occluded here
       let light = vdbFrameLights.position[i];
       let direction = select(normalize(light.xyz - world), light.xyz, light.w < 1.5);
-      slot[i] = vdbFrameShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, octaves, dot(ray, direction), vec2f(direct[i], slot[i])).y;
+      let visibility = vdbFrameOccluderVisibility(world, i);
+      let cosTheta = dot(ray, direction);
+      if (octaves.x > 0.0) {
+        slot[i] = vdbFrameShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, octaves, cosTheta, vec2f(direct[i], slot[i])).y * visibility;
+      } else {
+        slot[i] = vdbFrameShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, octaves, cosTheta, vec2f(direct[i] * visibility, slot[i] - direct[i] * (1.0 - visibility))).y;
+      }
     } else {
       slot[i] = vdbFrameShadowTotal(slot[i], octaves);
     }
@@ -639,13 +659,16 @@ fn vdbFrameLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> vec4f {
     let direction = select(normalize(lightVector), position.xyz, position.w < 1.5);
     let phase = vdbFramePhaseColor(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, dot(ray, direction));
     let hasSlot = i < shadowLights && i < 6u;
-    // no slot: no shadow (K6.3: octaves still add their light)
+    // K6.5b: the host occluder visibility at the lit position (the slots hold it already; their per-channel phase
+    // difference and the lights without a slot take it here). No slot: no shadow (K6.3: octaves still add their light)
     var factor = vdbFrameShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, vdbFrame.octaves, dot(ray, direction), vec2f(1.0));
     if (hasSlot) {
       factor = vec3f(slot[i]);
       if (colorPhase) {
-        factor += (phase - phase.y) * direct[i];
+        factor += (phase - phase.y) * (direct[i] * vdbFrameOccluderVisibility(world, i));
       }
+    } else {
+      factor *= vdbFrameOccluderVisibility(world, i);
     }
     irradiance += color.rgb * factor * spotAttenuation * distanceAttenuation;
   }

@@ -617,6 +617,12 @@ export interface VDBFrameDensityInputs {
    * position, given the sky up and down totals there (`vdbFrameEnvironmentDensityTerm`).
    */
   environmentAt?: ((world: Vec3, local: Vec3 | null, skyTotals: Vec2) => Vec3) | null;
+  /**
+   * K6.5b (the core's mesh → volume shadows): the host occluder visibility of slot light `index` at a world position
+   * (`vdbFrameOccluderVisibility`); multiplies the slot's direct light (the scattered part is occluded in the
+   * transmittance target already). Default: none.
+   */
+  occluderAt?: ((index: number, world: Vec3) => number) | null;
 }
 
 /**
@@ -726,8 +732,15 @@ function densityFroxelTail(
     if (index < p.sceneLightCount) {
       const l = p.lightPositions[index]!;
       const lightDir = l[3] < 1.5 ? ([l[0], l[1], l[2]] as Vec3) : normalize3([l[0] - visibleWorld[0], l[1] - visibleWorld[1], l[2] - visibleWorld[2]]);
-      // frameShadowedLight(...).g: the green phase × direct + the scattered light
-      s[c] = vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [directs[index]!, s[c]!])[1];
+      // frameShadowedLight(...).g: the green phase × direct + the scattered light (K6.5b: direct × occluder visibility,
+      // passed as (direct·v, total − direct·(1 − v)) so the scattered part total − direct is unchanged)
+      const v = p.occluderAt ? p.occluderAt(index, visibleWorld) : 1;
+      const direct = directs[index]!;
+      // K6.3 octaves: the slot keeps 1 / (1 + depth) unoccluded in the transmittance; both terms take v here
+      s[c] =
+        octaves[0] > 0
+          ? vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [direct, s[c]!])[1] * v
+          : vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [direct * v, s[c]! - direct * (1 - v)])[1];
     } else {
       s[c] = vdbFrameShadowTotal(s[c]!, octaves);
     }
@@ -876,6 +889,12 @@ export interface VDBFrameLightingInputs {
   /** K6.2: the light probe SH9 (rgb each; three's convention) and the sky direction (default +y) it is read along. */
   probe?: readonly Vec3[];
   sky?: Vec3;
+  /**
+   * K6.5b: the host occluder visibility of light `index` at the lit world position: lights without a shadow slot are
+   * multiplied by it, and with per-channel phases the slot's red / blue direct difference is (the slot values hold it
+   * already, `VDBFrameDensityInputs.occluderAt`). Default: none.
+   */
+  occluderAt?: ((index: number, world: Vec3) => number) | null;
 }
 
 /** three's `getShIrradianceAt` (the probe's L2 irradiance at a unit normal). */
@@ -945,11 +964,12 @@ export function vdbFrameLightingFroxel(
     const unshadowed = vdbFrameShadowedLightColor(inputs.phase, spectrum, inputs.octaves ?? vdbFrameOctavesOff, ray, dir, [1, 1]);
     const hasSlot = i < inputs.shadowLightCount;
     const shadow = i < 6 ? slots[i]! : 1;
-    const factor: Vec3 = hasSlot ? [shadow, shadow, shadow] : unshadowed;
+    const v = inputs.occluderAt ? inputs.occluderAt(i, world) : 1;
+    const factor: Vec3 = hasSlot ? [shadow, shadow, shadow] : [unshadowed[0] * v, unshadowed[1] * v, unshadowed[2] * v];
     // Per-channel phases: the slot holds the green phase; the direct light adds the red and blue difference.
     if (colorPhase && hasSlot) {
       const phase = vdbFramePhaseColor(inputs.phase, spectrum, ray, dir);
-      const direct = i < 6 ? directs[i]! : 1;
+      const direct = (i < 6 ? directs[i]! : 1) * v;
       for (let c = 0; c < 3; c++) factor[c] = factor[c]! + (phase[c]! - phase[1]) * direct;
     }
     for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + light.color[c]! * factor[c]! * spot * dist;

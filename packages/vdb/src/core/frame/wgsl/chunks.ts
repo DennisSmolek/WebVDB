@@ -206,16 +206,22 @@ fn vdbFrameHenyeyGreensteinColor(cosTheta: f32, g: vec3f) -> vec3f {
   let g2 = g * g;
   return (vec3f(1.0) - g2) / pow(max(vec3f(1.0) + g2 - g * 2.0 * cosTheta, vec3f(1e-4)), vec3f(1.5));
 }
-// K6.3: the Lorenz-Mie tables (V47; rgb 'lorenz-mie-rgb', a 'lorenz-mie'), ${MIE_SIZE} texels at the angle PI u^2, read
-// with textureLoad and a linear blend (his frameMieTexel)
-@group(0) @binding(4) var vdbFrameMieLut: texture_2d<f32>;
+// K6.3: the Lorenz-Mie tables (V47; rgb 'lorenz-mie-rgb', a 'lorenz-mie'), ${MIE_SIZE} texels at the angle PI u^2, as
+// binary16 in a uniform buffer (two texels per vec4u; no sampled texture), read with a linear blend (his frameMieTexel)
+struct VdbFrameMieTable {
+  t: array<vec4u, ${MIE_SIZE / 2}>,
+};
+@group(0) @binding(4) var<uniform> vdbFrameMie: VdbFrameMieTable;
+fn vdbFrameMieLoad(i: i32) -> vec4f {
+  let w = vdbFrameMie.t[u32(i) >> 1u];
+  let odd = (u32(i) & 1u) == 1u;
+  return vec4f(unpack2x16float(select(w.x, w.z, odd)), unpack2x16float(select(w.y, w.w, odd)));
+}
 fn vdbFrameMieTexel(cosTheta: f32) -> vec4f {
   let u = sqrt(acos(clamp(cosTheta, -1.0, 1.0)) * (1.0 / VDB_FRAME_PI));
   let texel = u * ${MIE_SIZE - 1}.0;
   let index = min(i32(texel), ${MIE_SIZE - 2});
-  let a = textureLoad(vdbFrameMieLut, vec2i(index, 0), 0);
-  let b = textureLoad(vdbFrameMieLut, vec2i(index + 1, 0), 0);
-  return mix(a, b, vec4f(texel - f32(index)));
+  return mix(vdbFrameMieLoad(index), vdbFrameMieLoad(index + 1), vec4f(texel - f32(index)));
 }
 // framePhaseWeight: (forward g, back g, back weight, Lorenz-Mie mode); mode > 0 mixes the 'lorenz-mie' table in
 fn vdbFramePhaseWeight(phase: vec4f, cosTheta: f32) -> f32 {

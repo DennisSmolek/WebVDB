@@ -46,6 +46,7 @@ import { vdbFrameStackLayout, type VDBFrameStackLayout } from "../../tools/frame
 import { GATHER_BINDINGS } from "./wgsl/gather.js";
 import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS } from "./wgsl/resolve.js";
+import { VDB_FRAME_OCCLUDER_BINDING } from "./wgsl/occluders.js";
 import { ENV_GRID_BINDINGS } from "./wgsl/environment.js";
 import { VDBFrameEnvironmentState } from "./environment.js";
 import {
@@ -67,10 +68,10 @@ import { VDBFrameShadowMaps } from "./shadows.js";
 import { VDBFrameEmissionColors, VDBFrameEmissionProbeSet, type VDBFrameEmissionPlan, type VDBFrameEmitterInput } from "./emission.js";
 import { EMISSION_DIRECTION_BINDINGS, EMISSION_PROBE_BINDINGS, EMISSION_REDUCE_BINDINGS, VDB_FRAME_EMISSION_DIRECTIONS, VDB_FRAME_EMITTERS, VDB_FRAME_EMITTERS_STRIDE } from "./wgsl/emission.js";
 import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "./pipelines.js";
-import { BUFFER_USAGE, createFroxelTexture, TEXTURE_USAGE, VDBRetireQueue } from "./resources.js";
+import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
 import { VDBFrameScattering } from "./scattering.js";
 import type { VDBFrameScatteringKernel } from "./wgsl/lighting.js";
-import { vdbFrameMieTableSize, vdbFrameMieTexels } from "../../tools/frame/mie.js";
+import { vdbFrameMieLutWords } from "../../tools/frame/mie.js";
 import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
 import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
@@ -83,7 +84,9 @@ import {
   VDB_FRAME_MAX_CASCADES,
   VDB_FRAME_MAX_HEMISPHERE_LIGHTS,
   VDB_FRAME_MAX_LIGHTS,
+  VDB_FRAME_MAX_OCCLUDERS,
   VDB_FRAME_MAX_VOLUMES,
+  VDB_FRAME_OCCLUDER_LAYERS,
   VDB_FRAME_SHADOW_SLOTS,
   VDB_FRAME_UNIFORMS,
   VDB_FRAME_VOLUME,
@@ -94,6 +97,7 @@ import {
   vdbFrameDefaultVolumeParams,
   type VDBFrameInput,
   type VDBFrameLight,
+  type VDBFrameOccluder,
   type VDBFrameOutputs,
   type VDBFrameRedrawStats,
   type VDBFrameTargets,
@@ -286,13 +290,16 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #colors: VDBFrameEmissionColors;
   readonly #probes: VDBFrameEmissionProbeSet;
   // K6.3: the Lorenz-Mie LUT and the scattered-light term's resources ('mlp', 'multi-scale')
-  readonly #mie: GPUTexture;
+  readonly #mie: GPUBuffer;
   readonly #scattering: VDBFrameScattering;
   /**
    * K6.3 EXPERIMENTAL: the network of `multipleScattering: 'mlp'` (and `'neural'`) in 'frame' lighting, data for a
    * generic MLP evaluator; default his trained weights (V48). null: those modes run as 1D diffusion (warned).
    */
   mlp: VDBFrameMlp | null = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
+  // K6.5b: this update's host occluder map views (slots 0–3) and the 1 × 1 placeholder of the empty slots
+  #occluderViews: GPUTextureView[] = [];
+  #occluderPlaceholder: { texture: GPUTexture; view: GPUTextureView } | null = null;
 
   constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
     this.device = device;
@@ -320,9 +327,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#colors = new VDBFrameEmissionColors(device, this.#label, this.#retire);
     this.#probes = new VDBFrameEmissionProbeSet(device, this.#label, this.#retire);
     // K6.3: the Lorenz-Mie phase tables as one LUT (V47: rgb 'lorenz-mie-rgb', a 'lorenz-mie'), group 0 binding 4
-    this.#mie = device.createTexture({ label: `${this.#label} Lorenz-Mie LUT`, size: [vdbFrameMieTableSize, 1, 1], format: "rgba32float", usage: TEXTURE_USAGE.TEXTURE_BINDING | TEXTURE_USAGE.COPY_DST });
-    const mie = vdbFrameMieTexels();
-    device.queue.writeTexture({ texture: this.#mie }, mie.buffer as ArrayBuffer, { bytesPerRow: vdbFrameMieTableSize * 16 }, [vdbFrameMieTableSize, 1, 1]);
+    const mie = vdbFrameMieLutWords();
+    this.#mie = device.createBuffer({ label: `${this.#label} Lorenz-Mie table`, size: mie.byteLength, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
+    device.queue.writeBuffer(this.#mie, 0, mie.buffer as ArrayBuffer);
     this.#scattering = new VDBFrameScattering(device, this.#label, this.#retire, (key, message) => this.#warnOnce(key, message));
     this.outputs ={ version: 0, froxels: null, uniforms: this.#frameBuffer, volumeShadows: this.#shadows.maps, emissionProbes: null };
   }
@@ -396,7 +403,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#retire.advance();
     const s = this.settings;
     const frameLighting = s.lighting === "frame";
-    if (frame.occluders && frame.occluders.length > 0) this.#warnOnce("occluders", "occluder maps (mesh → volume shadows) are K6.5b; they are ignored.");
     if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; the core renders grey.");
 
     if (options.froxels === false && this.#textures) return { outputs: this.outputs, recorded: this.#recorded, volumes: 0 };
@@ -577,7 +583,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "lighting", [0, s.multipleScattering === "two-sided" ? 1 : 0, 0, 0]);
     // K6.2b: the environment kernels this update runs (reduced on the GPU; no readback)
     this.#env.prepare(frame.environment, s);
-    const lightInfo = this.#packLights(frame.lights);
+    const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : []);
     const grid = usesGrid ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter, frameLighting && froxelWork) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
 
@@ -795,7 +801,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   #frameGrid(
     casterGroups: readonly SourceGroup[],
     cameraWorld: ArrayLike<number>,
-    lights: { sorted: readonly number[][]; sky: readonly number[] },
+    lights: { sorted: readonly number[][]; sky: readonly number[]; occluderOf: readonly (VDBFrameOccluder | null)[] },
     jitter: number,
     transmittance = true,
   ): { count: number; drawGrid: boolean; drawTransmittance: boolean; drawEnvironmentGrid: boolean; scattering: VDBFrameScatteringKernel } {
@@ -892,8 +898,19 @@ class FrameRenderer implements VDBFrameRendererGpu {
         : { kind: scattering, signature: [] };
     const signature: unknown[] = [this.#gridDraws, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky, envSlot, envSlot ? env.version : -1, twoSided, ...octaves, ...plan.signature];
     for (let i = 0; i < shadowSlots; i++) signature.push(...lights.sorted[i]!.slice(0, 4));
-    const drawTransmittance = count > 0 && (jitter >= 0 || !vdbSameValues(signature, this.#transmittanceSignature));
-    this.#transmittanceSignature = jitter >= 0 ? [] : signature;
+    // K6.5b: the slot lights' occluder maps (view, matrices, bias, flags, revision); a map without a revision changes
+    // every update
+    let occluderChanging = false;
+    for (let i = 0; i < shadowSlots; i++) {
+      const o = lights.occluderOf[i];
+      if (!o) continue;
+      if (o.revision === undefined) occluderChanging = true;
+      signature.push(i, o.depth, o.revision ?? -1, o.bias ?? 0, o.reversedDepth ? 1 : 0, o.filter ?? "bilinear", o.viewProjection.length);
+      for (const m of o.viewProjection) for (let k = 0; k < 16; k++) signature.push(m[k]);
+    }
+    const redraw = jitter >= 0 || occluderChanging;
+    const drawTransmittance = count > 0 && (redraw || !vdbSameValues(signature, this.#transmittanceSignature));
+    this.#transmittanceSignature = redraw ? [] : signature;
     if (count > 0) {
       if (drawTransmittance) this.redrawStats.transmittance.drawn++;
       else this.redrawStats.transmittance.skipped++;
@@ -995,7 +1012,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: 1, resource: { buffer: this.#lightsBuffer } },
           { binding: 2, resource: this.#linear },
           { binding: 3, resource: { buffer: this.#env.buffer } },
-          { binding: 4, resource: this.#mie.createView() },
+          { binding: 4, resource: { buffer: this.#mie } },
         ],
       });
     }
@@ -1013,12 +1030,28 @@ class FrameRenderer implements VDBFrameRendererGpu {
     return group;
   }
 
+  /** K6.5b: the 4 occluder slot views of this update (the placeholder in empty slots). */
+  #occluderSlots(): GPUTextureView[] {
+    if (!this.#occluderPlaceholder) {
+      const texture = this.device.createTexture({ label: `${this.#label} occluder placeholder`, size: [1, 1, 1], format: "r32float", usage: 0x04 /* TEXTURE_BINDING */ });
+      this.#occluderPlaceholder = { texture, view: texture.createView({ dimension: "2d-array" }) };
+    }
+    const placeholder = this.#occluderPlaceholder.view;
+    return [0, 1, 2, 3].map((k) => this.#occluderViews[k] ?? placeholder);
+  }
+
+  /** K6.5b: the group-1 entries of the occluder slots. */
+  #occluderEntries(views: readonly GPUTextureView[]): GPUBindGroupEntry[] {
+    return views.map((view, k) => ({ binding: VDB_FRAME_OCCLUDER_BINDING + k, resource: view }));
+  }
+
   #gatherBind(layout: GPUBindGroupLayout, tex: Textures, multi: boolean, frameLighting: boolean, lut: GPUTexture | null): GPUBindGroup {
     const b = frameLighting ? FRAME_GATHER_BINDINGS : GATHER_BINDINGS;
     const transmittance = frameLighting ? this.#grid!.transmittance : null;
     const environment = frameLighting ? this.#grid!.environment : null;
     const name = `gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}${lut ? "-lut" : ""}`;
-    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance, environment!] : []), ...(lut ? [lut] : []), this.#groupsBuffer], () =>
+    const occluders = this.#occluderSlots();
+    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance, environment!] : []), ...(lut ? [lut] : []), this.#groupsBuffer, ...occluders], () =>
       this.device.createBindGroup({
         label: `${this.#label} gather group 1`,
         layout,
@@ -1034,6 +1067,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
               ]
             : []),
           ...(lut ? [{ binding: b.emissionLut, resource: lut.createView() }] : []),
+          ...this.#occluderEntries(occluders),
         ],
       }),
     );
@@ -1057,13 +1091,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   #transmittanceBind(layout: GPUBindGroupLayout, gt: GridTextures): GPUBindGroup {
     const b = TRANSMITTANCE_BINDINGS;
-    return this.#cached("transmittance", [layout, gt.shadow, gt.transmittance], () =>
+    const occluders = this.#occluderSlots();
+    return this.#cached("transmittance", [layout, gt.shadow, gt.transmittance, ...occluders], () =>
       this.device.createBindGroup({
         label: `${this.#label} transmittance group 1`,
         layout,
         entries: [
           { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
           { binding: b.transmittance, resource: gt.transmittance.createView({ dimension: "3d" }) },
+          ...this.#occluderEntries(occluders),
         ],
       }),
     );
@@ -1115,8 +1151,11 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   // ---------------------------------------------------------------- packing
 
-  /** Packs the lights; returns the sorted records (directional, point, spot; ≤ 16) and the sky direction. */
-  #packLights(lights: readonly VDBFrameLight[]): { sorted: number[][]; sky: number[] } {
+  /**
+   * Packs the lights; returns the sorted records (directional, point, spot; ≤ 16), the sky direction and (K6.5b) each
+   * sorted light's occluder map (the first 4 maps of this frame's directional, point and spot lights take slots 0–3).
+   */
+  #packLights(lights: readonly VDBFrameLight[], occluders: readonly VDBFrameOccluder[]): { sorted: number[][]; sky: number[]; occluderOf: (VDBFrameOccluder | null)[] } {
     const w = this.#lightsWriter;
     const L = VDB_FRAME_LIGHTS;
     w.clear(0, L.size);
@@ -1128,6 +1167,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const directional: number[][] = [];
     const point: number[][] = [];
     const spot: number[][] = [];
+    // K6.5b: the light id of each record (element 16), for the occluder maps
+    const ids = new Map<number[], number | string>();
     const norm = (v: readonly number[]) => {
       const l = Math.hypot(v[0]!, v[1]!, v[2]!) || 1;
       return [v[0]! / l, v[1]! / l, v[2]! / l];
@@ -1154,15 +1195,22 @@ class FrameRenderer implements VDBFrameRendererGpu {
           break;
         case "directional": {
           const d = norm(l.direction);
-          directional.push([-d[0]!, -d[1]!, -d[2]!, 1, ...l.color, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+          const r = [-d[0]!, -d[1]!, -d[2]!, 1, ...l.color, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+          ids.set(r, l.id);
+          directional.push(r);
           break;
         }
-        case "point":
-          point.push([...l.position, 2, ...l.color, 0, 0, 0, 0, 0, l.distance, l.decay, 0, 0]);
+        case "point": {
+          const r = [...l.position, 2, ...l.color, 0, 0, 0, 0, 0, l.distance, l.decay, 0, 0];
+          ids.set(r, l.id);
+          point.push(r);
           break;
+        }
         case "spot": {
           const d = norm(l.direction);
-          spot.push([...l.position, 3, ...l.color, l.cosPenumbra, -d[0]!, -d[1]!, -d[2]!, l.cosAngle, l.distance, l.decay, 0, 0]);
+          const r = [...l.position, 3, ...l.color, l.cosPenumbra, -d[0]!, -d[1]!, -d[2]!, l.cosAngle, l.distance, l.decay, 0, 0];
+          ids.set(r, l.id);
+          spot.push(r);
           break;
         }
       }
@@ -1173,8 +1221,41 @@ class FrameRenderer implements VDBFrameRendererGpu {
     }
     const used = sorted.slice(0, VDB_FRAME_MAX_LIGHTS);
     const skyDirection = sky ?? [0, 1, 0];
+    // K6.5b: occluder slots (falloff.z = slot + 1), their layers, bias, flags and matrices
+    const occluderOf: (VDBFrameOccluder | null)[] = used.map(() => null);
+    const views: GPUTextureView[] = [];
+    const info: number[] = [];
+    const matrices = new Float32Array(VDB_FRAME_MAX_OCCLUDERS * VDB_FRAME_OCCLUDER_LAYERS * 16);
+    for (const o of occluders) {
+      const index = used.findIndex((r) => ids.get(r) === o.light);
+      if (index < 0) {
+        this.#warnOnce(`occluder-light-${String(o.light)}`, `the occluder map of light ${String(o.light)} has no directional, point or spot light of that id in this frame (or it is past the ${VDB_FRAME_MAX_LIGHTS} lights); it is ignored.`);
+        continue;
+      }
+      if (occluderOf[index]) {
+        this.#warnOnce("occluder-twice", `light ${String(o.light)} has two occluder maps; the first is used.`);
+        continue;
+      }
+      if (views.length >= VDB_FRAME_MAX_OCCLUDERS) {
+        this.#warnOnce("occluders", `more than ${VDB_FRAME_MAX_OCCLUDERS} occluder maps: only the first ${VDB_FRAME_MAX_OCCLUDERS} (in input order) shadow the volumes.`);
+        break;
+      }
+      const layers = o.viewProjection.length;
+      if (layers < 1 || layers > VDB_FRAME_OCCLUDER_LAYERS) {
+        throw new VDBError("VDB_BAD_OPTION", `VDBFrameRendererGpu.update: occluder of light ${String(o.light)} has ${layers} view-projections; give 1–${VDB_FRAME_OCCLUDER_LAYERS} (one per layer of its depth view).`);
+      }
+      const slot = views.length;
+      occluderOf[index] = o;
+      used[index]![14] = slot + 1;
+      views.push(o.depth);
+      info.push(layers, o.bias ?? 0, o.reversedDepth ? 1 : 0, o.filter === "nearest" ? 1 : 0);
+      o.viewProjection.forEach((m, l) => {
+        for (let k = 0; k < 16; k++) matrices[(slot * VDB_FRAME_OCCLUDER_LAYERS + l) * 16 + k] = m[k]!;
+      });
+    }
+    this.#occluderViews = views;
     w.set(L, 0, "ambient", [ambient[0]!, ambient[1]!, ambient[2]!, hemi.length]);
-    w.set(L, 0, "counts", [used.length, 0, 0, 0]);
+    w.set(L, 0, "counts", [used.length, views.length, 0, 0]);
     w.set(L, 0, "probe", probe);
     w.set(L, 0, "hemiSky", hemi.flatMap((h) => [...h.sky, 0]));
     w.set(L, 0, "hemiGround", hemi.flatMap((h) => [...h.ground, 0]));
@@ -1186,8 +1267,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
     w.set(L, 0, "sky", [...skyDirection, 0]);
     w.set(L, 0, "hemiSkySum", [...hemiSkySum, 0]);
     w.set(L, 0, "hemiGroundSum", [...hemiGroundSum, 0]);
+    if (views.length > 0) {
+      w.set(L, 0, "occluderInfo", info);
+      w.set(L, 0, "occluderMatrix", matrices);
+    }
     this.device.queue.writeBuffer(this.#lightsBuffer, 0, w.buffer);
-    return { sorted: used, sky: skyDirection };
+    return { sorted: used, sky: skyDirection, occluderOf };
   }
 
   /** The phase fields of a volume after its overrides (V65), or the renderer's own ('frame' lighting) for null. */
@@ -1343,6 +1428,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#env.dispose();
     this.#scattering.dispose();
     this.#mie.destroy();
+    this.#occluderPlaceholder?.texture.destroy();
+    this.#occluderPlaceholder = null;
+    this.#occluderViews = [];
     this.#retire.drain();
     this.#frameBuffer.destroy();
     this.#lightsBuffer.destroy();

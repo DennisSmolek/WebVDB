@@ -52,6 +52,7 @@ import {
 } from "./wgsl/emission.js";
 import { vdbFrameSourceFunctionsWgsl } from "./wgsl/gather.js";
 import { STAGE } from "./resources.js";
+import { vdbFrameOccluderLayoutEntries } from "./wgsl/occluders.js";
 
 /** Where a source's group-2 bindings start. */
 export const SOURCE_SLOT: VDBSlot = { group: 2, firstBinding: 0 };
@@ -66,8 +67,8 @@ export const GROUP0_LAYOUT: GPUBindGroupLayoutDescriptor = {
     { binding: 2, visibility: COMPUTE_FRAGMENT, sampler: { type: "filtering" } },
     // K6.2b: the environment buffer (written by envReduce, read as a uniform by the kernels after it)
     { binding: 3, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
-    // K6.3: the Lorenz-Mie phase LUT (2048 x 1 rgba32float, textureLoad; V47)
-    { binding: 4, visibility: COMPUTE_FRAGMENT, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+    // K6.3: the Lorenz-Mie phase tables (V47): 2048 texels as binary16 in a 16 KiB uniform (no sampled texture)
+    { binding: 4, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
   ],
 };
 
@@ -130,6 +131,8 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
     group1.push({ binding: FRAME_GATHER_BINDINGS.environmentGrid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
   }
   if (source.channels.emission) group1.push({ binding: b.emissionLut, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } });
+  // K6.5b: the host occluder maps (4 fixed slots)
+  group1.push(...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE));
   const hooked = source.channels.emission && key.hook ? `, hook ${vdbHashText(key.hook)}` : "";
   return {
     label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}; ${sourceChannels(source)}${hooked})`,
@@ -177,6 +180,8 @@ export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKe
       entries: [
         { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
         { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+        // K6.5b: the host occluder maps (4 fixed slots)
+        ...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE),
       ],
     },
   ];

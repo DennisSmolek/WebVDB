@@ -5,7 +5,9 @@ import { collectErrors } from "./console-errors";
 // - analytic: Beer–Lambert (slab, ball), emission only, single scattering (slab, ball) against the quadrature, white
 //   furnace, each per pixel within 4.5σ and unbiased over the image; every WGSL mutation fails some case;
 // - twin: the GPU kernel against its CPU twin (same random stream) on the committed cloud (dense source) and on
-//   synthetic grids (sparse source, 3 volumes); the dense render is bitwise deterministic.
+//   synthetic grids (sparse source, 3 volumes); the dense render is bitwise deterministic;
+// - K6.R1 features twin: per-cell majorants from the node stats, Mie RGB and a 3-lobe phase table, the blackbody colour
+//   table, a point light with three's falloff, a spot light, a light-probe environment; each new WGSL mutation breaks it.
 // Committed and synthetic data only: no fixtures, no skips. The high-sample report (scripts/k6/reference-report.mjs) is local.
 const PAGE_URL = "/src/harness/k6-reference.html";
 
@@ -74,14 +76,14 @@ for (const mutate of ["ratio-weight", "delta-accept", "phase-norm", "nee-transmi
   });
 }
 
-test("K6.R reference kernel = CPU twin (dense cloud, sparse 3 volumes) and deterministic", async ({ page }) => {
+test("K6.R reference kernel = CPU twin (dense cloud, sparse 3 volumes, K6.R1 features) and deterministic", async ({ page }) => {
   const errors = collectErrors(page);
   const r = await run(page, "?case=twin&determinism=1");
   const detail = JSON.stringify(r, null, 2);
   expect(r.error, detail).toBeUndefined();
   expect(r.uncaptured, detail).toEqual([]);
   expect(r.determinism?.identical, detail).toBe(true);
-  expect(r.twins.length, detail).toBe(2);
+  expect(r.twins.length, detail).toBe(3);
   for (const t of r.twins) {
     expect(t.passes, `${t.name}\n${detail}`).toBe(true);
     // The scenes exercise the medium (volume pixels, multiple scattering) and the shared stream (most values equal).
@@ -100,3 +102,19 @@ test("K6.R fail-before: a mutated kernel no longer matches its CPU twin", async 
   expect(r.error, detail).toBeUndefined();
   expect(r.twins[0]?.passes, detail).toBe(false);
 });
+
+test("K6.R1 phase variant of the features twin (environment through the 3-lobe table) = CPU twin", async ({ page }) => {
+  const r = await run(page, "?case=twin&source=features&variant=phase&batches=32");
+  const detail = JSON.stringify(r, null, 2);
+  expect(r.error, detail).toBeUndefined();
+  expect(r.twins[0]?.passes, detail).toBe(true);
+});
+
+for (const mutate of ["majorant-cell", "phase-table-weight", "falloff"]) {
+  test(`K6.R1 fail-before: mutation '${mutate}' breaks the features twin`, async ({ page }) => {
+    const r = await run(page, `?case=twin&source=features${mutate === "phase-table-weight" ? "&batches=64&variant=phase" : "&batches=32"}&mutate=${mutate}`);
+    const detail = JSON.stringify(r, null, 2);
+    expect(r.error, detail).toBeUndefined();
+    expect(r.twins[0]?.passes, detail).toBe(false);
+  });
+}

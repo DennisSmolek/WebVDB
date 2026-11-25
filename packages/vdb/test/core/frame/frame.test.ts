@@ -183,9 +183,16 @@ describe("K6.1 device limits (design §1)", () => {
     expect(spec.groups.length).toBeLessThanOrEqual(3);
     const all = spec.groups.flatMap((g) => [...g.entries]);
     expect(all.filter((e) => e.storageTexture).length).toBeLessThanOrEqual(2);
-    expect(all.filter((e) => e.texture).length).toBeLessThanOrEqual(12);
+    // Sampled textures: WebGPU's default (and compat's) maxSampledTexturesPerShaderStage is 16. K6.5b's 4 occluder
+    // slots raise the worst kernel (the 'frame' gather of a dense source with mask, albedo and emission and their mips:
+    // 8 source + transmittance + environment grid + emission LUT + 4 occluders) to 15; the design's own cap was 12
+    // before the occluders (design §3.2).
+    expect(all.filter((e) => e.texture).length).toBeLessThanOrEqual(16);
     expect(all.filter((e) => e.buffer?.type === "storage" || e.buffer?.type === "read-only-storage").length).toBeLessThanOrEqual(1);
-    expect(all.filter((e) => e.buffer?.type === "uniform").length).toBeLessThanOrEqual(5);
+    // Uniform buffers (default limit 12): frame, lights, environment, volumes, group, and K6.3's Lorenz-Mie table (16 KiB
+    // of binary16 in group 0, which keeps the sampled textures at 15); the 'multi-scale' / 'mlp' transmittance adds its
+    // group-2 uniform but has no volumes or group record
+    expect(all.filter((e) => e.buffer?.type === "uniform").length).toBeLessThanOrEqual(6);
     expect(all.filter((e) => e.sampler).length).toBeLessThanOrEqual(16);
     // the environment prefilter / blur / reduce kernels have their own group 0 (their parameters; K6.2b)
     expect([GROUP0_LAYOUT, ENV_GROUP0_LAYOUT]).toContain(spec.groups[0]);
@@ -198,6 +205,16 @@ describe("K6.1 device limits (design §1)", () => {
     // every declared @group is a layout group (no gaps, nothing past the layouts)
     const groups = new Set([...spec.code.matchAll(/@group\((\d+)\)/g)].map((m) => Number(m[1])));
     for (const g of groups) expect(g).toBeLessThan(spec.groups.length);
+  });
+});
+
+describe("K6.5b sampled-texture headroom", () => {
+  it("the worst kernel samples 15 textures (16 is the WebGPU default limit): one left", () => {
+    const { compute } = allSpecs();
+    const counts = compute.map((s) => [s.label, s.groups.flatMap((g) => [...g.entries]).filter((e) => e.texture).length] as const);
+    const worst = Math.max(...counts.map(([, n]) => n));
+    expect(worst).toBe(15);
+    expect(counts.filter(([, n]) => n === worst).every(([label]) => label.startsWith("vdb frame gather (frame lighting"))).toBe(true);
   });
 });
 
@@ -222,12 +239,14 @@ describe("K6.1 retire queue", () => {
 });
 
 describe("K6.1 settings", () => {
-  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix and the K6.3 multi-scale fields", () => {
+  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix, occlusion and the K6.3 multi-scale fields", () => {
     const core = vdbFrameDefaultSettings();
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
-    const { froxelMix, multiScaleLevels, multiScaleEdge, ...shared } = core;
+    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, ...shared } = core;
     expect([multiScaleLevels, multiScaleEdge]).toEqual([6, "zero"]);
     expect(froxelMix).toBe("mixture");
+    // K6.5b: host occluder maps shadow the volumes by default (core only)
+    expect(occlusion).toBe(true);
     expect(shared).toEqual(three);
   });
 });
