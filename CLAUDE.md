@@ -265,3 +265,6 @@ From v1; details in docs/archive/handoffs/.
   v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
 - `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
   and other explicit-type modules are byte-identical).
+- A volume-shadow test that moves a light must make the map wait, or it can't see a lookup that follows the wrong light
+  state. The budget always draws the oldest piece: add a second shadow light (older piece) to the scene first
+  (entries go in install order). See `k3-frame-shadows ?case=stale` (K7.1).
