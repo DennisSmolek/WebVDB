@@ -107,6 +107,7 @@ import { vdbFrameEmissionLutRow } from "../../tools/frame/blackbody.js";
 import { getDevice } from "../device.js";
 import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
 import { VDBFrameCoreIntegrateMaterial } from "./core-integrate-material.js";
+import { VDBCoreOccluders } from "./core-occluders.js";
 import { VDBCoreEnvironment } from "./core-environment.js";
 
 const { outputStruct, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
@@ -467,6 +468,13 @@ export class VDBFrameRenderer {
   backend: "tsl" | "core" = "tsl";
   /** @internal K6.1 A/B: the core's froxel mix (`'mixture'` default; `'over'` is his blend). */
   froxelMix: "mixture" | "over" = "mixture";
+  /**
+   * @internal K6.5b (`backend: 'core'`): meshes shadow the volumes through three's light shadow maps (lights with
+   * `castShadow`, `renderer.shadowMap.enabled`; the occluders need `castShadow`). Default true. Not his.
+   */
+  occlusion = true;
+  /** K6.5b: three's shadow maps as the core's occluder maps. */
+  private readonly coreOccluders = new VDBCoreOccluders();
   /** @internal The core renderer of `backend: 'core'` (made on first use, per device). */
   core: VDBFrameRendererGpu | null = null;
   private coreDevice: GPUDevice | null = null;
@@ -2299,7 +2307,7 @@ export class VDBFrameRenderer {
       this.disposeCoreSparse();
     }
     const core = this.core;
-    Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
+    Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix, occlusion: this.occlusion });
     // K6.5: the volume shadow filter on each shadow light (receivers build with it from the next render)
     this.volumeShadows.update(renderer, scene);
 
@@ -2330,7 +2338,9 @@ export class VDBFrameRenderer {
     const cam = camera as THREE.PerspectiveCamera & { isOrthographicCamera?: boolean };
     const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
     const canvas = renderer.getSize(new THREE.Vector2());
-    const { lights, emissionLight } = this.coreLights(scene, camera);
+    const { lights, emissionLight, shadowLights } = this.coreLights(scene, camera);
+    // K6.5b: three draws its pending shadow maps now (before this update's submit), so the occluders are this frame's
+    const occluders = this.occlusion ? this.coreOccluders.input(renderer as never, scene, camera, shadowLights) : [];
     const encoder = device.createCommandEncoder({ label: "vdb three core frame" });
     const u = core.update(encoder, {
       frameId: this.coreFrameId++,
@@ -2347,6 +2357,7 @@ export class VDBFrameRenderer {
       lights,
       emissionLight,
       environment: this.coreEnvironment.input(renderer as never, scene),
+      occluders,
     });
     device.queue.submit([encoder.finish()]);
     // K6.5: the receivers read the maps with the state they were drawn with (copied to their uniforms now, before they draw)
@@ -2495,8 +2506,10 @@ export class VDBFrameRenderer {
    * grid; point: its cube near / far; directional: cascades fitted by the core); a `VDBFrameEmissionLight` with
    * `backend: 'core'` gives the emission probe settings.
    */
-  private coreLights(scene: THREE.Object3D, camera: THREE.Camera): { lights: VDBFrameLight[]; emissionLight: VDBFrameEmissionLightSettings | null } {
+  private coreLights(scene: THREE.Object3D, camera: THREE.Camera): { lights: VDBFrameLight[]; emissionLight: VDBFrameEmissionLightSettings | null; shadowLights: THREE.Light[] } {
     const out: VDBFrameLight[] = [];
+    // K6.5b: the directional, spot and point lights passed (their shadow maps are the occluders)
+    const shadowLights: THREE.Light[] = [];
     let emissionLight: VDBFrameEmissionLightSettings | null = null;
     const position = new THREE.Vector3();
     const target = new THREE.Vector3();
@@ -2543,6 +2556,7 @@ export class VDBFrameRenderer {
           shadow = { size, view: { near: c.near, far: light.distance || c.far } };
         } else if (light.isDirectionalLight) shadow = { size, view: "fit" };
       }
+      if ((light.isDirectionalLight || light.isSpotLight || light.isPointLight) && light.castShadow) shadowLights.push(light);
       if (light.isAmbientLight) out.push({ id, kind: "ambient", color });
       else if (light.isHemisphereLight) {
         const g = light.groundColor!;
@@ -2571,7 +2585,7 @@ export class VDBFrameRenderer {
         out.push({ id, kind: "point", position: [position.x, position.y, position.z], color, distance: light.distance!, decay: light.decay!, ...(shadow ? { shadow } : {}) });
       }
     });
-    return { lights: out, emissionLight };
+    return { lights: out, emissionLight, shadowLights };
   }
   /** Disposes the renderer's targets, materials and shadow filters. A later render makes them again. */
   dispose(): void {
