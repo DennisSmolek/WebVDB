@@ -43,6 +43,11 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 - Tools: the unknown-codec error names the real `nanovdb_convert` flags (`-z/--zip`, `-b/--blosc`); it suggested
   `--codec=zip`, which doesn't exist.
+- Three: volume shadows of spot and point lights on meshes (`frameRenderer.settings.castShadows`) read each map with
+  the light state it was drawn with, not three's current shadow coordinates, so a map that waits for
+  `castShadowUpdatesPerFrame` no longer slides off its shadow when the light moves (mjurczyk/openvdb 62a6e3e). The
+  update budget now counts only shadow lights in the scene being rendered; a light of another scene, or one removed
+  mid-frame, no longer delays the rendered scene's maps (c13f2d5) (K7.1).
 
 ### Documentation
 

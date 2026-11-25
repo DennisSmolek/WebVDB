@@ -23,6 +23,12 @@
  * `?emitter=blob` (a smooth synthetic Gaussian emitter: the strict per-direction twin; SwiftShader's ~12-bit division
  * makes the explosion's sharp flames alias by several % per direction, so it gates on the 16-direction mean).
  *
+ * `?case=stale` (K7.1, his 62a6e3e): the shadow case's cloud and ground with a spot (`?light=spot`, default) or point
+ * (`?light=point`) light, and a decoy spot light whose empty map is older. Both lights move in one frame; the budget
+ * (1) draws the decoy, so the main light's map waits. Receivers must read that map with the state it was drawn with:
+ * the waiting frame's ground equals the frame before the move, pixel for pixel; the frame after (the map drawn) does not.
+ * Then the main light alone moves (its map drawn in that render): that frame equals the next one, nothing changed.
+ *
  * `?timing=N` (hardware): median ms of N forced volume shadow map redraws (pass timer; D25: provisional).
  * Results: `window.__VDB_K3_SHADOWS__` (e2e/k3-frame-shadows.spec.ts).
  */
@@ -50,6 +56,7 @@ import {
   vdbFrameShadowMapTexel,
   vdbFrameShadowPassRay,
   vdbFrameShadowReceiver,
+  vdbFrameShadowSpotUv,
   wvdbDenseToNvdb,
   wvdbDenseVolume,
   writeWvdb,
@@ -106,6 +113,20 @@ interface Result {
   probeValues?: number[];
   lightOff?: { groundPixels: number; nonBlack: number };
   timing?: { provisional: true; note: string; frames: number; mapMs: number | null; perPieceMs: number | null; samples: number[] } | null;
+  // stale case
+  stale?: {
+    groundPixels: number;
+    shadowedBefore: number;
+    staleChanged: number;
+    staleShadowedChanged: number;
+    afterChanged: number;
+    movedChanged: number;
+    order: { decoy: number; main: number };
+    staleUpdate: { drawn: number; waiting: number };
+    afterUpdate: { drawn: number; waiting: number };
+    movedUpdate: { drawn: number; waiting: number };
+    mainDrawnAtStale: boolean;
+  };
 }
 
 declare global {
@@ -115,12 +136,12 @@ declare global {
 }
 
 const params = new URLSearchParams(location.search);
-const CASE = (params.get("case") ?? "shadow") as "shadow" | "emission";
+const CASE = (params.get("case") ?? "shadow") as "shadow" | "emission" | "stale";
 const W = Number(params.get("w") ?? 160);
 const H = Number(params.get("h") ?? 120);
 const SOURCE_KIND = (params.get("source") ?? "dense") as "dense" | "sparse";
 const LIGHTING = (params.get("lighting") ?? "volume") as "volume" | "frame";
-const LIGHT = (params.get("light") ?? "dir") as "dir" | "spot";
+const LIGHT = (params.get("light") ?? (CASE === "stale" ? "spot" : "dir")) as "dir" | "spot" | "point";
 const GROUND = (params.get("ground") ?? "shadow") as "shadow" | "standard";
 const CAST = params.get("cast") !== "0";
 const CASCADES = Number(params.get("cascades") ?? 1);
@@ -270,10 +291,11 @@ function receiverTransmittance(entry: VDBFrameShadowEntry, map: VDBFrameAtlas, c
     uv = lookup.uv;
     ray = { origin: v3(cascade.drawn.origin), forward: v3(entry.drawn.forward), perspective: 0, far: cascade.drawn.far };
   } else {
-    const shadowCamera = entry.light.shadow.camera;
-    const clip = new THREE.Vector4(p[0], p[1], p[2], 1).applyMatrix4(new THREE.Matrix4().multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse));
-    uv = [(clip.x / clip.w) * 0.5 + 0.5, 0.5 - (clip.y / clip.w) * 0.5];
-    if (uv[0] < 0 || uv[0] > 1 || uv[1] < 0 || uv[1] > 1) return null;
+    // K7.1: the drawn camera (as the receivers), not the light's current shadow camera
+    const clip = new THREE.Vector4(p[0], p[1], p[2], 1).applyMatrix4(entry.drawn.viewProjection);
+    const lookup = vdbFrameShadowSpotUv([clip.x, clip.y, clip.z, clip.w]);
+    if (!lookup.inside) return null;
+    uv = lookup.uv;
     ray = { origin: v3(entry.drawn.origin), forward: v3(entry.drawn.forward), perspective: entry.drawn.perspective, far: entry.drawn.far };
   }
   const tx = uv[0] * map.width + offset[0];
@@ -576,6 +598,161 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   canvas.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(display), W, H), 0, 0);
   root.append(canvas);
   log(`shadow (${LIGHT}, ${SOURCE_KIND}, '${LIGHTING}' lighting): ${JSON.stringify(result.shadowStats)}; entry ${JSON.stringify(result.entry)}; repeat identical ${result.inPageIdentical}`, result.inPageIdentical ? "ok" : "fail");
+}
+
+// ── stale case (K7.1) ────────────────────────────────────────────────────────────────────────────────
+
+async function runStale(renderer: WebGPURenderer, device: GPUDevice): Promise<void> {
+  const wvdb = readWvdb(new Uint8Array(await (await fetch(cloudUrl)).arrayBuffer()));
+  const dense = wvdbDenseVolume(wvdb, { mipmaps: MIPS });
+  const source = await makeSource(renderer, device, dense, false);
+
+  const fr = new VDBFrameRenderer();
+  Object.assign(fr.settings, {
+    width: 96,
+    height: 64,
+    depth: 24,
+    temporal: false,
+    jitter: false,
+    lighting: LIGHTING,
+    multipleScattering: true,
+    castShadows: true,
+    castShadowMapSize: Number(params.get("mapSize") ?? 256),
+    castShadowSteps: STEPS,
+    castShadowUpdatesPerFrame: 1,
+  });
+  result.settings = { ...fr.settings };
+
+  const bbox = new THREE.Box3(new THREE.Vector3(...(dense.bbox?.[0] ?? [-0.5, -0.5, -0.5])), new THREE.Vector3(...(dense.bbox?.[1] ?? [0.5, 0.5, 0.5])));
+  const size = bbox.getSize(new THREE.Vector3());
+  const center = bbox.getCenter(new THREE.Vector3());
+  const scale = 100 / Math.max(size.x, size.y, size.z);
+  const volume = new VDBFrameVolume(source, { frameRenderer: fr, bbox, extinction: 60, shadowSteps: 24, mipmaps: MIPS });
+  volume.scale.setScalar(scale);
+  volume.position.copy(center).multiplyScalar(-scale).add(new THREE.Vector3(0, 20 + (size.y * scale) / 2, 0));
+
+  const scene = new THREE.Scene();
+  scene.background = BACKGROUND.clone();
+  // The decoy first: its entry is made first, so its map is drawn first and the main light's map is the newer one.
+  // It points away from the cloud (an empty map, no shadow on the ground).
+  const decoy = new THREE.SpotLight(0xffffff, 100, 0, 0.3, 0.0, 2);
+  decoy.position.set(250, 60, 250);
+  decoy.target.position.set(290, 0, 290);
+  decoy.castShadow = true;
+  decoy.shadow.camera.near = 10;
+  decoy.shadow.camera.far = 200;
+  scene.add(decoy, decoy.target);
+
+  let light: THREE.SpotLight | THREE.PointLight;
+  if (LIGHT === "point") {
+    const point = new THREE.PointLight(0xffffff, 40000, 0, 2);
+    point.shadow.camera.near = 10;
+    point.shadow.camera.far = 600;
+    light = point;
+  } else {
+    const spot = new THREE.SpotLight(0xffffff, 40000, 0, 0.6, 0.0, 2);
+    spot.target.position.set(30, 0, 60);
+    spot.shadow.camera.near = 10;
+    spot.shadow.camera.far = 600;
+    scene.add(spot.target);
+    light = spot;
+  }
+  light.position.set(-60, 260, -110);
+  light.castShadow = true;
+  light.shadow.mapSize.setScalar(512);
+  scene.add(light, volume);
+
+  const GROUND_HALF = 300;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(GROUND_HALF * 2, GROUND_HALF * 2, 64, 64), new THREE.ShadowMaterial({ opacity: SHADOW_OPACITY }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  const camera = new THREE.PerspectiveCamera(55, W / H, 1, 5000);
+  camera.position.set(70, 190, 220);
+  camera.lookAt(25, 10, 45);
+  camera.updateProjectionMatrix();
+  scene.updateMatrixWorld(true);
+  camera.updateMatrixWorld(true);
+
+  const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+  const frame = async () => {
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    return readLinear(renderer, rt);
+  };
+  const lastUpdate = () => ({ ...fr.volumeShadows.lastUpdate });
+
+  // Filters go on, receivers build, then the decoy's map and the main light's map are drawn (one piece per render)
+  for (let i = 0; i < 5; i++) await frame();
+  const before = await frame();
+  const mainEntry = fr.volumeShadows.entries.get(light)!;
+  const decoyEntry = fr.volumeShadows.entries.get(decoy)!;
+  const order = { decoy: decoyEntry.item.lastDraw, main: mainEntry.item.lastDraw };
+
+  // Both lights move: the decoy (the older map) takes the budget, the main light's map waits one render
+  const move = Number(params.get("move") ?? 40);
+  const mainLastDraw = mainEntry.item.lastDraw;
+  light.position.x += move;
+  decoy.position.x += 5;
+  const stale = await frame();
+  const staleUpdate = lastUpdate();
+  const mainDrawnAtStale = mainEntry.item.lastDraw !== mainLastDraw;
+  const after = await frame();
+  const afterUpdate = lastUpdate();
+
+  // The main light alone moves: its map is drawn in that render, which must equal the next one (nothing changes)
+  light.position.x += move;
+  const moved = await frame();
+  const movedUpdate = lastUpdate();
+  const settled = await frame();
+
+  // The volume's screen coverage at the three light positions (ground hidden: no receivers, so no map draws)
+  ground.visible = false;
+  const covered = new Uint8Array(W * H);
+  const bgLinear = [BACKGROUND.r, BACKGROUND.g, BACKGROUND.b];
+  for (const dx of [0, -move, -move]) {
+    light.position.x += dx;
+    const alone = await frame();
+    for (let i = 0; i < W * H; i++) {
+      if (Math.abs(alone[i * 4]! - bgLinear[0]!) + Math.abs(alone[i * 4 + 1]! - bgLinear[1]!) + Math.abs(alone[i * 4 + 2]! - bgLinear[2]!) > 1e-4) covered[i] = 1;
+    }
+  }
+  ground.visible = true;
+
+  // Ground pixels 2 px or more from the volume (the froxel composite's soft edge)
+  let groundPixels = 0;
+  let shadowedBefore = 0;
+  let staleChanged = 0;
+  let staleShadowedChanged = 0;
+  let afterChanged = 0;
+  let movedChanged = 0;
+  const same =(a: Float32Array, b: Float32Array, i: number) => a[i * 4] === b[i * 4] && a[i * 4 + 1] === b[i * 4 + 1] && a[i * 4 + 2] === b[i * 4 + 2];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      let near = false;
+      for (let dy = -2; dy <= 2 && !near; dy++) for (let dx = -2; dx <= 2 && !near; dx++) if (x + dx >= 0 && x + dx < W && y + dy >= 0 && y + dy < H && covered[(y + dy) * W + x + dx]) near = true;
+      if (near || !groundPoint(camera, x, y, 0, GROUND_HALF - 1)) continue;
+      groundPixels++;
+      const shadowed = before[i * 4 + 1]! < bgLinear[1]! - 1e-3;
+      if (shadowed) shadowedBefore++;
+      if (!same(stale, before, i)) {
+        staleChanged++;
+        if (shadowed) staleShadowedChanged++;
+      }
+      if (!same(after, before, i)) afterChanged++;
+      if (!same(moved, settled, i)) movedChanged++;
+    }
+  }
+  result.stale = { groundPixels, shadowedBefore, staleChanged, staleShadowedChanged, afterChanged, movedChanged, order, staleUpdate, afterUpdate, movedUpdate, mainDrawnAtStale };
+  result.width = W;
+  result.height = H;
+  result.rgba = toBase64(toDisplay(stale));
+  result.rgbaOff = toBase64(toDisplay(before));
+  result.inPageIdentical = true;
+  log(`stale (${LIGHT}): ${JSON.stringify(result.stale)}`, staleChanged === 0 ? "ok" : "fail");
 }
 
 // ── emission case ────────────────────────────────────────────────────────────────────────────────────
@@ -957,6 +1134,7 @@ async function main(): Promise<void> {
   renderer.shadowMap.enabled = true;
 
   if (CASE === "emission") await runEmission(renderer, device);
+  else if (CASE === "stale") await runStale(renderer, device);
   else await runShadow(renderer, device);
 }
 

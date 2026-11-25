@@ -3,6 +3,8 @@
 //   uniforms, cascade lookup, FrameVolumeShadowNode, FrameVolumeShadows: entries, install, cameras, cascades,
 //   the budgeted map updates, dispose).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
+// Past the pin (K7.1): his 62a6e3e (spot / point lookups from the drawn state) and c13f2d5 (the update budget counts
+// only lights of the rendered scene).
 // Changes: TypeScript; every three r187 internal goes through `three-internals.ts`, which self-tests it and throws
 // VDB_ENGINE_MISMATCH (his: a warning, then no volume shadow); the receiver depth and cascade maths have CPU twins
 // (`@pmndrs/vdb/tools` `vdbFrameShadow*`). Divergences: DIVERGES.md (K3.6 rows).
@@ -172,6 +174,8 @@ interface Cascade {
 
 interface Receiver {
   enabled: N;
+  /** Spot lights: the drawn view-projection (null for cascades and point lights). */
+  viewProjection: N | null;
   rayUniforms: ShadowRayUniforms;
   cascades: { count: N; breaks: N; items: { viewProjection: N; origin: N; far: N }[] } | null;
 }
@@ -190,7 +194,7 @@ export interface VDBFrameShadowEntry {
   map: N;
   enabled: N;
   rayUniforms: ShadowRayUniforms;
-  drawn: { origin: THREE.Vector3; forward: THREE.Vector3; perspective: number; far: number; cascadeCount: number; cascadeBreaks: THREE.Vector4 };
+  drawn: { origin: THREE.Vector3; forward: THREE.Vector3; perspective: number; far: number; viewProjection: THREE.Matrix4; cascadeCount: number; cascadeBreaks: THREE.Vector4 };
   item: { signature: number[]; lastDraw: number };
   cascadeCount: number;
   cascadeBreaks: THREE.Vector4;
@@ -202,10 +206,11 @@ export interface VDBFrameShadowEntry {
 // NOTE Receivers read the drawn state: the values of the camera that drew each map or cascade tile.
 // A map that waits for the frame budget is older, but its values match, so its shadow stays in place.
 const createReceiverUniforms = (entry: VDBFrameShadowEntry): Receiver => {
-  const { drawn, cascades } = entry;
+  const { drawn, cascades, isPoint } = entry;
 
   return {
     enabled: renderUniform(0, "int", () => entry.enabled.value),
+    viewProjection: cascades || isPoint ? null : renderUniform(new THREE.Matrix4(), "mat4", () => drawn.viewProjection),
     rayUniforms: {
       frameShadowOrigin: renderUniform(new THREE.Vector3(), "vec3", () => drawn.origin),
       frameShadowForward: renderUniform(new THREE.Vector3(), "vec3", () => drawn.forward),
@@ -266,7 +271,9 @@ const getCascadeLookup = (receiver: Receiver, size: number): { uv: N; inside: N;
 
 /**
  * Volume transmittance at a receiver from the Beer shadow map of the light (part of the light's shadow filter).
- * `uv` is the shadow map uv (spot) or the direction from the light (point); directional lights pick a cascade.
+ * The map coordinate comes from the state the map was drawn with, not from three's shadow coordinates (his 62a6e3e):
+ * spot lights project with the drawn view-projection (twin `vdbFrameShadowSpotUv`), point lights take the direction
+ * from the drawn light position, directional lights pick a cascade. A map that waits for the budget is read as drawn.
  * `updateBefore` draws the maps before the first receiver of each render. Twin: `vdbFrameShadowReceiver`.
  */
 export class VDBFrameVolumeShadowNode extends Node {
@@ -276,14 +283,12 @@ export class VDBFrameVolumeShadowNode extends Node {
 
   readonly shadows: VDBFrameVolumeShadows;
   readonly entry: VDBFrameShadowEntry;
-  readonly uv: N;
 
-  constructor(shadows: VDBFrameVolumeShadows, entry: VDBFrameShadowEntry, uv: N) {
+  constructor(shadows: VDBFrameVolumeShadows, entry: VDBFrameShadowEntry) {
     super("float");
 
     this.shadows = shadows;
     this.entry = entry;
-    this.uv = uv;
     (this as unknown as { updateBeforeType: string }).updateBeforeType = vdbFrameRenderUpdateType();
   }
 
@@ -308,9 +313,9 @@ export class VDBFrameVolumeShadowNode extends Node {
     const { entry } = this;
     const { map, spectralMap, isPoint, receiver } = entry;
     const spectral = this.isSpectral(builder);
-    let { uv } = this;
     let { rayUniforms } = receiver;
     let inside: N = receiver.enabled.equal(1);
+    let uv: N;
 
     if (receiver.cascades) {
       const lookup = getCascadeLookup(receiver, entry.size);
@@ -318,8 +323,16 @@ export class VDBFrameVolumeShadowNode extends Node {
       uv = lookup.uv;
       rayUniforms = lookup.rayUniforms;
       inside = inside.and(lookup.inside);
-    } else if (!isPoint) {
-      inside = inside.and(uv.x.greaterThanEqual(0.0)).and(uv.x.lessThanEqual(1.0)).and(uv.y.greaterThanEqual(0.0)).and(uv.y.lessThanEqual(1.0));
+    } else if (isPoint) {
+      // NOTE Cube map direction from the light position of the draw
+      uv = positionWorld.sub(rayUniforms.frameShadowOrigin);
+    } else {
+      // NOTE Spot map uv from the drawn camera, with the y flip of three's ShadowNode; behind the camera is outside
+      const clip = receiver.viewProjection!.mul(vec4(positionWorld, 1.0));
+      const ndc = clip.xy.div(clip.w);
+
+      uv = vec2(ndc.x.mul(0.5).add(0.5), float(0.5).sub(ndc.y.mul(0.5)));
+      inside = inside.and(clip.w.greaterThan(0.0)).and(uv.x.greaterThanEqual(0.0)).and(uv.x.lessThanEqual(1.0)).and(uv.y.greaterThanEqual(0.0)).and(uv.y.lessThanEqual(1.0));
     }
 
     return Fn(() => {
@@ -354,15 +367,20 @@ export class VDBFrameVolumeShadowNode extends Node {
   }
 }
 
-// NOTE An object and all its parents are visible
-const isVisible = (object: THREE.Object3D): boolean => {
+// NOTE An object and all its parents are visible, and its root is the rendered scene (his c13f2d5).
+// A removed light, or a light of another scene, takes no part of the update budget.
+const isVisible = (object: THREE.Object3D, scene: THREE.Object3D): boolean => {
+  let root = object;
+
   for (let current: THREE.Object3D | null = object; current; current = current.parent) {
     if (!current.visible) {
       return false;
     }
+
+    root = current;
   }
 
-  return true;
+  return root === scene;
 };
 
 // NOTE The object is in a scene. A removed light is not.
@@ -468,6 +486,7 @@ export class VDBFrameVolumeShadows {
           forward: new THREE.Vector3(0.0, 0.0, -1.0),
           perspective: 0,
           far: 1.0,
+          viewProjection: new THREE.Matrix4(),
           cascadeCount: 0,
           cascadeBreaks: new THREE.Vector4(),
         },
@@ -596,7 +615,8 @@ export class VDBFrameVolumeShadows {
     entry.userFilter = userFilter;
 
     // NOTE ShadowNode calls the filter when it builds. The base filter is three's or the user's.
-    // Point lights give the direction from the light (bd3D), other lights give shadowCoord.
+    // Point lights give the direction from the light (bd3D), other lights give shadowCoord. The volume shadow node
+    // does not use them: it finds its map coordinate from the drawn state.
     const filter: VolumeFilter = (inputs) => {
       vdbFrameCheckFilterInputs(inputs, entry.isPoint);
 
@@ -615,9 +635,7 @@ export class VDBFrameVolumeShadows {
 
       baseInputs.shadow = shadow;
 
-      const uv = entry.isPoint ? inputs.bd3D : (inputs.shadowCoord as N).xy;
-
-      return baseFilter(baseInputs).mul(new VDBFrameVolumeShadowNode(this, entry, uv));
+      return baseFilter(baseInputs).mul(new VDBFrameVolumeShadowNode(this, entry));
     };
 
     filter.isVDBFrameVolumeShadowFilter = true;
@@ -898,6 +916,7 @@ export class VDBFrameVolumeShadows {
         drawn.forward.copy(rayUniforms.frameShadowForward.value);
         drawn.perspective = rayUniforms.frameShadowPerspective.value;
         drawn.far = rayUniforms.frameShadowFar.value;
+        drawn.viewProjection.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
       },
     });
   }
@@ -936,7 +955,7 @@ export class VDBFrameVolumeShadows {
     const work: WorkPiece[] = [];
 
     this.entries.forEach((entry) => {
-      const active = entry.light.castShadow && isVisible(entry.light);
+      const active = entry.light.castShadow && isVisible(entry.light, scene);
 
       entry.enabled.value = active ? 1 : 0;
 

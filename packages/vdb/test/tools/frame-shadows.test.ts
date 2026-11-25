@@ -31,6 +31,7 @@ import {
   vdbFrameShadowMapTexel,
   vdbFrameShadowPassRay,
   vdbFrameShadowReceiver,
+  vdbFrameShadowSpotUv,
   type VDBFrameEmitter,
   type VDBFrameVec3 as Vec3,
 } from "../../src/tools/internal.js";
@@ -150,6 +151,37 @@ describe("volume shadows: directional cascades", () => {
     expect(edge.insideTile).toBe(false);
     close(edge.uv[0], (0.5 / 512 + 1) / 4, 1e-12);
     close(edge.uv[1], 0.5 / 512, 1e-12);
+  });
+});
+
+describe("volume shadows: spot lookup from the drawn camera (K7.1, his 62a6e3e)", () => {
+  it("the uv equals three's spot shadow coordinate (shadow.matrix, y flipped); behind the camera is outside", () => {
+    const spot = new THREE.SpotLight(0xffffff, 1, 0, 0.6);
+    spot.position.set(-60, 260, -110);
+    spot.target.position.set(30, 0, 60);
+    spot.shadow.camera.near = 10;
+    spot.shadow.camera.far = 600;
+    spot.updateMatrixWorld(true);
+    spot.target.updateMatrixWorld(true);
+    spot.shadow.updateMatrices(spot);
+    const cam = spot.shadow.camera;
+    const viewProjection = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    for (const p of [new THREE.Vector3(30, 0, 60), new THREE.Vector3(80, 10, 20), new THREE.Vector3(-20, 0, 130)]) {
+      const clip = new THREE.Vector4(p.x, p.y, p.z, 1).applyMatrix4(viewProjection);
+      const ours = vdbFrameShadowSpotUv([clip.x, clip.y, clip.z, clip.w]);
+      const s = new THREE.Vector4(p.x, p.y, p.z, 1).applyMatrix4(spot.shadow.matrix);
+      close(ours.uv[0], s.x / s.w, 1e-9);
+      close(ours.uv[1], 1 - s.y / s.w, 1e-9);
+      expect(ours.inside).toBe(true);
+    }
+    // The target's mirror image behind the light divides into the map (−clip / −w); w ≤ 0 keeps it out
+    const behind = new THREE.Vector3().subVectors(spot.position, new THREE.Vector3(30, 0, 60)).add(spot.position);
+    const clip = new THREE.Vector4(behind.x, behind.y, behind.z, 1).applyMatrix4(viewProjection);
+    const lookup = vdbFrameShadowSpotUv([clip.x, clip.y, clip.z, clip.w]);
+    expect(clip.w).toBeLessThan(0);
+    close(lookup.uv[0], 0.5, 1e-9);
+    close(lookup.uv[1], 0.5, 1e-9);
+    expect(lookup.inside).toBe(false);
   });
 });
 
