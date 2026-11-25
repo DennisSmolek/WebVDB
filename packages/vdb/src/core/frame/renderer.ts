@@ -206,9 +206,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
     if (!slot || !slot.source || typeof slot.source.wgsl !== "function" || !Number.isInteger(slot.v)) {
       throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.addVolume: pass a VDBVolumeSlot ({ source, v }); a dense source from vdbDenseSource() is its own slot.");
     }
-    if (slot.source.kind !== "dense") {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.addVolume: sparse sources come with K6.7 (vdbSparseSourceGpu); K6.1 renders dense sources (vdbDenseSource).");
-    }
     const v = new FrameVolume(this, slot, params);
     this.#volumes.push(v);
     return v;
@@ -368,6 +365,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#packVolumes(ordered);
     const groupList = [...groups.values()];
     this.#packGroups(groupList);
+
+    // Sparse sources (K6.7) record their own work after the host's pool.update(encoder); group 2 follows their version.
+    for (const source of groups.keys()) (source as VDBVolumeSource & { update?: (e: GPUCommandEncoder) => unknown }).update?.(encoder);
 
     // Record: gather per source group, then resolve
     const pass = encoder.beginComputePass({ label: `${this.#label} froxels` });
@@ -588,7 +588,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     records.forEach((r, i) => {
       const base = i * VDB_FRAME_VOLUME_BYTES;
       const p = r.volume.params;
-      const source = r.volume.slot.source;
+      const slot = r.volume.slot;
       const phaseFields = this.#phaseOf(p);
       const phase = vdbFramePhaseVector(phaseFields);
       if (phase[3] > 0) {
@@ -596,9 +596,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
         phase[3] = 0;
       }
       const ms = vdbFrameMultipleScatteringValue(this.settings.multipleScattering === "octaves" ? false : this.settings.multipleScattering, phaseFields);
-      const mean = p.densityMean ?? source.stats.meanNonZero;
+      const mean = p.densityMean ?? slot.stats.meanNonZero;
       const densityScale = p.normalizeDensity && mean > 0 ? p.densityScale / mean : p.densityScale;
-      const levels = source.lodLevels;
+      const levels = slot.lodLevels;
       w.clear(base, VDB_FRAME_VOLUME_BYTES);
       w.set(V, base, "viewToLocal", r.viewToLocal);
       w.set(V, base, "localToView", r.localToView);

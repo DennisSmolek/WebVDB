@@ -41,11 +41,13 @@ export interface VDBFrameGatherKey {
 
 /** The gather kernel's WGSL for `source` (its `vdbSrc*` at group 2). */
 export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameGatherKey): string {
-  if (source.kind !== "dense") {
-    throw new VDBError("VDB_BAD_OPTION", "vdbCreateFrameRenderer: sparse sources come with K6.7 (vdbSparseSourceGpu); K6.1 renders dense sources (vdbDenseSource).");
+  // One VDB module per shader (design §5.1): a sparse source (K6.7) gives it; a dense source has none.
+  const withModule = source as VDBVolumeSource & { moduleWgsl?: (slot: VDBSlot) => string };
+  if (source.kind !== "dense" && typeof withModule.moduleWgsl !== "function") {
+    throw new VDBError("VDB_BAD_OPTION", "vdbCreateFrameRenderer: a sparse source must come from vdbSparseSourceGpu (K6.7).");
   }
-  // K6.7: a sparse source puts the VDB module (vdbModuleWgsl at group 2) before its vdbSrc* WGSL here.
   return [
+    ...(typeof withModule.moduleWgsl === "function" ? [withModule.moduleWgsl(SOURCE_SLOT)] : []),
     source.wgsl({ slot: SOURCE_SLOT, profile: "march" }),
     vdbFrameUniformsWgsl(key.maxVolumes ?? VDB_FRAME_MAX_VOLUMES),
     vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels }),
