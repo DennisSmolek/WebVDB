@@ -161,11 +161,11 @@ interface VDBFrameEnvironment {
   rotation?: Float32Array;             // 3x3 world → map
   intensity: number;
 }
-interface VDBFrameOccluder {           // a host depth shadow map
+interface VDBFrameOccluder {           // a host depth shadow map (K6.5b as built)
   light: number | string;              // the VDBFrameLight id it belongs to
-  depth: GPUTextureView;               // depth or r32float, 2d or 2d-array (cascades / cube faces as layers)
-  viewProjection: Float32Array[];      // one per layer; the matrices the map was drawn with
-  orthographic: boolean; bias: number; reversedDepth: boolean;
+  depth: GPUTextureView;               // '2d-array' view of a depth (depth-only aspect) or r32float texture; layers = cascades / cube faces
+  viewProjection: ArrayLike<number>[]; // one per layer (≤ 6); the matrices the map was drawn with (WebGPU depth)
+  bias?: number; reversedDepth?: boolean; filter?: "bilinear" | "nearest"; revision?: number;
 }
 ```
 
@@ -296,7 +296,8 @@ caches skip kernels exactly as today (V44 fields + light ids + environment revis
 - **Stacked textures**: several logical 3D grids of one size (cascades × targets) are sub-volumes of one 3D texture,
   tiled along x, then y, then z within 2048 per axis (`vdbFrameStackLayout`, twin in `tools/frame`). Reads clamp the
   coordinate to the sub-volume's half-texel box, which equals clamp-to-edge per sub-volume. One binding per stack
-  keeps storage writes ≤ 2 and sampled reads ≤ 12 per kernel.
+  keeps storage writes ≤ 2 and sampled reads ≤ 16 per kernel (WebGPU's default limit; ≤ 12 before K6.5b's 4
+  occluder slots: the dense 'frame' gather with every channel and mips is the worst at 15).
 - **Zero outside the area**: each froxel kernel dispatches over the bounding box of this frame's and last frame's
   areas and writes 0 outside this frame's area. Texels outside both were zeroed earlier, so "zero outside the area"
   holds every frame without clears (his targets were cleared; same values).
@@ -449,6 +450,22 @@ flipY / cube reflection); a CUBE_UV atlas is drawn once into a 1024 × 512 lat-l
   host passes maps (`occlusion: true`). Twin: **new** `vdbFrameOccluderVisibility` (PCF as the host's filter: 1 tap
   or 2×2 comparison).
 - **Self-shadowing**: the volume's own march ('volume') or the shadow grid ('frame'), as now.
+
+*K6.5b as built (handoff [K6-5b.md](../../archive/handoffs/K6-5b.md)):* the maps bind at group-1 bindings 12–15 of the
+transmittance and both gathers as `texture_2d_array<f32>` (`unfilterable-float`) read with `textureLoad`, **not** a
+comparison sampler: one binding type takes depth and r32float maps, reversed depth is a flag, and the 2 × 2 PCF weights
+are exact (the twin matches; hardware comparison filtering quantizes them). `VdbFrameLights` holds the count
+(`counts.y`; 0 with `occlusion` off), each light's slot (`falloff.z` = slot + 1) and per slot (layers, bias, reversed,
+nearest) and 6 view-projections. A position is tested in the first layer whose clip volume holds it (cascades finest
+first, cube faces in any order); outside every layer it is lit. Terms: the transmittance stores `direct + (total −
+direct)·V(voxel)` for scene slots with a map (direct unoccluded; the environment slot has none); the fused gather
+multiplies each slot's direct by V at the volume's visible position, and the lighting pass multiplies the lights without
+a slot (and the per-channel phase difference) by V at the summed visible position; 'volume' lighting multiplies a scene
+light's whole term (spot attenuation × V, the march skipped at 0). With no map every factor is an exact × 1.0 and the
+transmittance branch is not taken, so frames are byte-identical. A map without `revision` redraws the transmittance
+every update. Twin: `tools/frame/occluders.ts` (`vdbFrameOccluderVisibility`, `vdbFrameOccludedTotal`) and the
+`occluderAt` / `visibility` hooks of the density, lighting and transmittance twins. `./three` passes three's light
+maps and draws pending ones first (no lag; `three/frame/core-occluders.ts`).
 
 ### 3.8 Emission (K6.5)
 

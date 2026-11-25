@@ -362,3 +362,20 @@ From v1; details in docs/archive/handoffs/.
 - Core vs TSL A/Bs of a term on meshes (volume shadows, the emission light): compare on − off per backend outside the
   volume's dilated coverage; inside it the term is seen through the froxel composite, whose silhouette differs by V80
   (30/255 on the explosion's edge otherwise).
+- three r187 makes a light's shadow node (and draws its map) only for a lit material on a mesh with `receiveShadow`
+  (`AnalyticLightNode.setupShadow`): volumes plus unlit casters give no map, so no mesh → volume shadow (K6.5b). The gate
+  harness keeps a small lit receiver in a corner.
+- The core's occluder maps (K6.5b) bind as `texture_2d_array<f32>` `unfilterable-float` at group-1 bindings 12–15 of the
+  transmittance and both gathers (keep those numbers free). Hosts pass a `'2d-array'` view (`aspect: 'depth-only'` for a
+  depth-stencil format); compat devices fix a texture's view dimension at creation, so a cube depth map made for `'cube'`
+  views cannot be viewed as `'2d-array'` there.
+- `./three` reads three's shadow maps with no lag by calling the light's `ShadowNode.updateBefore` before the core update
+  (three draws and submits the map then, and skips it later in the frame by `_cameraFrameId`). Read a map's matrices from
+  the shadow camera / `shadow.matrix` (they hold the last draw); a point map's light position is `−shadow.matrix`'s
+  translation and its faces follow three's WebGPU table (`three/frame/core-occluders.ts`).
+- The dense 'frame' gather samples 15 textures after K6.5b (16 is the WebGPU default): a pass adding a sampled texture to
+  it must free one (`frame.test.ts` "sampled-texture headroom" pins 15).
+- To shadow a volume from a mesh the view must not show: put the mesh on layer 1 and `light.shadow.camera.layers.enable(1)`
+  (three copies the view camera's layers into the shadow camera only when its mask is just layer 0).
+- A gate mask for "pixels behind an occluder" must weight the view ray by the cloud's visibility (a CPU density march):
+  a dense cloud shows its front, so "every sample of the ray in the shadow" almost never holds (K6.5b's first mask: 0 px).
