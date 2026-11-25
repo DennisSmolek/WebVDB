@@ -28,6 +28,9 @@ import {
   vdbRefInvert4,
   vdbReferenceSettings,
   type VDBReferenceAccum,
+  type VDBReferenceColorTable,
+  type VDBReferenceMajorantGrid,
+  type VDBReferencePhaseTable,
   type VDBReferenceScene,
   type VDBReferenceSettings,
 } from "../../tools/reference/index.js";
@@ -36,6 +39,7 @@ import {
   VDB_REF_FLAG_BOX_FILTER,
   VDB_REF_FLAG_EQUIRECT,
   VDB_REF_FLAG_ORTHOGRAPHIC,
+  VDB_REF_FLAG_SH,
   VDB_REF_HEMI_BYTES,
   VDB_REF_LIGHT_BYTES,
   VDB_REF_UNIFORM_OFFSETS as OFF,
@@ -95,8 +99,67 @@ export interface VDBReferenceRendererGpu {
   dispose(): void;
 }
 
+/**
+ * K6.R1: where the scene's tables and majorant grids live in the kernel's table texture (rows) and majorant atlas
+ * (z offsets), and their texel data. Tables and grids are shared by identity (instanced volumes upload once).
+ */
+export interface VDBReferenceTableLayout {
+  phaseRows: Map<VDBReferencePhaseTable, number>;
+  colorRows: Map<VDBReferenceColorTable, number>;
+  gridOffsets: Map<VDBReferenceMajorantGrid, number>;
+  tables: { width: number; height: number; data: Float32Array };
+  majorants: { width: number; height: number; depth: number; data: Float32Array };
+}
+
+/** The table texture and majorant atlas of a scene (one row / one z range per distinct table or grid). */
+export function vdbReferenceTableLayout(scene: VDBReferenceScene): VDBReferenceTableLayout {
+  const phaseRows = new Map<VDBReferencePhaseTable, number>();
+  const colorRows = new Map<VDBReferenceColorTable, number>();
+  const gridOffsets = new Map<VDBReferenceMajorantGrid, number>();
+  let rows = 0;
+  let width = 2;
+  let gw = 1;
+  let gh = 1;
+  let depth = 0;
+  for (const v of scene.volumes) {
+    const t = v.phase?.table;
+    if (t && !phaseRows.has(t)) {
+      phaseRows.set(t, rows++);
+      width = Math.max(width, t.size);
+    }
+    const c = v.emission?.colorTable;
+    if (c && !colorRows.has(c)) {
+      colorRows.set(c, rows++);
+      width = Math.max(width, c.size);
+    }
+    const g = v.majorantGrid;
+    if (g && !gridOffsets.has(g)) {
+      if (g.values.length !== g.dims[0] * g.dims[1] * g.dims[2]) throw new VDBError("VDB_BAD_OPTION", `reference renderer: a majorant grid of ${g.dims.join("x")} has ${g.values.length} values`);
+      gridOffsets.set(g, depth);
+      depth += g.dims[2];
+      gw = Math.max(gw, g.dims[0]);
+      gh = Math.max(gh, g.dims[1]);
+    }
+  }
+  const height = Math.max(rows, 1);
+  const tables = new Float32Array(width * height * 4);
+  for (const [t, row] of phaseRows) {
+    for (let i = 0; i < t.size; i++) tables.set([t.values[i * 3]!, t.values[i * 3 + 1]!, t.values[i * 3 + 2]!, t.cdf[i]!], (row * width + i) * 4);
+  }
+  for (const [t, row] of colorRows) {
+    for (let i = 0; i < t.size; i++) tables.set([t.values[i * 3]!, t.values[i * 3 + 1]!, t.values[i * 3 + 2]!, 0], (row * width + i) * 4);
+  }
+  const d = Math.max(depth, 1);
+  const majorants = new Float32Array(gw * gh * d);
+  for (const [g, z0] of gridOffsets) {
+    const [nx, ny, nz] = g.dims;
+    for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) majorants.set(g.values.subarray((z * ny + y) * nx, (z * ny + y + 1) * nx), ((z0 + z) * gh + y) * gw);
+  }
+  return { phaseRows, colorRows, gridOffsets, tables: { width, height, data: tables }, majorants: { width: gw, height: gh, depth: d, data: majorants } };
+}
+
 /** Pack `VdbRefUniforms` (layout in `wgsl.ts`). Exported for tests. */
-export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: VDBReferenceSettings): ArrayBuffer {
+export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: VDBReferenceSettings, layout: VDBReferenceTableLayout = vdbReferenceTableLayout(scene)): ArrayBuffer {
   const s = vdbReferenceSettings(settingsIn);
   const buf = new ArrayBuffer(OFF.size_);
   const f = new Float32Array(buf);
@@ -122,7 +185,10 @@ export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: V
   U(OFF.lightCount, lights.length);
   U(OFF.hemiCount, hemis.length);
   const eq = env.equirect;
-  U(OFF.flags, (s.pixelFilter === "box" ? VDB_REF_FLAG_BOX_FILTER : 0) | (scene.camera.orthographic ? VDB_REF_FLAG_ORTHOGRAPHIC : 0) | (eq ? VDB_REF_FLAG_EQUIRECT : 0));
+  const sh = env.sh;
+  if (sh && sh.length !== 27) throw new VDBError("VDB_BAD_OPTION", `reference renderer: the environment's sh needs 27 numbers, got ${sh.length}`);
+  U(OFF.flags, (s.pixelFilter === "box" ? VDB_REF_FLAG_BOX_FILTER : 0) | (scene.camera.orthographic ? VDB_REF_FLAG_ORTHOGRAPHIC : 0) | (eq ? VDB_REF_FLAG_EQUIRECT : 0) | (sh ? VDB_REF_FLAG_SH : 0));
+  if (sh) for (let i = 0; i < 9; i++) F(OFF.sh + i * 16, [sh[i * 3]!, sh[i * 3 + 1]!, sh[i * 3 + 2]!, 0]);
   U(OFF.envSize, eq?.width ?? 1);
   U(OFF.envSize + 4, eq?.height ?? 1);
   F(OFF.uniformEnv, [...(env.uniform ?? [0, 0, 0]), eq?.intensity ?? 1]);
@@ -146,8 +212,25 @@ export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: V
     F(o + 80, [...(v.albedo ?? [1, 1, 1]), v.emits ? 1 : 0]);
     F(o + 96, [v.phase?.g ?? 0, v.phase?.backG ?? 0, v.phase?.backWeight ?? 0, 0]);
     F(o + 112, [c[0] * k, c[1] * k, c[2] * k, 0]);
-    F(o + 128, [range[0], range[1], 0, 0]);
+    const ct = e.colorTable;
+    F(o + 128, [range[0], range[1], ct ? Math.log(ct.minTemperature) : 0, ct ? Math.log(ct.maxTemperature) : 0]);
+    const g = v.majorantGrid;
     U(o + 144, v.v ?? 0);
+    if (g) {
+      U(o + 148, g.dims[0]);
+      U(o + 152, g.dims[1]);
+      U(o + 156, g.dims[2]);
+      U(o + 160, layout.gridOffsets.get(g)!);
+    }
+    const pt = v.phase?.table;
+    if (pt) {
+      U(o + 176, layout.phaseRows.get(pt)! + 1);
+      U(o + 180, pt.size);
+    }
+    if (ct) {
+      U(o + 184, layout.colorRows.get(ct)! + 1);
+      U(o + 188, ct.size);
+    }
   });
   lights.forEach((l, i) => {
     const o = OFF.lights + i * VDB_REF_LIGHT_BYTES;
@@ -160,16 +243,19 @@ export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: V
       F(o + 16, [...norm(l.direction), 0]);
       F(o + 32, [...l.irradiance, 0]);
       F(o + 48, [0, 0, 0, 0]);
-    } else if (l.kind === "point") {
-      F(o, [...l.position, 1]);
-      F(o + 16, [0, 0, 0, 0]);
-      F(o + 32, [...l.intensity, 0]);
-      F(o + 48, [l.inverseSquare ? 1 : 0, 0, 0, 0]);
     } else {
-      F(o, [...l.position, 2]);
-      F(o + 16, [...norm(l.direction), l.cosOuter]);
-      F(o + 32, [...l.intensity, l.cosInner]);
-      F(o + 48, [l.inverseSquare ? 1 : 0, 0, 0, 0]);
+      // falloff: mode 0 none, 1 inverse square, 2 three's getDistanceAttenuation (cutoff, decay)
+      const falloff = l.falloff ? [2, l.falloff.cutoff ?? 0, l.falloff.decay, 0] : [l.inverseSquare ? 1 : 0, 0, 0, 0];
+      if (l.kind === "point") {
+        F(o, [...l.position, 1]);
+        F(o + 16, [0, 0, 0, 0]);
+        F(o + 32, [...l.intensity, 0]);
+      } else {
+        F(o, [...l.position, 2]);
+        F(o + 16, [...norm(l.direction), l.cosOuter]);
+        F(o + 32, [...l.intensity, l.cosInner]);
+      }
+      F(o + 48, falloff);
     }
   });
   return buf;
@@ -203,6 +289,8 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
   readonly #batch: GPUBuffer;
   readonly #accum: GPUTexture[];
   #env: GPUTexture;
+  #tables: GPUTexture;
+  #majorants: GPUTexture;
   #group0: GPUBindGroup;
   #group1: GPUBindGroup[] = [];
   #group2: GPUBindGroup | null = null;
@@ -227,6 +315,8 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
       device.createTexture({ label: `${this.#label} accum ${i}`, size: [o.width, o.height], format: "rgba32float", usage: TEX_BINDING | TEX_STORAGE | TEX_COPY_SRC }),
     );
     this.#env = this.#makeEnv(1, 1, new Float32Array(4));
+    this.#tables = this.#makeEnv(2, 1, new Float32Array(8));
+    this.#majorants = this.#makeMajorants(1, 1, 1, new Float32Array(1));
     this.#group0 = device.createBindGroup({
       label: `${this.#label} group 0`,
       layout: layouts[0]!,
@@ -244,6 +334,12 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
     return t;
   }
 
+  #makeMajorants(w: number, h: number, d: number, data: Float32Array): GPUTexture {
+    const t = this.device.createTexture({ label: `${this.#label} majorants`, size: [w, h, d], dimension: "3d", format: "r32float", usage: TEX_BINDING | TEX_COPY_DST });
+    this.device.queue.writeTexture({ texture: t }, data as Float32Array<ArrayBuffer>, { bytesPerRow: w * 4, rowsPerImage: h }, [w, h, d]);
+    return t;
+  }
+
   #buildGroup1(): void {
     const view = (t: GPUTexture) => t.createView();
     const a = this.#accum;
@@ -258,6 +354,8 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
           { binding: 2, resource: view(a[2 * (1 - p)]!) },
           { binding: 3, resource: view(a[2 * (1 - p) + 1]!) },
           { binding: 4, resource: view(this.#env) },
+          { binding: 5, resource: view(this.#tables) },
+          { binding: 6, resource: view(this.#majorants) },
         ],
       }),
     );
@@ -271,14 +369,22 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
     this.#check();
     const full = { ...settings, width: this.width, height: this.height };
     this.#settings = vdbReferenceSettings(full);
-    this.device.queue.writeBuffer(this.#uniforms, 0, vdbReferencePackUniforms(scene, full));
+    const layout = vdbReferenceTableLayout(scene);
+    this.device.queue.writeBuffer(this.#uniforms, 0, vdbReferencePackUniforms(scene, full, layout));
     const eq = scene.environment?.equirect;
     if (eq) {
       if (eq.data.length !== eq.width * eq.height * 4) throw new VDBError("VDB_BAD_OPTION", `reference renderer: the equirect map has ${eq.data.length} floats, expected ${eq.width}x${eq.height}x4`);
       this.#env.destroy();
       this.#env = this.#makeEnv(eq.width, eq.height, eq.data);
-      this.#buildGroup1();
     }
+    const max3d = this.device.limits.maxTextureDimension3D;
+    const m = layout.majorants;
+    if (m.width > max3d || m.height > max3d || m.depth > max3d) throw new VDBError("VDB_BAD_OPTION", `reference renderer: the majorant atlas ${m.width}x${m.height}x${m.depth} exceeds maxTextureDimension3D ${max3d} (use larger cells)`);
+    this.#tables.destroy();
+    this.#tables = this.#makeEnv(layout.tables.width, layout.tables.height, layout.tables.data);
+    this.#majorants.destroy();
+    this.#majorants = this.#makeMajorants(m.width, m.height, m.depth, m.data);
+    this.#buildGroup1();
     this.reset();
   }
 
@@ -344,6 +450,8 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
     this.#disposed = true;
     for (const t of this.#accum) t.destroy();
     this.#env.destroy();
+    this.#tables.destroy();
+    this.#majorants.destroy();
     this.#uniforms.destroy();
     this.#batch.destroy();
   }
@@ -380,6 +488,8 @@ export async function vdbCreateReferenceRendererGpu(device: GPUDevice, o: VDBRef
         { binding: 2, visibility: STAGE_COMPUTE, storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" } },
         { binding: 3, visibility: STAGE_COMPUTE, storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" } },
         { binding: 4, visibility: STAGE_COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+        { binding: 5, visibility: STAGE_COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+        { binding: 6, visibility: STAGE_COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "3d" } },
       ],
     }),
     device.createBindGroupLayout({ label: `${label} layout 2 (source)`, entries: o.source.layoutEntries(VDB_REFERENCE_SOURCE_SLOT, STAGE_COMPUTE) }),

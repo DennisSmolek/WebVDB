@@ -8,9 +8,11 @@
  *   over the camera ray's interval, ℓ(t) the distance from the point to the medium's exit toward the light
  *   (composite Simpson, n panels).
  * - White furnace: albedo 1 under a uniform environment Lₑ (and no other light): L + T · Lₑ = Lₑ.
+ * - K6.R1: single scattering of a point light (three's falloff or none) and with a tabulated phase.
  */
 
-import { vdbRefInvert4, type VDBRefVec3 } from "./scene.js";
+import { vdbRefDistanceAttenuation, vdbRefInvert4, type VDBRefVec3, type VDBReferenceFalloff, type VDBReferencePhase } from "./scene.js";
+import { vdbRefPhaseTableEval } from "./tables.js";
 import { vdbRefPhase, vdbRefVolumeInterval } from "./trace.js";
 
 /** A homogeneous medium in one box or ball. */
@@ -52,13 +54,13 @@ export function vdbRefSingleScatter(
   toLight: readonly number[],
   e: VDBRefVec3,
   albedo: VDBRefVec3,
-  phase: { g: number; backG?: number; backWeight?: number },
+  phase: VDBReferencePhase,
   n = 4096,
 ): VDBRefVec3 {
   const c = vdbRefChord(m, o, d);
   if (!c) return [0, 0, 0];
   const w2l = vdbRefInvert4(m.localToWorld);
-  const p = vdbRefPhase(dot(d, toLight), phase.g, phase.backG ?? 0, phase.backWeight ?? 0);
+  const pc = phaseOf(phase, dot(d, toLight));
   const f = (t: number) => {
     const x = [o[0]! + t * d[0]!, o[1]! + t * d[1]!, o[2]! + t * d[2]!];
     const [, exit] = vdbRefVolumeInterval(w2l, m.sphere, x, toLight, 1e30);
@@ -70,5 +72,51 @@ export function vdbRefSingleScatter(
   let s = f(c[0]) + f(c[1]);
   for (let i = 1; i < steps; i++) s += (i % 2 ? 4 : 2) * f(c[0] + i * h);
   const integral = (s * h) / 3;
-  return [0, 1, 2].map((k) => m.sigma * albedo[k]! * p * e[k]! * integral) as VDBRefVec3;
+  return [0, 1, 2].map((k) => m.sigma * albedo[k]! * pc[k]! * e[k]! * integral) as VDBRefVec3;
+}
+
+/** The phase per steradian per channel (HG / dual-lobe, or the table). */
+function phaseOf(phase: VDBReferencePhase, cosTheta: number): VDBRefVec3 {
+  if (phase.table) return vdbRefPhaseTableEval(phase.table, cosTheta);
+  const p = vdbRefPhase(cosTheta, phase.g, phase.backG ?? 0, phase.backWeight ?? 0);
+  return [p, p, p];
+}
+
+/**
+ * K6.R1: single-scattered radiance of a point light (`intensity` at `position`, `falloff` three's attenuation or
+ * none) along o + t·d (|d| = 1) in a homogeneous medium; composite Simpson, `n` panels. The light's transmittance
+ * is exp(−σ · the part of the segment x → light inside the medium).
+ */
+export function vdbRefSingleScatterPoint(
+  m: VDBRefHomogeneous,
+  o: readonly number[],
+  d: readonly number[],
+  light: { position: VDBRefVec3; intensity: VDBRefVec3; falloff?: VDBReferenceFalloff },
+  albedo: VDBRefVec3,
+  phase: VDBReferencePhase,
+  n = 4096,
+): VDBRefVec3 {
+  const c = vdbRefChord(m, o, d);
+  if (!c) return [0, 0, 0];
+  const w2l = vdbRefInvert4(m.localToWorld);
+  const f = (t: number): VDBRefVec3 => {
+    const x = [o[0]! + t * d[0]!, o[1]! + t * d[1]!, o[2]! + t * d[2]!];
+    const to = [light.position[0] - x[0]!, light.position[1] - x[1]!, light.position[2] - x[2]!];
+    const dist = Math.hypot(to[0]!, to[1]!, to[2]!);
+    const dir = [to[0]! / dist, to[1]! / dist, to[2]! / dist];
+    const [t0, t1] = vdbRefVolumeInterval(w2l, m.sphere, x, dir, dist);
+    const inside = t0 < t1 ? t1 - t0 : 0;
+    const k = (light.falloff ? vdbRefDistanceAttenuation(dist, light.falloff) : 1) * Math.exp(-m.sigma * (t - c[0])) * Math.exp(-m.sigma * inside);
+    const p = phaseOf(phase, dot(d, dir));
+    return [p[0] * k, p[1] * k, p[2] * k];
+  };
+  const steps = n % 2 === 0 ? n : n + 1;
+  const h = (c[1] - c[0]) / steps;
+  const s: VDBRefVec3 = [0, 0, 0];
+  for (let i = 0; i <= steps; i++) {
+    const w = i === 0 || i === steps ? 1 : i % 2 ? 4 : 2;
+    const v = f(c[0] + i * h);
+    for (let k = 0; k < 3; k++) s[k] = s[k]! + w * v[k]!;
+  }
+  return [0, 1, 2].map((k) => (m.sigma * albedo[k]! * light.intensity[k]! * s[k]! * h) / 3) as VDBRefVec3;
 }

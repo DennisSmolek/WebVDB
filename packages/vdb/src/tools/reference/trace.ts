@@ -8,10 +8,12 @@
  * 3. One path by delta tracking (Woodcock): at each real collision with volume i (picked by σᵢ / σ̄): emission
  *    (β · Le), then β ·= albedo, next-event estimation of every light (phase × ratio-tracked transmittance), then
  *    the bounce cap, Russian roulette on β from `rrStart`, and a new direction sampled from the phase (3 draws:
- *    lobe, cos θ, φ). A path that leaves the media after ≥ 1 collision gathers the environment.
+ *    lobe, cos θ, φ; a tabulated phase (K6.R1) samples cos θ by inverse CDF and weights β per channel). A path that
+ *    leaves the media after ≥ 1 collision gathers the environment.
  *
  * Tracking runs piecewise over the ray's intervals in each volume's box (or inscribed ball): the majorant on a
- * piece is Σ σᵢ · majorantᵢ of the volumes covering it, so empty gaps cost no steps. Each tentative step draws 1
+ * piece is Σ σᵢ · majorantᵢ of the volumes covering it, so empty gaps cost no steps. A volume with a majorant grid
+ * (K6.R1) splits its interval at its cells' faces and uses each cell's bound (a 0 cell is skipped without draws). Each tentative step draws 1
  * number (free flight); delta tracking draws 1 more to accept or reject; ratio tracking draws 1 when it plays
  * Russian roulette (T < {@link VDB_REFERENCE_RATIO_RR}: survive ½, × 2).
  *
@@ -24,16 +26,22 @@ import {
   VDB_REFERENCE_MAX_STEPS,
   VDB_REFERENCE_RATIO_RR,
   vdbReferenceSettings,
+  vdbRefDistanceAttenuation,
   vdbRefInvert4,
+  vdbRefShBasis,
   vdbRefTransformPoint,
   vdbRefTransformVector,
   type VDBRefVec3,
+  type VDBReferenceColorTable,
   type VDBReferenceEnvironment,
   type VDBReferenceLight,
+  type VDBReferenceMajorantGrid,
+  type VDBReferencePhaseTable,
   type VDBReferenceScene,
   type VDBReferenceSettings,
   type VDBReferenceVolume,
 } from "./scene.js";
+import { vdbRefColorTableAt, vdbRefMajorantCell, vdbRefPhaseTableEval, vdbRefPhaseTableSample } from "./tables.js";
 
 /** What the CPU twin reads from a volume's source at uvw (level 0; the source's own clamping). */
 export interface VDBReferenceMediumCpu {
@@ -49,7 +57,7 @@ export interface VDBReferenceMediumCpu {
  * Deliberate breaks for the fail-before checks (each must fail an analytic test); the GPU kernel has the same
  * names as WGSL patches (`core/reference/wgsl.ts` `VDB_REFERENCE_MUTATIONS`).
  */
-export type VDBReferenceMutation = "ratio-weight" | "delta-accept" | "phase-norm" | "nee-transmittance" | "emission-albedo" | "escape-depth";
+export type VDBReferenceMutation = "ratio-weight" | "delta-accept" | "phase-norm" | "nee-transmittance" | "emission-albedo" | "escape-depth" | "majorant-cell" | "phase-table-weight" | "falloff";
 
 /** Options of {@link vdbReferenceRenderCpu}. */
 export interface VDBReferenceCpuOptions {
@@ -104,8 +112,16 @@ interface PreparedVolume {
   sphere: boolean;
   emits: boolean;
   emission: VDBRefVec3;
+  colorTable: VDBReferenceColorTable | null;
+  table: VDBReferencePhaseTable | null;
+  grid: VDBReferenceMajorantGrid | null;
   t0: number;
   t1: number;
+  /** Ray origin and direction in the unit box (set per track when the volume has a majorant grid). */
+  lo: VDBRefVec3;
+  ld: VDBRefVec3;
+  /** The majorant σ̄ of the current tracking piece. */
+  maj: number;
 }
 
 const dot = (a: readonly number[], b: readonly number[]) => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
@@ -194,6 +210,10 @@ export function vdbRefEnvironmentRadiance(env: VDBReferenceEnvironment | undefin
   const out: VDBRefVec3 = [0, 0, 0];
   if (!env) return out;
   if (env.uniform) for (let c = 0; c < 3; c++) out[c] = out[c]! + env.uniform[c]!;
+  if (env.sh) {
+    const y = vdbRefShBasis(d);
+    for (let i = 0; i < 9; i++) for (let c = 0; c < 3; c++) out[c] = out[c]! + env.sh[i * 3 + c]! * y[i]!;
+  }
   for (const h of env.hemispheres ?? []) {
     const up = normalize(h.up);
     const src = dot(d, up) >= 0 ? h.sky : h.ground;
@@ -230,13 +250,23 @@ interface Tracker {
   mutate: VDBReferenceMutation | undefined;
 }
 
-/** Sample the medium of volume `v` at world `x`: σt (after the cutoff). */
+/** Sample the medium of volume `v` at world `x`: σt (after the cutoff), checked against the piece's majorant. */
 function sigmaAt(v: PreparedVolume, x: readonly number[], stats: VDBReferenceCpuStats): number {
   const l = vdbRefTransformPoint(v.worldToLocal, x);
   const value = v.medium.density([l[0] + 0.5, l[1] + 0.5, l[2] + 0.5]);
   const s = value > v.cutoff ? value : 0;
-  if (s * v.sigma > v.majorant * (1 + 1e-6)) stats.majorantViolations++;
+  if (s * v.sigma > v.maj * (1 + 1e-6)) stats.majorantViolations++;
   return s * v.sigma;
+}
+
+/** The majorant of volume `v` at t (its grid cell's bound, else the volume's) and the end of that piece. */
+function majorantAt(v: PreparedVolume, t: number, mutate: VDBReferenceMutation | undefined): { maj: number; end: number } {
+  if (!v.grid) return { maj: v.majorant, end: v.t1 };
+  const c = vdbRefMajorantCell(v.grid, v.lo, v.ld, t);
+  // The mutation reads the cell at z = 0 (a lost z index or atlas offset): violations and skipped cells, biased tracking.
+  const index = mutate === "majorant-cell" ? c.cell[0] + v.grid.dims[0] * c.cell[1] : c.index;
+  const exit = c.exit > t ? c.exit : t + 1e-6 * Math.max(1, Math.abs(t));
+  return { maj: v.sigma * v.grid.values[index]!, end: Math.min(v.t1, exit) };
 }
 
 /**
@@ -245,7 +275,13 @@ function sigmaAt(v: PreparedVolume, x: readonly number[], stats: VDBReferenceCpu
  */
 function track(tr: Tracker, rng: VDBRefRng, o: readonly number[], d: readonly number[], tMax: number, ratio: boolean): { escaped: boolean; t: number; vol: number; T: number } {
   const { vols } = tr;
-  for (const v of vols) [v.t0, v.t1] = vdbRefVolumeInterval(v.worldToLocal, v.sphere, o, d, tMax);
+  for (const v of vols) {
+    [v.t0, v.t1] = vdbRefVolumeInterval(v.worldToLocal, v.sphere, o, d, tMax);
+    if (v.grid) {
+      v.lo = vdbRefTransformPoint(v.worldToLocal, o);
+      v.ld = vdbRefTransformVector(v.worldToLocal, d);
+    }
+  }
   let t = 0;
   let T = 1;
   const sig = new Float64Array(vols.length);
@@ -254,8 +290,10 @@ function track(tr: Tracker, rng: VDBRefRng, o: readonly number[], d: readonly nu
     let tb = tMax;
     for (const v of vols) {
       if (v.t0 <= t && t < v.t1) {
-        sbar += v.majorant;
-        tb = Math.min(tb, v.t1);
+        const m = majorantAt(v, t, tr.mutate);
+        v.maj = m.maj;
+        sbar += m.maj;
+        tb = Math.min(tb, m.end);
       } else if (v.t0 > t && v.t0 <= v.t1) {
         tb = Math.min(tb, v.t0);
       }
@@ -321,8 +359,14 @@ function prepare(scene: VDBReferenceScene, media: readonly VDBReferenceMediumCpu
       sphere: src.shape === "sphere",
       emits: !!src.emits,
       emission: [c[0] * k, c[1] * k, c[2] * k],
+      colorTable: e.colorTable ?? null,
+      table: src.phase?.table ?? null,
+      grid: src.majorantGrid ?? null,
       t0: 1,
       t1: 0,
+      lo: [0, 0, 0],
+      ld: [0, 0, 0],
+      maj: 0,
     };
   });
 }
@@ -334,11 +378,12 @@ function emitted(v: PreparedVolume, uvw: readonly number[]): VDBRefVec3 {
   const temperature = range[0] + (range[1] - range[0]) * v.medium.emission(uvw);
   if (!(temperature > 0)) return [0, 0, 0];
   const power = Math.pow(temperature / Math.max(range[1], 1), 4);
-  return [v.emission[0] * power, v.emission[1] * power, v.emission[2] * power];
+  const tc = v.colorTable ? vdbRefColorTableAt(v.colorTable, temperature) : [1, 1, 1];
+  return [v.emission[0] * power * tc[0]!, v.emission[1] * power * tc[1]!, v.emission[2] * power * tc[2]!];
 }
 
-/** One light's NEE setup at x: direction, distance and Li (already × spot attenuation); null when it is dark. */
-export function vdbRefLightAt(l: VDBReferenceLight, x: readonly number[]): { dir: VDBRefVec3; dist: number; li: VDBRefVec3 } | null {
+/** One light's NEE setup at x: direction, distance and Li (already × falloff and spot attenuation); null when it is dark. */
+export function vdbRefLightAt(l: VDBReferenceLight, x: readonly number[], mutate?: VDBReferenceMutation): { dir: VDBRefVec3; dist: number; li: VDBRefVec3 } | null {
   if (l.kind === "directional") {
     return l.irradiance.some((c) => c > 0) ? { dir: normalize(l.direction), dist: 1e30, li: [...l.irradiance] as VDBRefVec3 } : null;
   }
@@ -346,7 +391,7 @@ export function vdbRefLightAt(l: VDBReferenceLight, x: readonly number[]): { dir
   const dist = Math.hypot(to[0]!, to[1]!, to[2]!);
   if (!(dist > 0)) return null;
   const dir: VDBRefVec3 = [to[0]! / dist, to[1]! / dist, to[2]! / dist];
-  let k = l.inverseSquare ? 1 / (dist * dist) : 1;
+  let k = l.falloff && mutate !== "falloff" ? vdbRefDistanceAttenuation(dist, l.falloff) : l.inverseSquare ? 1 / (dist * dist) : 1;
   if (l.kind === "spot") k *= vdbRefSmoothstep(l.cosOuter, l.cosInner, -dot(dir, normalize(l.direction)));
   if (!(k > 0)) return null;
   const li: VDBRefVec3 = [l.intensity[0] * k, l.intensity[1] * k, l.intensity[2] * k];
@@ -405,12 +450,14 @@ export function vdbReferenceSampleCpu(
     // A black collision ends the path (no draws: the GPU kernel ends it at the same point).
     if (!(Math.max(beta[0], beta[1], beta[2]) > 0)) break;
     for (const light of lights) {
-      const nee = vdbRefLightAt(light, x);
+      const nee = vdbRefLightAt(light, x, mutate);
       if (!nee) continue;
-      const p = vdbRefPhase(dot(d, nee.dir), v.g, v.backG, v.backWeight) * (mutate === "phase-norm" ? 4 * Math.PI : 1);
+      const norm = mutate === "phase-norm" && !v.table ? 4 * Math.PI : 1;
+      const cos = dot(d, nee.dir);
+      const p: VDBRefVec3 = v.table ? vdbRefPhaseTableEval(v.table, cos) : [0, 0, 0].map(() => vdbRefPhase(cos, v.g, v.backG, v.backWeight)) as VDBRefVec3;
       const tl = track(tr, rng, x, nee.dir, nee.dist, true).T;
       const t = mutate === "nee-transmittance" ? 1 : tl;
-      for (let c = 0; c < 3; c++) L[c] = L[c]! + beta[c]! * nee.li[c]! * p * t;
+      for (let c = 0; c < 3; c++) L[c] = L[c]! + beta[c]! * nee.li[c]! * p[c]! * norm * t;
     }
     if (depth >= settings.maxBounces) {
       if (beta.some((b) => b > 0)) stats.truncated++;
@@ -426,8 +473,17 @@ export function vdbReferenceSampleCpu(
     const lobe = rng.next();
     const u1 = rng.next();
     const u2 = rng.next();
-    const g = v.backWeight > 0 && lobe < v.backWeight ? v.backG : v.g;
-    d = normalize(vdbRefDirectionAround(d, vdbRefSampleHgCos(g, u1), u2));
+    let cosTheta: number;
+    if (v.table) {
+      const s = vdbRefPhaseTableSample(v.table, u1);
+      cosTheta = s.cosTheta;
+      // The mutation weights every channel with the green one (the mono-table path on an RGB table).
+      for (let c = 0; c < 3; c++) beta[c] = beta[c]! * s.weight[mutate === "phase-table-weight" ? 1 : c]!;
+    } else {
+      const g = v.backWeight > 0 && lobe < v.backWeight ? v.backG : v.g;
+      cosTheta = vdbRefSampleHgCos(g, u1);
+    }
+    d = normalize(vdbRefDirectionAround(d, cosTheta, u2));
     o = x;
   }
   stats.meanDepth += depth;

@@ -36,7 +36,12 @@ import {
   vdbRefSingleScatter,
   vdbReferenceConstantMediumCpu,
   vdbReferenceDenseMediumCpu,
+  vdbReferenceBlackbodyTable,
   vdbReferenceLightsFromFrame,
+  vdbReferenceMajorantGridSparse,
+  vdbReferenceMajorantGridStats,
+  vdbReferenceMiePhaseTable,
+  vdbReferencePhaseTable,
   vdbReferenceRenderCpu,
   vdbReferenceSigma,
   vdbReferenceSparseMediumCpu,
@@ -76,6 +81,8 @@ interface TwinResult {
   over: number;
   maxZ: number;
   meanZ: number;
+  /** K6.R1: the image z per channel (L.r, L.g, L.b, T). */
+  channelZ: number[];
   /** Values within 1e-3 relative (+1e-6) of the twin: paths that took the same random decisions. */
   equalShare: number;
   /** Mean relative standard error of L over pixels with signal (GPU). */
@@ -248,6 +255,8 @@ function checkTwin(name: string, gpu: VDBReferenceAccum, cpu: VDBReferenceAccum 
   let values = 0;
   let sumE = 0;
   let sumS2 = 0;
+  const chE = [0, 0, 0, 0];
+  const chS2 = [0, 0, 0, 0];
   let covered = 0;
   let noiseSum = 0;
   let noiseN = 0;
@@ -269,9 +278,13 @@ function checkTwin(name: string, gpu: VDBReferenceAccum, cpu: VDBReferenceAccum 
       if (Math.abs(e) > 2e-5) maxZ = Math.max(maxZ, Math.abs(e) / Math.max(s, 1e-12));
       sumE += e;
       sumS2 += s * s;
+      chE[ch] = chE[ch]! + e;
+      chS2[ch] = chS2[ch]! + s * s;
     }
   }
   const meanZ = sumE / Math.sqrt(Math.max(sumS2, 1e-30));
+  // K6.R1: per channel too (a per-channel bias, e.g. a phase table's weights, can cancel in the sum over channels)
+  const channelZ = chE.map((e, ch) => e / Math.sqrt(Math.max(chS2[ch]!, 1e-30)));
   return {
     name,
     width: gpu.width,
@@ -282,6 +295,7 @@ function checkTwin(name: string, gpu: VDBReferenceAccum, cpu: VDBReferenceAccum 
     over,
     maxZ,
     meanZ,
+    channelZ,
     equalShare: equal / values,
     noise: noiseN ? noiseSum / noiseN : 0,
     covered,
@@ -291,7 +305,7 @@ function checkTwin(name: string, gpu: VDBReferenceAccum, cpu: VDBReferenceAccum 
     majorantViolations: cpu.stats.majorantViolations,
     // ≤ 0.1 % of values over k·σ: a path that took one different random decision (f32 vs f64 near a branch) can sit
     // far out in a 16-sample mean; the image as a whole must be unbiased.
-    passes: over <= Math.max(1, Math.floor(values * 0.001)) && Math.abs(meanZ) < 4,
+    passes: over <= Math.max(1, Math.floor(values * 0.001)) && Math.abs(meanZ) < 4 && channelZ.every((z) => Math.abs(z) < 4),
   };
 }
 
@@ -528,6 +542,106 @@ async function twinSparse(device: GPUDevice): Promise<void> {
   pool.dispose();
 }
 
+/**
+ * K6.R1 features twin: sparse grids with per-cell majorants from the node stats (`vdbReferenceMajorantGridSparse`),
+ * his Mie RGB table on one volume and a synthetic table with very different channels on another (sampling weights),
+ * a blackbody emission colour table, a point light with three's falloff ('frame' mapping), a spot light without
+ * falloff ('volume' mapping) and a light-probe (SH) environment.
+ */
+async function twinFeatures(device: GPUDevice): Promise<void> {
+  // Two blobs in opposite corners: the leaves' maxima (the grid's bounds) differ a lot from cell to cell.
+  const blob = (x: number, y: number, z: number) => {
+    const a = Math.hypot(x - 9, y - 10, z - 8) / 8;
+    const b = Math.hypot(x - 23, y - 20, z - 23) / 7;
+    const v = Math.max(0, 1 - a) * 1.6 + Math.max(0, 1 - b) * 0.9;
+    return v > 0.03 ? v : 0;
+  };
+  const S = grid([32, 30, 32], [-13, 5, 70], blob);
+  const E = grid([32, 30, 32], [-13, 5, 70], (x, y, z) => Math.max(0, 1 - Math.hypot(x - 23, y - 20, z - 23) / 8));
+  const pool = await VDBGridPool.create(device, { label: "k6-reference features" });
+  const ids = { s: pool.add(S), e: pool.add(E) };
+  pool.flush();
+  await pool.settled();
+  const source = vdbSparseSourceGpu(pool, { lod: "none", normalize: "none", types: ["float"], maxVolumes: 4, label: "k6-reference features" });
+  const plain = source.volume({ density: ids.s }, { image: S });
+  const hot = source.volume({ density: ids.s, emission: ids.e }, { image: S });
+  const box = (id: number) => {
+    const b = pool.info(id).indexBBox;
+    return { min: [...b.min] as VDBRefVec3, max: [...b.max] as VDBRefVec3 };
+  };
+  const majorants = vdbReferenceMajorantGridSparse(S, plain.indexBox, { cellVoxels: 4 });
+  const mie = vdbReferenceMiePhaseTable("rgb");
+  const hg = (c: number, g: number) => (1 - g * g) / Math.pow(1 + g * g - 2 * g * c, 1.5);
+  const mixed = vdbReferencePhaseTable(
+    Array.from({ length: 256 * 3 }, (_, k) => {
+      const u = Math.floor(k / 3) / 255;
+      const c = Math.cos(Math.PI * u * u);
+      return [1, hg(c, 0.8), hg(c, -0.6)][k % 3]!;
+    }),
+    256,
+  );
+  const W = Number(params.get("w") ?? 18);
+  const H = Number(params.get("h") ?? 14);
+  const place = (cx: number, cy: number, cz: number, s: number, turn: number) => {
+    const c = Math.cos(turn);
+    const n = Math.sin(turn);
+    return [s * c, 0, -s * n, 0, 0, s, 0, 0, s * n, 0, s * c, 0, cx, cy, cz, 1];
+  };
+  const A = place(-0.2, 0, 0, 2, 0.3);
+  const B = place(0.8, 0.3, -0.4, 1.7, -0.5);
+  const sigmaOf = (m: number[]) => vdbReferenceSigma({ localToWorld: m, extinction: 24, normalizeDensity: false });
+  // A strongly directional probe (red toward the camera, blue away; small band-2 terms): the sampled phase direction
+  // decides which part of it a path gathers, so the per-channel table weights show.
+  const toCamera = [0.55, 0.27, 0.8];
+  const sh = Array.from({ length: 27 }, (_, i) => {
+    const k = Math.floor(i / 3);
+    const c = i % 3;
+    if (k === 0) return [3.6, 3.6, 3.6][c]!;
+    if (k <= 3) return [1.8, 0.2, -1.8][c]! * toCamera[[1, 2, 0][k - 1]!]!;
+    return 0.16 * Math.sin(i * 1.3);
+  });
+  const mapped = vdbReferenceLightsFromFrame(
+    [
+      { kind: "point", position: [2.2, 2.4, 1.6], color: [3, 2.6, 2.2], distance: 9, decay: 2 },
+      { kind: "probe", sh },
+    ],
+    { lighting: "frame" },
+  );
+  const spot = vdbReferenceLightsFromFrame([{ kind: "spot", position: [-2.5, 2, 2], direction: [2.5, -2, -2], color: [0.6, 0.7, 0.9], cosAngle: Math.cos(0.5), cosPenumbra: Math.cos(0.35) }]).lights;
+  const scene: VDBReferenceScene = {
+    camera: { cameraToWorld: lookAt([3.0, 1.5, 4.4], [0.2, 0.1, 0]), projectionInverse: Array.from(vdbRefInvert4(perspective(45, W / H, 0.05, 50))) },
+    volumes: [
+      { localToWorld: A, sigma: sigmaOf(A), majorant: 2, majorantGrid: majorants, albedo: [0.95, 0.95, 0.95], phase: { g: 0, table: mie }, v: plain.v },
+      { localToWorld: B, sigma: sigmaOf(B), majorant: 2, majorantGrid: majorants, albedo: [1, 1, 1], phase: { g: 0, table: mixed }, v: hot.v, emits: true, emission: { color: [1, 0.9, 0.8], intensity: 1.5, temperatureRange: [0, 2400], colorTable: vdbReferenceBlackbodyTable(1.39) } },
+    ],
+    lights: [...mapped.lights, ...spot],
+    environment: mapped.environment,
+  };
+  // `&variant=phase`: no lights, a two-colour hemisphere split toward the camera, both volumes on the 3-lobe table: the
+  // image is the phase-sampled environment (the 'phase-table-weight' fail-before; the lights would hide it).
+  const phaseVariant = params.get("variant") === "phase";
+  if (phaseVariant) {
+    scene.lights = [];
+    scene.environment = { hemispheres: [{ sky: [0.3, 0.6, 2.4], ground: [2.4, 0.5, 0.1], up: toCamera as VDBRefVec3 }] };
+    scene.volumes[0]!.phase = { g: 0, table: mixed };
+  }
+  const settings: Settings = { spp: Number(params.get("spp") ?? 2), maxBounces: Number(params.get("maxBounces") ?? 24), seed: 31, rrStart: 2, pixelFilter: "box" };
+  const batches = Number(params.get("batches") ?? 8);
+  const job: GpuJob = { source, sparse: source, width: W, height: H };
+  const ref = await makeRenderer(device, job, patchOf(MUTATE));
+  const gpu = await renderGpu(device, ref, job, scene, settings, batches);
+  const cpuOf = (emission: boolean): VDBSparseVolumeCpu => ({ lod: "none", density: { image: S, box: plain.indexBox }, ...(emission ? { emission: { image: E, box: box(ids.e) } } : {}) });
+  const media: VDBReferenceMediumCpu[] = [vdbReferenceSparseMediumCpu(cpuOf(false)), vdbReferenceSparseMediumCpu(cpuOf(true))];
+  const cpu = vdbReferenceRenderCpu(scene, media, { ...settings, width: W, height: H }, { batches });
+  const stats = vdbReferenceMajorantGridStats(majorants);
+  const r = checkTwin(`features${phaseVariant ? " (phase variant)" : ""} (majorant grid ${majorants.dims.join("x")}, ${(stats.empty * 100).toFixed(0)} % empty; Mie RGB + 3-lobe table; blackbody; point falloff + spot; SH probe)`, gpu, cpu, settings.spp!);
+  result.twins.push(r);
+  log(`${r.name}: ${JSON.stringify(r)}`, r.passes ? "ok" : "fail");
+  ref.dispose();
+  source.dispose();
+  pool.dispose();
+}
+
 // ── report: one K3 scenario from his capture manifest ────────────────────────────────────────────────
 
 interface ManifestScenario {
@@ -642,9 +756,10 @@ async function main(): Promise<void> {
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
   if (MODE === "analytic") await analytic(device);
   else if (MODE === "twin") {
-    const which = params.get("source") ?? "dense,sparse";
+    const which = params.get("source") ?? "dense,sparse,features";
     if (which.includes("dense")) await twinDense(device);
     if (which.includes("sparse")) await twinSparse(device);
+    if (which.includes("features")) await twinFeatures(device);
   } else if (MODE === "report") await report(device);
   else throw new Error(`unknown case ${MODE}`);
 }
