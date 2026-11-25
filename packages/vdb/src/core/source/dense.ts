@@ -273,6 +273,9 @@ fn vdbSrcLodLevels(v: u32) -> f32 {
       lines.push(`fn vdbSrcSkipEmpty(v: u32, o: vec3f, d: vec3f, t0: f32, t1: f32) -> f32 {
   return t0;
 }
+fn vdbSrcSkipSpan(v: u32, o: vec3f, d: vec3f, t0: f32, t1: f32, lod: f32, cutoff: f32) -> vec2f {
+  return vec2f(t0, 1e30);
+}
 fn vdbSrcMaxIn(v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32 {
   return ${this.stats.max.toFixed(9)};
 }

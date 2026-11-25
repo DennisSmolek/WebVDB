@@ -2,79 +2,124 @@
   "unit": "bytes of minified WGSL (scripts/lib/wgsl-variants.mjs wgslSizes)",
   "kernels": {
     "vdb frame gather (mixture; dense density+mask+albedo+emission+mips)": {
-      "raw": 26988,
-      "min": 20453,
-      "gz": 5408
+      "raw": 29202,
+      "min": 21853,
+      "gz": 5812
     },
     "vdb frame gather (mixture, multi-group; dense density+mask+albedo+emission+mips)": {
-      "raw": 27810,
-      "min": 21129,
-      "gz": 5607
+      "raw": 30024,
+      "min": 22529,
+      "gz": 6010
     },
     "vdb frame gather (over; dense density+mask+albedo+emission+mips)": {
-      "raw": 26821,
-      "min": 20346,
-      "gz": 5368
+      "raw": 29035,
+      "min": 21746,
+      "gz": 5773
     },
     "vdb frame gather (over, multi-group; dense density+mask+albedo+emission+mips)": {
-      "raw": 27643,
-      "min": 21022,
-      "gz": 5567
+      "raw": 29857,
+      "min": 22422,
+      "gz": 5971
+    },
+    "vdb frame gather (frame lighting; dense density+mask+albedo+emission+mips)": {
+      "raw": 29353,
+      "min": 21841,
+      "gz": 5782
+    },
+    "vdb frame grid density; dense density+mask+albedo+emission+mips": {
+      "raw": 15889,
+      "min": 12197,
+      "gz": 3183
+    },
+    "vdb frame gather (frame lighting, multi-group; dense density+mask+albedo+emission+mips)": {
+      "raw": 30542,
+      "min": 22827,
+      "gz": 6025
+    },
+    "vdb frame grid density (multi-group); dense density+mask+albedo+emission+mips": {
+      "raw": 16249,
+      "min": 12498,
+      "gz": 3284
     },
     "vdb frame gather (mixture; dense density)": {
-      "raw": 22061,
-      "min": 16183,
-      "gz": 4891
+      "raw": 24275,
+      "min": 17583,
+      "gz": 5293
     },
     "vdb frame gather (mixture, multi-group; dense density)": {
-      "raw": 22883,
-      "min": 16859,
-      "gz": 5087
+      "raw": 25097,
+      "min": 18259,
+      "gz": 5490
     },
     "vdb frame gather (over; dense density)": {
-      "raw": 21894,
-      "min": 16076,
-      "gz": 4851
+      "raw": 24108,
+      "min": 17476,
+      "gz": 5253
     },
     "vdb frame gather (over, multi-group; dense density)": {
-      "raw": 22716,
-      "min": 16752,
-      "gz": 5047
+      "raw": 24930,
+      "min": 18152,
+      "gz": 5450
+    },
+    "vdb frame gather (frame lighting; dense density)": {
+      "raw": 24426,
+      "min": 17571,
+      "gz": 5280
+    },
+    "vdb frame grid density; dense density": {
+      "raw": 10962,
+      "min": 7927,
+      "gz": 2665
+    },
+    "vdb frame gather (frame lighting, multi-group; dense density)": {
+      "raw": 25615,
+      "min": 18557,
+      "gz": 5524
+    },
+    "vdb frame grid density (multi-group); dense density": {
+      "raw": 11322,
+      "min": 8228,
+      "gz": 2765
+    },
+    "vdb frame transmittance": {
+      "raw": 10070,
+      "min": 6964,
+      "gz": 2426
     },
     "vdb frame resolve": {
-      "raw": 3716,
-      "min": 2850,
-      "gz": 1144
+      "raw": 4044,
+      "min": 3121,
+      "gz": 1223
     },
     "vdb frame resolve (temporal)": {
-      "raw": 6621,
-      "min": 4938,
-      "gz": 1784
+      "raw": 6949,
+      "min": 5209,
+      "gz": 1859
     },
     "vdb frame composite (premultiplied, depth)": {
-      "raw": 5946,
-      "min": 4625,
-      "gz": 1657
+      "raw": 6274,
+      "min": 4896,
+      "gz": 1734
     },
     "vdb frame composite (sRGB blend, depth)": {
-      "raw": 6038,
-      "min": 4712,
-      "gz": 1671
+      "raw": 6366,
+      "min": 4983,
+      "gz": 1747
     },
     "vdb frame composite (premultiplied, r32float)": {
-      "raw": 5947,
-      "min": 4626,
-      "gz": 1655
+      "raw": 6275,
+      "min": 4897,
+      "gz": 1732
     },
     "vdb frame composite (sRGB blend, r32float)": {
-      "raw": 6039,
-      "min": 4713,
-      "gz": 1665
+      "raw": 6367,
+      "min": 4984,
+      "gz": 1741
     },
     "vdb frame chunk probe": {
-      "raw": 12384,
-      "min": 9131,
-      "gz": 3094
+      "raw": 12712,
+      "min": 9402,
+      "gz": 3167
     }
   }
 }

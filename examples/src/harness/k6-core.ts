@@ -31,11 +31,20 @@ import {
   vdbFrameChunkProbeSpec,
   vdbFrameCompositeSpec,
   vdbFrameGatherSpec,
+  vdbFrameRendererGrid,
   vdbFrameRendererTextures,
   vdbFrameResolveSpec,
+  vdbFrameGridDensitySpec,
+  vdbFrameTransmittanceSpec,
+  vdbSparseSourceGpu,
   type VDBFrameLight,
+  type VDBFrameVolumeGpu,
   type VDBFrameVolumeParams,
+  type VDBSparseSourceGpu,
+  type VDBSparseVolumeGpu,
+  type VDBVolumeSlot,
 } from "../../../packages/vdb/src/core/internal.js";
+import { VDBGridPool } from "@pmndrs/vdb";
 import {
   vdbFloatToHalf,
   vdbFrameAtlasLayout,
@@ -60,13 +69,45 @@ import {
   vdbHalfToFloat,
   vdbMat4Invert,
   vdbMat4MaxScale,
+  vdbMat4Multiply,
   wvdbMipAtlas,
+  vdbBuildFromDense,
+  vdbBoxPyramid,
+  vdbPyramidToHalf,
+  vdbSparseAlbedoCpu,
+  vdbSparseDensityCpu,
+  vdbSparseEmissionCpu,
+  vdbSparseMaskCpu,
+  vdbFrameDensityFroxel,
+  vdbFrameFroxel,
+  vdbFrameGridDensityVoxel,
+  vdbFrameGridVoxelWorld,
+  vdbFrameLightingFroxel,
+  vdbFrameStackSample,
+  vdbFrameStackShadows,
+  vdbFrameTransmittanceVoxel3d,
+  type VDBFrameGridLayout,
+  type VDBFrameTexture3d,
+  type VDBSparseVolumeCpu,
   type VDBFrameVec3,
   type VDBFrameVec4,
   type WvdbDenseTexture,
   type WvdbDenseVolume,
 } from "../../../packages/vdb/src/tools/internal.js";
-import { gatherTwin, integrateTwin, resolveTwin, vdbFrameReproject, type TwinFrame, type TwinMutation, type TwinVolume } from "./k6-core-twin.js";
+import {
+  albedoAt,
+  denseSampler,
+  emissionAt,
+  extinctionAt,
+  gatherTwin,
+  integrateTwin,
+  resolveTwin,
+  vdbFrameReproject,
+  type TwinFrame,
+  type TwinMutation,
+  type TwinSampler,
+  type TwinVolume,
+} from "./k6-core-twin.js";
 
 interface Stats {
   compared: number;
@@ -89,6 +130,11 @@ interface Result {
   renderStats?: Stats;
   /** `?probe=gather&swap=1`: builds in the second identical update. */
   builds?: { first: number; second: number };
+  /** `?probe=frame`: the shadow grid and the transmittance stacks vs their twins (`stats` is the scatter texture). */
+  gridStats?: Stats;
+  transmittanceStats?: Stats;
+  /** `?probe=frame`: live cascades, redraw counters after a second identical update. */
+  frame?: { cascades: number; redraw: unknown };
   compile?: { variants: number; errors: string[] };
   warnings: string[];
   uncaptured: string[];
@@ -373,18 +419,202 @@ async function probeView(device: GPUDevice): Promise<void> {
   result.stats = stats;
 }
 
+// ------------------------------------------------------------------ the sparse source (K6.1d)
+
+type V3 = [number, number, number];
+
+/** A dense field (x-major, z fastest: vdbBuildFromDense's order) as a FLOAT grid at `origin`. */
+function sparseGrid(dims: V3, origin: V3, fn: (x: number, y: number, z: number) => number): Uint32Array {
+  const values = new Float32Array(dims[0] * dims[1] * dims[2]);
+  for (let x = 0; x < dims[0]; x++) for (let y = 0; y < dims[1]; y++) for (let z = 0; z < dims[2]; z++) values[(x * dims[1] + y) * dims[2] + z] = fn(x, y, z);
+  return vdbBuildFromDense(values, dims, { origin, voxelSize: 0.25 });
+}
+
+interface SparseFixture {
+  pool: VDBGridPool;
+  images: Map<number, Uint32Array>;
+  ids: { d1: number; d2: number; m: number; r: number; g: number; b: number; e: number };
+}
+
+/** Synthetic grids with empty space (the HDDA has leaves and nodes to skip): two densities, a mask, RGB albedo, emission. */
+async function sparseFixture(device: GPUDevice): Promise<SparseFixture> {
+  const pool = await VDBGridPool.create(device, { label: "k6-core sparse" });
+  const images = new Map<number, Uint32Array>();
+  const add = (image: Uint32Array) => {
+    const id = pool.add(image);
+    images.set(id, image);
+    return id;
+  };
+  const blob = (cx: number, cy: number, cz: number, r: number) => (x: number, y: number, z: number) => Math.max(0, 1 - Math.hypot(x - cx, y - cy, z - cz) / r);
+  const a = blob(8, 7, 7, 7);
+  const b = blob(17, 13, 15, 6);
+  const D1 = sparseGrid([26, 22, 24], [0, 0, 0], (x, y, z) => {
+    const v = a(x, y, z) * 1.1 + b(x, y, z) * (0.8 + 0.15 * Math.sin(x * 0.5 + z * 0.3));
+    return v > 0.03 ? v : 0;
+  });
+  const c = blob(9, 11, 8, 8);
+  const D2 = sparseGrid([20, 22, 18], [40, 0, 0], (x, y, z) => {
+    const v = c(x, y, z) * (0.9 + 0.1 * Math.cos(y * 0.4));
+    return v > 0.03 ? v : 0;
+  });
+  const ids = {
+    d1: add(D1),
+    d2: add(D2),
+    m: add(sparseGrid([20, 22, 18], [40, 0, 0], (x, y, z) => 0.35 + 0.6 * Math.abs(Math.sin(x * 0.21 + y * 0.13 - z * 0.08)))),
+    r: add(sparseGrid([26, 22, 24], [0, 0, 0], (x, y) => 0.4 + 0.5 * ((x + y) / 48))),
+    g: add(sparseGrid([26, 22, 24], [0, 0, 0], (_x, y, z) => 0.6 + 0.3 * Math.cos(y * 0.2 + z * 0.1))),
+    b: add(sparseGrid([26, 22, 24], [0, 0, 0], (x, _y, z) => 0.3 + (x * z) / 1300)),
+    e: add(sparseGrid([20, 22, 18], [40, 0, 0], (x, y, z) => Math.max(0, 0.8 - Math.hypot(x - 10, y - 11, z - 9) / 14))),
+  };
+  pool.flush();
+  await pool.settled();
+  return { pool, images, ids };
+}
+
+/** The CPU side of one sparse volume (each aux grid under its own box, as the source defaults). */
+function sparseCpu(fx: SparseFixture, source: VDBSparseSourceGpu, slot: VDBSparseVolumeGpu): VDBSparseVolumeCpu {
+  const own = (id: number) => {
+    const b = fx.pool.info(id).indexBBox;
+    return { min: [...b.min] as V3, max: [...b.max] as V3 };
+  };
+  const ids = slot.ids;
+  const albedo = ids.albedo === undefined ? undefined : Array.isArray(ids.albedo) ? (ids.albedo as number[]) : [ids.albedo as number];
+  const density = fx.images.get(ids.density)!;
+  return {
+    lod: source.lod,
+    density: { image: density, box: slot.indexBox },
+    ...(ids.mask !== undefined ? { mask: { image: fx.images.get(ids.mask)!, box: own(ids.mask) } } : {}),
+    ...(albedo ? { albedo: { images: albedo.map((id) => fx.images.get(id)!), box: own(albedo[0]!) } } : {}),
+    ...(ids.emission !== undefined ? { emission: { image: fx.images.get(ids.emission)!, box: own(ids.emission) } } : {}),
+    ...(source.lod === "coarse-pyramid" ? { pyramid: vdbPyramidToHalf(vdbBoxPyramid(density, { indexBox: slot.indexBox, pyramidMax: SPARSE_PYRAMID_MAX })) } : {}),
+  };
+}
+
+const SPARSE_PYRAMID_MAX = 8;
+
+/** The twin sampler of a sparse volume (`vdbSrc*` of `vdbSparseSourceGpu`). */
+function sparseSampler(cpu: VDBSparseVolumeCpu, slot: VDBVolumeSlot, source: VDBSparseSourceGpu): TwinSampler {
+  return {
+    texels: [...slot.texels] as V3,
+    levels: slot.lodLevels,
+    hasEmission: source.channels.emission,
+    density: (uvw, lod) => vdbSparseDensityCpu(cpu, uvw, lod).value,
+    mask: (uvw) => vdbSparseMaskCpu(cpu, uvw).value,
+    albedo: (uvw) => vdbSparseAlbedoCpu(cpu, uvw).value,
+    emission: (uvw) => vdbSparseEmissionCpu(cpu, uvw).value,
+  };
+}
+
+/** Two volumes (and optionally a third slot for a caster) on dense or sparse sources, one or two source groups. */
+async function probeScene(device: GPUDevice, o: { kind: "dense" | "sparse"; groups: number; mips: boolean; extra?: boolean }) {
+  if (o.kind === "dense") {
+    const volA = synthDense([20, 16, 24], 1, { albedo: true, mips: o.mips });
+    const volB = synthDense([16, 20, 18], 2, { mask: true, emission: true, mips: o.mips });
+    const srcA = vdbDenseSource(device, volA, { label: "k6 A" });
+    const srcB = o.groups === 2 ? vdbDenseSource(device, volB, { label: "k6 B" }) : srcA;
+    const slots: VDBVolumeSlot[] = [srcA, srcB, ...(o.extra ? [srcA] : [])];
+    const samplers = [denseSampler(volA), denseSampler(o.groups === 2 ? volB : volA), ...(o.extra ? [denseSampler(volA)] : [])];
+    return {
+      slots,
+      samplers,
+      dispose() {
+        srcA.dispose();
+        if (srcB !== srcA) srcB.dispose();
+      },
+    };
+  }
+  const fx = await sparseFixture(device);
+  const lod = (params.get("lod") ?? "none") as "none" | "coarse-pyramid" | "node-average";
+  const options = { lod, pyramidMax: SPARSE_PYRAMID_MAX, types: ["float" as const], maxVolumes: 8 };
+  const srcA = vdbSparseSourceGpu(fx.pool, { ...options, label: "k6 sparse A" });
+  const srcB = o.groups === 2 ? vdbSparseSourceGpu(fx.pool, { ...options, label: "k6 sparse B" }) : srcA;
+  const { ids } = fx;
+  const slotA = srcA.volume({ density: ids.d1, albedo: [ids.r, ids.g, ids.b] }, { image: fx.images.get(ids.d1)! });
+  const slotB = srcB.volume({ density: ids.d2, mask: ids.m, emission: ids.e }, { image: fx.images.get(ids.d2)! });
+  const slotC = o.extra ? srcA.volume({ density: ids.d1 }, { image: fx.images.get(ids.d1)! }) : null;
+  const slots: VDBVolumeSlot[] = [slotA, slotB, ...(slotC ? [slotC] : [])];
+  return {
+    slots,
+    // channels are known once every volume is added (a sparse source compiles the union)
+    samplers: [sparseSampler(sparseCpu(fx, srcA, slotA), slotA, srcA), sparseSampler(sparseCpu(fx, srcB, slotB), slotB, srcB), ...(slotC ? [sparseSampler(sparseCpu(fx, srcA, slotC), slotC, srcA)] : [])],
+    dispose() {
+      srcA.dispose();
+      if (srcB !== srcA) srcB.dispose();
+      fx.pool.dispose();
+    },
+  };
+}
+
+/**
+ * `?mutate=skip`: the shadow march's HDDA query treats cells whose bound is ≤ 0.6 as empty (skips samples that are
+ * not); a GPU patch. It fails only when the march asks the source and skips, so it also shows the HDDA path runs.
+ */
+function patchShaders(device: GPUDevice): () => void {
+  if (MUTATE !== "skip") return () => {};
+  const d = device as unknown as { createShaderModule: (desc: GPUShaderModuleDescriptor) => GPUShaderModule };
+  const saved = d.createShaderModule;
+  d.createShaderModule = (desc) => saved.call(device, { ...desc, code: desc.code.replace("let cutoff = max(vdbFrameVolumes.v[vi].density.y, 0.0);", "let cutoff = 0.6;") });
+  return () => (d.createShaderModule = saved);
+}
+
+/** The renderer's per-volume record twin of a volume (its params, slot and clip). */
+function twinRecord(handle: VDBFrameVolumeGpu, sampler: TwinSampler, c: { localToView: ArrayLike<number>; viewToLocal: ArrayLike<number>; worldToLocal: ArrayLike<number> }, rect: [number, number, number, number], slices: { first: number; count: number }, g: number): TwinVolume {
+  const p = handle.params;
+  const slot = handle.slot;
+  const mean = p.densityMean ?? slot.stats.meanNonZero;
+  return {
+    volume: sampler,
+    rect,
+    first: slices.first,
+    count: slices.count,
+    viewToLocal: c.viewToLocal,
+    localToView: c.localToView,
+    worldToLocal: c.worldToLocal,
+    densityScale: p.normalizeDensity && mean > 0 ? p.densityScale / mean : p.densityScale,
+    densityCutoff: p.densityCutoff,
+    extinction: p.extinction,
+    worldScale: vdbMat4MaxScale(p.matrixWorld),
+    absorbance: p.absorbance,
+    opacity: p.opacity,
+    baseColor: [...p.baseColor] as VDBFrameVec3,
+    scatterColor: [...p.scatterColor] as VDBFrameVec3,
+    offset: [...p.offset3D] as VDBFrameVec3,
+    wrap: p.wrap3D === "mirror" ? 2 : p.wrap3D === "repeat" ? 1 : 0,
+    phase: [g, -0.3, 0.2, 0],
+    phaseSpectrum: [1, 1, 0],
+    // diffusion: 1 − the dual-lobe asymmetry (back g −0.3, weight 0.2)
+    multipleScattering: 1 - (g * 0.8 + -0.3 * 0.2),
+    lights: p.lights,
+    shadowSteps: p.shadowSteps,
+    mipmaps: p.mipmaps && slot.lodLevels > 0,
+    levels: slot.lodLevels,
+    emissiveIntensity: p.emissiveIntensity,
+    temperatureRange: [p.temperatureRange[0], p.temperatureRange[1]],
+  };
+}
+
+const PROBE_LIGHTS: VDBFrameLight[] = [
+  { id: 1, kind: "ambient", color: [0.05, 0.06, 0.08] },
+  { id: 2, kind: "hemisphere", sky: [0.3, 0.4, 0.6], ground: [0.2, 0.15, 0.1], up: [0, 1, 0] },
+  { id: 3, kind: "directional", direction: [-0.4, -0.8, -0.45], color: [1.4, 1.3, 1.2] },
+  { id: 4, kind: "point", position: [2, 2, 1.5], color: [2, 1.4, 0.8], distance: 0, decay: 2 },
+  { id: 5, kind: "spot", position: [-2.5, 3, 2], direction: [0.55, -0.65, -0.5], color: [1.5, 1.5, 2.2], distance: 0, decay: 2, cosAngle: Math.cos(0.6), cosPenumbra: Math.cos(0.6 * 0.6) },
+  { id: 6, kind: "probe", sh: Array.from({ length: 27 }, (_, i) => (i < 3 ? 0.08 : 0.02 * Math.sin(i))) },
+];
+const PROBE_SH = Array.from({ length: 9 }, (_, i) => [0, 1, 2].map((c) => (i * 3 + c < 3 ? 0.08 : 0.02 * Math.sin(i * 3 + c))) as VDBFrameVec3);
+
 async function probeGather(device: GPUDevice): Promise<void> {
   const mix = (params.get("mix") ?? "mixture") as "mixture" | "over";
   const groups = Number(params.get("groups") ?? 1);
   const mips = params.get("mips") !== "0";
+  const kind = params.get("source") === "sparse" ? "sparse" : "dense";
   const [GW, GH, GD] = [24, 16, 12];
-  const volA = synthDense([20, 16, 24], 1, { albedo: true, mips });
-  const volB = synthDense([16, 20, 18], 2, { mask: true, emission: true, mips });
-  const srcA = vdbDenseSource(device, volA, { label: "k6 A" });
-  const srcB = groups === 2 ? vdbDenseSource(device, volB, { label: "k6 B" }) : srcA;
+  const restore = patchShaders(device);
+  const scene = await probeScene(device, { kind, groups, mips });
   const settings = { lighting: "volume" as const, width: GW, height: GH, depth: GD, subSteps: 16, temporal: false, jitter: false, multipleScattering: true, froxelMix: mix, phase: "dual-lobe" as const, fadeRadius: 9, srgbBlending: false };
   const renderer = vdbCreateFrameRenderer(device, { settings, composite: { colorFormat: "rgba16float", depthFormat: "depth32float" } });
-  const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, shadowSteps: 12, mipmaps: mips, phaseG: 0.6 };
+  // A skips empty space (hdda; the dense source never skips); B wraps with an offset, so it never skips
+  const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, shadowSteps: 12, mipmaps: mips, phaseG: 0.6, hdda: true };
   const pB: Partial<VDBFrameVolumeParams> = {
     matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]),
     extinction: 3,
@@ -397,20 +627,14 @@ async function probeGather(device: GPUDevice): Promise<void> {
     densityCutoff: 0.05,
     wrap3D: "mirror",
     offset3D: [0.1, 0, -0.05],
+    hdda: true,
   };
-  const a = renderer.addVolume(srcA, pA);
-  const b = renderer.addVolume(groups === 2 ? srcB : srcA, pB);
+  const a = renderer.addVolume(scene.slots[0]!, pA);
+  const b = renderer.addVolume(scene.slots[1]!, pB);
   const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
-  const lights: VDBFrameLight[] = [
-    { id: 1, kind: "ambient", color: [0.05, 0.06, 0.08] },
-    { id: 2, kind: "hemisphere", sky: [0.3, 0.4, 0.6], ground: [0.2, 0.15, 0.1], up: [0, 1, 0] },
-    { id: 3, kind: "directional", direction: [-0.4, -0.8, -0.45], color: [1.4, 1.3, 1.2] },
-    { id: 4, kind: "point", position: [2, 2, 1.5], color: [2, 1.4, 0.8], distance: 0, decay: 2 },
-    { id: 5, kind: "spot", position: [-2.5, 3, 2], direction: [0.55, -0.65, -0.5], color: [1.5, 1.5, 2.2], distance: 0, decay: 2, cosAngle: Math.cos(0.6), cosPenumbra: Math.cos(0.6 * 0.6) },
-    { id: 6, kind: "probe", sh: Array.from({ length: 27 }, (_, i) => (i < 3 ? 0.08 : 0.02 * Math.sin(i))) },
-  ];
+  const lights = PROBE_LIGHTS;
   const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights });
   const counter = countBuilds(device);
   let enc = device.createCommandEncoder();
@@ -424,6 +648,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     result.builds = { first, second: counter.count - first };
   }
   counter.restore();
+  restore();
   if (!u.recorded) throw new Error("update recorded nothing");
   const tex = vdbFrameRendererTextures(renderer)!;
   const scatter = halves(await readTexture(device, tex.scatter, [GW, GH, GD], 8));
@@ -431,46 +656,16 @@ async function probeGather(device: GPUDevice): Promise<void> {
   // The twin: the renderer's CPU work redone with the same tools functions
   const clip = vdbFrameClipCamera(view, projection, { coordinateSystem: "webgpu" });
   const vols = [
-    { h: a, vol: volA, p: a.params },
-    { h: b, vol: groups === 2 ? volB : volA, p: b.params },
+    { h: a, sampler: scene.samplers[0]!, p: a.params },
+    { h: b, sampler: scene.samplers[1]!, p: b.params },
   ];
   const clipped = vols.map((v) => ({ ...v, c: vdbFrameClipVolume(clip, v.p.matrixWorld)! }));
   const near = Math.max(Math.min(...clipped.map((v) => v.c.viewNear)), 0.1);
   const far = Math.min(Math.max(...clipped.map((v) => v.c.viewFar)), 100);
   const range: [number, number] = [near, Math.max(far, near * 1.0001)];
-  const records: TwinVolume[] = clipped.map(({ vol, p, c }) => {
-    const slices = vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD);
-    const g = p.phaseG ?? 0.8;
-    return {
-      volume: vol,
-      rect: vdbFrameFroxelRect(c.localToView, projection, GW, GH)!,
-      first: slices.first,
-      count: slices.count,
-      viewToLocal: c.viewToLocal,
-      localToView: c.localToView,
-      worldToLocal: c.worldToLocal,
-      densityScale: p.densityScale / vol.meanDensity,
-      densityCutoff: p.densityCutoff,
-      extinction: p.extinction,
-      worldScale: vdbMat4MaxScale(p.matrixWorld),
-      absorbance: p.absorbance,
-      opacity: p.opacity,
-      baseColor: [...p.baseColor] as VDBFrameVec3,
-      scatterColor: [...p.scatterColor] as VDBFrameVec3,
-      offset: [...p.offset3D] as VDBFrameVec3,
-      wrap: p.wrap3D === "mirror" ? 2 : p.wrap3D === "repeat" ? 1 : 0,
-      phase: [g, -0.3, 0.2, 0],
-      phaseSpectrum: [1, 1, 0],
-      // diffusion: 1 − the dual-lobe asymmetry (back g −0.3, weight 0.2)
-      multipleScattering: 1 - (g * 0.8 + -0.3 * 0.2),
-      lights: p.lights,
-      shadowSteps: p.shadowSteps,
-      mipmaps: p.mipmaps && (vol.density.mip?.levels ?? 0) > 0,
-      levels: vol.density.mip?.levels ?? 0,
-      emissiveIntensity: p.emissiveIntensity,
-      temperatureRange: [p.temperatureRange[0], p.temperatureRange[1]],
-    };
-  });
+  const records: TwinVolume[] = clipped.map(({ h, sampler, p, c }) =>
+    twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8),
+  );
   // record order = source-group order: A's source first (one group: add order)
   const ordered = records;
   const twinFrame: TwinFrame = {
@@ -483,11 +678,11 @@ async function probeGather(device: GPUDevice): Promise<void> {
     fadeRadius: settings.fadeRadius,
     subSteps: settings.subSteps,
     ambient: [0.05, 0.06, 0.08],
-    probe: Array.from({ length: 9 }, (_, i) => [0, 1, 2].map((c) => (i * 3 + c < 3 ? 0.08 : 0.02 * Math.sin(i * 3 + c))) as VDBFrameVec3),
+    probe: PROBE_SH,
     hemi: [{ sky: [0.3, 0.4, 0.6], ground: [0.2, 0.15, 0.1], up: [0, 1, 0] }],
     lights: lightRecords(lights),
   };
-  const stats = newStats("2 f16 ulp (rgba16float scatter vs the f64 twin)");
+  const stats = newStats(`2 f16 ulp (rgba16float scatter vs the f64 twin; ${kind} source)`);
   for (let z = 0; z < GD; z++)
     for (let y = 0; y < GH; y++)
       for (let x = 0; x < GW; x++) {
@@ -521,27 +716,256 @@ async function probeGather(device: GPUDevice): Promise<void> {
     }
   result.renderStats = rstats;
   renderer.dispose();
-  srcA.dispose();
-  if (srcB !== srcA) srcB.dispose();
+  scene.dispose();
+}
+
+/**
+ * `?probe=frame` (K6.2): 'frame' lighting on two visible volumes and one caster out of the drawn set (`&source=`,
+ * `&groups=`, `&cascades=`, `&ms=0`): the shadow grid stack vs `vdbFrameGridDensityVoxel`, the transmittance stack vs
+ * `vdbFrameTransmittanceVoxel3d` on the read-back grid, and the fused gather's scatter vs his density + lighting twins
+ * (`vdbFrameDensityFroxel`, `vdbFrameLightingFroxel`) on the read-back transmittance. A second identical update must
+ * skip the grid and the transmittance (his redraw signatures).
+ */
+async function probeFrame(device: GPUDevice): Promise<void> {
+  const groups = Number(params.get("groups") ?? 1);
+  const cascades = Number(params.get("cascades") ?? 1);
+  const ms = params.get("ms") !== "0";
+  const kind = params.get("source") === "sparse" ? "sparse" : "dense";
+  const [GW, GH, GD] = [24, 16, 12];
+  const R = 16;
+  const scene = await probeScene(device, { kind, groups, mips: true, extra: true });
+  const g = 0.6;
+  const backG = -0.3;
+  const backWeight = 0.2;
+  const exponent = 0.5;
+  const settings = {
+    lighting: "frame" as const,
+    width: GW,
+    height: GH,
+    depth: GD,
+    subSteps: 16,
+    temporal: false,
+    jitter: false,
+    multipleScattering: ms,
+    phase: "dual-lobe" as const,
+    phaseG: g,
+    phaseBackG: backG,
+    phaseBackWeight: backWeight,
+    phaseGExponent: exponent,
+    fadeRadius: 9,
+    srgbBlending: false,
+    shadowResolution: R,
+    shadowCascades: cascades,
+    shadowDistance: 2.5,
+  };
+  const renderer = vdbCreateFrameRenderer(device, { settings });
+  const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, absorbance: 0.7, mipmaps: true, hdda: true };
+  const pB: Partial<VDBFrameVolumeParams> = {
+    matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]),
+    extinction: 3,
+    baseColor: [0.9, 0.8, 0.7],
+    mipmaps: true,
+    emissiveIntensity: 0.5,
+    temperatureRange: [500, 3000],
+    scatterColor: [0.01, 0.02, 0.03],
+    densityCutoff: 0.05,
+    wrap3D: "mirror",
+    offset3D: [0.1, 0, -0.05],
+  };
+  // C: a caster that is not drawn (his collector: casters out of the view still shadow), between the sun and A; with
+  // two cascades its box holds the camera, so the fine cascade around the camera is not empty
+  const pC: Partial<VDBFrameVolumeParams> = { matrixWorld: compose(cascades > 1 ? [1.6, 1.2, 2.4] : [0.6, 1.6, 0.4], 0.2, cascades > 1 ? [4, 2.4, 5] : [1.4, 0.5, 1.2]), extinction: 5, mipmaps: true };
+  const a = renderer.addVolume(scene.slots[0]!, pA);
+  const b = renderer.addVolume(scene.slots[1]!, pB);
+  const c = renderer.addVolume(scene.slots[2]!, pC);
+  c.visible = false;
+  const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
+  const view = vdbMat4Invert(eyeWorld);
+  const projection = perspective(0.75, GW / GH, 0.1, 100);
+  const lights = PROBE_LIGHTS;
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights });
+  let enc = device.createCommandEncoder();
+  const u = renderer.update(enc, frame(0));
+  device.queue.submit([enc.finish()]);
+  if (!u.recorded) throw new Error("update recorded nothing");
+  const grid = vdbFrameRendererGrid(renderer)!;
+  const tex = vdbFrameRendererTextures(renderer)!;
+  const gt = grid.textures;
+  const shadowStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.shadow, gt.shadowLayout.size, 8)), size: gt.shadowLayout.size, channels: 4 };
+  const transStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.transmittance, gt.transmittanceLayout.size, 8)), size: gt.transmittanceLayout.size, channels: 4 };
+  const scatter = halves(await readTexture(device, tex.scatter, [GW, GH, GD], 8));
+  enc = device.createCommandEncoder();
+  renderer.update(enc, frame(1));
+  device.queue.submit([enc.finish()]);
+  result.frame = { cascades: grid.count, redraw: JSON.parse(JSON.stringify(renderer.redrawStats)) };
+
+  const layout: VDBFrameGridLayout = {
+    count: grid.count,
+    resolution: R,
+    columns: vdbFrameAtlasLayout(R, R, R * cascades).columns,
+    atlasSize: [1, 1],
+    gridMin: grid.gridMin as VDBFrameVec3[],
+    gridSize: grid.gridSize as VDBFrameVec3[],
+    gridVoxel: grid.gridVoxel as VDBFrameVec3[],
+  };
+  const clip = vdbFrameClipCamera(view, projection, { coordinateSystem: "webgpu" });
+  const handles = [a, b, c];
+  const clips = handles.map((h) => vdbFrameClipVolume(clip, h.params.matrixWorld));
+  const visibleClips = clips.slice(0, 2).map((x) => x!);
+  const near = Math.max(Math.min(...visibleClips.map((v) => v.viewNear)), 0.1);
+  const far = Math.min(Math.max(...visibleClips.map((v) => v.viewFar)), 100);
+  const range: [number, number] = [near, Math.max(far, near * 1.0001)];
+  const records = handles.map((h, i) => {
+    const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
+    const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
+    return twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8);
+  });
+  const readLod = (r: TwinVolume, lod: number) => (r.mipmaps ? lod : 0);
+
+  // (a) the shadow grid
+  const gstats = newStats("2 f16 ulp (rgba16float shadow grid vs vdbFrameGridDensityVoxel)");
+  const casters = records.map((r) => ({
+    worldToLocal: r.worldToLocal,
+    maxTexels: Math.max(...r.volume.texels),
+    worldScale: r.worldScale,
+    mipmaps: MUTATE === "grid-lod" ? false : r.mipmaps,
+    absorbance: MUTATE === "grid-absorbance" ? 1 : r.absorbance,
+    extinctionAt: (local: VDBFrameVec3, lod: number) => extinctionAt(r, local, lod),
+    albedoAt: (local: VDBFrameVec3, lod: number) => albedoAt(r, local, lod),
+  }));
+  const at = (t: VDBFrameTexture3d, p: readonly number[]) => {
+    const i = (p[0]! + (p[1]! + p[2]! * t.size[1]) * t.size[0]) * 4;
+    return [t.data[i]!, t.data[i + 1]!, t.data[i + 2]!, t.data[i + 3]!];
+  };
+  for (let cc = 0; cc < layout.count; cc++) {
+    const voxel = layout.gridVoxel[cc]!;
+    for (let z = 0; z < R; z++)
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const world = vdbFrameGridVoxelWorld(layout, cc, [x, y, z]);
+          const e = vdbFrameGridDensityVoxel(world, Math.max(...voxel), casters);
+          const o = gt.shadowLayout.origins[cc]!;
+          compare(gstats, [cc, x, y, z], at(shadowStack, [o[0] + x, o[1] + y, o[2] + z]), [e[0], e[1], 0, 0], 2, 2 ** -20);
+        }
+  }
+  result.gridStats = gstats;
+
+  // (b) the transmittance from the read-back grid
+  const msValue = ms ? 1 - (g * (1 - backWeight) + backG * backWeight) : 0;
+  const slotLights = lightRecords(lights).slice(0, 6).map((l) => l.position);
+  const tstats = newStats("2 f16 ulp (rgba16float transmittance vs vdbFrameTransmittanceVoxel3d on the read-back grid)");
+  const gridAt = (cc: number, uvw: VDBFrameVec3): [number, number] => {
+    const s = vdbFrameStackSample(shadowStack, gt.shadowLayout.origins[cc]!, R, uvw);
+    return [s[0]!, s[1]!];
+  };
+  for (let cc = 0; cc < layout.count; cc++)
+    for (let z = 0; z < R; z++)
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const t = vdbFrameTransmittanceVoxel3d(gridAt, layout, cc, [x, y, z], slotLights, [0, 1, 0], MUTATE === "diffusion" ? 0 : msValue, -1);
+          for (let k = 0; k < 4; k++) {
+            const o = gt.transmittanceLayout.origins[4 * cc + k]!;
+            compare(tstats, [cc, k, x, y, z], at(transStack, [o[0] + x, o[1] + y, o[2] + z]), t[k]!, 2, 2 ** -20);
+          }
+        }
+  result.transmittanceStats = tstats;
+
+  // (c) the fused gather from the read-back transmittance
+  const shadowsAt =
+    layout.count > 0
+      ? (world: VDBFrameVec3) => vdbFrameStackShadows((cc, k, uvw) => vdbFrameStackSample(transStack, gt.transmittanceLayout.origins[4 * cc + k]!, R, uvw), layout, world)
+      : null;
+  const phase: VDBFrameVec4 = [g, backG, backWeight, 0];
+  const phaseSpectrum: VDBFrameVec3 = [Math.pow(650 / 550, -exponent), Math.pow(450 / 550, -exponent), 1];
+  const sorted = lightRecords(lights);
+  const sceneSlots = Math.min(sorted.length, 6);
+  const projectionInverse = vdbMat4Invert(projection);
+  const columns = vdbFrameAtlasLayout(GW, GH, GD).columns;
+  const stats = newStats(`2 f16 ulp (rgba16float scatter vs his density + lighting twins; ${kind} source, ${groups} group(s), ${layout.count} cascade(s))`);
+  for (let z = 0; z < GD; z++)
+    for (let y = 0; y < GH; y++)
+      for (let x = 0; x < GW; x++) {
+        const tile: [number, number] = [z % columns, Math.floor(z / columns)];
+        const fragCoord: [number, number] = [tile[0] * GW + x + 0.5, tile[1] * GH + y + 0.5];
+        const sums: [VDBFrameVec4, VDBFrameVec4, VDBFrameVec4, VDBFrameVec4] = [
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+        ];
+        for (const r of records.slice(0, 2)) {
+          if (x < r.rect[0] || y < r.rect[1] || x >= r.rect[2] || y >= r.rect[3] || z < r.first || z >= r.first + r.count) continue;
+          const d = vdbFrameDensityFroxel(fragCoord, {
+            froxelGrid: [GW, GH, GD],
+            columns,
+            range,
+            projectionInverse,
+            cameraWorld: eyeWorld,
+            viewToLocal: r.viewToLocal,
+            maxTexels: Math.max(...r.volume.texels),
+            mipLevels: r.mipmaps ? r.levels : 0,
+            worldScale: r.worldScale,
+            subSteps: settings.subSteps,
+            jitter: -1,
+            fadeRadius: settings.fadeRadius,
+            opacity: r.opacity,
+            baseColor: r.baseColor,
+            scatterColor: r.scatterColor,
+            extinctionAt: (local, lod) => extinctionAt(r, local, readLod(r, lod), MUTATE),
+            albedoAt: (local, lod) => albedoAt(r, local, readLod(r, lod)),
+            emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod)),
+            shadows: null,
+            shadowsAt,
+            sceneLightCount: MUTATE === "slots" ? 0 : sceneSlots,
+            lightPositions: sorted.map((l) => l.position),
+            phase,
+            phaseSpectrum,
+          });
+          if (!d) continue;
+          for (let k = 0; k < 4; k++) for (let ch = 0; ch < 4; ch++) sums[k]![ch]! += d[k]![ch]!;
+        }
+        const f = vdbFrameFroxel([GW, GH, GD], columns, range, projectionInverse, fragCoord);
+        const cpu = vdbFrameLightingFroxel(sums, f.viewNear, f.viewFar, eyeWorld, {
+          ambient: [0.05, 0.06, 0.08],
+          hemiSky: [0.3, 0.4, 0.6],
+          hemiGround: [0.2, 0.15, 0.1],
+          lights: sorted.map((l) => ({ position: l.position, color: [l.color[0], l.color[1], l.color[2]] as VDBFrameVec3, spot: l.spot, penumbra: l.color[3], falloff: l.falloff })),
+          shadowLightCount: sceneSlots,
+          phase,
+          phaseSpectrum,
+          directAt: shadowsAt ? (world) => {
+            const s = shadowsAt(world);
+            return [s[2]![0]!, s[2]![1]!, s[2]![2]!, s[2]![3]!, s[3]![0]!, s[3]![1]!];
+          } : () => [1, 1, 1, 1, 1, 1],
+          environmentColors: [],
+          environmentShadowSlot: sceneSlots,
+          ...(MUTATE === "sky" ? {} : { probe: PROBE_SH, sky: [0, 1, 0] as VDBFrameVec3 }),
+        });
+        const i = ((z * GH + y) * GW + x) * 4;
+        compare(stats, [x, y, z], [scatter[i]!, scatter[i + 1]!, scatter[i + 2]!, scatter[i + 3]!], cpu, 2, 2 ** -20);
+      }
+  result.stats = stats;
+  renderer.dispose();
+  scene.dispose();
 }
 
 /** The lights as the renderer packs them (directional, point, spot; position w kind). */
-function lightRecords(lights: readonly VDBFrameLight[]): TwinFrame["lights"] {
+function lightRecords(lights: readonly VDBFrameLight[]): (TwinFrame["lights"][number] & { falloff: [number, number] })[] {
   const n = (v: readonly number[]) => {
     const l = Math.hypot(v[0]!, v[1]!, v[2]!);
     return [v[0]! / l, v[1]! / l, v[2]! / l];
   };
-  const out: TwinFrame["lights"] = [];
+  const out: (TwinFrame["lights"][number] & { falloff: [number, number] })[] = [];
   for (const kind of ["directional", "point", "spot"] as const) {
     for (const l of lights) {
       if (l.kind !== kind) continue;
       if (l.kind === "directional") {
         const d = n(l.direction);
-        out.push({ position: [-d[0]!, -d[1]!, -d[2]!, 1], color: [...l.color, 0], spot: [0, 0, 0, 0] });
-      } else if (l.kind === "point") out.push({ position: [...l.position, 2], color: [...l.color, 0], spot: [0, 0, 0, 0] });
+        out.push({ position: [-d[0]!, -d[1]!, -d[2]!, 1], color: [...l.color, 0], spot: [0, 0, 0, 0], falloff: [0, 0] });
+      } else if (l.kind === "point") out.push({ position: [...l.position, 2], color: [...l.color, 0], spot: [0, 0, 0, 0], falloff: [l.distance, l.decay] });
       else if (l.kind === "spot") {
         const d = n(l.direction);
-        out.push({ position: [...l.position, 3], color: [...l.color, l.cosPenumbra], spot: [-d[0]!, -d[1]!, -d[2]!, l.cosAngle] });
+        out.push({ position: [...l.position, 3], color: [...l.color, l.cosPenumbra], spot: [-d[0]!, -d[1]!, -d[2]!, l.cosAngle], falloff: [l.distance, l.decay] });
       }
     }
   }
@@ -771,11 +1195,17 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
 async function probeCompile(device: GPUDevice): Promise<void> {
   const vol = synthDense([8, 8, 8], 3, { albedo: true, mask: true, emission: true, mips: true });
   const plain = synthDense([8, 8, 8], 4, { mips: false });
+  // K6.1d / K6.2: the sparse source (K6.7) with every channel, and the 'frame' lighting kernels
+  const fx = await sparseFixture(device);
+  const sparse = vdbSparseSourceGpu(fx.pool, { types: ["float"], maxVolumes: 8, label: "k6 compile" });
+  sparse.volume({ density: fx.ids.d2, mask: fx.ids.m, albedo: fx.ids.r, emission: fx.ids.e }, { image: fx.images.get(fx.ids.d2)! });
   const specs = [
-    ...[vol, plain].flatMap((v) => {
-      const s = vdbDenseSource(device, v);
-      return (["mixture", "over"] as const).flatMap((mix) => [false, true].map((multi) => vdbFrameGatherSpec(s, { mix, multi })));
-    }),
+    ...[vdbDenseSource(device, vol), vdbDenseSource(device, plain), sparse].flatMap((s) => [
+      ...(["mixture", "over"] as const).flatMap((mix) => [false, true].map((multi) => vdbFrameGatherSpec(s, { mix, multi }))),
+      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" })),
+      ...[false, true].map((multi) => vdbFrameGridDensitySpec(s, { multi })),
+    ]),
+    vdbFrameTransmittanceSpec(),
     vdbFrameResolveSpec({ temporal: false }),
     vdbFrameResolveSpec({ temporal: true }),
     vdbFrameChunkProbeSpec(),
@@ -832,13 +1262,14 @@ async function main(): Promise<void> {
   if (!adapter) throw new Error("WebGPU: no adapter");
   const info = adapter.info;
   result.adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" ");
-  const device = await adapter.requestDevice();
+  const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
   if (PROBE === "view") await probeView(device);
   else if (PROBE === "gather") await probeGather(device);
   else if (PROBE === "resolve") await probeResolve(device);
   else if (PROBE === "integrate") await probeIntegrate(device);
   else if (PROBE === "compile") await probeCompile(device);
+  else if (PROBE === "frame") await probeFrame(device);
   else throw new Error(`unknown ?probe=${PROBE}`);
   await device.queue.onSubmittedWorkDone();
   const s = result.stats;

@@ -122,6 +122,10 @@ export const VDB_FRAME_GROUP_STRIDE = 256;
 export const VDB_FRAME_MAX_LIGHTS = 16;
 /** Most hemisphere lights (his `frameMaxHemisphereLights`). */
 export const VDB_FRAME_MAX_HEMISPHERE_LIGHTS = 4;
+/** Most shadow grid cascades (his `frameMaxShadowCascades`). */
+export const VDB_FRAME_MAX_CASCADES = 4;
+/** Light slots of the 'frame' transmittance (his `frameShadowLightSlots`). */
+export const VDB_FRAME_SHADOW_SLOTS = 6;
 
 /** Group 0 binding 0: camera, froxel layout, areas, jitter, fade, temporal and composite values. */
 export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
@@ -151,6 +155,21 @@ export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
   // K6.3: octaves (count, a, b, c); reserved for K6.3/K6.4 (two-sided, spectral)
   { name: "octaves", type: "vec4f" },
   { name: "reserved", type: "vec4f" },
+  // K6.2 'frame' lighting: the world shadow grid cascades (his createGridUniforms; xyz, w unused)
+  { name: "gridMin", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
+  { name: "gridSize", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
+  { name: "gridVoxel", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
+  // cascade count, resolution R (voxels per side), his grid atlas columns (the noise coordinate), scene shadow slots
+  { name: "gridLayout", type: "vec4f" },
+  // texel origin of cascade c in the shadow grid stack (a stacked 3D texture, design §3.2)
+  { name: "shadowOrigin", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
+  // texel origin of transmittance target k of cascade c, at [4c + k], in the transmittance stack
+  { name: "transmittanceOrigin", type: "vec4f", count: 4 * VDB_FRAME_MAX_CASCADES },
+  // multiple scattering (1 − g or 0), two-sided (0/1; K6.3), use shadows (0/1), diffusion (0/1)
+  { name: "lighting", type: "vec4f" },
+  // the renderer's 'frame' phase (forward g, back g, back weight, Lorenz-Mie mode) and its spectrum (red, blue g scale, flag)
+  { name: "framePhase", type: "vec4f" },
+  { name: "framePhaseSpectrum", type: "vec4f" },
 ]);
 
 /** Group 0 binding 1: the scene lights (his light uniforms), in slot order directional, point, spot. */
@@ -170,6 +189,11 @@ export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   { name: "color", type: "vec4f", count: VDB_FRAME_MAX_LIGHTS },
   { name: "spot", type: "vec4f", count: VDB_FRAME_MAX_LIGHTS },
   { name: "falloff", type: "vec4f", count: VDB_FRAME_MAX_LIGHTS },
+  // K6.2 'frame' lighting: the sky direction (his frameSkyDirection: the first hemisphere light's up, else +y) and the
+  // sums of every hemisphere light's sky and ground colours (his frameHemiSkyColor / frameHemiGroundColor)
+  { name: "sky", type: "vec4f" },
+  { name: "hemiSkySum", type: "vec4f" },
+  { name: "hemiGroundSum", type: "vec4f" },
 ]);
 
 /** One volume record (512 B) in the `VdbFrameVolumes` array (group 1). */
@@ -209,6 +233,8 @@ export const VDB_FRAME_VOLUME = vdbUniformStruct(
 export const VDB_FRAME_GROUP = vdbUniformStruct("VdbFrameGroup", [
   // first volume record, count, role (bit 0 first group, bit 1 last group), group index
   { name: "range", type: "vec4u" },
+  // K6.2: the group's shadow casters (first record, count, role among the caster groups, caster group index)
+  { name: "casters", type: "vec4u" },
 ]);
 
 /** The WGSL of the frame structs and the group-0 bindings every frame kernel declares. */

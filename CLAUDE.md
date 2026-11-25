@@ -304,12 +304,18 @@ From v1; details in docs/archive/handoffs/.
   data (< ~3/255 per texel) and a static camera for the temporal taps; SwiftShader filters exactly.
 - The agent sandbox refuses Bash commands whose text contains the bare word `source` followed by a path, and long
   compound commands: use `sourc?` globs and run steps as separate commands (or a script file in the scratchpad).
+- K6.2 'frame' probes (`k6-core ?probe=frame`) feed each kernel's twin with the **read-back** output of the kernel before
+  it (grid → transmittance → gather); twins fed with twins compound f16 rounding and hide which kernel moved.
+- Core vs TSL A/Bs assume his froxel density (1280 × 720, 512 × 512 froxels): with ~4 px per froxel the V80 silhouette
+  band alone exceeds the 0.2 % > 4/255 bar (WDAS at 640 × 360 / 160² froxels: 0.3 %, all on the outline).
+- The core's 'frame' casters are `castsShadow` volumes, drawn or not (`visible = false` still casts); a host that
+  hides a volume for good must clear both flags (`./three` does for volumes that left the scene).
 - WGSL lets an implementation assume no ±∞ or NaN: never rely on `1.0 / 0.0` (a slab test of an axis-parallel ray).
   Guard the divisor and use finite sentinels (the K6.R kernel: `abs(d) < 1e-12` → inside or miss, ±1e30 bounds); the
   CPU twin must make the same branch or the shared random stream diverges.
 - The froxel renderer's punctual lights are 4× three's Lambert convention: 'volume' lighting adds `color · phasê · T`
   (phasê = phase / (1/4π)) and divides by π, so a directional light of colour C is irradiance 4C to a physical
-  renderer; point and spot lights have no distance falloff. Ambient C is a uniform radiance C/π (unshadowed in the
+  renderer; point and spot lights have no distance falloff in 'volume' lighting ('frame' lighting applies three's getDistanceAttenuation, as his lighting pass, K6.2). Ambient C is a uniform radiance C/π (unshadowed in the
   renderer). Map lights with `vdbReferenceLightsFromFrame` (K6.R) or a comparison shows a 4× "error".
 - A GPU path tracer and its CPU twin agree path for path only if they draw random numbers in the same order (K6.R:
   > 99 % of values equal). When they drift, diff the draw order before the maths; f32 vs f64 flips a few branches.

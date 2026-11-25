@@ -35,6 +35,123 @@ export interface VDBFrameGatherOptions {
 /** Group-1 bindings of the gather kernel. */
 export const GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3 } as const;
 
+/**
+ * The volume-record functions every source kernel shares (gather 'volume' and 'frame', gridDensity): his gridUv,
+ * sampleExtinction, sampleAlbedo and sampleEmission over the group-2 source, reading `vdbFrameVolumes` (group 1).
+ */
+export function vdbFrameSourceFunctionsWgsl(channels: VDBVolumeChannels): string {
+  const emission = channels.emission
+    ? `  let e = vdbFrameVolumes.v[vi].emission;
+  let value = vdbSrcEmission(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
+  let temperature = mix(e.y, e.z, value);
+  let power = pow(temperature / max(e.z, 1.0), 4.0);
+  return select(vec3f(0.0), vec3f(1.0), temperature > 0.0) * power * e.x;`
+    : `  return vec3f(0.0);`;
+  return `fn vdbFrameMirror(x: f32) -> f32 {
+  let period = x - 2.0 * floor(x / 2.0);
+  return select(period, 2.0 - period, period > 1.0);
+}
+// gridUv: the local position as an offset, wrapped uvw (wrap 0 clamp, 1 repeat, 2 mirrored repeat)
+fn vdbFrameGridUv(vi: u32, localPosition: vec3f) -> vec3f {
+  let offsetWrap = vdbFrameVolumes.v[vi].offsetWrap;
+  let uvw = localPosition + 0.5 + offsetWrap.xyz;
+  if (offsetWrap.w > 1.5) {
+    return vec3f(vdbFrameMirror(uvw.x), vdbFrameMirror(uvw.y), vdbFrameMirror(uvw.z));
+  }
+  if (offsetWrap.w > 0.5) {
+    return fract(uvw);
+  }
+  return uvw;
+}
+// sampleExtinction: extinction per world unit (the mask is read at local + 0.5, no offset or wrap)
+fn vdbFrameExtinction(vi: u32, localPosition: vec3f, lod: f32) -> f32 {
+  let v = vdbFrameVolumes.v[vi].slices.z;
+  let mask = vdbSrcMask(v, localPosition + 0.5, lod);
+  let value = vdbSrcDensity(v, vdbFrameGridUv(vi, localPosition), lod) * mask;
+  let d = vdbFrameVolumes.v[vi].density;
+  return select(0.0, value, value > d.y) * d.x * vdbFrameVolumes.v[vi].baseExtinction.w / d.z;
+}
+// sampleAlbedo: base colour times the albedo channel
+fn vdbFrameAlbedo(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
+  return vdbFrameVolumes.v[vi].baseExtinction.xyz * vdbSrcAlbedo(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
+}
+// sampleEmission (colour white; emission colour data and hooks: K6.5)
+fn vdbFrameEmission(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
+${emission}
+}
+`;
+}
+
+/**
+ * The slice pre-integration of one volume in one froxel (his inject / density passes, L142–200): the box segment,
+ * the sub-steps at the froxel lod and the visibility-weighted mean position. Shared by the 'volume' and 'frame'
+ * gathers (one density call site).
+ */
+export const VDB_FRAME_SLICE_WGSL = `// One volume's slice: (alpha, visible t, extinction sum / steps * segment, read lod); alpha 0: nothing.
+struct VdbFrameSlice {
+  alpha: f32,
+  visibleT: f32,
+  extinction: f32,
+  readLod: f32,
+  lod: f32,
+  maxTexels: f32,
+  localNear: vec3f,
+  localFar: vec3f,
+};
+fn vdbFrameSliceOf(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSlice {
+  var s: VdbFrameSlice;
+  s.alpha = 0.0;
+  let rect = vdbFrameVolumes.v[vi].rect;
+  let slices = vdbFrameVolumes.v[vi].slices;
+  let p = vec2f(cell.xy);
+  if (p.x < rect.x || p.y < rect.y || p.x >= rect.z || p.y >= rect.w || cell.z < slices.x || cell.z >= slices.x + slices.y) {
+    return s;
+  }
+  let v = slices.z;
+  let viewToLocal = vdbFrameVolumes.v[vi].viewToLocal;
+  s.localNear = (viewToLocal * vec4f(f.viewNear, 1.0)).xyz;
+  s.localFar = (viewToLocal * vec4f(f.viewFar, 1.0)).xyz;
+  let boxSegment = vdbFrameBoxSegment(s.localNear, s.localFar);
+  if (boxSegment.x >= boxSegment.y) {
+    return s;
+  }
+  let segment = boxSegment.y - boxSegment.x;
+  let texels = vdbSrcTexels(v);
+  s.maxTexels = max(texels.x, max(texels.y, texels.z));
+  let worldScale = vdbFrameVolumes.v[vi].density.z;
+  let mipmaps = vdbFrameVolumes.v[vi].march.y != 0u;
+  let widthLod = vdbFrameFroxelLod(f, 0.0, worldScale, s.maxTexels);
+  let sampledLod = select(0.0, min(widthLod, vdbFrameVolumes.v[vi].emission.w), mipmaps);
+  let steps = vdbFrameBoxSteps(s.localNear, s.localFar, segment, sampledLod, s.maxTexels);
+  let subStepCount = f32(steps);
+  let subStepLength = length(f.viewFar - f.viewNear) * segment / subStepCount;
+  s.lod = max(widthLod, vdbFrameLod(subStepLength / worldScale, s.maxTexels));
+  s.readLod = select(0.0, s.lod, mipmaps);
+  let opacity = vdbFrameVolumes.v[vi].scatterOpacity.w;
+
+  // Pre-integrate the slice along the view ray; light the visibility-weighted mean position.
+  var transmittance = 1.0;
+  var visibleWeight = 0.0;
+  var visibleTSum = 0.0;
+  var extinctionSum = 0.0;
+  let jitter = vdbFrameNoise(vdbFrame.jitterFade.x, f.fragCoord);
+  for (var i = 0u; i < steps; i++) {
+    let t = boxSegment.x + segment * ((f32(i) + jitter) / subStepCount);
+    let extinction = vdbFrameExtinction(vi, mix(s.localNear, s.localFar, vec3f(t)), s.readLod) * opacity * vdbFrameDistanceFade(mix(f.viewNear, f.viewFar, vec3f(t)));
+    let stepTransmittance = exp(-extinction * subStepLength);
+    let weight = transmittance * (1.0 - stepTransmittance);
+    visibleWeight += weight;
+    visibleTSum += weight * t;
+    extinctionSum += extinction;
+    transmittance *= stepTransmittance;
+  }
+  s.alpha = 1.0 - transmittance;
+  s.extinction = extinctionSum / subStepCount * segment;
+  s.visibleT = select(-1.0, visibleTSum / visibleWeight, visibleWeight > 0.0);
+  return s;
+}
+`;
+
 /** The kernel's WGSL after the source module and `vdbFrameUniformsWgsl()` (group 1 + functions + entry). */
 export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
   const b = GATHER_BINDINGS;
@@ -44,14 +161,6 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
     `@group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;`,
     ...(o.multi ? [`@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;`] : []),
   ].join("\n");
-
-  const emission = o.channels.emission
-    ? `  let e = vdbFrameVolumes.v[vi].emission;
-  let value = vdbSrcEmission(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
-  let temperature = mix(e.y, e.z, value);
-  let power = pow(temperature / max(e.z, 1.0), 4.0);
-  return select(vec3f(0.0), vec3f(1.0), temperature > 0.0) * power * e.x;`
-    : `  return vec3f(0.0);`;
 
   const accumulate =
     o.mix === "over"
@@ -118,41 +227,13 @@ ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
 
-fn vdbFrameMirror(x: f32) -> f32 {
-  let period = x - 2.0 * floor(x / 2.0);
-  return select(period, 2.0 - period, period > 1.0);
-}
-// gridUv: the local position as an offset, wrapped uvw (wrap 0 clamp, 1 repeat, 2 mirrored repeat)
-fn vdbFrameGridUv(vi: u32, localPosition: vec3f) -> vec3f {
-  let offsetWrap = vdbFrameVolumes.v[vi].offsetWrap;
-  let uvw = localPosition + 0.5 + offsetWrap.xyz;
-  if (offsetWrap.w > 1.5) {
-    return vec3f(vdbFrameMirror(uvw.x), vdbFrameMirror(uvw.y), vdbFrameMirror(uvw.z));
-  }
-  if (offsetWrap.w > 0.5) {
-    return fract(uvw);
-  }
-  return uvw;
-}
-// sampleExtinction: extinction per world unit (the mask is read at local + 0.5, no offset or wrap)
-fn vdbFrameExtinction(vi: u32, localPosition: vec3f, lod: f32) -> f32 {
-  let v = vdbFrameVolumes.v[vi].slices.z;
-  let mask = vdbSrcMask(v, localPosition + 0.5, lod);
-  let value = vdbSrcDensity(v, vdbFrameGridUv(vi, localPosition), lod) * mask;
-  let d = vdbFrameVolumes.v[vi].density;
-  return select(0.0, value, value > d.y) * d.x * vdbFrameVolumes.v[vi].baseExtinction.w / d.z;
-}
-// sampleAlbedo: base colour times the albedo channel
-fn vdbFrameAlbedo(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
-  return vdbFrameVolumes.v[vi].baseExtinction.xyz * vdbSrcAlbedo(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
-}
-// sampleEmission (colour white; emission colour data and hooks: K6.5)
-fn vdbFrameEmission(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
-${emission}
-}
-
+${vdbFrameSourceFunctionsWgsl(o.channels)}
+${VDB_FRAME_SLICE_WGSL}
 // The inject pass's shadow march inside one volume: (direct, total, reduced depth, effective depth).
-// The one march of the kernel (one density call site), stopping when the depth passes 8.
+// The one march of the kernel (one density call site), stopping when the depth passes 8. Samples sit at
+// t_k = step (k + noise); with the volume's hdda flag (K6.1d) runs of samples the source proves empty are jumped
+// over (vdbSrcSkipSpan; the dense source never skips). No skipping under wrap or an offset (samples leave the
+// ray's cells). The source is asked only at the start and after a zero sample past the last cell end (K3.2).
 fn vdbFrameShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDistance: f32, lod: f32, maxTexels: f32, albedo: vec3f, noise: f32) -> vec4f {
   let steps = vdbFrameVolumes.v[vi].march.x;
   let absorbance = vdbFrameVolumes.v[vi].density.w;
@@ -170,15 +251,34 @@ fn vdbFrameShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDi
   let stepLod = select(0.0, max(lod, vdbFrameLod(localStep, maxTexels)), mipmaps);
   let worldStep = localStep * length(vdbFrameMat3(vdbFrameVolumes.v[vi].localToView) * direction);
   let stepScale = worldStep * absorbance;
+  let offsetWrap = vdbFrameVolumes.v[vi].offsetWrap;
+  let skip = vdbFrameVolumes.v[vi].march.z != 0u && offsetWrap.w < 0.5 && all(offsetWrap.xyz == vec3f(0.0));
+  let cutoff = max(vdbFrameVolumes.v[vi].density.y, 0.0);
+  let tEnd = marchDistance + localStep;
   var depths = vec3f(0.0);
-  var probe = origin + direction * localStep * noise;
-  for (var k = 0u; k < steps; k++) {
-    let extinction = vdbFrameExtinction(vi, probe, stepLod) * stepScale;
+  var cellEnd = -1.0;
+  var lastZero = true;
+  var k = 0u;
+  loop {
+    if (k >= steps) {
+      break;
+    }
+    let t = localStep * (f32(k) + noise);
+    if (skip && lastZero && t >= cellEnd) {
+      let span = vdbSrcSkipSpan(vdbFrameVolumes.v[vi].slices.z, origin + 0.5, direction, t, tEnd, stepLod, cutoff);
+      cellEnd = span.y;
+      if (span.x > t) {
+        k = max(k + 1u, u32(max(ceil(span.x / localStep - noise), 0.0)));
+        continue;
+      }
+    }
+    let extinction = vdbFrameExtinction(vi, origin + direction * t, stepLod) * stepScale;
+    lastZero = extinction <= 0.0;
     depths += vdbFrameShadowStep(extinction, vdbFrameShadowAbsorption(extinction, albedo), multipleScattering);
     if (vdbFrameShadowDepth(depths, multipleScattering) > 8.0) {
       break;
     }
-    probe += direction * localStep;
+    k++;
   }
   let shadow = vdbFrameShadowTransmittance(depths, multipleScattering);
   return vec4f(shadow.x, shadow.y, depths.z, depths.y);
@@ -186,54 +286,16 @@ fn vdbFrameShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDi
 
 // One volume in one froxel (his inject pass): (unpremultiplied radiance, slice alpha); alpha 0: nothing.
 fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
-  let rect = vdbFrameVolumes.v[vi].rect;
+  let s = vdbFrameSliceOf(vi, cell, f);
+  let alpha = s.alpha;
+  if (s.visibleT < 0.0 || alpha <= 1e-5) {
+    return vec4f(0.0);
+  }
   let slices = vdbFrameVolumes.v[vi].slices;
-  let p = vec2f(cell.xy);
-  if (p.x < rect.x || p.y < rect.y || p.x >= rect.z || p.y >= rect.w || cell.z < slices.x || cell.z >= slices.x + slices.y) {
-    return vec4f(0.0);
-  }
-  let v = slices.z;
-  let viewToLocal = vdbFrameVolumes.v[vi].viewToLocal;
-  let localNear = (viewToLocal * vec4f(f.viewNear, 1.0)).xyz;
-  let localFar = (viewToLocal * vec4f(f.viewFar, 1.0)).xyz;
-  let boxSegment = vdbFrameBoxSegment(localNear, localFar);
-  if (boxSegment.x >= boxSegment.y) {
-    return vec4f(0.0);
-  }
-  let segment = boxSegment.y - boxSegment.x;
-  let texels = vdbSrcTexels(v);
-  let maxTexels = max(texels.x, max(texels.y, texels.z));
-  let worldScale = vdbFrameVolumes.v[vi].density.z;
-  let mipmaps = vdbFrameVolumes.v[vi].march.y != 0u;
-  let widthLod = vdbFrameFroxelLod(f, 0.0, worldScale, maxTexels);
-  let sampledLod = select(0.0, min(widthLod, vdbFrameVolumes.v[vi].emission.w), mipmaps);
-  let steps = vdbFrameBoxSteps(localNear, localFar, segment, sampledLod, maxTexels);
-  let subStepCount = f32(steps);
-  let subStepLength = length(f.viewFar - f.viewNear) * segment / subStepCount;
-  let lod = max(widthLod, vdbFrameLod(subStepLength / worldScale, maxTexels));
-  let readLod = select(0.0, lod, mipmaps);
-  let opacity = vdbFrameVolumes.v[vi].scatterOpacity.w;
-
-  // Pre-integrate the slice along the view ray; light the visibility-weighted mean position.
-  var transmittance = 1.0;
-  var visibleWeight = 0.0;
-  var visibleTSum = 0.0;
-  let jitter = vdbFrameNoise(vdbFrame.jitterFade.x, f.fragCoord);
-  for (var i = 0u; i < steps; i++) {
-    let t = boxSegment.x + segment * ((f32(i) + jitter) / subStepCount);
-    let opticalDepth = vdbFrameExtinction(vi, mix(localNear, localFar, vec3f(t)), readLod) * opacity * vdbFrameDistanceFade(mix(f.viewNear, f.viewFar, vec3f(t))) * subStepLength;
-    let stepTransmittance = exp(-opticalDepth);
-    let weight = transmittance * (1.0 - stepTransmittance);
-    visibleWeight += weight;
-    visibleTSum += weight * t;
-    transmittance *= stepTransmittance;
-  }
-  let alpha = 1.0 - transmittance;
-  if (visibleWeight <= 0.0 || alpha <= 1e-5) {
-    return vec4f(0.0);
-  }
-
-  let localPosition = mix(localNear, localFar, vec3f(visibleTSum / visibleWeight));
+  let lod = s.lod;
+  let readLod = s.readLod;
+  let maxTexels = s.maxTexels;
+  let localPosition = mix(s.localNear, s.localFar, vec3f(s.visibleT));
   let localToView = vdbFrameVolumes.v[vi].localToView;
   let worldToLocal = vdbFrameVolumes.v[vi].worldToLocal;
   let viewPosition = (localToView * vec4f(localPosition, 1.0)).xyz;

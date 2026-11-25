@@ -267,6 +267,45 @@ fn vdbFrameShIrradiance(normal: vec3f) -> vec3f {
     },
   ],
   [
+    "grid",
+    {
+      deps: [],
+      code: `// The world shadow grid (his createGridNodes): gridUvw, insideGrid (half a voxel in), findCascade
+fn vdbFrameGridUvw(cascade: u32, world: vec3f) -> vec3f {
+  return (world - vdbFrame.gridMin[cascade].xyz) / vdbFrame.gridSize[cascade].xyz;
+}
+fn vdbFrameInsideGrid(uvw: vec3f) -> bool {
+  let inset = 0.5 / vdbFrame.gridLayout.y;
+  return min(uvw.x, min(uvw.y, uvw.z)) >= inset && max(uvw.x, max(uvw.y, uvw.z)) <= 1.0 - inset;
+}
+// the finest cascade from first that holds the position, or -1
+fn vdbFrameFindCascade(world: vec3f, first: u32) -> i32 {
+  let count = u32(vdbFrame.gridLayout.x);
+  for (var c = first; c < count; c++) {
+    if (vdbFrameInsideGrid(vdbFrameGridUvw(c, world))) {
+      return i32(c);
+    }
+  }
+  return -1;
+}
+// sampleTiles on a stacked 3D texture: hardware trilinear in the R^3 sub-volume at origin, clamped to its
+// half-texel box (his clamp to edge in a slice and between slices)
+fn vdbFrameStackSample(stack: texture_3d<f32>, origin: vec3f, uvw: vec3f) -> vec4f {
+  let r = vdbFrame.gridLayout.y;
+  let p = origin + clamp(uvw * r, vec3f(0.5), vec3f(r - 0.5));
+  return textureSampleLevel(stack, vdbFrameLinear, p / vec3f(textureDimensions(stack)), 0.0);
+}
+// his grid atlas pixel of a voxel (the jitter noise reads it): tile cascade * R + z of an atlas with gridLayout.z columns
+fn vdbFrameGridFragCoord(cascade: u32, cell: vec3u) -> vec2f {
+  let r = u32(vdbFrame.gridLayout.y);
+  let columns = u32(vdbFrame.gridLayout.z);
+  let tile = cascade * r + cell.z;
+  return vec2f(f32((tile % columns) * r + cell.x), f32((tile / columns) * r + cell.y)) + 0.5;
+}
+`,
+    },
+  ],
+  [
     "srgb",
     {
       deps: [],
@@ -287,7 +326,7 @@ fn vdbFrameSrgbEotf(color: vec3f) -> vec3f {
 const BY_NAME = new Map(CHUNKS);
 
 /** Names of the chunks {@link frameChunksWgsl} knows. */
-export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "sh" | "srgb";
+export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "sh" | "grid" | "srgb";
 
 /** The closure of `roots` (with dependencies), in the fixed chunk order. */
 export function frameChunksWgsl(roots: Iterable<VDBFrameChunk>): string {

@@ -9,8 +9,8 @@
 // (K6.1 rows).
 
 /**
- * `vdbCreateFrameRenderer(device, options)`: the core froxel renderer (K6.1: 'volume' lighting on dense
- * sources). Per frame:
+ * `vdbCreateFrameRenderer(device, options)`: the core froxel renderer ('volume' lighting, K6.1; 'frame' lighting's
+ * shadow grid, transmittance and fused gather, K6.2; dense and sparse sources). Per frame:
  *
  *   const enc = device.createCommandEncoder();
  *   const u = frame.update(enc, { frameId, camera, viewport, lights });   // gather per source group, resolve
@@ -36,12 +36,25 @@ import {
   vdbFroxelHeldSize,
   vdbMat4Invert,
   vdbMat4MaxScale,
+  vdbMat4Multiply,
+  vdbUnitBoxBounds,
   type VDBFroxelArea,
   type VDBFroxelRect,
 } from "../../tools/frame/view.js";
+import { vdbFrameGridCascades, vdbFrameGridSignatureState, vdbFrameUpdateGridSignatures, vdbSameValues } from "../../tools/frame/grid.js";
+import { vdbFrameStackLayout, type VDBFrameStackLayout } from "../../tools/frame/stack.js";
 import { GATHER_BINDINGS } from "./wgsl/gather.js";
+import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS } from "./wgsl/resolve.js";
-import { vdbFrameCompositeSpec, vdbFrameGatherSpec, vdbFrameResolveSpec, SOURCE_SLOT, type VDBFrameCompositeKey } from "./kernels.js";
+import {
+  vdbFrameCompositeSpec,
+  vdbFrameGatherSpec,
+  vdbFrameGridDensitySpec,
+  vdbFrameResolveSpec,
+  vdbFrameTransmittanceSpec,
+  SOURCE_SLOT,
+  type VDBFrameCompositeKey,
+} from "./kernels.js";
 import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "./pipelines.js";
 import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
 import { vdbFrameDefaultSettings, type VDBFrameSettings } from "./settings.js";
@@ -50,9 +63,11 @@ import {
   VDB_FRAME_GROUP,
   VDB_FRAME_GROUP_STRIDE,
   VDB_FRAME_LIGHTS,
+  VDB_FRAME_MAX_CASCADES,
   VDB_FRAME_MAX_HEMISPHERE_LIGHTS,
   VDB_FRAME_MAX_LIGHTS,
   VDB_FRAME_MAX_VOLUMES,
+  VDB_FRAME_SHADOW_SLOTS,
   VDB_FRAME_UNIFORMS,
   VDB_FRAME_VOLUME,
   VDB_FRAME_VOLUME_BYTES,
@@ -119,7 +134,7 @@ class FrameVolume implements VDBFrameVolumeGpu {
   }
 }
 
-/** One visible volume after the CPU work of an update. */
+/** One volume after the CPU work of an update: visible (drawn into the froxels) and/or a shadow caster ('frame'). */
 interface VolumeRecord {
   volume: FrameVolume;
   localToView: Float64Array;
@@ -128,6 +143,19 @@ interface VolumeRecord {
   rect: VDBFroxelRect;
   first: number;
   count: number;
+  visible: boolean;
+  caster: boolean;
+}
+
+/** One source group of an update: its records (visible ones first, then casters) and where they sit. */
+interface SourceGroup {
+  source: VDBVolumeSource;
+  records: VolumeRecord[];
+  /** First record index; visible records [first, first + visible); casters [first + casterStart, + casters). */
+  first: number;
+  visible: number;
+  casterStart: number;
+  casters: number;
 }
 
 interface Textures {
@@ -135,6 +163,19 @@ interface Textures {
   scatter: GPUTexture;
   integrated: GPUTexture;
   history: [GPUTexture, GPUTexture] | null;
+  partials: GPUTexture | null;
+  /** Slices per froxel slice the partials hold (2 for 'volume', 8 for 'frame'). */
+  partialLayers: number;
+}
+
+/** The 'frame' lighting grid textures (K6.2): the shadow grid and transmittance stacks (design §3.2). */
+interface GridTextures {
+  resolution: number;
+  cascades: number;
+  shadow: GPUTexture;
+  shadowLayout: VDBFrameStackLayout;
+  transmittance: GPUTexture;
+  transmittanceLayout: VDBFrameStackLayout;
   partials: GPUTexture | null;
 }
 
@@ -174,6 +215,17 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #sourceGroups = new WeakMap<VDBVolumeSource, { version: number; layout: GPUBindGroupLayout; group: GPUBindGroup }>();
   #recorded = false;
   #disposed = false;
+  // K6.2 'frame' lighting: the grid textures, the cascade layout and his change signatures
+  #grid: GridTextures | null = null;
+  readonly #gridState = vdbFrameGridSignatureState();
+  readonly #gridMin = Array.from({ length: VDB_FRAME_MAX_CASCADES }, () => ({ x: 0, y: 0, z: 0 }));
+  readonly #gridSize = Array.from({ length: VDB_FRAME_MAX_CASCADES }, () => ({ x: 0, y: 0, z: 0 }));
+  readonly #gridVoxel = Array.from({ length: VDB_FRAME_MAX_CASCADES }, () => ({ x: 0, y: 0, z: 0 }));
+  /** The grid version the shadow grid texture holds (−1: none). */
+  #gridDrawn = -1;
+  #transmittanceSignature: unknown[] = [];
+  readonly #sourceIds = new WeakMap<object, number>();
+  #nextSourceId = 1;
 
   constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
     this.device = device;
@@ -229,12 +281,16 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   async prepare(options: { lighting?: ("volume" | "frame")[] } = {}): Promise<void> {
     this.#check();
-    if (options.lighting?.includes("frame")) this.#warnOnce("prepare-frame", "prepare: 'frame' lighting comes with K6.2; preparing 'volume' lighting only.");
+    const modes = options.lighting ?? [this.settings.lighting];
     const jobs: Promise<void>[] = [];
     const sources = new Set(this.#volumes.map((v) => v.slot.source));
     for (const source of sources) {
-      for (const multi of [false, true]) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes })));
+      for (const multi of [false, true]) {
+        for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting })));
+        if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes })));
+      }
     }
+    if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec()));
     jobs.push(prepareCompute(this.device, vdbFrameResolveSpec({ temporal: this.settings.temporal })));
     const key = this.#compositeKey();
     if (key) jobs.push(prepareRender(this.device, vdbFrameCompositeSpec(key)));
@@ -247,16 +303,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#check();
     this.#retire.advance();
     const s = this.settings;
-    if (s.lighting !== "volume") {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu: 'frame' lighting comes with K6.2; set settings.lighting = 'volume'.");
-    }
-    if (frame.environment) this.#warnOnce("environment", "the environment input is K6.2; K6.1 ignores it.");
-    if (frame.occluders && frame.occluders.length > 0) this.#warnOnce("occluders", "occluder maps (mesh → volume shadows) are K6.5b; K6.1 ignores them.");
-    if (frame.lights.some((l) => "shadow" in l && l.shadow)) this.#warnOnce("shadow", "volume shadow map requests are K6.5; K6.1 ignores them.");
-    if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; K6.1 renders grey.");
-    if (s.castShadows) this.#warnOnce("castShadows", "settings.castShadows is K6.5; K6.1 ignores it.");
-    if (s.multipleScattering === "two-sided") this.#warnOnce("two-sided", "multipleScattering 'two-sided' is K6.3; K6.1 runs it as true (1D diffusion).");
-    if (s.multipleScattering === "octaves") this.#warnOnce("octaves", "multipleScattering 'octaves' is K6.3; K6.1 runs it as false.");
+    const frameLighting = s.lighting === "frame";
+    if (frame.environment) this.#warnOnce("environment", "the environment input (GPU prefilter, SH and environment lights) is K6.2b; this build ignores it.");
+    if (frame.occluders && frame.occluders.length > 0) this.#warnOnce("occluders", "occluder maps (mesh → volume shadows) are K6.5b; they are ignored.");
+    if (frame.lights.some((l) => "shadow" in l && l.shadow)) this.#warnOnce("shadow", "volume shadow map requests are K6.5; they are ignored.");
+    if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; the core renders grey.");
+    if (s.castShadows) this.#warnOnce("castShadows", "settings.castShadows is K6.5; it is ignored.");
+    if (s.multipleScattering === "two-sided") this.#warnOnce("two-sided", "multipleScattering 'two-sided' is K6.3; it runs as true (1D diffusion).");
+    if (s.multipleScattering === "octaves") this.#warnOnce("octaves", "multipleScattering 'octaves' is K6.3; it runs as false.");
+    if (frameLighting && s.multipleScattering === "neural") this.#warnOnce("neural", "multipleScattering 'neural' (the MLP) is K6.3; 'frame' lighting runs it as true (1D diffusion).");
 
     if (options.froxels === false && this.#textures) return { outputs: this.outputs, recorded: this.#recorded, volumes: 0 };
 
@@ -266,14 +321,16 @@ class FrameRenderer implements VDBFrameRendererGpu {
     let W = size.width;
     let H = size.height;
     let D = Math.max(1, Math.round(s.depth));
-    if (W > maxDim || H > maxDim || D + 1 > maxDim || 2 * D > maxDim) {
+    // multi-group partials stack 2 ('volume') or 8 ('frame') slices per froxel slice along z
+    const layers = frameLighting ? VDB_FRAME_SUM_WORDS : 2;
+    if (W > maxDim || H > maxDim || D + 1 > maxDim || layers * D > maxDim) {
       this.#warnOnce("size", `the froxel grid ${W}x${H}x${D} exceeds maxTextureDimension3D (${maxDim}); clamped.`);
       W = Math.min(W, maxDim);
       H = Math.min(H, maxDim);
-      D = Math.min(D, Math.floor(maxDim / 2));
+      D = Math.min(D, Math.floor(maxDim / layers));
     }
 
-    // Collect and clip the visible volumes (his FrameVolumeCollector)
+    // Collect and clip the visible volumes (his FrameVolumeCollector); 'frame' lighting: every caster too
     const cam = frame.camera;
     const clip = vdbFrameClipCamera(cam.view, cam.projection, { coordinateSystem: "webgpu", reversedDepth: !!cam.reversedDepth });
     let near = Infinity;
@@ -297,35 +354,67 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const range: [number, number] = [near, far];
 
     // Rects, slices and the froxel area
-    let records: VolumeRecord[] = [];
+    let visible: VolumeRecord[] = [];
     for (const { volume, c } of clipped) {
       const rect = vdbFrameFroxelRect(c.localToView, cam.projection, W, H);
       if (!rect) continue;
       const slices = vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, D);
-      records.push({ volume, localToView: c.localToView, viewToLocal: c.viewToLocal, worldToLocal: c.worldToLocal, rect, first: slices.first, count: slices.count });
+      visible.push({ volume, localToView: c.localToView, viewToLocal: c.viewToLocal, worldToLocal: c.worldToLocal, rect, first: slices.first, count: slices.count, visible: true, caster: frameLighting && volume.castsShadow });
     }
-    if (records.length > this.#maxVolumes) {
-      this.#warnOnce("volumes", `${records.length} visible volumes exceed the ${this.#maxVolumes} a frame holds (uniform binding size); the rest are not drawn.`);
-      records = records.slice(0, this.#maxVolumes);
+    if (visible.length > this.#maxVolumes) {
+      this.#warnOnce("volumes", `${visible.length} visible volumes exceed the ${this.#maxVolumes} a frame holds (uniform binding size); the rest are not drawn.`);
+      visible = visible.slice(0, this.#maxVolumes);
     }
-    const area = vdbFrameFroxelArea(records, W, H, D);
-    if (records.length === 0 || area.count <= 0) {
+    const area = vdbFrameFroxelArea(visible, W, H, D);
+    if (visible.length === 0 || area.count <= 0) {
       this.#recorded = false;
       return { outputs: this.outputs, recorded: false, volumes: 0 };
     }
-
-    // Source groups: volumes sharing a source object, in first-appearance order
-    const groups = new Map<VDBVolumeSource, VolumeRecord[]>();
-    for (const r of records) {
-      const list = groups.get(r.volume.slot.source);
-      if (list) list.push(r);
-      else groups.set(r.volume.slot.source, [r]);
+    // 'frame' lighting: casters out of view (or not drawn) still shadow the visible ones (his collector)
+    const casterOnly: VolumeRecord[] = [];
+    if (frameLighting) {
+      const drawn = new Set(visible.map((r) => r.volume));
+      for (const volume of this.#volumes) {
+        if (!volume.castsShadow || drawn.has(volume)) continue;
+        const localToView = vdbMat4Multiply(cam.view, volume.params.matrixWorld);
+        casterOnly.push({ volume, localToView, viewToLocal: vdbMat4Invert(localToView), worldToLocal: vdbMat4Invert(volume.params.matrixWorld), rect: [0, 0, 0, 0], first: 0, count: 0, visible: false, caster: true });
+      }
+      if (visible.length + casterOnly.length > this.#maxVolumes) {
+        this.#warnOnce("casters", `${visible.length + casterOnly.length} volumes and casters exceed the ${this.#maxVolumes} a frame holds; some casters are left out.`);
+        casterOnly.length = Math.max(0, this.#maxVolumes - visible.length);
+      }
     }
-    const ordered = [...groups.values()].flat();
-    const multi = groups.size > 1;
+
+    // Source groups, in first-appearance order; in a group the visible non-casters, the visible casters, then the
+    // caster-only records (gather range: the visible ones; caster range: the casters)
+    const bySource = new Map<VDBVolumeSource, VolumeRecord[]>();
+    for (const r of [...visible, ...casterOnly]) {
+      const list = bySource.get(r.volume.slot.source);
+      if (list) list.push(r);
+      else bySource.set(r.volume.slot.source, [r]);
+    }
+    const groups: SourceGroup[] = [];
+    const ordered: VolumeRecord[] = [];
+    for (const [source, list] of bySource) {
+      const sorted = [...list.filter((r) => r.visible && !r.caster), ...list.filter((r) => r.visible && r.caster), ...list.filter((r) => !r.visible)];
+      const g: SourceGroup = {
+        source,
+        records: sorted,
+        first: ordered.length,
+        visible: sorted.filter((r) => r.visible).length,
+        casterStart: sorted.findIndex((r) => r.caster),
+        casters: sorted.filter((r) => r.caster).length,
+      };
+      if (g.casterStart < 0) g.casterStart = 0;
+      groups.push(g);
+      ordered.push(...sorted);
+    }
+    const gatherGroups = groups.filter((g) => g.visible > 0);
+    const casterGroups = groups.filter((g) => g.casters > 0);
+    const multi = gatherGroups.length > 1;
 
     // Textures (a new size or temporal / multi-group need retires the old ones and drops the history)
-    const tex = this.#ensureTextures(W, H, D, s.temporal, multi);
+    const tex = this.#ensureTextures(W, H, D, s.temporal, multi, layers);
 
     // Temporal validity (his historyValid && historyCamera === camera; plus a consecutive frameId)
     const prev = this.#previous;
@@ -360,25 +449,45 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "jitterFade", [jitter, fade, Math.min(1, Math.max(0.01, s.temporalBlend)), useHistory ? 1 : 0]);
     fw.set(U, 0, "flags", [Math.max(1, Math.round(s.subSteps)), s.temporal ? 1 : 0, (cam.reversedDepth ? 1 : 0) | (cam.orthographic ? 2 : 0), 0]);
     fw.set(U, 0, "camera", [cam.near, cam.far, 0, 0]);
+    const lightInfo = this.#packLights(frame.lights);
+    const grid = frameLighting ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
-    this.#packLights(frame.lights);
     this.#packVolumes(ordered);
-    const groupList = [...groups.values()];
-    this.#packGroups(groupList);
+    this.#packGroups(groups, gatherGroups, casterGroups);
 
     // Sparse sources (K6.7) record their own work after the host's pool.update(encoder); group 2 follows their version.
-    for (const source of groups.keys()) (source as VDBVolumeSource & { update?: (e: GPUCommandEncoder) => unknown }).update?.(encoder);
+    for (const g of groups) (g.source as VDBVolumeSource & { update?: (e: GPUCommandEncoder) => unknown }).update?.(encoder);
 
-    // Record: gather per source group, then resolve
+    // Record: ['frame': shadow grid per caster group, transmittance], gather per source group, then resolve
     const pass = encoder.beginComputePass({ label: `${this.#label} froxels` });
     const group0 = this.#group0Bind();
-    groupList.forEach((list, gi) => {
-      const source = list[0]!.volume.slot.source;
-      const built = computePipeline(this.device, vdbFrameGatherSpec(source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes }));
+    if (grid?.drawGrid) {
+      const gt = this.#grid!;
+      const r = gt.resolution;
+      casterGroups.forEach((g) => {
+        const built = computePipeline(this.device, vdbFrameGridDensitySpec(g.source, { multi: casterGroups.length > 1, maxVolumes: this.#maxVolumes }));
+        pass.setPipeline(built.pipeline);
+        pass.setBindGroup(0, group0);
+        pass.setBindGroup(1, this.#gridDensityBind(built.layouts[1]!, gt, casterGroups.length > 1), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);
+        pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
+        pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
+      });
+    }
+    if (grid?.drawTransmittance) {
+      const gt = this.#grid!;
+      const r = gt.resolution;
+      const built = computePipeline(this.device, vdbFrameTransmittanceSpec());
       pass.setPipeline(built.pipeline);
       pass.setBindGroup(0, group0);
-      pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi), [gi * VDB_FRAME_GROUP_STRIDE]);
-      pass.setBindGroup(2, this.#sourceBind(source, built.layouts[2]!));
+      pass.setBindGroup(1, this.#transmittanceBind(built.layouts[1]!, gt));
+      pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
+    }
+    gatherGroups.forEach((g) => {
+      const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting: s.lighting }));
+      pass.setPipeline(built.pipeline);
+      pass.setBindGroup(0, group0);
+      pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi, frameLighting), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);
+      pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
       pass.dispatchWorkgroups(Math.ceil((box.rect[2] - box.rect[0]) / 8), Math.ceil((box.rect[3] - box.rect[1]) / 8), D);
     });
     const resolve = computePipeline(this.device, vdbFrameResolveSpec({ temporal: s.temporal }));
@@ -398,13 +507,136 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const layout: VDBFroxelLayout = { width: W, height: H, depth: D, range, screenRect: vdbFrameClipRect(area.rect, W, H, 1) };
     this.outputs.froxels = { integrated: tex.integrated, integratedAlpha: null, layout };
     this.#recorded = true;
-    return { outputs: this.outputs, recorded: true, volumes: ordered.length };
+    return { outputs: this.outputs, recorded: true, volumes: visible.length };
   }
 
-  #ensureTextures(W: number, H: number, D: number, temporal: boolean, multi: boolean): Textures {
+  /** A stable number per source object (the caster signature's source identity). */
+  #sourceId(source: object): number {
+    let id = this.#sourceIds.get(source);
+    if (id === undefined) this.#sourceIds.set(source, (id = this.#nextSourceId++));
+    return id;
+  }
+
+  /**
+   * 'frame' lighting's CPU work (his updateGrid, updateGridSignatures, transmittanceUnchanged): the cascades around
+   * the casters and the camera, the grid textures, the grid uniforms, and which kernels must run.
+   */
+  #frameGrid(
+    casterGroups: readonly SourceGroup[],
+    cameraWorld: ArrayLike<number>,
+    lights: { sorted: readonly number[][]; sky: readonly number[] },
+    jitter: number,
+  ): { count: number; drawGrid: boolean; drawTransmittance: boolean } {
+    const s = this.settings;
+    const fw = this.#frameWriter;
+    const U = VDB_FRAME_UNIFORMS;
+    const resolution = Math.max(2, Math.round(s.shadowResolution));
+    const cascades = Math.min(VDB_FRAME_MAX_CASCADES, Math.max(1, Math.round(s.shadowCascades)));
+    const gt = this.#ensureGrid(resolution, cascades, casterGroups.length > 1);
+    const casters = casterGroups.flatMap((g) => g.records.filter((r) => r.caster));
+    const boxes = casters.map((r) => {
+      const b = vdbUnitBoxBounds(r.volume.params.matrixWorld);
+      return { min: { x: b.min[0], y: b.min[1], z: b.min[2] }, max: { x: b.max[0], y: b.max[1], z: b.max[2] } };
+    });
+    const cameraPosition = { x: cameraWorld[12]!, y: cameraWorld[13]!, z: cameraWorld[14]! };
+    const count = casters.length > 0 ? vdbFrameGridCascades(boxes, cameraPosition, s.shadowDistance, resolution, cascades, this.#gridMin, this.#gridSize, this.#gridVoxel) : 0;
+    vdbFrameUpdateGridSignatures(this.#gridState, count > 0 ? casters : [], count, resolution, false, this.#gridMin, this.#gridSize, (values, r) => {
+      const p = r.volume.params;
+      const slot = r.volume.slot;
+      for (let i = 0; i < 16; i++) values.push(p.matrixWorld[i]!);
+      values.push(this.#sourceId(slot.source), slot.v, slot.version, ...p.baseColor, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.mipmaps ? 1 : 0, WRAP_CODE[p.wrap3D] ?? 0, ...p.offset3D);
+    });
+    const shadowSlots = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
+    const ms = vdbFrameMultipleScatteringValue(s.multipleScattering === "octaves" ? false : s.multipleScattering, this.#phaseOf(null));
+    const diffusion = !!s.multipleScattering && s.multipleScattering !== "octaves";
+    const phaseFields = this.#phaseOf(null);
+    const phase = vdbFramePhaseVector(phaseFields);
+    if (phase[3] > 0) {
+      this.#warnOnce("mie-frame", "the Lorenz-Mie phases are K6.3; 'frame' lighting lights them with the phase's lobes off (isotropic).");
+      phase[3] = 0;
+    }
+    const v = (a: { x: number; y: number; z: number }) => [a.x, a.y, a.z, 0];
+    for (let c = 0; c < VDB_FRAME_MAX_CASCADES; c++) {
+      const live = c < count;
+      if (!live) continue;
+      const at = (name: string, value: number[]) => {
+        const slot = U.fields.get(name)!;
+        const base = (slot.offset + c * slot.stride) / 4;
+        for (let k = 0; k < value.length; k++) fw.f32[base + k] = value[k]!;
+      };
+      at("gridMin", v(this.#gridMin[c]!));
+      at("gridSize", v(this.#gridSize[c]!));
+      at("gridVoxel", v(this.#gridVoxel[c]!));
+      at("shadowOrigin", [...gt.shadowLayout.origins[c]!, 0]);
+      for (let k = 0; k < 4; k++) {
+        const slot = U.fields.get("transmittanceOrigin")!;
+        const base = (slot.offset + (4 * c + k) * slot.stride) / 4;
+        const o = gt.transmittanceLayout.origins[4 * c + k]!;
+        fw.f32[base] = o[0];
+        fw.f32[base + 1] = o[1];
+        fw.f32[base + 2] = o[2];
+      }
+    }
+    fw.set(U, 0, "gridLayout", [count, resolution, vdbFrameAtlasLayout(resolution, resolution, resolution * cascades).columns, shadowSlots]);
+    fw.set(U, 0, "lighting", [ms, 0, count > 0 ? 1 : 0, diffusion ? 1 : 0]);
+    fw.set(U, 0, "framePhase", phase);
+    fw.set(U, 0, "framePhaseSpectrum", [...vdbFramePhaseSpectrum(phaseFields), 0]);
+
+    // His redraw skips: the grid when its version or texture changed; the transmittance when its signature did (a
+    // jittered grid is drawn every frame)
+    const drawGrid = count > 0 && (this.#gridDrawn !== this.#gridState.gridVersion);
+    if (count > 0) {
+      if (drawGrid) this.redrawStats.shadowDensity.drawn++;
+      else this.redrawStats.shadowDensity.skipped++;
+      this.#gridDrawn = this.#gridState.gridVersion;
+    }
+    const signature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky];
+    for (let i = 0; i < shadowSlots; i++) signature.push(...lights.sorted[i]!.slice(0, 4));
+    const drawTransmittance = count > 0 && (jitter >= 0 || !vdbSameValues(signature, this.#transmittanceSignature));
+    this.#transmittanceSignature = jitter >= 0 ? [] : signature;
+    if (count > 0) {
+      if (drawTransmittance) this.redrawStats.transmittance.drawn++;
+      else this.redrawStats.transmittance.skipped++;
+    }
+    return { count, drawGrid, drawTransmittance };
+  }
+
+  /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */
+  #ensureGrid(resolution: number, cascades: number, multi: boolean): GridTextures {
+    const g = this.#grid;
+    if (g && g.resolution === resolution && g.cascades === cascades && (!multi || g.partials)) return g;
+    const maxDim = this.device.limits?.maxTextureDimension3D ?? 2048;
+    if (g && g.resolution === resolution && g.cascades === cascades) {
+      g.partials = createFroxelTexture(this.device, `${this.#label} grid partials`, g.shadowLayout.size, "r32uint", false);
+      return g;
+    }
+    if (g) {
+      this.#retire.retire(g.shadow);
+      this.#retire.retire(g.transmittance);
+      this.#retire.retire(g.partials);
+    }
+    const shadowLayout = vdbFrameStackLayout(resolution, cascades, maxDim);
+    const transmittanceLayout = vdbFrameStackLayout(resolution, 4 * cascades, maxDim);
+    const next: GridTextures = {
+      resolution,
+      cascades,
+      shadowLayout,
+      transmittanceLayout,
+      shadow: createFroxelTexture(this.device, `${this.#label} shadow grid`, shadowLayout.size, "rgba16float"),
+      transmittance: createFroxelTexture(this.device, `${this.#label} transmittance`, transmittanceLayout.size, "rgba16float"),
+      partials: multi ? createFroxelTexture(this.device, `${this.#label} grid partials`, shadowLayout.size, "r32uint", false) : null,
+    };
+    this.#grid = next;
+    // A new texture is empty: draw the grid and the transmittance again
+    this.#gridDrawn = -1;
+    this.#transmittanceSignature = [];
+    return next;
+  }
+
+  #ensureTextures(W: number, H: number, D: number, temporal: boolean, multi: boolean, layers: number): Textures {
     const t = this.#textures;
     const sameSize = !!t && t.size[0] === W && t.size[1] === H && t.size[2] === D;
-    if (t && sameSize && (!temporal || t.history) && (!multi || t.partials)) {
+    if (t && sameSize && (!temporal || t.history) && (!multi || (t.partials && t.partialLayers === layers))) {
       return t;
     }
     let changed = false;
@@ -423,6 +655,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
         integrated: createFroxelTexture(this.device, `${this.#label} integrated`, [W, H, D + 1], "rgba16float"),
         history: null,
         partials: null,
+        partialLayers: 0,
       } as Textures;
     })();
     if (temporal && !next.history) {
@@ -430,7 +663,11 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#historyValid = false;
       this.#historyIndex = 0;
     }
-    if (multi && !next.partials) next.partials = createFroxelTexture(this.device, `${this.#label} partials`, [W, H, 2 * D], "r32uint", false);
+    if (multi && (!next.partials || next.partialLayers !== layers)) {
+      this.#retire.retire(next.partials);
+      next.partials = createFroxelTexture(this.device, `${this.#label} partials`, [W, H, layers * D], "r32uint", false);
+      next.partialLayers = layers;
+    }
     this.#textures = next;
     if (changed) this.outputs.version++;
     return next;
@@ -463,9 +700,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     return group;
   }
 
-  #gatherBind(layout: GPUBindGroupLayout, tex: Textures, multi: boolean): GPUBindGroup {
-    const b = GATHER_BINDINGS;
-    return this.#cached(`gather${multi ? "-multi" : ""}`, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), this.#groupsBuffer], () =>
+  #gatherBind(layout: GPUBindGroupLayout, tex: Textures, multi: boolean, frameLighting: boolean): GPUBindGroup {
+    const b = frameLighting ? FRAME_GATHER_BINDINGS : GATHER_BINDINGS;
+    const transmittance = frameLighting ? this.#grid!.transmittance : null;
+    return this.#cached(`gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}`, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance] : []), this.#groupsBuffer], () =>
       this.device.createBindGroup({
         label: `${this.#label} gather group 1`,
         layout,
@@ -474,6 +712,37 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: b.group, resource: { buffer: this.#groupsBuffer, size: VDB_FRAME_GROUP.size } },
           { binding: b.scatter, resource: tex.scatter.createView({ dimension: "3d" }) },
           ...(multi ? [{ binding: b.partials, resource: tex.partials!.createView({ dimension: "3d" }) }] : []),
+          ...(transmittance ? [{ binding: FRAME_GATHER_BINDINGS.transmittance, resource: transmittance.createView({ dimension: "3d" }) }] : []),
+        ],
+      }),
+    );
+  }
+
+  #gridDensityBind(layout: GPUBindGroupLayout, gt: GridTextures, multi: boolean): GPUBindGroup {
+    const b = GRID_DENSITY_BINDINGS;
+    return this.#cached(`grid-density${multi ? "-multi" : ""}`, [layout, gt.shadow, ...(multi ? [gt.partials!] : []), this.#groupsBuffer], () =>
+      this.device.createBindGroup({
+        label: `${this.#label} grid density group 1`,
+        layout,
+        entries: [
+          { binding: b.volumes, resource: { buffer: this.#volumesBuffer } },
+          { binding: b.group, resource: { buffer: this.#groupsBuffer, size: VDB_FRAME_GROUP.size } },
+          { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
+          ...(multi ? [{ binding: b.partials, resource: gt.partials!.createView({ dimension: "3d" }) }] : []),
+        ],
+      }),
+    );
+  }
+
+  #transmittanceBind(layout: GPUBindGroupLayout, gt: GridTextures): GPUBindGroup {
+    const b = TRANSMITTANCE_BINDINGS;
+    return this.#cached("transmittance", [layout, gt.shadow, gt.transmittance], () =>
+      this.device.createBindGroup({
+        label: `${this.#label} transmittance group 1`,
+        layout,
+        entries: [
+          { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
+          { binding: b.transmittance, resource: gt.transmittance.createView({ dimension: "3d" }) },
         ],
       }),
     );
@@ -511,13 +780,16 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   // ---------------------------------------------------------------- packing
 
-  #packLights(lights: readonly VDBFrameLight[]): void {
+  /** Packs the lights; returns the sorted records (directional, point, spot; ≤ 16) and the sky direction. */
+  #packLights(lights: readonly VDBFrameLight[]): { sorted: number[][]; sky: number[] } {
     const w = this.#lightsWriter;
     const L = VDB_FRAME_LIGHTS;
     w.clear(0, L.size);
     const ambient = [0, 0, 0];
     const probe = new Float32Array(36);
     const hemi: { sky: readonly number[]; ground: readonly number[]; up: number[] }[] = [];
+    const hemiSkySum = [0, 0, 0];
+    const hemiGroundSum = [0, 0, 0];
     const directional: number[][] = [];
     const point: number[][] = [];
     const spot: number[][] = [];
@@ -526,6 +798,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       return [v[0]! / l, v[1]! / l, v[2]! / l];
     };
     let hemiTotal = 0;
+    let sky: number[] | null = null;
     for (const l of lights) {
       switch (l.kind) {
         case "ambient":
@@ -537,6 +810,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
         case "hemisphere":
           hemiTotal++;
           if (hemi.length < VDB_FRAME_MAX_HEMISPHERE_LIGHTS) hemi.push({ sky: l.sky, ground: l.ground, up: norm(l.up) });
+          for (let i = 0; i < 3; i++) {
+            hemiSkySum[i] = hemiSkySum[i]! + l.sky[i]!;
+            hemiGroundSum[i] = hemiGroundSum[i]! + l.ground[i]!;
+          }
+          // his frameSkyDirection: the first hemisphere light's direction
+          if (!sky && Math.hypot(l.up[0], l.up[1], l.up[2]) > 0) sky = norm(l.up);
           break;
         case "directional": {
           const d = norm(l.direction);
@@ -558,6 +837,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#warnOnce("lights", `too many lights: only ${VDB_FRAME_MAX_LIGHTS} lights and ${VDB_FRAME_MAX_HEMISPHERE_LIGHTS} hemisphere lights are used.`);
     }
     const used = sorted.slice(0, VDB_FRAME_MAX_LIGHTS);
+    const skyDirection = sky ?? [0, 1, 0];
     w.set(L, 0, "ambient", [ambient[0]!, ambient[1]!, ambient[2]!, hemi.length]);
     w.set(L, 0, "counts", [used.length, 0, 0, 0]);
     w.set(L, 0, "probe", probe);
@@ -568,18 +848,29 @@ class FrameRenderer implements VDBFrameRendererGpu {
     w.set(L, 0, "color", used.flatMap((r) => r.slice(4, 8)));
     w.set(L, 0, "spot", used.flatMap((r) => r.slice(8, 12)));
     w.set(L, 0, "falloff", used.flatMap((r) => r.slice(12, 16)));
+    w.set(L, 0, "sky", [...skyDirection, 0]);
+    w.set(L, 0, "hemiSkySum", [...hemiSkySum, 0]);
+    w.set(L, 0, "hemiGroundSum", [...hemiGroundSum, 0]);
     this.device.queue.writeBuffer(this.#lightsBuffer, 0, w.buffer);
+    return { sorted: used, sky: skyDirection };
   }
 
-  #phaseOf(p: VDBFrameVolumeParams): VDBFramePhaseFields {
+  /** The phase fields of a volume after its overrides (V65), or the renderer's own ('frame' lighting) for null. */
+  #phaseOf(p: VDBFrameVolumeParams | null): VDBFramePhaseFields {
     const s = this.settings;
     return {
-      phase: p.phase ?? s.phase,
-      phaseG: p.phaseG ?? s.phaseG,
-      phaseBackG: p.phaseBackG ?? s.phaseBackG,
-      phaseBackWeight: p.phaseBackWeight ?? s.phaseBackWeight,
-      phaseGExponent: p.phaseGExponent ?? s.phaseGExponent,
+      phase: p?.phase ?? s.phase,
+      phaseG: p?.phaseG ?? s.phaseG,
+      phaseBackG: p?.phaseBackG ?? s.phaseBackG,
+      phaseBackWeight: p?.phaseBackWeight ?? s.phaseBackWeight,
+      phaseGExponent: p?.phaseGExponent ?? s.phaseGExponent,
     };
+  }
+
+  /** densityScale after normalizeDensity (his getDensityScale). */
+  #densityScaleOf(p: VDBFrameVolumeParams, slot: VDBVolumeSlot): number {
+    const mean = p.densityMean ?? slot.stats.meanNonZero;
+    return p.normalizeDensity && mean > 0 ? p.densityScale / mean : p.densityScale;
   }
 
   #packVolumes(records: readonly VolumeRecord[]): void {
@@ -592,12 +883,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
       const phaseFields = this.#phaseOf(p);
       const phase = vdbFramePhaseVector(phaseFields);
       if (phase[3] > 0) {
-        this.#warnOnce("mie", "the Lorenz-Mie phases are K6.3; K6.1 lights them with the phase's lobes off (isotropic).");
+        this.#warnOnce("mie", "the Lorenz-Mie phases are K6.3; 'volume' lighting lights them with the phase's lobes off (isotropic).");
         phase[3] = 0;
       }
       const ms = vdbFrameMultipleScatteringValue(this.settings.multipleScattering === "octaves" ? false : this.settings.multipleScattering, phaseFields);
-      const mean = p.densityMean ?? slot.stats.meanNonZero;
-      const densityScale = p.normalizeDensity && mean > 0 ? p.densityScale / mean : p.densityScale;
       const levels = slot.lodLevels;
       w.clear(base, VDB_FRAME_VOLUME_BYTES);
       w.set(V, base, "viewToLocal", r.viewToLocal);
@@ -610,7 +899,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       w.set(V, base, "offsetWrap", [...p.offset3D, WRAP_CODE[p.wrap3D] ?? 0]);
       w.set(V, base, "phase", phase);
       w.set(V, base, "phaseSpectrumMs", [...vdbFramePhaseSpectrum(phaseFields), ms]);
-      w.set(V, base, "density", [densityScale, p.densityCutoff, vdbMat4MaxScale(p.matrixWorld), p.absorbance]);
+      w.set(V, base, "density", [this.#densityScaleOf(p, slot), p.densityCutoff, vdbMat4MaxScale(p.matrixWorld), p.absorbance]);
       w.set(V, base, "emission", [p.emissiveIntensity, p.temperatureRange[0], p.temperatureRange[1], levels]);
       w.set(V, base, "march", [Math.max(0, Math.round(p.shadowSteps)), p.mipmaps && levels > 0 ? 1 : 0, p.hdda ? 1 : 0, 0]);
       w.set(V, base, "extinctionSpectrum", [1, 1, 1, 0]);
@@ -618,7 +907,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.device.queue.writeBuffer(this.#volumesBuffer, 0, w.buffer, 0, Math.max(1, records.length) * VDB_FRAME_VOLUME_BYTES);
   }
 
-  #packGroups(groups: readonly VolumeRecord[][]): void {
+  /** One record per source group: its gather range and role among the gather groups, its casters and their role. */
+  #packGroups(groups: readonly SourceGroup[], gatherGroups: readonly SourceGroup[], casterGroups: readonly SourceGroup[]): void {
     const bytes = Math.max(4, groups.length) * VDB_FRAME_GROUP_STRIDE;
     if (this.#groupsBuffer.size < bytes) {
       this.#retire.retire(this.#groupsBuffer);
@@ -626,11 +916,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#groupsWriter = new VDBUniformWriter(bytes);
     }
     const w = this.#groupsWriter;
-    let first = 0;
-    groups.forEach((list, i) => {
-      const role = (i === 0 ? 1 : 0) | (i === groups.length - 1 ? 2 : 0);
-      w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "range", [first, list.length, role, i]);
-      first += list.length;
+    const role = (list: readonly SourceGroup[], g: SourceGroup) => {
+      const i = list.indexOf(g);
+      return i < 0 ? 0 : (i === 0 ? 1 : 0) | (i === list.length - 1 ? 2 : 0);
+    };
+    groups.forEach((g, i) => {
+      w.clear(i * VDB_FRAME_GROUP_STRIDE, VDB_FRAME_GROUP_STRIDE);
+      w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "range", [g.first, g.visible, role(gatherGroups, g), gatherGroups.indexOf(g)]);
+      w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "casters", [g.first + g.casterStart, g.casters, role(casterGroups, g), casterGroups.indexOf(g)]);
     });
     this.device.queue.writeBuffer(this.#groupsBuffer, 0, w.buffer, 0, groups.length * VDB_FRAME_GROUP_STRIDE);
   }
@@ -704,6 +997,13 @@ class FrameRenderer implements VDBFrameRendererGpu {
       t.partials?.destroy();
     }
     this.#textures = null;
+    const g = this.#grid;
+    if (g) {
+      g.shadow.destroy();
+      g.transmittance.destroy();
+      g.partials?.destroy();
+    }
+    this.#grid = null;
     this.#retire.drain();
     this.#frameBuffer.destroy();
     this.#lightsBuffer.destroy();
@@ -716,6 +1016,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
   /** @internal The textures (harness probes and tests). */
   get debugTextures(): Readonly<Textures> | null {
     return this.#textures;
+  }
+
+  /** @internal The 'frame' lighting grid textures and the live cascade layout (harness probes and tests). */
+  get debugGrid(): { textures: Readonly<GridTextures>; count: number; gridMin: number[][]; gridSize: number[][]; gridVoxel: number[][] } | null {
+    const g = this.#grid;
+    if (!g) return null;
+    const count = this.#frameWriter.f32[VDB_FRAME_UNIFORMS.fields.get("gridLayout")!.offset / 4]!;
+    const v = (a: { x: number; y: number; z: number }[]) => a.slice(0, count).map((p) => [p.x, p.y, p.z]);
+    return { textures: g, count, gridMin: v(this.#gridMin), gridSize: v(this.#gridSize), gridVoxel: v(this.#gridVoxel) };
   }
 }
 
@@ -736,4 +1045,15 @@ export function vdbCreateFrameRenderer(device: GPUDevice, options: VDBFrameRende
 /** @internal The froxel textures of a renderer from {@link vdbCreateFrameRenderer} (harness probes). */
 export function vdbFrameRendererTextures(r: VDBFrameRendererGpu): { scatter: GPUTexture; integrated: GPUTexture; history: readonly GPUTexture[] | null; partials: GPUTexture | null; size: readonly number[] } | null {
   return (r as unknown as { debugTextures: Textures | null }).debugTextures;
+}
+
+/** @internal The 'frame' lighting grid of a renderer (harness probes): stacks, their layouts and the live cascades. */
+export function vdbFrameRendererGrid(r: VDBFrameRendererGpu): {
+  textures: { resolution: number; cascades: number; shadow: GPUTexture; shadowLayout: VDBFrameStackLayout; transmittance: GPUTexture; transmittanceLayout: VDBFrameStackLayout; partials: GPUTexture | null };
+  count: number;
+  gridMin: number[][];
+  gridSize: number[][];
+  gridVoxel: number[][];
+} | null {
+  return (r as unknown as { debugGrid: ReturnType<typeof vdbFrameRendererGrid> }).debugGrid;
 }

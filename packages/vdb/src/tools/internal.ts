@@ -205,6 +205,17 @@ export type {
   VDBFrameTransmittanceModes,
 } from "./frame/grid.js";
 export {
+  vdbFrameStackLayout,
+  vdbFrameTrilinear,
+  vdbFrameStackSample,
+  vdbFrameGridFragCoord,
+  vdbFrameGridVoxelWorld,
+  vdbFrameGridDensityVoxel,
+  vdbFrameTransmittanceVoxel3d,
+  vdbFrameStackShadows,
+} from "./frame/stack.js";
+export type { VDBFrameStackLayout, VDBFrameTexture3d, VDBFrameGridCaster } from "./frame/stack.js";
+export {
   VDBFrameEnvironmentLights,
   vdbFrameEnvironmentMapDirection,
   vdbFrameEnvironmentMode,
