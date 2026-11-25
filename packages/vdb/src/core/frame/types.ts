@@ -1,8 +1,8 @@
 /**
  * Plain-data types of the core frame renderer (K6.1, design §2.1–§2.5). Matrices are column-major
  * `ArrayLike<number>` (three's `Matrix4.elements` order); colours are linear RGB. K6.1 implements
- * 'volume' lighting on dense sources; the environment, occluders and shadow requests are typed here and
- * ignored with a one-time warning until K6.2 / K6.5 / K6.5b.
+ * 'volume' lighting on dense sources (K6.2: 'frame' lighting, K6.2b: the environment); occluders and shadow requests
+ * are typed here and ignored with a one-time warning until K6.5 / K6.5b.
  */
 
 import type { VDBVolumeSlot } from "../source/types.js";
@@ -85,13 +85,25 @@ export type VDBFrameLight = { readonly id: number | string; readonly mask?: numb
     }
 );
 
-/** A host environment texture (K6.2; typed, ignored in K6.1). */
+/**
+ * A host environment texture (K6.2b, design §2.3, Q3): linear radiance, reduced on the GPU (no readback). Any float
+ * format the device can bind as a sampled texture (read with `textureLoad` at level 0, so unfilterable formats such as
+ * rgba32float work): a compute-PMREM or sky generator's output plugs in directly.
+ */
 export interface VDBFrameEnvironment {
+  /** Identity of the source: a new id or revision re-runs the prefilter. */
   id: unknown;
   revision: number;
+  /** Equirect: u = atan2(m.z, m.x) / 2π + ½ along x, row 0 the zenith (+Y). Cube: 6 layers, WebGPU's faces. */
   texture: GPUTexture;
+  /** Default: 6 square layers → cube, else equirect (a `GPUTextureView` has no readable dimension). */
   projection?: "equirect" | "cube";
+  /**
+   * World → map, 3 × 3 column-major (m = R · d): a rotation, or a rotation with a reflection (three's flipY equirect is
+   * diag(1, −1, 1) · Rᵀ, its WebGPU cube diag(−1, 1, 1) · Rᵀ). Default identity.
+   */
   rotation?: Float32Array;
+  /** Scales the environment lights and irradiance (three's `scene.environmentIntensity`). */
   intensity: number;
 }
 

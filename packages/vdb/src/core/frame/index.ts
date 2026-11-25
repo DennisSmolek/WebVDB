@@ -3,7 +3,20 @@
  * export through `core/internal.ts` only; the public surface lands in K6.8 (design §2.1).
  */
 
-export { vdbCreateFrameRenderer, vdbFrameRendererGrid, vdbFrameRendererTextures } from "./renderer.js";
+export { vdbCreateFrameRenderer, vdbFrameRendererEnvironment, vdbFrameRendererGrid, vdbFrameRendererTextures } from "./renderer.js";
+export { VDBFrameEnvironmentState, vdbFrameEnvironmentProjection } from "./environment.js";
+export type { VDBFrameEnvironmentInfo } from "./environment.js";
+export {
+  ENV_BLUR_BINDINGS,
+  ENV_GRID_BINDINGS,
+  ENV_PREFILTER_BINDINGS,
+  ENV_REDUCE_BINDINGS,
+  vdbFrameEnvAreaWgsl,
+  vdbFrameEnvBlurWgsl,
+  vdbFrameEnvCubeWgsl,
+  vdbFrameEnvReduceWgsl,
+  vdbFrameEnvironmentGridWgsl,
+} from "./wgsl/environment.js";
 export type { VDBFrameRendererGpu, VDBFrameRendererGpuOptions } from "./renderer.js";
 export { vdbFrameDefaultSettings } from "./settings.js";
 export type { VDBFrameSettings, VDBFramePhaseName, VDBFrameMultipleScatteringMode } from "./settings.js";
@@ -44,8 +57,13 @@ export type { VDBFrameChunk } from "./wgsl/chunks.js";
 export {
   CHUNK_PROBE_INPUTS,
   CHUNK_PROBE_OUTPUTS,
+  ENV_GROUP0_LAYOUT,
   GROUP0_LAYOUT,
   SOURCE_SLOT,
+  vdbFrameEnvBlurSpec,
+  vdbFrameEnvPrefilterSpec,
+  vdbFrameEnvReduceSpec,
+  vdbFrameEnvironmentGridSpec,
   vdbFrameChunkProbeSpec,
   vdbFrameCompositeKernelWgsl,
   vdbFrameCompositeSpec,
@@ -62,8 +80,11 @@ export { computePipeline, renderPipeline, prepareCompute, prepareRender, vdbHash
 export type { VDBCachedPipeline, VDBComputeSpec, VDBRenderSpec } from "./pipelines.js";
 export { VDBRetireQueue, createFroxelTexture } from "./resources.js";
 export {
+  VDB_FRAME_ENV_PARAMS,
+  VDB_FRAME_ENVIRONMENT,
   VDB_FRAME_GROUP,
   VDB_FRAME_GROUP_STRIDE,
+  VDB_FRAME_MAX_ENVIRONMENT_LIGHTS,
   VDB_FRAME_LIGHTS,
   VDB_FRAME_MAX_CASCADES,
   VDB_FRAME_MAX_HEMISPHERE_LIGHTS,

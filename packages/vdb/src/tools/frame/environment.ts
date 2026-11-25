@@ -245,12 +245,16 @@ export class VDBFrameEnvironmentLights<R = unknown, S extends VDBFrameEnvironmen
    * Dominant direction (brightest texel) and fixed sky directions: zenith, nadir, then a horizon ring.
    * Each texel goes to the nearest direction; a light is at the energy centroid of its texels with
    * their energy; colour is energy / 4 (a uniform environment then gives the 'outward' light).
-   * `pairs`: seeds in opposite pairs (diffusion weights of a pair sum to 2).
+   * `pairs`: seeds in opposite pairs (diffusion weights of a pair sum to 2). `tie` (K6.2b, the core): near-ties go to
+   * the first candidate.
    */
-  getDirectionalLights(samples: number, pairs = false): VDBFrameEnvironmentLight[] {
+  getDirectionalLights(samples: number, pairs = false, tie = 0): VDBFrameEnvironmentLight[] {
     const texels = this.texels!;
     const count = Math.min(frameMaxEnvironmentSamples, Math.max(1, Math.round(samples) || 1));
-    const peak = texels.reduce((best, texel) => (texel.luminance > best.luminance ? texel : best));
+    // K6.2b `tie` (the core twin): the first texel within `tie` (relative) of the maximum, and a seed must be nearer
+    // by more than `tie`; 0 is his (the first exact maximum, strictly nearer)
+    const brightest = Math.max(...texels.map((texel) => texel.luminance));
+    const peak = tie > 0 ? texels.find((texel) => texel.luminance >= brightest * (1 - tie))! : texels.reduce((best, texel) => (texel.luminance > best.luminance ? texel : best));
     const seeds: V3[] = [peak.direction];
     const ringCount = pairs ? Math.max(0, count - 4) - (Math.max(0, count - 4) % 2) : count - 3;
 
@@ -275,7 +279,7 @@ export class VDBFrameEnvironmentLights<R = unknown, S extends VDBFrameEnvironmen
       let nearestDot = -Infinity;
       for (const cell of cells) {
         const dot = cell.seed[0] * direction[0] + cell.seed[1] * direction[1] + cell.seed[2] * direction[2];
-        if (dot > nearestDot) {
+        if (dot > nearestDot + tie) {
           nearest = cell;
           nearestDot = dot;
         }

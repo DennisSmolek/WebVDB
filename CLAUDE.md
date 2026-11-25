@@ -343,3 +343,17 @@ From v1; details in docs/archive/handoffs/.
 - His sRGB blend is not linear: the K6.R report's "composite − (1 − α)·background" goes negative where a volume is darker
   than the background (the luminance bias then reads 0). The K6.R1 report inverts the blend at the reference's α.
 - `froxelMix` acts in 'volume' lighting only ('frame' sums densities, V90): the V79 A/B is `?lighting=volume`.
+- WGSL `sin`/`cos` are only accurate to 2^-11 (absolute; SwiftShader shows ~1e-4). Anything that amplifies a direction
+  error (a GGX lobe at roughness 0.4, Voronoi cell boundaries, nearest-texel picks) then differs from an f64 twin by
+  %: the K6.2b environment kernels read texel directions and solid angles from f32 tables in the WGSL (and turn the
+  horizon ring by a table); near-ties in the 'directional' extraction use a 1e-5 tolerance (`VDB_FRAME_ENV_TIE`).
+- A buffer one dispatch writes as storage and later dispatches bind as a uniform is fine in one compute pass, but not
+  in the same dispatch: the writer's pipeline layout must not include it. The core's `envReduce` has its own group 0
+  (`ENV_GROUP0_LAYOUT`); every other frame kernel's group 0 has the environment buffer at binding 3.
+- three's `flipY` equirect (HDR / UltraHDR loaders) is uploaded bottom row first: GPU row 0 is the nadir. The core's
+  equirect has row 0 at the zenith, so `./three` passes `diag(1, −1, 1) · Rᵀ` as the environment rotation (R: three's
+  `environmentRotation` matrix; three looks up `Rᵀ d`). Its WebGPU cube lookups negate x: `diag(−1, 1, 1) · Rᵀ`.
+- Point-sampling three's PMREM (a `CUBE_UV` `scene.environment`) at roughness 0 into a coarse lat-long loses a small
+  sun between samples (256 × 128: 5× less sun energy); the `./three` core fallback draws 1024 × 512 (≈ PMREM mip 0).
+- k3-frame `?backend=core` reads the environment lights from the core's buffer after one frame (no readback wait); the
+  TSL path still waits for its readback, so core-vs-TSL env A/Bs compare settled frames.

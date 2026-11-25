@@ -612,6 +612,11 @@ export interface VDBFrameDensityInputs {
   octaves?: Vec4;
   /** Environment mode 'grid': the environment grid atlas (last cascade), its tile columns and the unshadowed light. */
   environmentGrid?: { atlas: VDBFrameAtlas; columns: number; unshadowed: Vec3 } | null;
+  /**
+   * K6.2b (the core's environment term): the irradiance added as albedo · E / π at the visible world and local
+   * position, given the sky up and down totals there (`vdbFrameEnvironmentDensityTerm`).
+   */
+  environmentAt?: ((world: Vec3, local: Vec3 | null, skyTotals: Vec2) => Vec3) | null;
 }
 
 /**
@@ -738,6 +743,10 @@ function densityFroxelTail(
     const uvw = vdbFrameGridUvw(g, g.count - 1, visibleWorld);
     const outside = vdbFrameShadowTotal(1, octaves);
     const env = vdbFrameInsideGrid(g.resolution, uvw) ? vdbFrameSampleTiles(p.environmentGrid.atlas, g.resolution, 0, p.environmentGrid.columns, uvw) : p.environmentGrid.unshadowed.map((v) => v * outside);
+    for (let c = 0; c < 3; c++) emission[c] = emission[c]! + (albedo[c]! * env[c]!) / Math.PI;
+  }
+  if (p.environmentAt) {
+    const env = p.environmentAt(visibleWorld, visibleLocal, [shadow0[0]!, shadow0[1]!]);
     for (let c = 0; c < 3; c++) emission[c] = emission[c]! + (albedo[c]! * env[c]!) / Math.PI;
   }
   return [
