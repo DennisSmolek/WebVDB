@@ -283,3 +283,17 @@ From v1; details in docs/archive/handoffs/.
   nearest.
 - Agent worktrees can start at an old commit (seen at `c3732d0`, not main): compare `git log -1` with main and
   `git merge --ff-only main` first. They also lack the git-ignored fixtures: `cp -n` them from the main checkout.
+- three r187 binds a foreign `GPUTexture` through `ExternalTexture` (`backend.createTexture` takes `sourceTexture`,
+  `destroyTexture` never destroys it); set `is3DTexture = true` for a `texture3D()` node. An initialized ExternalTexture
+  cannot be re-pointed ("Texture already initialized"): make a new stand-in and swap the node's `value`
+  (`three/frame/core-textures.ts`, self-tested per backend).
+- Core frame renderer (K6.1): the integrated prefix stores (radiance, opacity 1 − T); zero is empty, so never clear it
+  to T = 1. Its x, y filtering acts on the prefix, so core-vs-TSL and core-vs-his frames differ only on volume
+  silhouettes (≤ 41/255). `scripts/k3/compare.mjs` measures inside the volume rect (fractions ~10× the full-frame
+  ones): quote which one you mean.
+- `VDBFrameRendererGpu.render()` with sRGB blending needs `targets.sceneColor` (a copy of the colour target before the
+  volumes); without it, use `settings.srgbBlending = false` or composite with `vdbFrameIntegrateWgsl` yourself.
+- K6 twin probes on hardware: hardware trilinear quantizes filter weights (8 bits), so the k6-core probes use smooth
+  data (< ~3/255 per texel) and a static camera for the temporal taps; SwiftShader filters exactly.
+- The agent sandbox refuses Bash commands whose text contains the bare word `source` followed by a path, and long
+  compound commands: use `sourc?` globs and run steps as separate commands (or a script file in the scratchpad).

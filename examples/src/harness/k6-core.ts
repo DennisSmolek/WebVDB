@@ -85,6 +85,8 @@ interface Result {
   probe?: string;
   mutate?: string;
   stats?: Stats;
+  /** `?probe=gather`: `render()` (the core composite pass) vs its twin. */
+  renderStats?: Stats;
   /** `?probe=gather&swap=1`: builds in the second identical update. */
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
@@ -380,8 +382,8 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const volB = synthDense([16, 20, 18], 2, { mask: true, emission: true, mips });
   const srcA = vdbDenseSource(device, volA, { label: "k6 A" });
   const srcB = groups === 2 ? vdbDenseSource(device, volB, { label: "k6 B" }) : srcA;
-  const settings = { lighting: "volume" as const, width: GW, height: GH, depth: GD, subSteps: 16, temporal: false, jitter: false, multipleScattering: true, froxelMix: mix, phase: "dual-lobe" as const, fadeRadius: 9 };
-  const renderer = vdbCreateFrameRenderer(device, { settings });
+  const settings = { lighting: "volume" as const, width: GW, height: GH, depth: GD, subSteps: 16, temporal: false, jitter: false, multipleScattering: true, froxelMix: mix, phase: "dual-lobe" as const, fadeRadius: 9, srgbBlending: false };
+  const renderer = vdbCreateFrameRenderer(device, { settings, composite: { colorFormat: "rgba16float", depthFormat: "depth32float" } });
   const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, shadowSteps: 12, mipmaps: mips, phaseG: 0.6 };
   const pB: Partial<VDBFrameVolumeParams> = {
     matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]),
@@ -495,6 +497,29 @@ async function probeGather(device: GPUDevice): Promise<void> {
         compare(stats, [x, y, z], gpu, cpu, 2, 2 ** -20);
       }
   result.stats = stats;
+
+  // render(): the core composite pass over an empty depth (froxel grid = target size: taps on texel centres) vs the
+  // two-tap twin on the read-back prefix (boundary D at an infinite depth)
+  const color = device.createTexture({ size: [GW, GH], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+  const depthTex = device.createTexture({ size: [GW, GH], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+  enc = device.createCommandEncoder();
+  enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: "clear", clearValue: [0, 0, 0, 0], storeOp: "store" }], depthStencilAttachment: { view: depthTex.createView(), depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "store" } }).end();
+  renderer.render(enc, { color: color.createView(), size: [GW, GH], depth: depthTex.createView() });
+  device.queue.submit([enc.finish()]);
+  const composite = halves(await readTexture(device, color, [GW, GH, 1], 8));
+  const prefix = halves(await readTexture(device, tex.integrated, [GW, GH, GD + 1], 8));
+  const rstats = newStats("2 f16 ulp (render() over an empty depth vs the two-tap twin on the read-back prefix)");
+  for (let py = 0; py < GH; py++)
+    for (let x = 0; x < GW; x++) {
+      const y = GH - 1 - py;
+      const cpu = integrateTwin((k) => {
+        const j = ((k * GH + y) * GW + x) * 4;
+        return [prefix[j]!, prefix[j + 1]!, prefix[j + 2]!, prefix[j + 3]!];
+      }, 1e20, range, GD, MUTATE === "taps" ? "taps" : "none");
+      const i = (py * GW + x) * 4;
+      compare(rstats, [x, py], [composite[i]!, composite[i + 1]!, composite[i + 2]!, composite[i + 3]!], cpu[3] > 0 ? cpu : [0, 0, 0, 0]);
+    }
+  result.renderStats = rstats;
   renderer.dispose();
   srcA.dispose();
   if (srcB !== srcA) srcB.dispose();

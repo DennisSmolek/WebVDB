@@ -27,6 +27,7 @@ interface Result {
   error?: string;
   adapter?: string;
   stats?: Stats;
+  renderStats?: Stats;
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
   warnings: string[];
@@ -73,6 +74,10 @@ for (const p of PROBES) {
     expect(r.stats!.compared, detail(r)).toBeGreaterThanOrEqual(512);
     expect(r.stats!.covered, detail(r)).toBeGreaterThanOrEqual(p.minCovered);
     expect(r.stats!.over, detail(r)).toBeLessThanOrEqual(Math.floor(r.stats!.compared * 0.001));
+    if (r.renderStats) {
+      expect(r.renderStats.over, detail(r)).toBe(0);
+      expect(r.renderStats.covered, detail(r)).toBeGreaterThan(50);
+    }
     console.log(`[k6-core] ${p.name} on ${r.adapter}: ${r.stats!.compared} texels, ${r.stats!.covered} non-zero, max ${r.stats!.maxUlp.toFixed(2)} f16 ulp, ${r.stats!.over} over`);
     for (const m of p.mutations) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
@@ -155,6 +160,7 @@ for (const scene of AB_SCENES) {
         for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
           mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
           writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
+          writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
         }
       }
       console.log(`[k6-ab] ${scene} ${mix}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
