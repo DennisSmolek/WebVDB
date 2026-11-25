@@ -14,7 +14,7 @@
  *   Per pixel and channel |GPU − CPU| ≤ k·√(σ²_GPU + σ²_CPU); also the share of values equal to 1e-3 relative (the
  *   shared stream makes most paths identical). `&determinism=1` renders the dense case twice (bitwise equal).
  * - `report`: one K3 scenario from the capture manifest (`?scenario=`, his bunny), rendered by the reference for
- *   `scripts/k6/reference-report.mjs` (`?w=&h=&spp=&batches=&maxBounces=&phase=g,backG,backWeight&budget=<s>`).
+ *   `scripts/k6/reference-report.mjs` (`?w=&h=&spp=&batches=&maxBounces=&phase=g,backG,backWeight&budget=<s>&filter=box|center`).
  *
  * Results: `window.__VDB_K6_REFERENCE__` (e2e/k6-reference.spec.ts).
  */
@@ -590,7 +590,8 @@ async function report(device: GPUDevice): Promise<void> {
     lights: frame.lights,
     environment: frame.environment,
   };
-  const settings: Settings = { spp: Number(params.get("spp") ?? 1), maxBounces: Number(params.get("maxBounces") ?? 512), seed: Number(params.get("seed") ?? 1), rrStart: 4 };
+  // Box filter: the report compares with the TSL frame box-downsampled to this size (pixel areas, not centres).
+  const settings: Settings = { spp: Number(params.get("spp") ?? 1), maxBounces: Number(params.get("maxBounces") ?? 512), seed: Number(params.get("seed") ?? 1), rrStart: 4, pixelFilter: params.get("filter") === "center" ? "center" : "box" };
   const job: GpuJob = { source, width: W, height: H };
   const ref = await makeRenderer(device, job);
   ref.setScene(scene, settings);

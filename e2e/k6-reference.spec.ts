@@ -38,7 +38,10 @@ interface Result {
 async function run(page: Page, query: string, timeout = 300_000): Promise<Result> {
   await page.goto(`${PAGE_URL}${query}`);
   await page.waitForFunction(() => (window as { __VDB_K6_REFERENCE__?: { done: boolean } }).__VDB_K6_REFERENCE__?.done === true, undefined, { timeout });
-  return (await page.evaluate(() => (window as { __VDB_K6_REFERENCE__?: unknown }).__VDB_K6_REFERENCE__)) as Result;
+  const r = (await page.evaluate(() => (window as { __VDB_K6_REFERENCE__?: unknown }).__VDB_K6_REFERENCE__)) as Result;
+  // K6R_LOG=1: print the numbers (the handoff quotes them).
+  if (process.env.K6R_LOG) console.log(`${query}\n${JSON.stringify({ cases: r.cases, twins: r.twins, determinism: r.determinism })}`);
+  return r;
 }
 
 test.describe.configure({ mode: "serial", timeout: 400_000 });
