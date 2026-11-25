@@ -70,3 +70,5 @@ export {
   sparseRecordStructWgsl,
   sparseSourceWgsl,
 } from "./source/sparse-wgsl.js";
+// K6.R: the reference renderer (brute-force path tracer over a volume source; internal only).
+export * from "./reference/index.js";

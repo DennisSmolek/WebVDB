@@ -352,3 +352,5 @@ export {
   frameBlackbodyTableSize as vdbFrameBlackbodyTableSize,
   frameBlackbodyTableRows as vdbFrameBlackbodyTableRows,
 } from "./frame/blackbody.js";
+// K6.R: the reference renderer's scene, random stream, CPU twin and analytic cases (internal only).
+export * from "./reference/index.js";
