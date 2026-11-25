@@ -12,12 +12,19 @@
  * - the chain rule for the world normal under an anisotropic, rotated map:
  *   `normalize(W^T (q - c))` for the sphere, which a `W` (not transposed) gets
  *   wrong.
- * The GPU half runs in e2e/k3-levelset.spec.ts against these twins.
+ * K6.6: the surface twins (`levelSetPixelUv`, `levelSetViewRay`, `levelSetSurface`, `levelSetNdcDepth`) against
+ * three's camera maths (unproject, project) and the analytic sphere.
+ * The GPU half runs in e2e/k3-levelset.spec.ts and e2e/k6-surface.spec.ts against these twins.
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { Matrix4, OrthographicCamera, PerspectiveCamera, Vector3, WebGPUCoordinateSystem } from "three";
 import { describe, expect, it } from "vitest";
 import {
+  levelSetNdcDepth,
+  levelSetPixelUv,
+  levelSetSurface,
+  levelSetViewRay,
   vdbBuildFromLeavesDetailed,
   buildFromVdb,
   VDB_FLOAT_LEAF_CODEC,
@@ -267,5 +274,82 @@ describe("vdbPointRenderData (his createPointData)", () => {
     expect(d.count).toBe(9802);
     expect(d.positions).toEqual(grid.points().positions);
     expect(d.spacing).toBeGreaterThan(0);
+  });
+});
+
+describe("K6.6 surface twins (levelSetViewRay, levelSetSurface)", () => {
+  const W2I = [1 / VOXEL, 0, 0, 0, 0, 1 / VOXEL, 0, 0, 0, 0, 1 / VOXEL, 0];
+  const centre = new Vector3(...C).multiplyScalar(VOXEL);
+  const perspectiveCamera = () => {
+    const camera = new PerspectiveCamera(50, 1.5, 0.01, 100);
+    camera.coordinateSystem = WebGPUCoordinateSystem;
+    camera.position.copy(centre).add(new Vector3(1.6, 0.9, 2.4));
+    camera.lookAt(centre);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    return camera;
+  };
+  const angle = (a: readonly number[], b: readonly number[]) => new Vector3(...a).angleTo(new Vector3(...b));
+
+  it("the pixel uv is the pixel centre in the viewport, y down", () => {
+    expect(levelSetPixelUv([0.5, 0.5], [0, 0, 4, 2])).toEqual([0.125, 0.25]);
+    expect(levelSetPixelUv([10.5, 20.5], [10, 20, 4, 2])).toEqual([0.125, 0.25]);
+  });
+
+  it("perspective rays go from the camera through three's unprojected pixel; orthographic rays leave the camera plane along -z", () => {
+    const camera = perspectiveCamera();
+    for (const [u, v] of [[0.1, 0.2], [0.5, 0.5], [0.93, 0.71]] as const) {
+      const ray = levelSetViewRay([u, v], camera.projectionMatrixInverse.elements, camera.matrixWorld.elements, false);
+      const through = new Vector3(u * 2 - 1, 1 - v * 2, 0.5).unproject(camera);
+      expect(ray.origin.map((x, k) => Math.abs(x - camera.position.getComponent(k)))).toEqual([0, 0, 0]);
+      expect(angle(ray.dir, through.sub(camera.position).toArray())).toBeLessThan(1e-12);
+      expect(Math.hypot(...ray.dir)).toBeCloseTo(1, 14);
+      expect(ray.span).toEqual([0, 1e30]);
+    }
+    const ortho = new OrthographicCamera(-2, 2, 1.5, -1.5, 0.1, 50);
+    ortho.coordinateSystem = WebGPUCoordinateSystem;
+    ortho.position.set(1, 2, 3);
+    ortho.lookAt(0, 0, 0);
+    ortho.updateMatrixWorld(true);
+    ortho.updateProjectionMatrix();
+    const ray = levelSetViewRay([0.25, 0.75], ortho.projectionMatrixInverse.elements, ortho.matrixWorld.elements, true);
+    const forward = new Vector3(0, 0, -1).transformDirection(ortho.matrixWorld);
+    expect(angle(ray.dir, forward.toArray())).toBeLessThan(1e-12);
+    expect(new Vector3(...ray.origin).sub(ortho.position).dot(forward)).toBeCloseTo(0, 12);
+    const back = new Vector3(...ray.origin).project(ortho);
+    expect(back.x).toBeCloseTo(-0.5, 12);
+    expect(back.y).toBeCloseTo(-0.5, 12);
+    expect(ray.span).toEqual([-1e5, 1e5]);
+  });
+
+  it("the surface of the sphere: hits on radius R, radial normals, three's projected depth, the twin's t", () => {
+    const camera = perspectiveCamera();
+    const viewProjection = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements;
+    let hits = 0;
+    let misses = 0;
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 24; x++) {
+        const ray = levelSetViewRay(levelSetPixelUv([x + 0.5, y + 0.5], [0, 0, 24, 16]), camera.projectionMatrixInverse.elements, camera.matrixWorld.elements, false);
+        const s = levelSetSurface(SPHERE, ray, W2I, viewProjection, { sdfToIndex: 1 / VOXEL });
+        const h = levelSetHit(SPHERE, ray.origin.map((v) => v / VOXEL), ray.dir.map((v) => v / VOXEL), ray.span, { sdfToIndex: 1 / VOXEL });
+        expect(s.hit).toBe(h.hit);
+        if (!s.hit) {
+          misses++;
+          expect(s).toEqual({ hit: false, t: 0, world: [0, 0, 0], normal: [0, 0, 0], ndcDepth: 0, samples: h.samples });
+          continue;
+        }
+        hits++;
+        expect(s.t).toBe(h.t);
+        const q = new Vector3(...s.world).divideScalar(VOXEL);
+        expect(Math.abs(q.distanceTo(new Vector3(...C)) - R)).toBeLessThan(0.02);
+        expect(angle(s.normal, q.clone().sub(new Vector3(...C)).toArray())).toBeLessThan((0.5 * Math.PI) / 180);
+        expect(Math.abs(s.ndcDepth - new Vector3(...s.world).project(camera).z)).toBeLessThan(1e-12);
+        expect(levelSetNdcDepth(s.world, viewProjection)).toBe(s.ndcDepth);
+        expect(s.ndcDepth).toBeGreaterThan(0);
+        expect(s.ndcDepth).toBeLessThan(1);
+      }
+    }
+    expect(hits).toBeGreaterThan(40);
+    expect(misses).toBeGreaterThan(40);
   });
 });
