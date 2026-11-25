@@ -76,3 +76,57 @@ export function vdbBoxPyramidLayout(texels: readonly number[], o: { pyramidMax?:
     lodLevels: level + count,
   };
 }
+
+/** The result of {@link vdbPackPyramidBlocks}. */
+export interface VDBPyramidPacking {
+  /** Origin (texels) of each block, in input order. */
+  readonly origins: readonly Vec3[];
+  /** The smallest texture that holds every block (each axis ≥ 1). */
+  readonly size: Vec3;
+}
+
+/**
+ * K6.7: packs 3D blocks (the coarse pyramids' bases and mip atlases of a sparse source's volumes) into one
+ * texture, deterministically from the input order: blocks go along x in rows, rows along y in layers, layers
+ * along z (a 3D shelf packer). Blocks never overlap, and no padding is needed: every read clamps to its block's
+ * half-texel box. Throws `VDB_BAD_OPTION` when a block or the result exceeds `max` per axis (WebGPU's
+ * `maxTextureDimension3D`, 2048 by default).
+ */
+export function vdbPackPyramidBlocks(blocks: readonly (readonly number[])[], max: readonly number[] = [2048, 2048, 2048]): VDBPyramidPacking {
+  const [MW, MH, MD] = [max[0]!, max[1]!, max[2]!];
+  const origins: Vec3[] = [];
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let rowH = 0;
+  let layerD = 0;
+  const size: Vec3 = [1, 1, 1];
+  for (const b of blocks) {
+    const [w, h, d] = [b[0]!, b[1]!, b[2]!];
+    if (![w, h, d].every((v) => Number.isInteger(v) && v > 0)) throw new VDBToolsError("VDB_BAD_OPTION", `vdbPackPyramidBlocks: block sizes must be positive integers, got ${JSON.stringify(b)}`);
+    if (w > MW || h > MH || d > MD) throw new VDBToolsError("VDB_BAD_OPTION", `vdbPackPyramidBlocks: a ${w}x${h}x${d} block exceeds the ${MW}x${MH}x${MD} texture limit`);
+    if (x + w > MW) {
+      x = 0;
+      y += rowH;
+      rowH = 0;
+    }
+    if (y + h > MH) {
+      x = 0;
+      y = 0;
+      rowH = 0;
+      z += layerD;
+      layerD = 0;
+    }
+    if (z + d > MD) {
+      throw new VDBToolsError("VDB_BAD_OPTION", `vdbPackPyramidBlocks: the blocks exceed the ${MW}x${MH}x${MD} texture limit (lower pyramidMax, or split the volumes over more sources)`);
+    }
+    origins.push([x, y, z]);
+    size[0] = Math.max(size[0], x + w);
+    size[1] = Math.max(size[1], y + h);
+    size[2] = Math.max(size[2], z + d);
+    x += w;
+    rowH = Math.max(rowH, h);
+    layerD = Math.max(layerD, d);
+  }
+  return { origins, size };
+}

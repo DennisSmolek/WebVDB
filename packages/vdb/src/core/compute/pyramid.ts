@@ -293,11 +293,13 @@ export interface VDBBoxPyramidGpuOptions {
   /** Base level override (default `vdbPyramidBaseLevel`). */
   level?: number;
   /**
-   * Write into these r16float textures (`COPY_DST`, the layout's sizes; `atlas` null exactly when the
-   * layout has no atlas) instead of allocating. The pyramid never destroys them (a three texture's
-   * `GPUTexture`, for example).
+   * Write into these r16float textures (`COPY_DST`; `atlas` null exactly when the layout has no atlas)
+   * instead of allocating. The pyramid never destroys them (a three texture's `GPUTexture`, for example).
+   * Without origins they must have the layout's sizes; with `baseOrigin` / `atlasOrigin` (K6.7: the core
+   * sparse source packs every volume's pyramid into one texture) the block at the origin must fit, and
+   * `base` and `atlas` may be the same texture.
    */
-  targets?: { base: GPUTexture; atlas: GPUTexture | null };
+  targets?: { base: GPUTexture; atlas: GPUTexture | null; baseOrigin?: VDBVec3; atlasOrigin?: VDBVec3 };
   /** Debug label of the GPU objects. */
   label?: string;
 }
@@ -364,6 +366,8 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
   readonly #params: GPUBuffer;
   readonly #rows: { base: number; atlas: number; atlasOffset: number };
   readonly #blocks: [number, number, number];
+  /** Where the base and the atlas land in their textures (K6.7 packing; 0 otherwise). */
+  #origins: { base: VDBVec3; atlas: VDBVec3 } = { base: [0, 0, 0], atlas: [0, 0, 0] };
   #group1: GPUBindGroup | null = null;
   #destroyed = false;
 
@@ -387,18 +391,24 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
     const atlasCount = atlas ? atlas.dimensions[0] * atlas.dimensions[1] * atlas.dimensions[2] : 0;
 
     if (o.targets) {
-      const check = (t: GPUTexture | null, want: readonly number[] | null, what: string) => {
+      const check = (t: GPUTexture | null, want: readonly number[] | null, origin: VDBVec3 | undefined, what: string) => {
         if (!want) {
           if (t) bad(`targets.${what} must be null: the layout has no ${what}.`);
           return;
         }
         if (!t) return bad(`targets.${what} is missing (the layout has one, ${want.join("x")}).`);
-        if (t.format !== "r16float" || t.width !== want[0] || t.height !== want[1] || t.depthOrArrayLayers !== want[2] || (t.usage & TEXTURE_USAGE.COPY_DST) === 0) {
-          bad(`targets.${what} must be an r16float 3D texture of ${want.join("x")} with COPY_DST (got ${t.format} ${t.width}x${t.height}x${t.depthOrArrayLayers}, usage ${t.usage}).`);
+        const size = [t.width, t.height, t.depthOrArrayLayers];
+        const fits = origin
+          ? origin.every((v, a) => Number.isInteger(v) && v >= 0 && v + want[a]! <= size[a]!)
+          : size.every((v, a) => v === want[a]);
+        if (t.format !== "r16float" || !fits || (t.usage & TEXTURE_USAGE.COPY_DST) === 0) {
+          const where = origin ? ` holding ${want.join("x")} at ${origin.join(",")}` : ` of ${want.join("x")}`;
+          bad(`targets.${what} must be an r16float 3D texture${where} with COPY_DST (got ${t.format} ${t.width}x${t.height}x${t.depthOrArrayLayers}, usage ${t.usage}).`);
         }
       };
-      check(o.targets.base, dims, "base");
-      check(o.targets.atlas, atlas?.dimensions ?? null, "atlas");
+      check(o.targets.base, dims, o.targets.baseOrigin, "base");
+      check(o.targets.atlas, atlas?.dimensions ?? null, o.targets.atlasOrigin, "atlas");
+      this.#origins = { base: o.targets.baseOrigin ?? [0, 0, 0], atlas: o.targets.atlasOrigin ?? [0, 0, 0] };
       this.base = o.targets.base;
       this.atlas = o.targets.atlas;
     } else {
@@ -511,10 +521,10 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
     dispatch(p.pack, 1, [Math.ceil(dims[0] / 2), dims[1], dims[2]]);
     if (atlas) dispatch(p.pack, 2, [Math.ceil(atlas.dimensions[0] / 2), atlas.dimensions[1], atlas.dimensions[2]]);
     pass.end();
-    encoder.copyBufferToTexture({ buffer: this.#packed, offset: 0, bytesPerRow: this.#rows.base * 4, rowsPerImage: dims[1] }, { texture: this.base }, [dims[0], dims[1], dims[2]]);
+    encoder.copyBufferToTexture({ buffer: this.#packed, offset: 0, bytesPerRow: this.#rows.base * 4, rowsPerImage: dims[1] }, { texture: this.base, origin: this.#origins.base }, [dims[0], dims[1], dims[2]]);
     if (atlas && this.atlas) {
       const [aw, ah, ad] = atlas.dimensions;
-      encoder.copyBufferToTexture({ buffer: this.#packed, offset: this.#rows.atlasOffset * 4, bytesPerRow: this.#rows.atlas * 4, rowsPerImage: ah }, { texture: this.atlas }, [aw, ah, ad]);
+      encoder.copyBufferToTexture({ buffer: this.#packed, offset: this.#rows.atlasOffset * 4, bytesPerRow: this.#rows.atlas * 4, rowsPerImage: ah }, { texture: this.atlas, origin: this.#origins.atlas }, [aw, ah, ad]);
     }
     this.builtRevision = info.imageRevision;
   }
