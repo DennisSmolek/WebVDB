@@ -297,6 +297,15 @@ export function vdbFrameEmissionFalloff(edge: Vec3, position: Vec3, center: Vec3
  * (red, green, blue) L1 probe values and the falloff; {@link vdbFrameEmissionIrradiance} then gives E(n).
  */
 export function vdbFrameEmissionLookup(atlases: readonly [VDBFrameAtlas, VDBFrameAtlas, VDBFrameAtlas], grid: VDBFrameGridLayout, center: Vec3, position: Vec3): { probe: [Vec4, Vec4, Vec4]; falloff: number } {
+  return vdbFrameEmissionLookupWith((cascade, channel, uvw) => vdbFrameSampleGrid(atlases[channel]!, grid, cascade, uvw) as Vec4, grid, center, position);
+}
+
+/**
+ * {@link vdbFrameEmissionLookup} on any probe store: `sample(cascade, channel, uvw)` returns the filtered L1 probe of
+ * one colour channel (K6.5: the core's stacked 3D texture through `vdbFrameStackSample`; the CPU twin of
+ * `vdbEmissionIrradiance`).
+ */
+export function vdbFrameEmissionLookupWith(sampleProbe: (cascade: number, channel: number, uvw: Vec3) => ArrayLike<number>, grid: VDBFrameGridLayout, center: Vec3, position: Vec3): { probe: [Vec4, Vec4, Vec4]; falloff: number } {
   let probe: [Vec4, Vec4, Vec4] = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
@@ -305,7 +314,7 @@ export function vdbFrameEmissionLookup(atlases: readonly [VDBFrameAtlas, VDBFram
   let falloff = 1;
   const sample = (cascade: number, uvw: Vec3, weight: number) => {
     probe = probe.map((p, k) => {
-      const s = vdbFrameSampleGrid(atlases[k]!, grid, cascade, uvw);
+      const s = sampleProbe(cascade, k, uvw);
       return p.map((v, c) => v + (s[c]! - v) * weight) as Vec4;
     }) as [Vec4, Vec4, Vec4];
   };

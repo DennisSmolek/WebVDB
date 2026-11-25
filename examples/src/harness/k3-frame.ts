@@ -654,6 +654,8 @@ function setupStep6(o: { scene: THREE.Scene; renderer: WebGPURenderer; frameRend
       steps: cl?.steps ?? 24,
     });
     if (cl?.color) light.color.fromArray(cl.color);
+    // K6.5: `?backend=core` takes the probes from the core renderer's emission kernels
+    light.backend = frameRenderer.backend;
     scene.add(light);
   }
 }

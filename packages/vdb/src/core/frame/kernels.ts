@@ -179,7 +179,7 @@ export function vdbFrameEmissionDirectionSpec(source: VDBVolumeSource, key: { ma
   const b = EMISSION_DIRECTION_BINDINGS;
   const hook = key.hook ?? null;
   const code = `${sourcePrelude(source, key.maxVolumes)}
-${frameChunksWgsl(["constants", "box", "lod"])}
+${frameChunksWgsl(["constants", "froxel", "box", "lod"])}
 @group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
 @group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
 ${vdbFrameSourceFunctionsWgsl(source.channels, { lutBinding: b.lut, hook })}

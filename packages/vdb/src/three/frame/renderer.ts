@@ -101,7 +101,8 @@ import type { VDBGridTypeName } from "../../core/types.js";
 import { VDBError } from "../../core/errors.js";
 import { vdbDenseSource, type VDBDenseSource } from "../../core/source/dense.js";
 import { vdbCreateFrameRenderer, type VDBFrameRendererGpu } from "../../core/frame/renderer.js";
-import type { VDBEmissionColor, VDBFrameLight, VDBFrameVolumeGpu, VDBFrameVolumeParams } from "../../core/frame/types.js";
+import type { VDBEmissionColor, VDBFrameEmissionLightSettings, VDBFrameLight, VDBFrameUpdate, VDBFrameVolumeGpu, VDBFrameVolumeParams, VDBVolumeShadowRequest } from "../../core/frame/types.js";
+import { vdbFrameRenderId } from "./three-internals.js";
 import { vdbFrameEmissionLutRow } from "../../tools/frame/blackbody.js";
 import { getDevice } from "../device.js";
 import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
@@ -478,6 +479,8 @@ export class VDBFrameRenderer {
   private coreSparseSlots = new WeakMap<object, VDBSparseVolumeGpu>();
   private coreVolumes = new Map<VDBFrameVolume, VDBFrameVolumeGpu>();
   private coreFrameId = 0;
+  /** K6.5: the render the last core update ran for (one update per render). */
+  private coreFrameKey: { renderId: number; camera: THREE.Camera; scene: object; result: VDBFrameUpdate } | null = null;
 
   /**
    * Timing/debug hook: proxies draw the integrate pass over the last froxel atlas without rendering
@@ -2254,11 +2257,34 @@ export class VDBFrameRenderer {
   }
 
 
-  /** K6.1 `backend: 'core'`: the frame through the core renderer, recorded into its own encoder and submitted. */
+  /** K6.1 `backend: 'core'`: the first proxy of a render draws the core frame (`coreFrame`, once per render). */
   private renderCore(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, proxy: THREE.Mesh<THREE.InstancedBufferGeometry>): void {
     const material = this.proxyMaterial() as VDBFrameCoreIntegrateMaterial;
     // NOTE three draws the material it chose before onBeforeRender: a swapped proxy draws the core material from the next frame
     if (proxy.material !== material) proxy.material = material;
+    const u = this.coreFrame(renderer, scene, camera);
+    const cam = camera as THREE.PerspectiveCamera;
+    if (u?.recorded && u.outputs.froxels) {
+      if (this.corePrefix.set(u.outputs.froxels.integrated)) material.prefix.value = this.corePrefix.texture;
+      material.setLayout(u.outputs.froxels.layout, cam);
+      material.setSrgbBlending(this.settings.srgbBlending && renderer.outputColorSpace === THREE.SRGBColorSpace, renderer.toneMapping === THREE.NoToneMapping);
+    }
+    this.cachedFrame = renderer.info.render.calls;
+    this.cachedCamera = camera;
+    proxy.geometry.instanceCount = u?.recorded ? 1 : 0;
+  }
+
+  /**
+   * K6.1 / K6.5 `backend: 'core'`: the core update of one render, recorded into its own encoder and submitted (three's
+   * frame submits after it, so queue order is right). It runs once per render id, camera and scene; the first caller
+   * runs it: a volume shadow receiver's or the emission light's `updateBefore` (before any receiver of the render
+   * draws, his order), else the first volume proxy. The volume shadow maps and the emission probes are drawn here.
+   */
+  coreFrame(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera): VDBFrameUpdate | null {
+    if (!renderer.isWebGPURenderer) return null;
+    const renderId = vdbFrameRenderId(renderer);
+    const key = this.coreFrameKey;
+    if (key && key.renderId === renderId && key.camera === camera && key.scene === scene) return key.result;
     const device = getDevice(renderer as never);
     if (!this.core || this.coreDevice !== device) {
       vdbCoreTextureSelfTest(renderer as never, device);
@@ -2272,6 +2298,8 @@ export class VDBFrameRenderer {
     const core = this.core;
     Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
     if (scene.environment) this.warnOnce("core-environment", "backend 'core': the scene environment (GPU prefilter, SH, environment lights) is K6.2b; it is ignored.");
+    // K6.5: the volume shadow filter on each shadow light (receivers build with it from the next render)
+    this.volumeShadows.update(renderer, scene);
 
     const seen = new Set<VDBFrameVolumeGpu>();
     scene.traverseVisible((object) => {
@@ -2283,7 +2311,7 @@ export class VDBFrameRenderer {
       record.matrixWorld.multiplyMatrices(frameVolume.matrixWorld, record.matrix);
       this.setCoreParams(handle.params, frameVolume, record.matrixWorld);
       handle.visible = record.ready;
-      // his collector: every ready volume in the camera's layers casts into the 'frame' shadow grid, also out of view
+      // his collector: every ready volume in the camera's layers casts into the shadow grid, also out of view
       handle.castsShadow = record.ready;
       seen.add(handle);
     });
@@ -2300,6 +2328,7 @@ export class VDBFrameRenderer {
     const cam = camera as THREE.PerspectiveCamera & { isOrthographicCamera?: boolean };
     const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
     const canvas = renderer.getSize(new THREE.Vector2());
+    const { lights, emissionLight } = this.coreLights(scene, camera);
     const encoder = device.createCommandEncoder({ label: "vdb three core frame" });
     const u = core.update(encoder, {
       frameId: this.coreFrameId++,
@@ -2313,17 +2342,14 @@ export class VDBFrameRenderer {
         id: camera.id,
       },
       viewport: { drawingBuffer: [buffer.x, buffer.y], canvas: [canvas.x, canvas.y] },
-      lights: this.coreLights(scene, camera),
+      lights,
+      emissionLight,
     });
     device.queue.submit([encoder.finish()]);
-    if (u.recorded && u.outputs.froxels) {
-      if (this.corePrefix.set(u.outputs.froxels.integrated)) material.prefix.value = this.corePrefix.texture;
-      material.setLayout(u.outputs.froxels.layout, cam);
-      material.setSrgbBlending(this.settings.srgbBlending && renderer.outputColorSpace === THREE.SRGBColorSpace, renderer.toneMapping === THREE.NoToneMapping);
-    }
-    this.cachedFrame = renderer.info.render.calls;
-    this.cachedCamera = camera;
-    proxy.geometry.instanceCount = u.recorded ? 1 : 0;
+    // K6.5: the receivers read the maps with the state they were drawn with (copied to their uniforms now, before they draw)
+    this.volumeShadows.syncCore(u.outputs.volumeShadows, core.redrawStats.volumeShadows);
+    this.coreFrameKey = { renderId, camera, scene, result: u };
+    return u;
   }
 
   /** The core volume of a frame volume (its dense source uploaded once on the core side). */
@@ -2460,11 +2486,18 @@ export class VDBFrameRenderer {
     return "white";
   }
 
-  /** The scene's lights in the camera's layers as core lights (his visitLight). */
-  private coreLights(scene: THREE.Object3D, camera: THREE.Camera): VDBFrameLight[] {
+  /**
+   * The scene's lights in the camera's layers as core lights (his visitLight). K6.5: a shadow light with the volume
+   * shadow filter on it asks for a volume shadow map (spot: the light's own shadow camera, so both maps share one texel
+   * grid; point: its cube near / far; directional: cascades fitted by the core); a `VDBFrameEmissionLight` with
+   * `backend: 'core'` gives the emission probe settings.
+   */
+  private coreLights(scene: THREE.Object3D, camera: THREE.Camera): { lights: VDBFrameLight[]; emissionLight: VDBFrameEmissionLightSettings | null } {
     const out: VDBFrameLight[] = [];
+    let emissionLight: VDBFrameEmissionLightSettings | null = null;
     const position = new THREE.Vector3();
     const target = new THREE.Vector3();
+    const size = this.volumeShadows.getMapSize();
     scene.traverseVisible((object) => {
       const light = object as THREE.Light & {
         isAmbientLight?: boolean;
@@ -2473,6 +2506,8 @@ export class VDBFrameRenderer {
         isDirectionalLight?: boolean;
         isSpotLight?: boolean;
         isPointLight?: boolean;
+        isVDBFrameEmissionLight?: boolean;
+        backend?: string;
         groundColor?: THREE.Color;
         sh?: { coefficients: THREE.Vector3[] };
         target?: THREE.Object3D;
@@ -2482,10 +2517,29 @@ export class VDBFrameRenderer {
         decay?: number;
       };
       if (!light.isLight || !light.layers.test(camera.layers)) return;
+      if (light.isVDBFrameEmissionLight) {
+        if (light.backend === "core" && !emissionLight) {
+          const e = light as unknown as Required<VDBFrameEmissionLightSettings>;
+          emissionLight = { resolution: e.resolution, range: e.range, cascades: e.cascades, distance: e.distance, steps: Math.max(1, Math.round(e.steps)) };
+        }
+        return;
+      }
       const i = light.intensity;
       const color: [number, number, number] = [light.color.r * i, light.color.g * i, light.color.b * i];
       position.setFromMatrixPosition(light.matrixWorld);
       const id = light.id;
+      // K6.5: a map for each light the volume shadow filter is on (VDBFrameVolumeShadows.update installed it)
+      let shadow: VDBVolumeShadowRequest | undefined;
+      if (this.settings.castShadows && light.castShadow && this.volumeShadows.entries.has(light)) {
+        if (light.isSpotLight) {
+          (light as unknown as THREE.SpotLight).shadow.updateMatrices(light as unknown as THREE.SpotLight);
+          const c = (light as unknown as THREE.SpotLight).shadow.camera;
+          shadow = { size, view: { viewProjection: new THREE.Matrix4().multiplyMatrices(c.projectionMatrix, c.matrixWorldInverse).elements, near: c.near, far: c.far, orthographic: false } };
+        } else if (light.isPointLight) {
+          const c = (light as unknown as THREE.SpotLight).shadow.camera;
+          shadow = { size, view: { near: c.near, far: light.distance || c.far } };
+        } else if (light.isDirectionalLight) shadow = { size, view: "fit" };
+      }
       if (light.isAmbientLight) out.push({ id, kind: "ambient", color });
       else if (light.isHemisphereLight) {
         const g = light.groundColor!;
@@ -2495,7 +2549,7 @@ export class VDBFrameRenderer {
         out.push({ id, kind: "probe", sh: light.sh!.coefficients.flatMap((c) => [c.x * i, c.y * i, c.z * i]) });
       } else if (light.isDirectionalLight) {
         target.setFromMatrixPosition(light.target!.matrixWorld).sub(position).normalize();
-        out.push({ id, kind: "directional", direction: [target.x, target.y, target.z], color });
+        out.push({ id, kind: "directional", direction: [target.x, target.y, target.z], color, ...(shadow ? { shadow } : {}) });
       } else if (light.isSpotLight) {
         target.setFromMatrixPosition(light.target!.matrixWorld).sub(position).normalize();
         out.push({
@@ -2508,14 +2562,14 @@ export class VDBFrameRenderer {
           decay: light.decay!,
           cosAngle: Math.cos(light.angle!),
           cosPenumbra: Math.cos(light.angle! * (1.0 - light.penumbra!)),
+          ...(shadow ? { shadow } : {}),
         });
       } else if (light.isPointLight) {
-        out.push({ id, kind: "point", position: [position.x, position.y, position.z], color, distance: light.distance!, decay: light.decay! });
+        out.push({ id, kind: "point", position: [position.x, position.y, position.z], color, distance: light.distance!, decay: light.decay!, ...(shadow ? { shadow } : {}) });
       }
     });
-    return out;
+    return { lights: out, emissionLight };
   }
-
   /** Disposes the renderer's targets, materials and shadow filters. A later render makes them again. */
   dispose(): void {
     // NOTE Puts back the shadow filter of each light; the new instance installs again on the next render

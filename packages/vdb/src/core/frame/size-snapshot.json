@@ -42,14 +42,14 @@
       "gz": 3332
     },
     "vdb frame emission direction; dense density+mask+albedo+emission+mips": {
-      "raw": 17381,
-      "min": 13535,
-      "gz": 3599
+      "raw": 18363,
+      "min": 14216,
+      "gz": 3800
     },
     "vdb frame emission direction; dense density+mask+albedo+emission+mips, hook ac65142384852047": {
-      "raw": 17592,
-      "min": 13708,
-      "gz": 3646
+      "raw": 18574,
+      "min": 14389,
+      "gz": 3850
     },
     "vdb frame gather (mixture; dense density+mask+albedo+emission+mips, hook ac65142384852047)": {
       "raw": 30372,

@@ -44,8 +44,21 @@ import { vdbFramePrecompiling, vdbFrameRegisterLightNode, vdbFrameRenderUpdateTy
 import type { VDBFrameVolume } from "./volume.js";
 import type { FrameVolumeRecord } from "./view.js";
 import type { Vec3 } from "../../tools/frame/index.js";
+import { VDBCoreTextureBinding } from "./core-textures.js";
+import type { VDBFrameEmissionProbes } from "../../core/frame/types.js";
+import type { VDBFrameRenderer } from "./renderer.js";
 
-const { Discard, Fn, If, Loop, Break, abs, clamp, cos, cross, dot, exp, float, floor, int, inverseSqrt, ivec2, luminance, max, min, mix, normalWorld, normalize, outputStruct, positionGeometry, positionWorld, property, renderGroup, select, sin, smoothstep, sqrt, texture, uniform, uniformArray, vec3, vec4 } =
+/** A 1³ zero placeholder until the core binds its probe stack (K6.5). */
+function stackPlaceholder(): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(new Uint16Array(4), 1, 1, 1);
+  t.type = THREE.HalfFloatType;
+  t.format = THREE.RGBAFormat;
+  t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+
+const { Discard, Fn, If, Loop, Break, abs, clamp, cos, cross, dot, exp, float, floor, int, inverseSqrt, ivec2, luminance, max, min, mix, normalWorld, normalize, outputStruct, positionGeometry, positionWorld, property, renderGroup, select, sin, smoothstep, sqrt, texture, texture3D, uniform, uniformArray, vec3, vec4 } =
   TSL as unknown as Record<string, VDBTslNode>;
 
 type N = VDBTslNode;
@@ -372,6 +385,11 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
   readonly gridUniforms: GridUniforms;
   readonly probeCenter: N;
   readonly probeActive: N;
+  /** K6.5 `backend: 'core'`: the core's probe stack (a 3D texture, 3 sub-volumes per cascade) and its layout. */
+  readonly coreMode: boolean;
+  readonly probeStack: N;
+  readonly stackOrigins: N;
+  readonly stackSize: N;
 
   constructor(light: VDBFrameEmissionLight | null = null) {
     super(light as never);
@@ -389,6 +407,13 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
     this.gridUniforms = createProbeGridUniforms(renderGroup);
     this.probeCenter = uniform(new THREE.Vector3()).setGroup(renderGroup);
     this.probeActive = uniform(0.0).setGroup(renderGroup);
+    this.coreMode = light?.backend === "core";
+    this.probeStack = texture3D(stackPlaceholder());
+    this.stackOrigins = uniformArray(
+      Array.from({ length: 3 * maxCascades }, () => new THREE.Vector3()),
+      "vec3",
+    ).setGroup(renderGroup);
+    this.stackSize = uniform(new THREE.Vector3(1, 1, 1)).setGroup(renderGroup);
   }
 
   private get emissionLight(): VDBFrameEmissionLight {
@@ -417,6 +442,15 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
     this.probeCenter.value.copy(light.probeCenter);
     this.probeActive.value = light.emitterCount > 0 ? 1.0 : 0.0;
 
+    // K6.5: the core stack and its sub-volume origins (a new stack: a new stand-in)
+    const probes = light.coreProbes;
+    if (this.coreMode && probes) {
+      if (light.coreBinding.set(probes.texture)) this.probeStack.value = light.coreBinding.texture;
+      const origins = this.stackOrigins.array as THREE.Vector3[];
+      probes.layout.origins.forEach((o, i) => origins[i]?.set(o[0], o[1], o[2]));
+      this.stackSize.value.set(probes.layout.size[0], probes.layout.size[1], probes.layout.size[2]);
+    }
+
     return undefined;
   }
 
@@ -433,7 +467,19 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
       const blue = vec4(0.0).toVar();
       const falloff = float(1.0).toVar();
 
+      // K6.5 core: one channel of a cascade in the stack, hardware trilinear clamped to its half-texel box
+      const sampleStack = (cascade: N, channel: number, uvw: N): N => {
+        const r = frameGridResolution;
+        const p = this.stackOrigins.element(cascade.mul(3).add(channel)).add(clamp(uvw.mul(r), vec3(0.5), vec3(r.sub(0.5))));
+        return this.probeStack.sample(p.div(this.stackSize)).level(0);
+      };
       const sampleProbes = (cascade: N, uvw: N, weight: N) => {
+        if (this.coreMode) {
+          red.assign(mix(red, sampleStack(cascade, 0, uvw), weight));
+          green.assign(mix(green, sampleStack(cascade, 1, uvw), weight));
+          blue.assign(mix(blue, sampleStack(cascade, 2, uvw), weight));
+          return;
+        }
         red.assign(mix(red, grid.sampleGrid(redMap, cascade, uvw), weight));
         green.assign(mix(green, grid.sampleGrid(greenMap, cascade, uvw), weight));
         blue.assign(mix(blue, grid.sampleGrid(blueMap, cascade, uvw), weight));
@@ -634,6 +680,15 @@ export class VDBFrameEmissionLight extends THREE.Light {
   rendererState: object = {};
   /** Volumes drawn in the last probe update and whether the probes were drawn (not his; tests and timing). */
   readonly lastUpdate = { directions: 0, probes: false };
+  /**
+   * @internal K6.5 A/B: `'core'` takes the probes from the core frame renderer of the scene's `backend: 'core'` volumes
+   * (its emission kernels; set before the first render: the light node builds with it).
+   */
+  backend: "tsl" | "core" = "tsl";
+  /** @internal K6.5: the core's probes after the last update (`backend: 'core'`). */
+  coreProbes: VDBFrameEmissionProbes | null = null;
+  /** @internal K6.5: the stand-in of the core probe stack. */
+  readonly coreBinding = new VDBCoreTextureBinding("3d");
 
   /**
    * Makes the light with its targets, passes and probe grid settings.
@@ -873,6 +928,11 @@ export class VDBFrameEmissionLight extends THREE.Light {
     this.lastUpdate.directions = 0;
     this.lastUpdate.probes = false;
 
+    if (this.backend === "core") {
+      this.updateCoreProbes(renderer, scene, viewCamera);
+      return;
+    }
+
     const changed = this.prepareProbes(scene, viewCamera);
 
     if (!changed) {
@@ -928,8 +988,41 @@ export class VDBFrameEmissionLight extends THREE.Light {
     }
   }
 
+  /**
+   * K6.5 `backend: 'core'`: the core frame of this render (the first `backend: 'core'` frame renderer of the scene's
+   * volumes) draws the emitters and probes; this light copies the probe grid for its node.
+   */
+  updateCoreProbes(renderer: RendererLike, scene: THREE.Object3D, viewCamera: THREE.Camera): void {
+    let frameRenderer: VDBFrameRenderer | null = null;
+    scene.traverseVisible((object) => {
+      const v = object as VDBFrameVolume;
+      if (!frameRenderer && v.isVDBFrameVolume && v.frameRenderer?.backend === "core") frameRenderer = v.frameRenderer;
+    });
+    const fr = frameRenderer as VDBFrameRenderer | null;
+    fr?.coreFrame(renderer as never, scene as never, viewCamera);
+    const probes = fr?.core?.outputs.emissionProbes ?? null;
+    this.coreProbes = probes;
+    if (!probes) {
+      this.emitterCount = 0;
+      this.cascadeCount = 0;
+      return;
+    }
+    const { state } = probes;
+    this.emitterCount = state.emitters;
+    this.cascadeCount = state.count;
+    this.probeResolution = state.resolution;
+    this.probeCenter.fromArray(state.center as unknown as number[]);
+    for (let i = 0; i < state.count; i++) {
+      this.cascadeMin[i]!.fromArray(state.min[i] as unknown as number[]);
+      this.cascadeSize[i]!.fromArray(state.size[i] as unknown as number[]);
+    }
+    this.lastUpdate.directions = probes.lastUpdate.directions;
+    this.lastUpdate.probes = probes.lastUpdate.probes;
+  }
+
   override dispose(): void {
     super.dispose();
+    this.coreBinding.dispose();
 
     this.slotKeys = [];
     this.slotCount = 0;

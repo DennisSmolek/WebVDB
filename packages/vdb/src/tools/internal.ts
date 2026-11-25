@@ -358,6 +358,7 @@ export {
   vdbFrameEmissionProbeGrid,
   vdbFrameEmissionFalloff,
   vdbFrameEmissionLookup,
+  vdbFrameEmissionLookupWith,
 } from "./frame/emission.js";
 export type {
   VDBFrameEmitter,
