@@ -108,6 +108,10 @@ async function main(): Promise<void> {
   // K6.3: the core's 'multi-scale' settings (the V75 edge A/B)
   if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
   if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.Q1: the shadowed ambient (?ao=1, ?aoPairs=, ?aoSteps=)
+  if (params.has("ao")) frameRenderer.coreSettings.ambientOcclusion = params.get("ao") === "1";
+  if (params.has("aoPairs")) frameRenderer.coreSettings.ambientOcclusionPairs = Number(params.get("aoPairs"));
+  if (params.has("aoSteps")) frameRenderer.coreSettings.ambientOcclusionSteps = Number(params.get("aoSteps"));
   result.backend = frameRenderer.backend;
   result.froxelMix = frameRenderer.froxelMix;
   Object.assign(frameRenderer.settings, {
@@ -175,7 +179,15 @@ async function main(): Promise<void> {
       sun.target.position.set(...frame.center);
       scene.add(sun, sun.target);
     } else if (l.kind === "ambient") scene.add(new THREE.AmbientLight(color, l.intensity));
-    else {
+    else if (l.kind === "hemisphere") {
+      const ground = new THREE.Color().setRGB(l.ground![0], l.ground![1], l.ground![2], THREE.LinearSRGBColorSpace);
+      const h = new THREE.HemisphereLight(color, ground, l.intensity);
+      h.position.set(...l.position);
+      scene.add(h);
+    } else if (l.kind === "probe") {
+      const sh = new THREE.SphericalHarmonics3().fromArray(l.sh!);
+      scene.add(new THREE.LightProbe(sh, l.intensity));
+    } else {
       const p = new THREE.PointLight(color, l.intensity, 0, l.decay);
       p.position.set(...l.position);
       scene.add(p);

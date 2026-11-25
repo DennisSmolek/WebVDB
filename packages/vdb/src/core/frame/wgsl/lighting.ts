@@ -32,6 +32,7 @@ import { frameChunksWgsl } from "./chunks.js";
 import { VDB_FRAME_SLICE_WGSL, vdbFrameSourceFunctionsWgsl } from "./gather.js";
 import { vdbFrameMultiScaleWgsl } from "../../compute/multi-scale.js";
 import { vdbFrameOccluderWgsl } from "./occluders.js";
+import { VDB_FRAME_AMBIENT_MAX_PAIRS } from "../../../tools/frame/ambient.js";
 
 /** Group-1 bindings of the shadow grid density kernel. */
 export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 3 } as const;
@@ -271,7 +272,7 @@ export function vdbFrameTransmittanceWgsl(o: { scattering?: VDBFrameScatteringKe
         ? `      // 'multi-scale' (K7.3): total = direct + the multi-scale scattered light, at most 1
       results[i].y = min(results[i].x + vdbFrameMultiScaleLight(vdbFrameShadowGrid, vdbFrameMsMips, vdbFrameLinear, vdbFrameMsParams, world, s.xyz, s.w), 1.0);\n`
         : "";
-  return `${frameChunksWgsl(["constants", "noise", "shadow", "grid"])}
+  return `${frameChunksWgsl(["constants", "noise", "shadow", "octaveTotal", "grid"])}
 @group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
 @group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceOut: texture_storage_3d<rgba16float, write>;
 ${extra}
@@ -317,7 +318,8 @@ fn vdbFrameGridMarch(origin: vec3f, direction: vec3f, maxDistance: f32, jitter: 
 }
 
 // His transmittance pass at one voxel: 4 targets (sky up total, sky down total, slot 0, 1 total), (slots 2–5
-// total), (slots 0–3 direct), (slots 4–5 direct, 1, 1); 1 where no extinction is within half a voxel.
+// total), (slots 0–3 direct), (slots 4–5 direct, K6.Q1 ambient V up, V down (1: off)); 1 where no extinction is within
+// half a voxel.
 @compute @workgroup_size(4, 4, 4)
 fn vdbFrameTransmittanceCs(@builtin(global_invocation_id) gid: vec3u) {
 ${GRID_CELL}
@@ -410,10 +412,33 @@ ${slotTerm}      // K6.5b: a host occluder map scales the scene slot's scattered
       skyUp = vdbFrameIsotropicDiffusion(up.z, down.z, up.w);
       skyDown = vdbFrameIsotropicDiffusion(down.z, up.z, down.w);
     }
+    // K6.Q1 shadowed ambient: the hemispherical visibilities (V up, V down), the mean isotropic-light total of each
+    // pair's two sides (pair 0: the sky up / down marches above; octaves: their octave totals)
+    var ambientUp = 1.0;
+    var ambientDown = 1.0;
+    let ambientPairs = min(vdbFrameLights.counts.z, ${VDB_FRAME_AMBIENT_MAX_PAIRS}u);
+    if (ambientPairs > 0u) {
+      ambientUp = select(vdbFrameShadowTotal(skyUp, vdbFrame.octaves) / vdbFrameShadowTotal(1.0, vdbFrame.octaves), skyUp, ms > 0.0);
+      ambientDown = select(vdbFrameShadowTotal(skyDown, vdbFrame.octaves) / vdbFrameShadowTotal(1.0, vdbFrame.octaves), skyDown, ms > 0.0);
+      for (var k = 1u; k < ambientPairs; k++) {
+        let d = vdbFrameLights.ambientDirections[k].xyz;
+        let front = vdbFrameGridMarch(world, d, 1e20, jitter).t;
+        let back = vdbFrameGridMarch(world, -d, 1e20, jitter).t;
+        if (ms > 0.0) {
+          ambientUp += vdbFrameIsotropicDiffusion(front.z, back.z, front.w);
+          ambientDown += vdbFrameIsotropicDiffusion(back.z, front.z, back.w);
+        } else {
+          ambientUp += vdbFrameShadowTotal(front.y, vdbFrame.octaves) / vdbFrameShadowTotal(1.0, vdbFrame.octaves);
+          ambientDown += vdbFrameShadowTotal(back.y, vdbFrame.octaves) / vdbFrameShadowTotal(1.0, vdbFrame.octaves);
+        }
+      }
+      ambientUp /= f32(ambientPairs);
+      ambientDown /= f32(ambientPairs);
+    }
     t0 = vec4f(skyUp, skyDown, results[0].y, results[1].y);
     t1 = vec4f(results[2].y, results[3].y, results[4].y, results[5].y);
     t2 = vec4f(results[0].x, results[1].x, results[2].x, results[3].x);
-    t3 = vec4f(results[4].x, results[5].x, 1.0, 1.0);
+    t3 = vec4f(results[4].x, results[5].x, ambientUp, ambientDown);
   }
   let base = cascade * 4u;
   textureStore(vdbFrameTransmittanceOut, vec3u(vdbFrame.transmittanceOrigin[base].xyz) + cell, t0);
@@ -547,8 +572,13 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
   let shadows = vdbFrameShadowsAt(world);
   // K6.3: isotropic slots (sky up and down, the environment slot) hold total transmittance (octaves: their sum)
   let octaves = vdbFrame.octaves;
-  let skyUp = vdbFrameShadowTotal(shadows[0].x, octaves);
-  let skyDown = vdbFrameShadowTotal(shadows[0].y, octaves);
+  var skyUp = vdbFrameShadowTotal(shadows[0].x, octaves);
+  var skyDown = vdbFrameShadowTotal(shadows[0].y, octaves);
+  // K6.Q1 shadowed ambient: the hemispherical visibilities replace the sky totals (hemisphere, probe, 'outward', ambient)
+  if (vdbFrameLights.counts.z > 0u) {
+    skyUp = shadows[3].z;
+    skyDown = shadows[3].w;
+  }
   let envMode = vdbFrameEnvDensityMode();
   if (envMode == 1u) {
     // along the outward direction from the volume centre; its shadow between the sky down and up totals
@@ -642,7 +672,8 @@ fn vdbFrameLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> vec4f {
   let sky = normalize(vdbFrameLights.sky.xyz);
   let skyUp = s0.x * 0.5;
   let skyDown = s0.y * 0.5;
-  var irradiance = vdbFrameLights.ambient.xyz;
+  // K6.Q1: ambient x the mean of the hemispherical visibilities (off: unshadowed, his)
+  var irradiance = vdbFrameLights.ambient.xyz * select(1.0, skyUp + skyDown, vdbFrameLights.counts.z > 0u);
   irradiance += vdbFrameShIrradiance(sky) * skyUp;
   irradiance += vdbFrameShIrradiance(-sky) * skyDown;
   irradiance += vdbFrameLights.hemiSkySum.xyz * skyUp;

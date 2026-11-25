@@ -27,6 +27,9 @@ import {
   vdbMat4Point,
   vdbShIrradianceAt,
   vdbFrameEnvironmentIrradiance,
+  vdbFrameAmbientIrradiance,
+  vdbFrameAmbientPairTotals,
+  vdbFrameAmbientVisibility,
   type VDBFrameEnvironmentGpuResult,
   type VDBFrameFroxelMix,
   type VDBFrameVec2,
@@ -78,6 +81,9 @@ export type TwinMutation =
   | "env-grid"
   | "env-outward"
   | "env-lights"
+  // K6.Q1 shadowed ambient: one pair fewer; no occlusion (V = 1)
+  | "ao-pairs"
+  | "ao"
   // K6.3 phase and multiple scattering
   | "mie"
   | "octaves"
@@ -171,6 +177,8 @@ export interface TwinFrame {
   twoSided?: boolean;
   /** K6.5b: the host occluder visibility of light `index` (record order) at a world position. */
   occluder?: ((index: number, world: V3) => number) | null;
+  /** K6.Q1 shadowed ambient: the pairs' upper directions (world; [0] the sky) and each march's steps (0: the volume's). */
+  ambientOcclusion?: { directions: V3[]; steps: number } | null;
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -247,16 +255,18 @@ export function emissionAt(r: TwinVolume, local: V3, lod: number, color: ((t: nu
   return [c[0] * power * r.emissiveIntensity, c[1] * power * r.emissiveIntensity, c[2] * power * r.emissiveIntensity];
 }
 
-function march(r: TwinVolume, origin: V3, localDirection: V3, maxDistance: number, lod: number, maxTexels: number, albedo: V3, noise: number, mutate: TwinMutation, octaves: V4 = vdbFrameOctavesOff): V4 {
+function march(r: TwinVolume, origin: V3, localDirection: V3, maxDistance: number, lod: number, maxTexels: number, albedo: V3, noise: number, mutate: TwinMutation, octaves: V4 = vdbFrameOctavesOff, stepCount = 0): V4 {
   if (r.absorbance <= 0 || r.shadowSteps === 0) return [1, 1, 0, 0];
   const d = norm(localDirection);
   const distance = Math.min(boxExit(origin, d), maxDistance);
   if (distance <= 0) return [1, 1, 0, 0];
-  const step = distance / r.shadowSteps;
+  // K6.Q1: the ambient marches may take fewer steps
+  const steps = stepCount > 0 ? stepCount : r.shadowSteps;
+  const step = distance / steps;
   const stepLod = r.mipmaps ? Math.max(lod, lodOf(step, maxTexels)) : 0;
   const stepScale = step * len(mat3(r.localToView, d)) * r.absorbance;
   const samples: number[] = [];
-  for (let k = 0; k < r.shadowSteps; k++) samples.push(extinctionAt(r, add(origin, scale(d, step * noise + step * k)), stepLod, mutate) * stepScale);
+  for (let k = 0; k < steps; k++) samples.push(extinctionAt(r, add(origin, scale(d, step * noise + step * k)), stepLod, mutate) * stepScale);
   return vdbFrameShadowMarch(samples, albedo, r.multipleScattering, octaves);
 }
 
@@ -302,8 +312,11 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
   const octaves: V4 = mutate === "octaves" ? vdbFrameOctavesOff : (frame.octaves ?? vdbFrameOctavesOff);
   const outward = len(local) > 1e-4 ? norm(mat3(frame.cameraWorld, mat3(r.localToView, local))) : ([0, 1, 0] as V3);
   let irradiance: V3 = [0, 0, 0];
-  if (r.lights & 32) irradiance = add(add(irradiance, frame.ambient), vdbShIrradianceAt(outward, frame.probe));
-  if (r.lights & 2) {
+  // K6.Q1 shadowed ambient (ambient or hemisphere bit): the pairs replace the unshadowed ambient / probe and the
+  // hemisphere lights' own marches
+  const ao = frame.ambientOcclusion && r.lights & (32 | 2) ? frame.ambientOcclusion : null;
+  if (r.lights & 32 && !ao) irradiance = add(add(irradiance, frame.ambient), vdbShIrradianceAt(outward, frame.probe));
+  if (r.lights & 2 && !ao) {
     for (const h of frame.hemi) {
       const up = mat3(r.worldToLocal, h.up);
       const front = march(r, local, up, 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves);
@@ -336,6 +349,21 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
         irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, scale(outward, -1)), vdbFrameIsotropicDiffusion(back[2], front[2], back[3]) * 0.5));
       } else irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), vdbFrameShadowTotal(front[1], octaves)));
     }
+  }
+  if (ao) {
+    const dirs = mutate === "ao-pairs" ? ao.directions.slice(0, -1) : ao.directions;
+    const totals = dirs.map((w) => {
+      const d = mat3(r.worldToLocal, w);
+      const front = march(r, local, d, 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves, ao.steps);
+      const back = march(r, local, scale(d, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves, ao.steps);
+      return vdbFrameAmbientPairTotals(front, back, diffusion, octaves);
+    });
+    const v = mutate === "ao" ? ([1, 1] as [number, number]) : vdbFrameAmbientVisibility(totals);
+    const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
+    const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
+    const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);
+    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: frame.probe, sky }, v));
+    if (r.lights & 2) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: [0, 0, 0], hemiSky, hemiGround, sky }, v));
   }
   for (const [index, l] of frame.lights.entries()) {
     const isDirectional = l.position[3] < 1.5;

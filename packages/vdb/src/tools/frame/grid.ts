@@ -623,6 +623,8 @@ export interface VDBFrameDensityInputs {
    * transmittance target already). Default: none.
    */
   occluderAt?: ((index: number, world: Vec3) => number) | null;
+  /** K6.Q1 shadowed ambient: the sky up / down totals are the fourth target's hemispherical visibilities (z, w). */
+  ambientOcclusion?: boolean;
 }
 
 /**
@@ -747,6 +749,11 @@ function densityFroxelTail(
   });
   shadow0[0] = vdbFrameShadowTotal(shadow0[0]!, octaves);
   shadow0[1] = vdbFrameShadowTotal(shadow0[1]!, octaves);
+  // K6.Q1: the hemispherical visibilities replace the sky totals
+  if (p.ambientOcclusion) {
+    shadow0[0] = sh[3]![2]!;
+    shadow0[1] = sh[3]![3]!;
+  }
   const ext = (v: number[]) => v.map((x) => Math.min(x * extinction, 6.0e4)) as Vec4;
   const own = p.emissionAt && visibleLocal ? p.emissionAt(visibleLocal, at!.lod) : ([0, 0, 0] as Vec3);
   const emission: Vec3 = [p.scatterColor[0] + own[0], p.scatterColor[1] + own[1], p.scatterColor[2] + own[2]];
@@ -895,6 +902,8 @@ export interface VDBFrameLightingInputs {
    * already, `VDBFrameDensityInputs.occluderAt`). Default: none.
    */
   occluderAt?: ((index: number, world: Vec3) => number) | null;
+  /** K6.Q1 shadowed ambient: ambient × the mean of the sky up / down values (the hemispherical visibilities). */
+  ambientOcclusion?: boolean;
 }
 
 /** three's `getShIrradianceAt` (the probe's L2 irradiance at a unit normal). */
@@ -946,7 +955,8 @@ export function vdbFrameLightingFroxel(
   const spectrum = inputs.phaseSpectrum ?? [1, 1, 0];
   const colorPhase = spectrum[2] > 0.5;
   const directs = colorPhase && inputs.directAt ? inputs.directAt(world) : [1, 1, 1, 1, 1, 1];
-  const irradiance: Vec3 = [0, 1, 2].map((c) => inputs.ambient[c]! + inputs.hemiSky[c]! * skyUp + inputs.hemiGround[c]! * skyDown) as Vec3;
+  const ambientScale = inputs.ambientOcclusion ? skyUp + skyDown : 1;
+  const irradiance: Vec3 = [0, 1, 2].map((c) => inputs.ambient[c]! * ambientScale + inputs.hemiSky[c]! * skyUp + inputs.hemiGround[c]! * skyDown) as Vec3;
   if (inputs.probe) {
     const sky = normalize3(inputs.sky ?? [0, 1, 0]);
     const up = shIrradiance(sky, inputs.probe);
