@@ -14,7 +14,12 @@
  *   Per pixel and channel |GPU − CPU| ≤ k·√(σ²_GPU + σ²_CPU); also the share of values equal to 1e-3 relative (the
  *   shared stream makes most paths identical). `&determinism=1` renders the dense case twice (bitwise equal).
  * - `report`: one K3 scenario from the capture manifest (`?scenario=`, his bunny), rendered by the reference for
- *   `scripts/k6/reference-report.mjs` (`?w=&h=&spp=&batches=&maxBounces=&phase=g,backG,backWeight&budget=<s>&filter=box|center`).
+ *   `scripts/k6/reference-report.mjs` (`?w=&h=&spp=&maxBounces=&phase=g,backG,backWeight&filter=box|center`; K6.R1:
+ *   `?lighting=volume|frame` (point/spot falloff mapping), `?mie=mono|rgb` (his Lorenz-Mie tables), `?extinction=`,
+ *   `?majorants=0`, and the convergence stop `?target=&check=&minBatches=` with caps `?batches=&budget=`; several volumes
+ *   also publish the overlap mask).
+ * - `scene` (K6.R1): one scene of the report's own set (`k6-scenes.ts`: WDAS, smoke, absorbing / thin bunny, a point
+ *   light; `?scene=&lighting=`), the same options.
  *
  * Results: `window.__VDB_K6_REFERENCE__` (e2e/k6-reference.spec.ts).
  */
@@ -32,12 +37,16 @@ import {
   vdbRefBeerLambert,
   vdbRefEmissionOnly,
   vdbRefInvert4,
+  vdbRefCameraRay,
   vdbRefMultiply4,
   vdbRefSingleScatter,
+  vdbRefTransformPoint,
+  vdbRefVolumeInterval,
   vdbReferenceConstantMediumCpu,
   vdbReferenceDenseMediumCpu,
   vdbReferenceBlackbodyTable,
   vdbReferenceLightsFromFrame,
+  vdbReferenceMajorantGridDense,
   vdbReferenceMajorantGridSparse,
   vdbReferenceMajorantGridStats,
   vdbReferenceMiePhaseTable,
@@ -50,6 +59,7 @@ import {
   type VDBRefVec3,
   type VDBReferenceAccum,
   type VDBReferenceFrameLight,
+  type VDBReferenceMajorantGrid,
   type VDBReferenceMediumCpu,
   type VDBReferenceScene,
   type VDBReferenceSettings,
@@ -57,6 +67,7 @@ import {
   type WvdbDenseTexture,
   type WvdbDenseVolume,
 } from "../../../packages/vdb/src/tools/internal.js";
+import { K6_SCENES, k6LoadAsset, k6SceneFrame, k6SparseBox } from "./k6-scenes.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
 type Settings = Omit<VDBReferenceSettings, "width" | "height">;
@@ -642,7 +653,7 @@ async function twinFeatures(device: GPUDevice): Promise<void> {
   pool.dispose();
 }
 
-// ── report: one K3 scenario from his capture manifest ────────────────────────────────────────────────
+// ── report: one K3 scenario from his capture manifest, or (K6.R1) one scene of k6-scenes.ts ─────────────────
 
 interface ManifestScenario {
   name: string;
@@ -653,12 +664,130 @@ interface ManifestScenario {
   };
 }
 
-const toBase64 = (a: Float32Array) => {
+const toBase64 = (a: Float32Array | Uint8Array) => {
   const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(s);
 };
+
+/**
+ * The reference's own noise: the mean (and 90th percentile) relative standard error of the luminance over the volume
+ * pixels (primary T < 0.98, Y > 1e-3).
+ */
+function referenceNoise(mean: Float64Array, stderr: Float64Array): { mean: number; p90: number; pixels: number } {
+  const rel: number[] = [];
+  for (let i = 0; i < mean.length; i += 4) {
+    const y = 0.2126 * mean[i]! + 0.7152 * mean[i + 1]! + 0.0722 * mean[i + 2]!;
+    if (mean[i + 3]! < 0.98 && y > 1e-3) rel.push((0.2126 * stderr[i]! + 0.7152 * stderr[i + 1]! + 0.0722 * stderr[i + 2]!) / y);
+  }
+  rel.sort((a, b) => a - b);
+  return { mean: rel.length ? rel.reduce((s, v) => s + v, 0) / rel.length : 0, p90: rel.length ? rel[Math.floor(rel.length * 0.9)]! : 0, pixels: rel.length };
+}
+
+/**
+ * K6.R1 convergence stop: batches until the mean relative standard error of Y over the volume pixels reaches
+ * `?target=` (default 0.02), checked every `?check=` batches (default 32) after `?minBatches=` (default 32); caps: `?batches=`
+ * (default 65536) and `?budget=` seconds (default 600; a safety cap, not the stop rule). `?target=0` keeps the old
+ * fixed-budget behaviour.
+ */
+async function accumulate(device: GPUDevice, ref: Awaited<ReturnType<typeof makeRenderer>>, job: GpuJob): Promise<{ accum: VDBReferenceAccum; seconds: number; noise: ReturnType<typeof referenceNoise>; converged: boolean; stop: string; checks: number }> {
+  const maxBatches = Number(params.get("batches") ?? 65536);
+  const budget = Number(params.get("budget") ?? 600) * 1000;
+  const target = Number(params.get("target") ?? 0.02);
+  const every = Number(params.get("check") ?? 32);
+  const minBatches = Number(params.get("minBatches") ?? 32);
+  const chunk = Math.min(Number(params.get("chunk") ?? 4), 64);
+  const t0 = performance.now();
+  let checks = 0;
+  let nextCheck = Math.max(minBatches, every);
+  for (;;) {
+    const enc = device.createCommandEncoder();
+    if (job.sparse) {
+      job.sparse.pool.update(enc);
+      job.sparse.update(enc);
+    }
+    ref.render(enc, Math.min(chunk, maxBatches - ref.batches));
+    device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    const elapsed = performance.now() - t0;
+    if (ref.batches >= maxBatches || (elapsed > budget && ref.batches >= 4)) {
+      const accum = await ref.readback();
+      const s = vdbReferenceStatistics(accum);
+      const noise = referenceNoise(s.mean, s.stderr);
+      return { accum, seconds: elapsed / 1000, noise, converged: target > 0 && noise.mean <= target, stop: ref.batches >= maxBatches ? "batches" : "budget", checks };
+    }
+    if (target > 0 && ref.batches >= nextCheck) {
+      checks++;
+      nextCheck = ref.batches + every;
+      const accum = await ref.readback();
+      const s = vdbReferenceStatistics(accum);
+      const noise = referenceNoise(s.mean, s.stderr);
+      if (noise.mean <= target) return { accum, seconds: (performance.now() - t0) / 1000, noise, converged: true, stop: "target", checks };
+    }
+  }
+}
+
+/**
+ * Per pixel (centre ray), whether two or more volumes each have optical depth > 0.1 along it (CPU, 192 midpoints per
+ * box): the overlap mask of the V79 mixing comparison. Bit i of the byte = volume i reached.
+ */
+function overlapMask(scene: VDBReferenceScene, media: VDBReferenceMediumCpu[], W: number, H: number): Uint8Array {
+  const out = new Uint8Array(W * H);
+  const w2l = scene.volumes.map((v) => vdbRefInvert4(v.localToWorld));
+  for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
+    const ray = vdbRefCameraRay(scene.camera, W, H, px, py, 0.5, 0.5);
+    let bits = 0;
+    scene.volumes.forEach((v, i) => {
+      const [t0, t1] = vdbRefVolumeInterval(w2l[i]!, false, ray.o, ray.d, 1e30);
+      if (!(t0 < t1)) return;
+      let tau = 0;
+      const n = 192;
+      const dt = (t1 - t0) / n;
+      for (let k = 0; k < n; k++) {
+        const t = t0 + (k + 0.5) * dt;
+        const x = [ray.o[0] + t * ray.d[0], ray.o[1] + t * ray.d[1], ray.o[2] + t * ray.d[2]];
+        const l = vdbRefTransformPoint(w2l[i]!, x);
+        tau += media[i]!.density([l[0] + 0.5, l[1] + 0.5, l[2] + 0.5]) * v.sigma * dt;
+      }
+      if (tau > 0.1) bits |= 1 << i;
+    });
+    out[py * W + px] = bits;
+  }
+  return out;
+}
+
+/** Render `scene` to convergence and publish the result for the report script. */
+async function publishReference(device: GPUDevice, job: GpuJob, scene: VDBReferenceScene, extra: Record<string, unknown>, mask?: Uint8Array): Promise<void> {
+  // Box filter: the report compares with the frame box-downsampled to this size (pixel areas, not centres).
+  const settings: Settings = { spp: Number(params.get("spp") ?? 1), maxBounces: Number(params.get("maxBounces") ?? 512), seed: Number(params.get("seed") ?? 1), rrStart: 4, pixelFilter: params.get("filter") === "center" ? "center" : "box" };
+  const ref = await makeRenderer(device, job);
+  ref.setScene(scene, settings);
+  const run = await accumulate(device, ref, job);
+  const { mean, stderr } = vdbReferenceStatistics(run.accum);
+  result.report = {
+    ...extra,
+    width: job.width,
+    height: job.height,
+    batches: run.accum.batches,
+    spp: settings.spp,
+    maxBounces: settings.maxBounces,
+    sigma: scene.volumes.map((v) => v.sigma),
+    majorantGrids: scene.volumes.map((v) => (v.majorantGrid ? { dims: v.majorantGrid.dims, ...vdbReferenceMajorantGridStats(v.majorantGrid) } : null)),
+    lights: scene.lights,
+    environment: scene.environment,
+    seconds: run.seconds,
+    converged: run.converged,
+    stop: run.stop,
+    checks: run.checks,
+    noise: run.noise,
+    mean: toBase64(Float32Array.from(mean)),
+    stderr: toBase64(Float32Array.from(stderr)),
+    ...(mask ? { overlap: toBase64(mask) } : {}),
+  };
+  log(`reference ${String(extra.scenario ?? extra.scene)}: ${job.width}x${job.height}, ${run.accum.batches} batches × ${settings.spp} spp in ${run.seconds.toFixed(1)} s, noise ${(run.noise.mean * 100).toFixed(2)} % (${run.stop})`, "ok");
+  ref.dispose();
+}
 
 async function report(device: GPUDevice): Promise<void> {
   const name = params.get("scenario") ?? "step1-volume-dir-ms-on-isolated";
@@ -676,14 +805,20 @@ async function report(device: GPUDevice): Promise<void> {
   const vol = md.volumes.find((v) => v.visible !== false) ?? md.volumes[0]!;
   const others = md.volumes.filter((v) => v !== vol && v.visible !== false);
   const phaseArg = (params.get("phase") ?? "0.8,-0.3,0.2").split(",").map(Number);
-  const phase = { g: phaseArg[0]!, backG: phaseArg[1] ?? 0, backWeight: phaseArg[2] ?? 0 };
+  const phase: VDBReferenceScene["volumes"][number]["phase"] = { g: phaseArg[0]!, backG: phaseArg[1] ?? 0, backWeight: phaseArg[2] ?? 0 };
+  // K6.R1 `?mie=mono|rgb`: his Lorenz-Mie tables (the renderer's 'lorenz-mie' / 'lorenz-mie-rgb' 'frame' phase)
+  const mie = params.get("mie");
+  if (mie === "mono" || mie === "rgb") phase!.table = vdbReferenceMiePhaseTable(mie);
+  // K6.R1: per-cell majorants from the texels (8³ cells), unless `?majorants=0`
+  const majorantGrid = params.get("majorants") === "0" ? undefined : vdbReferenceMajorantGridDense(volume, 8);
   const volumes = [vol, ...others].map((v) => {
     const l2w = Array.from(vdbRefMultiply4(v.matrixWorld, v.textures[0]!.matrix));
     return {
       localToWorld: l2w,
       // OUR normalisation (k3-frame: normalizeDensity with the texture's mean), his extinction.
-      sigma: vdbReferenceSigma({ localToWorld: l2w, extinction: v.extinction, normalizeDensity: true, meanNonZero: volume.meanDensity }),
+      sigma: vdbReferenceSigma({ localToWorld: l2w, extinction: Number(params.get("extinction") ?? v.extinction), normalizeDensity: true, meanNonZero: volume.meanDensity }),
       majorant: volume.maxDensity,
+      ...(majorantGrid ? { majorantGrid } : {}),
       albedo: [1, 1, 1] as VDBRefVec3,
       phase,
     };
@@ -697,48 +832,72 @@ async function report(device: GPUDevice): Promise<void> {
     result.warnings.push(`report: light ${l.type} not mapped`);
     return [];
   });
-  const frame = vdbReferenceLightsFromFrame(frameLights);
+  const lighting = params.get("lighting") === "frame" ? "frame" : "volume";
+  const frame = vdbReferenceLightsFromFrame(frameLights, { lighting });
   const scene: VDBReferenceScene = {
     camera: { cameraToWorld: md.camera.matrixWorld, projectionInverse: Array.from(vdbRefInvert4(md.camera.projectionMatrix)) },
     volumes,
     lights: frame.lights,
     environment: frame.environment,
   };
-  // Box filter: the report compares with the TSL frame box-downsampled to this size (pixel areas, not centres).
-  const settings: Settings = { spp: Number(params.get("spp") ?? 1), maxBounces: Number(params.get("maxBounces") ?? 512), seed: Number(params.get("seed") ?? 1), rrStart: 4, pixelFilter: params.get("filter") === "center" ? "center" : "box" };
-  const job: GpuJob = { source, width: W, height: H };
-  const ref = await makeRenderer(device, job);
-  ref.setScene(scene, settings);
-  const maxBatches = Number(params.get("batches") ?? 256);
-  const budget = Number(params.get("budget") ?? 120) * 1000;
-  const chunk = Number(params.get("chunk") ?? 1);
-  const t0 = performance.now();
-  while (ref.batches < maxBatches && (ref.batches < 4 || performance.now() - t0 < budget)) {
-    const enc = device.createCommandEncoder();
-    ref.render(enc, Math.min(chunk, maxBatches - ref.batches));
-    device.queue.submit([enc.finish()]);
-    await device.queue.onSubmittedWorkDone();
-  }
-  const accum = await ref.readback();
-  const { mean, stderr } = vdbReferenceStatistics(accum);
-  result.report = {
-    scenario: name,
-    width: W,
-    height: H,
-    batches: accum.batches,
-    spp: settings.spp,
-    maxBounces: settings.maxBounces,
-    phase,
-    sigma: volumes.map((v) => v.sigma),
-    lights: frame.lights,
-    environment: frame.environment,
-    seconds: (performance.now() - t0) / 1000,
-    mean: toBase64(Float32Array.from(mean)),
-    stderr: toBase64(Float32Array.from(stderr)),
-  };
-  log(`report ${name}: ${W}x${H}, ${accum.batches} batches × ${settings.spp} spp in ${((performance.now() - t0) / 1000).toFixed(1)} s`, "ok");
-  ref.dispose();
+  const mask = volumes.length > 1 ? overlapMask(scene, volumes.map(() => vdbReferenceDenseMediumCpu(volume)), W, H) : undefined;
+  await publishReference(device, { source, width: W, height: H }, scene, { scenario: name, lighting, phase: { ...phase, table: mie ?? undefined } }, mask);
   source.dispose();
+}
+
+/** K6.R1: one scene of the report's own set (k6-scenes.ts), as the renderer page builds it. */
+async function sceneReport(device: GPUDevice): Promise<void> {
+  const name = params.get("scene") ?? "wdas";
+  const def = K6_SCENES[name];
+  if (!def) throw new Error(`unknown ?scene=${name}; known: ${Object.keys(K6_SCENES).join(", ")}`);
+  const lighting = params.get("lighting") === "volume" ? "volume" : "frame";
+  const W = Number(params.get("w") ?? 160);
+  const H = Number(params.get("h") ?? 90);
+  const asset = await k6LoadAsset(def.asset);
+  let job: GpuJob;
+  let v = 0;
+  let majorantGrid: VDBReferenceMajorantGrid;
+  let pool: VDBGridPool | null = null;
+  if (asset.image) {
+    pool = await VDBGridPool.create(device, { label: "k6-reference scene" });
+    const id = pool.add(asset.image);
+    pool.flush();
+    await pool.settled();
+    const info = pool.info(id);
+    if (!info.hasStats) result.warnings.push(`${def.asset}: the grid has no node stats; the majorant grid is not a bound`);
+    if (info.background !== 0) result.warnings.push(`${def.asset}: background ${info.background} ≠ 0 (the majorant grid assumes 0)`);
+    k6SparseBox(asset, info);
+    const source = vdbSparseSourceGpu(pool, { lod: "none", normalize: "none", maxVolumes: 1, label: "k6-reference scene" });
+    const slot = source.volume({ density: id }, { image: asset.image, stats: asset.stats, bbox: asset.bbox });
+    v = slot.v;
+    majorantGrid = vdbReferenceMajorantGridSparse(asset.image, slot.indexBox, { cellVoxels: 8 });
+    job = { source, sparse: source, width: W, height: H };
+  } else {
+    const dense = wvdbDenseVolume(readWvdb(new Uint8Array(await (await fetch("/fixtures/k3/bunny_cloud.wvdb")).arrayBuffer())), { mipmaps: false });
+    job = { source: vdbDenseSource(device, dense, { label: "k6-reference scene" }), width: W, height: H };
+    majorantGrid = vdbReferenceMajorantGridDense(dense, 8);
+  }
+  const frame = k6SceneFrame(def, asset, W / H, lighting);
+  const mapped = vdbReferenceLightsFromFrame(frame.lights, { lighting });
+  const scene: VDBReferenceScene = {
+    camera: { cameraToWorld: frame.cameraToWorld, projectionInverse: Array.from(vdbRefInvert4(frame.projection)) },
+    volumes: [
+      {
+        localToWorld: frame.localToWorld,
+        sigma: vdbReferenceSigma({ localToWorld: frame.localToWorld, extinction: def.extinction, normalizeDensity: true, meanNonZero: asset.stats.meanNonZero }),
+        majorant: asset.stats.max,
+        majorantGrid,
+        albedo: def.albedo,
+        phase: { g: def.phase[0], backG: def.phase[1], backWeight: def.phase[2] },
+        v,
+      },
+    ],
+    lights: mapped.lights,
+    environment: mapped.environment,
+  };
+  await publishReference(device, job, scene, { scene: name, lighting, phase: def.phase, stats: asset.stats, bbox: asset.bbox });
+  job.source.dispose();
+  pool?.dispose();
 }
 
 async function main(): Promise<void> {
@@ -761,6 +920,7 @@ async function main(): Promise<void> {
     if (which.includes("sparse")) await twinSparse(device);
     if (which.includes("features")) await twinFeatures(device);
   } else if (MODE === "report") await report(device);
+  else if (MODE === "scene") await sceneReport(device);
   else throw new Error(`unknown case ${MODE}`);
 }
 
