@@ -7,9 +7,10 @@
  * 2. The primary transmittance T by ratio tracking (Novák et al. 2014) to infinity.
  * 3. One path by delta tracking (Woodcock): at each real collision with volume i (picked by σᵢ / σ̄): emission
  *    (β · Le), then β ·= albedo, next-event estimation of every light (phase × ratio-tracked transmittance), then
- *    the bounce cap, Russian roulette on β from `rrStart`, and a new direction sampled from the phase (3 draws:
+ *    Russian roulette on β from `rrStart`, and a new direction sampled from the phase (3 draws:
  *    lobe, cos θ, φ; a tabulated phase (K6.R1) samples cos θ by inverse CDF and weights β per channel). A path that
- *    leaves the media after ≥ 1 collision gathers the environment.
+ *    leaves the media after ≥ 1 collision gathers the environment; a collision past `maxBounces` ends the path
+ *    (K6.R1: so `maxBounces` 1 is single scattering of the lights AND the environment).
  *
  * Tracking runs piecewise over the ray's intervals in each volume's box (or inscribed ball): the majorant on a
  * piece is Σ σᵢ · majorantᵢ of the volumes covering it, so empty gaps cost no steps. A volume with a majorant grid
@@ -437,6 +438,12 @@ export function vdbReferenceSampleCpu(
       }
       break;
     }
+    // K6.R1: the cap ends a path at a collision past it, so the last bounce still gathers the environment it escapes to
+    // (single scattering of an environment, ambient or a probe needs one phase-sampled escape after the collision).
+    if (depth >= settings.maxBounces) {
+      if (beta.some((b) => b > 0)) stats.truncated++;
+      break;
+    }
     depth++;
     const v = vols[hit.vol]!;
     const x: VDBRefVec3 = [o[0]! + hit.t * d[0], o[1]! + hit.t * d[1], o[2]! + hit.t * d[2]];
@@ -458,10 +465,6 @@ export function vdbReferenceSampleCpu(
       const tl = track(tr, rng, x, nee.dir, nee.dist, true).T;
       const t = mutate === "nee-transmittance" ? 1 : tl;
       for (let c = 0; c < 3; c++) L[c] = L[c]! + beta[c]! * nee.li[c]! * p[c]! * norm * t;
-    }
-    if (depth >= settings.maxBounces) {
-      if (beta.some((b) => b > 0)) stats.truncated++;
-      break;
     }
     if (depth >= settings.rrStart) {
       const q = Math.min(Math.max(beta[0], beta[1], beta[2]), 1);

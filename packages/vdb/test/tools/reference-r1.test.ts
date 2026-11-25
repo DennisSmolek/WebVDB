@@ -17,6 +17,7 @@ import {
   vdbRefShBasis,
   vdbRefSingleScatter,
   vdbRefSingleScatterPoint,
+  vdbRefVolumeInterval,
   vdbReferenceBlackbodyTable,
   vdbReferenceConstantMediumCpu,
   vdbReferenceLightsFromFrame,
@@ -322,6 +323,46 @@ describe("K6.R1 light probe environment", () => {
     const sh = [c0, c0, c0, ...new Array(24).fill(0)];
     const scene: VDBReferenceScene = { camera: orthoCamera(), volumes: [{ localToWorld: BALL, sigma: 1.6, majorant: 1.25, albedo: [1, 1, 1], phase: { g: 0.5 }, shape: "sphere" }], environment: { sh } };
     expect(furnacePasses(furnace(scene, [vdbReferenceConstantMediumCpu(1)], [0.5, 0.5, 0.5], 24))).toBe(true);
+  });
+});
+
+describe("K6.R1 single scattering of the environment (maxBounces 1)", () => {
+  it("a uniform environment through an isotropic ball = the quadrature (the last bounce still escapes and gathers it)", () => {
+    const le: VDBRefVec3 = [0.6, 0.5, 0.4];
+    const albedo: VDBRefVec3 = [0.9, 0.8, 0.7];
+    const sigma = 0.9;
+    const scene: VDBReferenceScene = { camera: orthoCamera(), volumes: [{ localToWorld: BALL, sigma, majorant: 1, albedo, phase: { g: 0 }, shape: "sphere" }], environment: { uniform: le } };
+    const m = { localToWorld: BALL, sphere: true, sigma };
+    const w2l = vdbRefInvert4(BALL);
+    // directions: a Fibonacci sphere of 1024; isotropic phase 1/(4π)
+    const dirs = Array.from({ length: 1024 }, (_, i) => {
+      const z = 1 - (2 * (i + 0.5)) / 1024;
+      const r = Math.sqrt(1 - z * z);
+      const phi = i * Math.PI * (3 - Math.sqrt(5));
+      return [r * Math.cos(phi), r * Math.sin(phi), z];
+    });
+    const c = check(scene, [vdbReferenceConstantMediumCpu(1)], { width: W, height: H, spp: 16, maxBounces: 1, seed: 12 }, 24, (px, py) => {
+      const r = orthoRay(px, py);
+      const T = vdbRefBeerLambert(m, r.o, r.d);
+      const [t0, t1] = vdbRefVolumeInterval(w2l, true, r.o, r.d, 1e30);
+      if (!(t0 < t1)) return [0, 0, 0, T];
+      const n = 64;
+      const h = (t1 - t0) / n;
+      let s = 0;
+      for (let k = 0; k <= n; k++) {
+        const t = t0 + k * h;
+        const x = [r.o[0] + t * r.d[0], r.o[1] + t * r.d[1], r.o[2] + t * r.d[2]];
+        let esc = 0;
+        for (const d of dirs) {
+          const [, e1] = vdbRefVolumeInterval(w2l, true, x, d, 1e30);
+          esc += Math.exp(-sigma * Math.max(e1, 0));
+        }
+        s += (k === 0 || k === n ? 1 : k % 2 ? 4 : 2) * Math.exp(-sigma * (t - t0)) * (esc / dirs.length);
+      }
+      const integral = (s * h) / 3;
+      return [0, 1, 2].map((k) => sigma * albedo[k]! * le[k]! * integral).concat([T]);
+    });
+    expect(passes(c), JSON.stringify(c)).toBe(true);
   });
 });
 

@@ -200,7 +200,11 @@ export interface VDBReferenceCamera {
 export interface VDBReferenceSettings {
   width: number;
   height: number;
-  /** Scattering events per path (1 = single scattering). Default 256; paths longer than this are cut (bias). */
+  /**
+   * Scattering events per path (1 = single scattering, of the lights and of the environment: the last event still
+   * samples a direction and gathers the environment if the path escapes). Default 256; a collision past it ends the
+   * path (bias).
+   */
   maxBounces?: number;
   /** Russian roulette on the path throughput from this depth on (survival = min(max(β), 1)). Default 4. */
   rrStart?: number;

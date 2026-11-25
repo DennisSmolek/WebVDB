@@ -542,6 +542,10 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
         }
         break;
       }
+      // a collision past the cap ends the path (the last bounce's escape still gathered the environment above)
+      if (depth >= vdbRefU.maxBounces) {
+        break;
+      }
       depth = depth + 1u;
       vol = hit.vol;
       x = o + hit.t * d;
@@ -587,9 +591,6 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
     if (found) {
       mode = 2u;
       continue;
-    }
-    if (depth >= vdbRefU.maxBounces) {
-      break;
     }
     if (depth >= vdbRefU.rrStart) {
       let q = min(vdbRefMax3(beta), 1.0);

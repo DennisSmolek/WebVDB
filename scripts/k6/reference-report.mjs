@@ -183,6 +183,21 @@ const GROUP_DEFS = {
       k3("TSL ms off", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
     ],
   },
+  env: {
+    kind: "his",
+    title: "V96: his sky-midday environment only, 'frame' lighting: 'outward' irradiance (core SH L2 vs TSL PMREM roughness 1 × π) and 'directional'",
+    scenario: "step3-environment-sky-midday-env-isolated",
+    lighting: "frame",
+    env: "/fixtures/k3/sky-midday-HDR.jpg",
+    rows: [
+      k3("TSL outward, ms off", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=0", { lighting: "frame", vsSingle: true }),
+      k3("core outward, ms off", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=0&backend=core", { lighting: "frame", vsSingle: true }),
+      k3("TSL outward, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=1", { lighting: "frame" }),
+      k3("core outward, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=1&backend=core", { lighting: "frame" }),
+      k3("TSL directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1", { lighting: "frame", capture: "step3-environment-sky-midday-env-isolated" }),
+      k3("core directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1&backend=core", { lighting: "frame" }),
+    ],
+  },
   ...Object.fromEntries(
     [
       ["wdas", "WDAS cloud (sparse, Fp8), sun", "wdas"],
@@ -443,7 +458,7 @@ try {
         const s = frames.find((t) => t.settings && t.lighting === "frame")?.settings;
         const phase = g.lighting === "volume" ? VOLUME_PHASE : s?.phase === "dual-lobe" ? [s.phaseG, s.phaseBackG, s.phaseBackWeight] : [s?.phaseG ?? 0.8, 0, 0];
         if (g.lighting === "frame" && s && !["henyey-greenstein", "dual-lobe", "isotropic", "lorenz-mie", "lorenz-mie-rgb"].includes(s.phase)) console.warn(`  phase ${s.phase}: the reference uses HG g = ${phase[0]}`);
-        query = `case=report&scenario=${g.scenario}&lighting=${lighting}&phase=${phase.join(",")}${g.mie ? `&mie=${g.mie}` : ""}`;
+        query = `case=report&scenario=${g.scenario}&lighting=${lighting}&phase=${phase.join(",")}${g.mie ? `&mie=${g.mie}` : ""}${g.env ? `&env=${g.env}` : ""}`;
       } else query = `case=scene&scene=${g.scene}&lighting=${lighting}`;
       const common = `&w=${gw}&h=${gh}&spp=${SPP}&target=${TARGET}&check=${CHECK}&budget=${BUDGET}`;
       const entry = {};

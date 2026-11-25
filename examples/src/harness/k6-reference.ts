@@ -16,7 +16,7 @@
  * - `report`: one K3 scenario from the capture manifest (`?scenario=`, his bunny), rendered by the reference for
  *   `scripts/k6/reference-report.mjs` (`?w=&h=&spp=&maxBounces=&phase=g,backG,backWeight&filter=box|center`; K6.R1:
  *   `?lighting=volume|frame` (point/spot falloff mapping), `?mie=mono|rgb` (his Lorenz-Mie tables), `?extinction=`,
- *   `?majorants=0`, and the convergence stop `?target=&check=&minBatches=` with caps `?batches=&budget=`; several volumes
+ *   `?majorants=0`, `?env=<UltraHDR url>` (his scene.environment as an equirect map), and the convergence stop `?target=&check=&minBatches=` with caps `?batches=&budget=`; several volumes
  *   also publish the overlap mask).
  * - `scene` (K6.R1): one scene of the report's own set (`k6-scenes.ts`: WDAS, smoke, absorbing / thin bunny, a point
  *   light; `?scene=&lighting=`), the same options.
@@ -67,6 +67,8 @@ import {
   type WvdbDenseTexture,
   type WvdbDenseVolume,
 } from "../../../packages/vdb/src/tools/internal.js";
+import * as THREE from "three";
+import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
 import { K6_SCENES, k6LoadAsset, k6SceneFrame, k6SparseBox } from "./k6-scenes.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
@@ -661,6 +663,7 @@ interface ManifestScenario {
     camera: { matrixWorld: number[]; projectionMatrix: number[] };
     lights: { type: string; color: number[]; intensity: number; matrixWorld: number[]; groundColor?: number[] }[];
     volumes: { matrixWorld: number[]; densityScale: number; extinction: number; visible?: boolean; textures: { matrix: number[] }[] }[];
+    environment?: { intensity: number; rotation: [number, number, number, string] } | null;
   };
 }
 
@@ -775,7 +778,7 @@ async function publishReference(device: GPUDevice, job: GpuJob, scene: VDBRefere
     sigma: scene.volumes.map((v) => v.sigma),
     majorantGrids: scene.volumes.map((v) => (v.majorantGrid ? { dims: v.majorantGrid.dims, ...vdbReferenceMajorantGridStats(v.majorantGrid) } : null)),
     lights: scene.lights,
-    environment: scene.environment,
+    environment: scene.environment && { ...scene.environment, ...(scene.environment.equirect ? { equirect: { width: scene.environment.equirect.width, height: scene.environment.equirect.height, intensity: scene.environment.equirect.intensity } } : {}) },
     seconds: run.seconds,
     converged: run.converged,
     stop: run.stop,
@@ -834,6 +837,20 @@ async function report(device: GPUDevice): Promise<void> {
   });
   const lighting = params.get("lighting") === "frame" ? "frame" : "volume";
   const frame = vdbReferenceLightsFromFrame(frameLights, { lighting });
+  // K6.R1 `?env=<UltraHDR url>`: his scene.environment as an equirect radiance map (the capture's intensity; rotation
+  // must be 0). three's loaders keep the decoded rows top first (flipY happens on upload), the reference's row 0 is
+  // the zenith: no flip on the CPU.
+  const envUrl = params.get("env");
+  if (envUrl) {
+    const e = md.environment;
+    if (e && e.rotation.slice(0, 3).some((r) => r !== 0)) throw new Error(`report: environment rotation ${JSON.stringify(e.rotation)} is not supported`);
+    const tex = await new UltraHDRLoader().loadAsync(envUrl);
+    const img = tex.image as { width: number; height: number; data: Uint16Array | Float32Array };
+    const data = new Float32Array(img.width * img.height * 4);
+    for (let i = 0; i < data.length; i++) data[i] = img.data instanceof Uint16Array ? THREE.DataUtils.fromHalfFloat(img.data[i]!) : img.data[i]!;
+    frame.environment.equirect = { width: img.width, height: img.height, data, intensity: Number(params.get("envIntensity") ?? e?.intensity ?? 0.4) };
+    tex.dispose();
+  }
   const scene: VDBReferenceScene = {
     camera: { cameraToWorld: md.camera.matrixWorld, projectionInverse: Array.from(vdbRefInvert4(md.camera.projectionMatrix)) },
     volumes,
