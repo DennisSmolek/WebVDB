@@ -30,3 +30,5 @@ export {
 export type { VDBGridRecord, VDBPoolHeader } from "./pool/layout.js";
 export { VDB_MODULE_BANNER } from "./wgsl/generate.js";
 export { boxPyramidWgsl } from "./compute/index.js";
+// K6.1: the group-2 source contract (design §2.1); public in K6.8.
+export type { VDBVolumeSlot } from "./source/types.js";

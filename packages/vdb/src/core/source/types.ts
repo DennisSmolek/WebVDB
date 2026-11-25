@@ -47,6 +47,25 @@ export interface VDBVolumeSourceWgslOptions {
 }
 
 /**
+ * One volume of a source (K6 design §2.1, the group-2 source contract frozen in K6.1).
+ *
+ * Every `vdbSrc*` function takes `v: u32` first: the source-local slot of the volume. The core
+ * frame renderer copies `v` from the slot into the volume's uniform record and passes it to every
+ * `vdbSrc*` call for that volume. Volumes whose slots share one `source` object form one **source
+ * group**: one bind group (group 2, `source.layoutEntries({ group: 2, firstBinding: 0 })` /
+ * `source.bindEntries(...)`, rebuilt when `source.version` moves) and one dispatch per update.
+ *
+ * A dense source is its own slot (`source` is itself, `v` = 0). A sparse source (K6.7) serves every
+ * volume of one pool and returns a slot per volume from `source.volume({ density, mask?, albedo?, emission? })`.
+ */
+export interface VDBVolumeSlot {
+  /** The source whose `wgsl`, `layoutEntries` and `bindEntries` serve this volume (group 2). */
+  readonly source: VDBVolumeSource;
+  /** The source-local slot of the volume, passed as `v: u32` to every `vdbSrc*` function. */
+  readonly v: number;
+}
+
+/**
  * A volume source for raw WebGPU kernels. Generated WGSL (all names `vdbSrc*`):
  *
  *   fn vdbSrcDensity (v: u32, uvw: vec3f, lod: f32) -> f32;   // dense: [0, 1]
@@ -59,8 +78,10 @@ export interface VDBVolumeSourceWgslOptions {
  *   fn vdbSrcSkipEmpty(v: u32, o: vec3f, d: vec3f, t0: f32, t1: f32) -> f32;
  *   fn vdbSrcMaxIn   (v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32;
  *
- * `uvw` is in [0, 1]³ of the source box, already offset and wrapped by the
- * caller; `lod` is in levels (log2 of the footprint in lod-0 voxels).
+ * `v` is the volume's source-local slot ({@link VDBVolumeSlot}; a dense source
+ * ignores it, its only volume is `v` = 0). `uvw` is in [0, 1]³ of the source box,
+ * already offset and wrapped by the caller; `lod` is in levels (log2 of the
+ * footprint in lod-0 voxels).
  */
 export interface VDBVolumeSource extends VDBVolumeSourceInfo {
   /** Returns the WGSL of the `vdbSrc*` functions for the given slot, profile and channels. */

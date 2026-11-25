@@ -21,7 +21,7 @@
 import { VDBError } from "../errors.js";
 import type { VDBSlot } from "../types.js";
 import type { WvdbDenseTexture, WvdbDenseVolume } from "../../tools/wvdb/dense.js";
-import type { VDBVolumeChannels, VDBVolumeSource, VDBVolumeSourceWgslOptions } from "./types.js";
+import type { VDBVolumeChannels, VDBVolumeSlot, VDBVolumeSource, VDBVolumeSourceWgslOptions } from "./types.js";
 
 /** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST` (0x04 | 0x02); the globals do not exist in Node. */
 const TEXTURE_USAGE = 0x04 | 0x02;
@@ -107,8 +107,13 @@ fn vdbSrcSample${C}(uvw: vec3f, lod: f32) -> vec4f {
 `;
 }
 
-class DenseSource implements VDBVolumeSource {
+class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
   readonly kind = "dense" as const;
+  /** A dense source is its own volume slot (K6 design §2.1): `source` is itself, `v` = 0. */
+  get source(): VDBVolumeSource {
+    return this;
+  }
+  readonly v = 0;
   texels: [number, number, number];
   lodLevels: number;
   readonly channels: VDBVolumeChannels;
@@ -303,7 +308,7 @@ fn vdbSrcMaxIn(v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32 {
 }
 
 /** A dense source with `replace` (LOD swap). */
-export type VDBDenseSource = VDBVolumeSource & {
+export type VDBDenseSource = VDBVolumeSource & VDBVolumeSlot & {
   readonly kind: "dense";
   readonly volume: WvdbDenseVolume;
   replace(volume: WvdbDenseVolume): void;
