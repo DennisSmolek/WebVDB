@@ -72,3 +72,5 @@ export {
 } from "./source/sparse-wgsl.js";
 // K6.1: the core frame renderer (public in K6.8).
 export * from "./frame/index.js";
+// K6.6: level-set surfaces and point sprites (public in K6.8).
+export * from "./surface/index.js";

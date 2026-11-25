@@ -37,6 +37,24 @@ export interface VDBRenderSpec {
   readonly fragmentEntryPoint: string;
   readonly groups: readonly GPUBindGroupLayoutDescriptor[];
   readonly targets: readonly GPUColorTargetState[];
+  /** K6.6 (level sets, points): optional depth state, primitive state and vertex buffers (default: none, triangle-list). */
+  readonly depthStencil?: GPUDepthStencilState;
+  readonly primitive?: GPUPrimitiveState;
+  readonly buffers?: readonly GPUVertexBufferLayout[];
+}
+
+/** The pipeline-state part of a render spec's key and descriptor (K6.6); empty for the composite. */
+const renderState = (s: VDBRenderSpec) => (s.depthStencil || s.primitive || s.buffers ? `:${vdbHashText(JSON.stringify([s.depthStencil ?? null, s.primitive ?? null, s.buffers ?? null]))}` : "");
+
+function renderDescriptor(spec: VDBRenderSpec, module: GPUShaderModule, layout: GPUPipelineLayout): GPURenderPipelineDescriptor {
+  return {
+    label: spec.label,
+    layout,
+    vertex: { module, entryPoint: spec.vertexEntryPoint, ...(spec.buffers ? { buffers: [...spec.buffers] } : {}) },
+    fragment: { module, entryPoint: spec.fragmentEntryPoint, targets: [...spec.targets] },
+    primitive: spec.primitive ?? { topology: "triangle-list" },
+    ...(spec.depthStencil ? { depthStencil: spec.depthStencil } : {}),
+  };
 }
 
 /** A built pipeline with its group layouts and the validation result of its creation. */
@@ -57,7 +75,7 @@ const layoutKey = (groups: readonly GPUBindGroupLayoutDescriptor[]) =>
 export const computeKey = (s: VDBComputeSpec) => `c:${s.entryPoint}:${vdbHashText(s.code)}:${vdbHashText(layoutKey(s.groups))}`;
 /** The cache key of a render spec. */
 export const renderKey = (s: VDBRenderSpec) =>
-  `r:${s.vertexEntryPoint}:${s.fragmentEntryPoint}:${vdbHashText(s.code)}:${vdbHashText(layoutKey(s.groups))}:${vdbHashText(JSON.stringify(s.targets))}`;
+  `r:${s.vertexEntryPoint}:${s.fragmentEntryPoint}:${vdbHashText(s.code)}:${vdbHashText(layoutKey(s.groups))}:${vdbHashText(JSON.stringify(s.targets))}${renderState(s)}`;
 
 function cacheOf(device: GPUDevice): Map<string, AnyPipeline | Promise<AnyPipeline>> {
   let c = caches.get(device);
@@ -110,13 +128,7 @@ export function renderPipeline(device: GPUDevice, spec: VDBRenderSpec): VDBCache
   device.pushErrorScope("validation");
   const layouts = layoutsOf(device, spec.label, spec.groups);
   const module = device.createShaderModule({ label: spec.label, code: spec.code });
-  const pipeline = device.createRenderPipeline({
-    label: spec.label,
-    layout: device.createPipelineLayout({ label: spec.label, bindGroupLayouts: layouts }),
-    vertex: { module, entryPoint: spec.vertexEntryPoint },
-    fragment: { module, entryPoint: spec.fragmentEntryPoint, targets: [...spec.targets] },
-    primitive: { topology: "triangle-list" },
-  });
+  const pipeline = device.createRenderPipeline(renderDescriptor(spec, module, device.createPipelineLayout({ label: spec.label, bindGroupLayouts: layouts })));
   const built = { pipeline, layouts, error: logged(spec.label, device.popErrorScope()) };
   cache.set(key, built);
   return built;
@@ -171,14 +183,7 @@ export async function prepareRender(device: GPUDevice, spec: VDBRenderSpec): Pro
     const module = device.createShaderModule({ label: spec.label, code: spec.code });
     const layout = device.createPipelineLayout({ label: spec.label, bindGroupLayouts: layouts });
     const scope = device.popErrorScope();
-    const descriptor: GPURenderPipelineDescriptor = {
-      label: spec.label,
-      layout,
-      vertex: { module, entryPoint: spec.vertexEntryPoint },
-      fragment: { module, entryPoint: spec.fragmentEntryPoint, targets: [...spec.targets] },
-      primitive: { topology: "triangle-list" },
-    };
-    const pipeline = await device.createRenderPipelineAsync(descriptor);
+    const pipeline = await device.createRenderPipelineAsync(renderDescriptor(spec, module, layout));
     return { pipeline, layouts, error: logged(spec.label, scope) };
   })();
   await settle(cache, key, job);
