@@ -144,17 +144,20 @@ Plan: [docs/dev/research/notes/R1-renderer-port.md](research/notes/R1-renderer-p
 
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
-| K6.0 | Design: core renderer API (device, host encoder, host targets; camera/lights/shadow maps as plain data), pass graph, resource ownership, renderer WGSL + `vdb` module composition, core-side shadow-map interface, MRT/post-processing seam, parity plan | T3 | 🟨 | Design written, awaiting owner review (2026-11-24): [docs/dev/design/K6-core-renderer.md](design/K6-core-renderer.md), with a D34 draft (§10) and owner questions Q1–Q10 (§9). Owner review before K6.1. |
-| K6.1 | Froxel grid, density inject, integrate and 'volume' lighting as core WGSL | T3 | ⬜ | CPU twin; pixel A/B vs the TSL path on the K3 Step 1 scenes. |
+| K6.0 | Design: core renderer API (device, host encoder, host targets; camera/lights/shadow maps as plain data), pass graph, resource ownership, renderer WGSL + `vdb` module composition, core-side shadow-map interface, MRT/post-processing seam, parity plan | T3 | ✅ | 2026-11-25: owner answered Q1–Q10 (compute on 3D textures, D34); design [K6-core-renderer.md](design/K6-core-renderer.md), brief [K6.1-brief.md](design/K6.1-brief.md). |
+| K6.1 | Froxel grid, density inject, integrate and 'volume' lighting as core WGSL | T3 | ⬜ | [Brief](design/K6.1-brief.md). Compute: gather + z-scan resolve + composite + `vdbFrameIntegrate`; dense source; `k6-core` harness; internal `backend` A/B. Gate: kernels vs CPU twins, frames vs the TSL path within tolerance. |
 | K6.2 | 'frame' lighting: shadow grid and cascades, transmittance, environment lights | T3 | ⬜ | A/B on Step 3 scenes. |
 | K6.3 | Scattering: phase functions, multiple scattering (diffusion, neural, multi-scale from K7.3) | T3 | ⬜ | After K7.3. Step 4 scenes. |
 | K6.4 | Spectral media | T2 | ⬜ | Step 5 scenes. |
 | K6.5 | Mesh shadows and the emission light through the core shadow-map interface | T3 | ⬜ | Step 6 scenes. |
+| K6.5b | Mesh→volume shadows: host depth shadow maps (occluders) stop the shadow-grid, transmittance, gather and 'volume' marches; default on when the host gives a map | T3 | ⬜ | Owner 2026-11-25: shadows are first-class. Test: a box between sun and cloud darkens only the cloud behind it. |
 | K6.6 | Level-set tracer and points in the core | T3 | ⬜ | Step 7 IoU and point counts. |
 | K6.7 | Dense and sparse volume sources in the core (the GPU pyramid and `followImage` already are) | T2 | ⬜ | Lifts K3.2b. |
-| K6.8 | `./three` becomes a thin adapter over the core passes | T3 | ⬜ | K3 parity 48/48, demo goldens, demos 10–16 unchanged. Closes K3.8. |
+| K6.R | Reference renderer: brute-force high-sample march (design §7.4) + CPU twin + report script; judges 'better' (MS default, volume mixing) | T3 | ⬜ | Parallel with K6.1/K6.7 after the group-2 contract. Later the pathtracer (P1). |
+| K6.8 | `./three` becomes a thin adapter over the core passes | T3 | ⬜ | Deletes the TSL passes and `backend`; `VDBSequence` to core; 0.2.0 API. Gate: D34 (twins, tolerance vs TSL and K3 captures, K6.R); bit-identity no longer required. Closes K3.8. |
 | K6.9 | Raw-WebGPU renderer demo (no three) + docs page "Rendering without three" | T2 | ⬜ | Exit-gate demo: WDAS, 'frame' lighting, mesh shadows, emission. |
 | K6.10 | Gate review by a separate agent | T3 | ⬜ | |
+| K6.T | Deferred timing A/Bs (design §5.4: workgroup shapes, fusion, light sets, formats, compile cost, core vs TSL frame time, …) | T3 | ⏸ | Blocked: needs a quiet machine (owner, 2026-11-25). Nothing in K6 gates on speed. |
 
 ## K7 — Upstream sync
 

@@ -1,358 +1,430 @@
 # K6 design note: the renderer in the core
 
-Status: design only, 2026-11-24 (K6.0). Awaiting owner review before K6.1 starts. Plan context:
-[PHASES.md](../PHASES.md) K6/K7/P1, [TASKS.md](../TASKS.md) K6.0–K6.10, [DECISIONS.md](../DECISIONS.md) D8, D10, D20,
-D21, D28–D33. Inputs: [R1](../research/notes/R1-renderer-port.md), [K1-core](./K1-core.md) (pool, generator, budgets),
-the K3 handoffs ([K3-1](../../archive/handoffs/K3-1.md), [K3-2a](../../archive/handoffs/K3-2a.md),
-[K3-2d](../../archive/handoffs/K3-2d.md), [K3-3](../../archive/handoffs/K3-3.md), [K3-6](../../archive/handoffs/K3-6.md),
-[K3-7](../../archive/handoffs/K3-7.md)), [DIVERGES.md](../DIVERGES.md) V23–V67, and the 2026-11-24 research on his
-post-0.26 fixes (K7.1, K7.2, K7.3).
+Status: design, rewritten 2026-11-25 for the owner's answers (Q1 = B: compute on 3D textures; Q2–Q10, N1–N3). Ready
+for K6.1 ([K6.1-brief.md](./K6.1-brief.md)). Plan context: [PHASES.md](../PHASES.md) K6/K7/P1,
+[TASKS.md](../TASKS.md) K6.x, [DECISIONS.md](../DECISIONS.md) D8, D10, D11, D20, D21, D25, D32 and the D34 text in §10.
+Inputs: [R1](../research/notes/R1-renderer-port.md), [K1-core](./K1-core.md), the K3 handoffs in
+[docs/archive/handoffs/](../../archive/handoffs/), [DIVERGES.md](../DIVERGES.md) V23–V73, his post-0.26 fixes (K7.1–K7.3).
+
+Project goal (owner, 2026-11-25): the best VDB library on the web, WebGPU-first. mjurczyk's renderer (our K3 port at
+`75e7345`) is a benchmark and a collaborator, not the spec. Native OpenVDB/NanoVDB, papers (Hillaire 2015/2020,
+Wronski 2014, Disney "Deep Scattering", Novák et al. 2018) and other engines are fair sources. Every departure from
+his renderer gets a DIVERGES row (§11).
 
 ## 0. Decisions at a glance
 
-| Topic | Proposal |
+| Topic | Design |
 |---|---|
-| Who runs the passes | The core, into the host's encoder on the host's device. `./three` collects scene data, owns the proxies and composites through a material. |
-| Pass style | Fragment passes on today's 2D z-slice atlases, formats and blend states, checkable texel for texel against the TSL path. Compute/3D textures: a later A/B (Q1). |
-| Inputs | Plain data: camera matrices, a light list (directional, point, spot, ambient, hemisphere, probe), environment textures, a frame id. No engine objects. |
-| Outputs | Textures the host reads (froxel atlas, volume shadow maps, emission probes), core-allocated or from a host allocator hook (the pyramid's `targets`, generalised). |
-| MRT / post seam | Composite by a core pass into host targets, or by the WGSL function `vdbFrameIntegrate` in the host's own pass or material. `./three` uses the function: three's MRT and `pass()` reach the composite, never the froxel passes. |
-| Shadow maps | The host lists lights with their shadow cameras (or asks the core to fit them); each map comes back with the view it was drawn with, which receivers use instead of the host's `shadowCoord` (K7.1 by construction). |
-| Shader composition | One `vdb` module (union of helpers) + `vdbSrc*` + the `vdbFrame*` chunk closure + the entry. Keyed by a hash of the text; boxes in uniforms, so a grid swap builds nothing (G16a). |
-| Ownership | The core destroys only what it allocated, two updates after retiring it (the pool's contract), and registers no listeners: it polls `version` / `revision` / `imageRevision`. |
+| Who runs the passes | The core, on the host's device, into the host's encoder (Q2). `./three` passes three's device, collects scene data, binds core textures into three by the backend-record swap, composites through a material. |
+| Pass style | Compute kernels on 3D textures (Q1 = B). Fragment only at host seams: composite (pass or WGSL function), level-set `frag_depth`, points. |
+| Froxels | `texture_3d` written through `texture_storage_3d`. One thread per froxel gathers the visible volumes; a per-column z-scan writes integrated scattering and optical depth; the composite reads that prefix texture at the scene depth (§3.4). |
+| 'frame' lighting | Density and lighting fused into one kernel; no 4 × rgba16float intermediates. Shadow grid, transmittance and env grid are stacked 3D textures read with hardware trilinear. |
+| Environment | Host equirect or cube `GPUTexture`. The core prefilters it, projects SH (irradiance) and extracts dominant lights on the GPU into a buffer later passes read. No CPU readback (Q3). |
+| Shadows | Volume→mesh Beer maps read with the view they were drawn with; mesh→volume from the host's depth maps (default on when given); volume self-shadowing. All in K6 (Q10). |
+| Multiple scattering | A pluggable term. Default chosen by quality against the reference renderer (K6.R), between diffusion and K7.3 multi-scale. The MLP is an experimental generic evaluator (Q5). |
+| Emission colour | Data (named spectrum or 256-texel LUT) plus an optional user WGSL hook (Q9). |
+| Device baseline | WebGPU core features and default limits. `texture-formats-tier1`, `shader-f16`, `subgroups` are optional fast paths with fallbacks (N2). |
+| Gates | Correctness and quality only: kernel ↔ CPU twin, frames vs the TSL path and his K3 captures by tolerance, a brute-force reference for "better" (N1). No timing gates; timing A/Bs are deferred (§5.4). |
+| TSL path | Stays as the reference behind an internal `backend: 'tsl' \| 'core'` during K6.1–K6.7; deleted in K6.8 (N3). |
 
 ## 1. Goals, non-goals, constraints
 
 **Goals.** (1) A WebGPU host with no engine renders the froxel renderer ('volume' and 'frame' lighting, phase,
-multiple scattering incl. neural and multi-scale, spectral, temporal), volume shadows on its meshes, emission
-light, level sets and points (PHASES K6 exit gate: the WDAS cloud, 'frame' lighting, mesh shadows, emission, without
-three). (2) `./three` draws through the same passes and keeps the K3 parity suite at 48/48 and the demo goldens.
-(3) Every core pass has a CPU twin in `tools` (D11). (4) The three-specific bug classes found in K3–K5 can't happen
-in the core by construction (§4).
+multiple scattering, spectral, temporal), volume shadows on its meshes, mesh shadows on volumes, emission light,
+level sets and points (PHASES K6 exit gate). (2) `./three` draws through the same kernels. (3) Every kernel has a
+CPU twin in `tools` (D11). (4) The three bug classes of K3–K7 can't happen in the core by construction (§4.3).
+(5) Quality is measured against a reference, not only against his renderer.
 
-**Non-goals for K6.** A new lighting model or new defaults (V67 stays). Delta tracking and majorants (P1's
-`majorant` profile, D22). Other adapters (R6; K6 only has to make them possible). A compute rewrite of the pass
-graph (Q1). Removing the dense source or the 2D atlases. Shading level-set and point surfaces with the core's
-own BRDF inside `./three` (three shades them; §3.6).
+**Non-goals for K6.** Delta tracking and majorants in the froxel path (P1's `majorant` profile, D22). Other adapters
+(R6; K6 makes them possible). Removing the dense source. Shading level-set and point surfaces with a core BRDF
+inside `./three` (three shades them; §3.9). Any speed claim (no quiet machine; §5.4).
 
 **Constraints.**
-- D8: the host owns the `GPUDevice` and the encoder. The core records into the host's encoder and never submits;
-  the environment readback copies in the host's encoder and maps its core-owned buffer two updates later (the
-  pool's submit contract), so a map never precedes the host's submit (Traps: `read()` before `submitted()`). `dispose()` frees only what the core allocated.
-- D20: `core` never imports `three`; it may import engine-free maths and twins from `tools/frame` (as
-  `core/compute/pyramid.ts` already imports `tools/frame/pyramid-layout.ts`); `tools` never imports `core`.
-- D10: grid data reaches a kernel through **one** storage buffer (the pool) at a slot. A pass reads one source
-  at a time, so passes over volumes in different pools (demo 13's one pool per large grid) work: each draw binds
-  its source's group. Dense sources bind textures, a compile-time choice (R1 §4.2).
-- D21: WGSL bytes are budgeted and snapshotted (§5.3). One VDB module per shader (Traps).
-- WebGPU default limits the pass graph must fit, asserted per pipeline by a unit test: 4 bind groups, 10 storage
-  buffers per stage (Apple), 16 sampled textures per stage, 8 colour attachments, **32 colour bytes per
-  sample** (the grey density pass and transmittance pass are 4 × rgba16float = 32 B, exactly at the limit),
-  `maxStorageBufferBindingSize` 128 MiB per pool (Traps: demo 13), 64 KiB uniform bindings. The spectral
-  lighting pass reads 4 groups × 3 transmittance targets: in the core these are layers of one 2D-array texture
-  (one binding), which keeps it under 16 textures.
-- Compatibility-mode devices may expose no fragment-stage storage buffers (K1-core §6 item 4): the sparse source
-  then throws `VDB_UNSUPPORTED_DEVICE`, saying so.
+- D8: the host owns the device and the encoder. The core records and never submits. It frees only what it made.
+- D20: `core` never imports `three`; it may import engine-free maths and twins from `tools/frame` (precedent:
+  `core/compute/pyramid.ts` → `tools/frame/pyramid-layout.ts`). `tools` never imports `core`.
+- D10: grid data reaches a kernel through one storage buffer (the pool). A source-free kernel may use its one
+  storage buffer for other data (MLP weights, the environment result). No kernel binds two.
+- D21: WGSL bytes are budgeted and snapshotted (§5.3). One VDB module per shader.
+- D32: new core objects take `Gpu` where `./three` has the plain name (Q4). K6.1–K6.7 export through
+  `core/internal.ts` only; the public surface lands in K6.8 with one reviewed `api-surface` diff.
 
-## 2. Public core API sketch
+**Device limits and formats (N2).** Verified 2026-11-25 against the WebGPU editor's draft
+(<https://gpuweb.github.io/gpuweb/>: §3.6.2 limits, §25 features, §26.1.1 plain color formats) and WGSL
+(<https://gpuweb.github.io/gpuweb/wgsl/>: §6.6.5 storage textures, `readonly_and_readwrite_storage_textures`).
 
-### 2.1 Objects and names (D32)
-
-`./three` keeps the plain names (`VDBFrameRenderer`, `VDBFrameVolume`, `vdbSparseSource`), so the core's
-encoder-level objects take `Gpu`, as `VDBBoxPyramidGpu` / `vdbCreateBoxPyramid` already do (Q4).
-
-| Core export (`.`) | Kind | Notes |
+| Fact (core = default device, `core-features-and-limits`) | Value | What it means here |
 |---|---|---|
-| `vdbCreateFrameRenderer(device, options)` → `VDBFrameRendererGpu` | function / type | The pass graph and its resources. |
-| `VDBFrameVolumeGpu` | type | Handle from `renderer.addVolume(source, params)`. |
-| `vdbSparseSourceGpu(pool, grids, options)` → `VDBVolumeSource` | function | K6.7 (lifts K3.2b): the sparse source over a pool slot, the GPU pyramid, `followImage`. |
-| `vdbDenseSource` | function | Exists (K3.0). |
-| `VDBFrameSettings`, `VDBFrameVolumeParams`, `VDBFrameInput`, `VDBFrameCamera`, `VDBFrameLight`, `VDBFrameEnvironment`, `VDBFrameTargets`, `VDBFrameOutputs`, `VDBVolumeShadowRequest`, `VDBVolumeShadowMap`, `VDBTextureAllocator` | types | Plain data. `VDBFrameRendererSettings` (three) becomes `VDBFrameSettings`, one declaration re-exported (D32). |
-| `vdbFrameIntegrateWgsl(options)`, `vdbVolumeShadowWgsl(options)`, `vdbEmissionProbeWgsl(options)` | functions | WGSL text for hosts that composite or receive in their own shaders (§2.5). |
-| `vdbFrameLights`, `vdbFrameAllLights`, phase packing | values | Move from `./three` (`lights.ts`, `phase.ts` are already engine-free); one declaration each. |
-| `VDBSequence` | class | Already engine-free (it imports only `core` errors and `tools`); moves to core, re-exported by `./three` (Q7). |
+| `rgba16float` storage | write-only and read-only in core; read-write needs `texture-formats-tier2` | Froxels, prefix, history, grids, maps: all rgba16float, written write-only. |
+| `rg16float`, `r16float`, `r8unorm` storage | only with `texture-formats-tier1` (read-write: `r16float`/`r8unorm` with tier2; `rg16float` never) | rg16float shadow grid is a fast path; fallback rgba16float (same `.xy`). |
+| `r32float`, `r32uint`, `r32sint` | read-write in core | In-place accumulation of multi-group partials as packed `pack2x16float` pairs in `r32uint` (§3.3). |
+| `rgba32float` storage | write-only/read-only in core; filterable only with `float32-filterable` | Environment map (HDR suns exceed f16's 65504); read with `textureLoad`, never filtered. |
+| `rgba16float` sampling | `"float"` (filterable) in core | Hardware trilinear on every froxel and grid texture. |
+| 3D storage textures | `texture_storage_3d` exists; layouts forbid only `cube`/`cube-array` storage views | Froxels and grids are 3D; cube shadow maps are 2D arrays of 6 layers. |
+| `GPUTextureView` | exposes no dimension or format (`interface GPUTextureView {}`) | Environment input is a `GPUTexture` plus a projection (§2.3). |
+| `maxTextureDimension3D` | 2048 | Froxel width/height/depth+1 ≤ 2048 (clamped, warned). Stacked grids tile in 3D (§3.2). |
+| `maxStorageTexturesPerShaderStage` | 4 (fragment: `maxStorageTexturesInFragmentStage` 4) | Stacking keeps every kernel at ≤ 3 storage textures (spectral gather: scatter, scatterAlpha, partials); fragment seams use none. |
+| `maxSampledTexturesPerShaderStage` / `maxSamplersPerShaderStage` | 16 / 16 | Stacking keeps sampled counts ≤ 12 incl. a dense source's 8 (4 maps + 4 mip atlases). |
+| `maxStorageBuffersPerShaderStage` | 8 (fragment 8; compat 4) | We use ≤ 1 (D10). |
+| `maxUniformBufferBindingSize` | 65,536 B (compat 16,384) | The visible-volume array: 512 B each → ≤ 128 volumes per frame (compat 32), warned beyond. |
+| `maxUniformBuffersPerShaderStage` | 12 | ≤ 5 used (frame, lights, environment, volumes, group). |
+| `maxComputeInvocationsPerWorkgroup` | 256 (compat 128) | All kernels use 64 (fits compat). |
+| `maxComputeWorkgroupSizeX/Y/Z` | 256 / 256 / 64 (compat 128 / 128 / 64) | Shapes 8×8×1 and 4×4×4. |
+| `maxComputeWorkgroupStorageSize` | 16,384 B | Reductions use ≤ 8 KiB (256 × vec4f × 2). His MLP (1,761 f32 = 6.9 KiB) fits a workgroup cache (deferred A/B). |
+| `maxComputeWorkgroupsPerDimension` | 65,535 | Not binding (512 / 8 = 64). |
+| `maxStorageBufferBindingSize` / `maxBufferSize` | 128 MiB / 256 MiB | Per pool (demo 13's one pool per large grid stays). |
+| `maxBindGroups` | 4 | Groups 0–2 used, no gaps (Traps). |
+| `shader-f16` / `subgroups` | WGSL `enable f16;` / `enable subgroups;` only with the feature | Optional fast paths, off until a deferred A/B (§5.4). |
+
+Compatibility-mode devices are best effort: kernels fit compat's workgroup limits; the volume cap drops to 32; the
+sparse source still needs a storage buffer in compute (always available).
+
+## 2. Public core API
+
+### 2.1 Objects and names (D32, Q4)
+
+| Core export | Kind | Notes |
+|---|---|---|
+| `vdbCreateFrameRenderer(device, options)` → `VDBFrameRendererGpu` | function / type | The kernel graph and its resources. |
+| `VDBFrameVolumeGpu` | type | Handle from `renderer.addVolume(slot, params)`. |
+| `vdbSparseSourceGpu(pool, options)` → `VDBSparseSourceGpu` | function / type | K6.7: one source for every volume of one pool. `source.volume({ density, mask?, albedo?, emission? })` returns a `VDBVolumeSlot`. Pyramids share one packed r16float atlas (one binding), `followImage`, `skipEmpty`. |
+| `vdbDenseSource` | function | Exists (K3.0). A dense source is its own `VDBVolumeSlot` (`v` = 0). |
+| `VDBFrameSettings`, `VDBFrameVolumeParams`, `VDBFrameInput`, `VDBFrameCamera`, `VDBFrameLight`, `VDBFrameEnvironment`, `VDBFrameOccluder`, `VDBFrameTargets`, `VDBFrameOutputs`, `VDBVolumeShadowRequest`, `VDBVolumeShadowMap`, `VDBEmissionColor`, `VDBFrameMlp` | types | Plain data. One declaration each; `./three` re-exports. |
+| `vdbFrameIntegrateWgsl(options)`, `vdbVolumeShadowWgsl(options)`, `vdbEmissionProbeWgsl(options)`, `vdbLevelSetSurfaceWgsl(options)` | functions | WGSL for hosts that composite or receive in their own shaders (§2.5). |
+| `vdbFrameLights`, phase packing, `VDBSequence` | values / class | Move from `./three` (Q7: `VDBSequence` is engine-free already); one declaration, re-exported. |
+
+Group-2 source contract (frozen in K6.1, used by K6.7): `wgsl`, `layoutEntries`, `bindEntries` as today
+(`core/source/types.ts`), and every `vdbSrc*` function takes `v: u32`, the source-local slot of the volume, which the
+renderer copies from `VDBVolumeSlot.v` into the volume's uniform record. Volumes that share a source object form one
+**source group**: one bind group, one dispatch.
 
 ### 2.2 Creation, settings, volumes
 
 ```ts
 interface VDBFrameRendererGpuOptions {
-  settings?: Partial<VDBFrameSettings>;      // his names and v0.26 defaults (V67), as VDBFrameRendererSettings today
-  types?: readonly VDBGridTypeName[];         // grid types any sparse source may hold (default VDB_ALL_SCALAR_TYPES): compiled once (G16a)
-  composite?: { colorFormat: GPUTextureFormat; depthFormat: GPUTextureFormat; sampleCount?: 1 } | null; // the core composite pass (§2.5)
-  allocator?: VDBTextureAllocator;            // host-allocated outputs (§4.1)
-  neuralNetwork?: VDBFrameNeuralNetwork | null; // default: his weights (V48); a uniform buffer, not shader constants (Q5)
+  settings?: Partial<VDBFrameSettings>;      // his names and v0.26 defaults (V67), plus the K6 fields below
+  types?: readonly VDBGridTypeName[];         // grid types sparse sources may hold (default VDB_ALL_SCALAR_TYPES); compiled once (G16a)
+  composite?: { colorFormat: GPUTextureFormat; depthFormat: GPUTextureFormat } | null; // the core composite pass (§2.5)
+  features?: { tier1?: boolean; f16?: boolean; subgroups?: boolean }; // default: what the device has (f16/subgroups off until §5.4)
   label?: string;
 }
-
 interface VDBFrameRendererGpu {
   readonly device: GPUDevice;
   readonly settings: VDBFrameSettings;        // mutable; read at the next update()
-  readonly outputs: VDBFrameOutputs;          // §2.5; stable objects, their textures change with `outputs.version`
+  readonly outputs: VDBFrameOutputs;          // §2.5
   readonly redrawStats: VDBFrameRedrawStats;  // V46
-  addVolume(source: VDBVolumeSource, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolumeGpu;
-  prepare(options?: { spectral?: boolean[]; lighting?: ("volume" | "frame")[] }): Promise<void>; // warm every pipeline the settings and sources can need
-  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options?: { timestampWrites?: VDBFrameTimestamps }): VDBFrameUpdate;
-  render(encoder: GPUCommandEncoder, targets: VDBFrameTargets): void;   // the core composite (needs options.composite)
+  addVolume(slot: VDBVolumeSlot, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolumeGpu;
+  prepare(options?: { spectral?: boolean[]; lighting?: ("volume" | "frame")[] }): Promise<void>; // createComputePipelineAsync for every reachable variant
+  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options?: { timestampWrites?: VDBFrameTimestamps; froxels?: boolean }): VDBFrameUpdate;
+  render(encoder: GPUCommandEncoder, targets: VDBFrameTargets): void; // the core composite (needs options.composite)
   dispose(): void;
 }
-
 interface VDBFrameVolumeGpu {
-  readonly source: VDBVolumeSource;
-  params: VDBFrameVolumeParams;   // matrixWorld, bbox, extinction, extinctionScale, angstromExponent, baseColor,
-                                  // scatterColor, densityScale, normalizeDensity, densityMean, densityCutoff, absorbance,
-                                  // opacity, emissiveIntensity, temperatureRange, lights (bitmask), shadowSteps, mipmaps,
-                                  // hdda, phase overrides ('volume' lighting, V65), wrap/offset: his FrameVolume props;
-                                  // emissionColor: 'white' | { spectrum: 'planck' | 'soot', exponent } | { lut } (Q9)
-  visible: boolean;               // drawn this frame (host culling and layers)
-  castsShadow: boolean;           // injected into the shadow grid ('frame' lighting), also when not visible (his casters)
+  params: VDBFrameVolumeParams;   // his FrameVolume props: matrixWorld, bbox, extinction, extinctionScale, angstromExponent,
+                                  // baseColor, scatterColor, densityScale, normalizeDensity, densityMean, densityCutoff,
+                                  // absorbance, opacity, emissiveIntensity, temperatureRange, lights (bitmask),
+                                  // shadowSteps, mipmaps, hdda, phase overrides (V65), wrap/offset, emissionColor (§3.8)
+  visible: boolean;               // drawn this frame (host culling, layers)
+  castsShadow: boolean;           // in the shadow grid ('frame' lighting), also when not visible
   remove(): void;
 }
 ```
 
-`params` is plain data with one writer (the host). The renderer packs it into the per-volume uniform block in
-`update()`; nothing else writes those bytes (the K5.9a class, §4.3).
+New settings (K6 fields, beside his): `froxelMix: 'mixture' | 'over'` (§3.3; `'over'` is internal, for the TSL
+A/B, removed in K6.8), `occlusion: boolean` (default true: host occluder maps shadow volumes, §3.7),
+`multipleScattering` adds `'multi-scale'` (K7.3) and `'mlp'` (experimental, §3.6). `params` has one writer (the
+host); `update()` packs it into the volume's uniform record (the K5.9a class, §4.3).
 
-### 2.3 Frame input: camera, lights, environment, time
+### 2.3 Frame input
 
 ```ts
 interface VDBFrameInput {
-  frameId: number;                     // monotonic; frame identity (jitter index, temporal, dedupe). Replaces his
-                                       // renderer.info.render.calls + camera heuristic (R1 §8 quality 2)
-  camera: VDBFrameCamera;
-  viewport: { drawingBuffer: [number, number]; canvas: [number, number] }; // getFroxelSize, pixelsPerFroxel
-  lights: readonly VDBFrameLight[];    // only lights in the rendered scene: the shadow budget counts these (K7.1 c13f2d5)
+  frameId: number;                     // monotonic; jitter index, temporal validity (replaces his render-call heuristic)
+  camera: VDBFrameCamera;              // view, projection (column-major), near, far, orthographic, reversedDepth, id?
+  viewport: { drawingBuffer: [number, number]; canvas: [number, number] }; // froxel size, pixelsPerFroxel
+  lights: readonly VDBFrameLight[];    // only lights in the rendered scene (the shadow budget counts these, K7.1 c13f2d5)
   environment?: VDBFrameEnvironment | null;
-  time?: number;                       // seconds; recorded in redraw signatures only, no pass reads it
+  occluders?: readonly VDBFrameOccluder[]; // host depth shadow maps (§3.7)
 }
-interface VDBFrameCamera {
-  view: Float32Array;                  // world → view, column-major 4x4
-  projection: Float32Array;            // and its inverse is computed in f64 on the CPU
-  near: number; far: number;
-  orthographic: boolean;
-  reversedDepth: boolean;              // three's camera.reversedDepth / renderer.reversedDepthBuffer
-  id?: unknown;                        // history is valid only for the same id (his historyCamera === camera)
-}
-type VDBFrameLight = { id: number | string; mask?: number } & (   // mask: his vdbFrameLights type bit, default by kind
-  | { kind: "ambient"; color: VDBVec3 }                            // colour × intensity, linear
+type VDBFrameLight = { id: number | string; mask?: number } & (
+  | { kind: "ambient"; color: VDBVec3 }
   | { kind: "hemisphere"; sky: VDBVec3; ground: VDBVec3; up: VDBVec3 }
   | { kind: "probe"; sh: Float32Array }                            // 9 × rgb, three's SH9 convention
-  | { kind: "directional"; direction: VDBVec3; color: VDBVec3; shadow?: VDBVolumeShadowRequest } // direction: toward the light
+  | { kind: "directional"; direction: VDBVec3; color: VDBVec3; shadow?: VDBVolumeShadowRequest }
   | { kind: "point"; position: VDBVec3; color: VDBVec3; distance: number; decay: number; shadow?: VDBVolumeShadowRequest }
   | { kind: "spot"; position: VDBVec3; direction: VDBVec3; color: VDBVec3; distance: number; decay: number;
       cosAngle: number; cosPenumbra: number; shadow?: VDBVolumeShadowRequest });
 interface VDBFrameEnvironment {
-  id: unknown; revision: number;       // a change redraws the env map, env grid and readback
-  radiance: GPUTextureView;            // equirect, linear, rgba16float/rgba32float, sampled with a linear sampler
-  irradiance?: GPUTextureView;         // equirect, PMREM-roughness-1 radiance × π (his IBL irradiance); default: the core prefilters `radiance`
-  rotation?: Float32Array;             // 3x3, world → map (backgroundRotation / environmentRotation)
+  id: unknown; revision: number;       // a change re-runs the environment kernels
+  texture: GPUTexture;                 // linear radiance; any filterable or unfilterable float format (read by textureLoad)
+  projection?: "equirect" | "cube";    // default: 6 square layers → cube, else equirect (a GPUTextureView has no readable dimension)
+  rotation?: Float32Array;             // 3x3 world → map
   intensity: number;
+}
+interface VDBFrameOccluder {           // a host depth shadow map
+  light: number | string;              // the VDBFrameLight id it belongs to
+  depth: GPUTextureView;               // depth or r32float, 2d or 2d-array (cascades / cube faces as layers)
+  viewProjection: Float32Array[];      // one per layer; the matrices the map was drawn with
+  orthographic: boolean; bias: number; reversedDepth: boolean;
 }
 ```
 
-Light ordering and slot assignment (`getSortedLight`, the first ≤ 6 shadow slots, the dominant directional
-environment light in the next free slot, the rest to the environment grid) move unchanged into the core's
-`update()`; the three adapter only builds the list. The 16-light and 4-hemisphere caps stay and warn once.
+Light slots (`getSortedLight`, ≤ 6 shadow slots, the dominant environment light in the next free slot) are CPU work
+in `update()`. The environment slot's direction and colour are not known on the CPU: the slot points at environment
+light 0 in the GPU environment buffer (§3.5), so no readback is needed. The 16-light and 4-hemisphere caps stay.
 
-**Environment.** Today the passes sample three's PMREM (CUBE_UV) through `pmremTexture` at roughness 1 and the CPU
-derives ≤ 12 environment lights from a 64 × 32 lat-long readback (`tools/frame/environment.ts`, engine-free). In the
-core the host gives equirect textures; the core renders the 64 × 32 map from them, reads it back into its own
-buffer and runs the same `VDBFrameEnvironmentLights` (its `settled` promise stays). The three adapter bakes
-`irradiance` and `radiance` from the PMREM once per environment change with the existing env-map pass (Q3).
+The environment input fits a host's compute-PMREM output or a pmndrs/sky texture directly: any linear float
+equirect or cube texture with `TEXTURE_BINDING`, mips optional (the prefilter reads level 0 by area). three's
+CUBE_UV atlas is not a core format; the adapter passes `scene.environment`'s source texture, or converts a CUBE_UV-only
+input with its existing env-map pass.
 
-### 2.4 Lifecycle and the host's frame
+### 2.4 Lifecycle
 
 ```ts
-// once
-const frame = vdbCreateFrameRenderer(device, { composite: { colorFormat, depthFormat }, types: VDB_ALL_SCALAR_TYPES });
-const volume = frame.addVolume(vdbSparseSourceGpu(pool, { density: id }, { followImage: true }), { extinction: 100 });
-await frame.prepare();                           // optional warm-up (createRenderPipelineAsync for every variant)
+const frame = vdbCreateFrameRenderer(device, { composite: { colorFormat, depthFormat } });
+const sparse = vdbSparseSourceGpu(pool, { followImage: true });
+const volume = frame.addVolume(sparse.volume({ density: id }), { extinction: 100 });
+await frame.prepare();                            // optional warm-up
 
-// per frame, one encoder
-const enc = device.createCommandEncoder();
-pool.update(enc);                                // host-owned pool first (Traps: bind groups after the pool's update)
-const u = frame.update(enc, { frameId, camera, viewport, lights, environment });
-//   records: source pyramids that are stale, shadow density + grid mips + transmittance + env grid (signature-cached),
-//   volume shadow maps (budgeted), emission probes, the froxel passes, temporal.
-drawOpaque(enc, u.outputs);                      // receivers sample u.outputs.volumeShadows / emissionProbes
-frame.render(enc, { color, depth, sceneColor }); // composite (or call vdbFrameIntegrate in the host's own pass)
+const enc = device.createCommandEncoder();        // per frame
+pool.update(enc);                                 // host pool first (Traps: bind groups after the pool's update)
+const u = frame.update(enc, { frameId, camera, viewport, lights, environment, occluders });
+drawOpaque(enc, u.outputs);                        // receivers sample outputs.volumeShadows / emissionProbes
+frame.render(enc, { color, depth, sceneColor });  // or vdbFrameIntegrate in the host's own pass
 device.queue.submit([enc.finish()]);
 ```
 
-- **update** does all CPU work (collection of visible volumes and casters, frustum clip and slice range
-  (`view.ts`), grid cascades and signatures (`tools/frame/grid.ts`), light slots, uniform packing), rebuilds bind
-  groups whose inputs changed (pool `version`, source `version`, outputs reallocated), then records passes. It
-  returns `VDBFrameUpdate { outputs, froxelArea, drawn: VDBFramePass[], skipped: VDBFramePass[] }`.
-  `options.timestampWrites` maps pass names (V34/V46/V49) to timestamp query slots, replacing three's
-  render-pass timestamps for timing (`k3-pass-timer.ts` moves to it).
-- **render** draws a fullscreen triangle per pixel area into `targets.color` (load, premultiplied blend), reading
-  `targets.depth` as `texture_depth_2d` (or a sampled `r32float` view) and, for `srgbBlending` or spectral, the
-  scene colour from `targets.sceneColor`. Without `sceneColor` the core copies `color` into its own scratch
-  first (needs `COPY_SRC`). Single-sample only; MSAA hosts composite after their resolve or use the WGSL function.
-- **Resize** is implicit: froxel sizes come from `settings` and `viewport` each update (`getFroxelSize` with its
-  15 % hysteresis); grid sizes from `shadowResolution` / `shadowCascades`. A size change reallocates, retires the
-  old textures (§4.2), bumps `outputs.version` and invalidates the history.
-- **dispose** destroys every texture, buffer and query set the renderer allocated, current and retired; calls
-  `allocator.release` for host-allocated ones; never touches the device, the pools or the sources (their
-  creators dispose them; `VDBVolumeSource.dispose()` exists).
+- **update** does the CPU work (visible volumes and casters, frustum clip, slice range, froxel area, cascades and
+  signatures, light slots, uniform packing), rebuilds bind groups whose inputs changed (`pool.version`,
+  `source.version`, reallocated textures), and records the kernels of §3.1. Uniforms go through
+  `queue.writeBuffer`; the contract is one `update()` per submitted encoder (the pool's contract, K1-core §1.4).
+- **render** draws one triangle per pixel area into `targets.color`, scissored to the froxel screen rectangle,
+  reading `targets.depth` (`texture_depth_2d`, or `r32float`) and, for `srgbBlending` or spectral, `targets.sceneColor`
+  (else the core copies `color` into its scratch; needs `COPY_SRC`). Single-sample; MSAA hosts composite after
+  their resolve or use the function.
+- **Resize** is implicit: froxel size from settings and viewport (`getFroxelSize`, 15 % hysteresis), grid sizes from
+  settings. A change reallocates, retires the old textures (§4.2), bumps `outputs.version`, drops history.
+- **dispose** destroys every texture, buffer and query set the renderer made, current and retired. It never touches
+  the device, pools or sources.
 
-### 2.5 Outputs and the MRT / post-processing seam
+### 2.5 Outputs and the composite / MRT seam
 
 ```ts
 interface VDBFrameOutputs {
-  readonly version: number;                 // +1 when any texture below is a new object: rebuild host bind groups
-  readonly froxels: { color: GPUTexture; alpha: GPUTexture | null; layout: VDBFroxelLayout } | null; // atlas + spectral alpha
+  readonly version: number;                 // +1 when a texture below is a new object: rebuild host bind groups
+  readonly froxels: { integrated: GPUTexture; integratedAlpha: GPUTexture | null; layout: VDBFroxelLayout } | null;
   readonly volumeShadows: ReadonlyMap<number | string, VDBVolumeShadowMap>;  // by light id
-  readonly emissionProbes: { maps: [GPUTexture, GPUTexture, GPUTexture]; grid: VDBFrameGridLayout } | null;
-  readonly uniforms: GPUBuffer;             // the integrate / receiver uniform block, for host shaders
-}
-interface VDBTextureAllocator {             // optional: the host allocates the outputs it samples
-  create(descriptor: GPUTextureDescriptor, role: "froxels" | "froxelAlpha" | "volumeShadow" | "emissionProbe"): GPUTexture;
-  release(texture: GPUTexture, role: string): void;  // after the retire delay; the core never destroys these
+  readonly emissionProbes: { texture: GPUTexture; grid: VDBFrameGridLayout } | null; // stacked 3D, 3 sub-volumes
+  readonly uniforms: GPUBuffer;             // integrate / receiver uniforms, for host shaders
 }
 ```
 
-Composite options: (a) `frame.render(encoder, targets)`, the core's own pass; (b) `vdbFrameIntegrateWgsl({
-spectral, srgbBlending })` returns `fn vdbFrameIntegrate(pixel: vec2f, sceneViewZ: f32, sceneColor: vec3f) ->
-vec4f` plus its bindings (`vdbFrameIntegrateEntries(slot)`) for a host that composites in its own pass, its own
-MRT layout, or inside a material. (b) is the seam that removes the K7.2 class: the froxel passes are raw passes
-that no host MRT or `pass()` setting can reach, and the only code in the host's pass is a function the host
-places. The same holds for receivers: `vdbVolumeShadowWgsl()` gives `fn vdbVolumeShadow(light: u32, world: vec3f,
-viewDepth: f32) -> vec3f` (grey in `.x`, spectral in `.xyz`; twin `vdbFrameShadowReceiver`), and
-`vdbEmissionProbeWgsl()` gives `fn vdbEmissionIrradiance(world: vec3f, normal: vec3f) -> vec3f` (twin
-`vdbFrameEmissionLookup` + `vdbFrameEmissionIrradiance`).
+The core allocates every output (storage textures need `STORAGE_BINDING`, which three render targets lack; Q2).
+Hosts that composite themselves bind `outputs.froxels.integrated` (`texture_3d<f32>`, linear sampler) and call
+`vdbFrameIntegrateWgsl({ spectral })`:
+
+```wgsl
+struct VdbFrameIntegrated { radiance: vec3f, transmittance: vec3f }   // grey: transmittance.x == .y == .z
+fn vdbFrameIntegrate(screenUv: vec2f, sceneViewDepth: f32) -> VdbFrameIntegrated;
+fn vdbFrameComposite(i: VdbFrameIntegrated, sceneColor: vec4f, srgbBlending: bool) -> vec4f;
+```
+
+This is the seam that removes the K7.2 class (his 720c38f): kernels run in compute passes no host MRT or `pass()`
+setting reaches; the host places only a function. Receivers get `fn vdbVolumeShadow(light: u32, world: vec3f,
+viewDepth: f32) -> vec3f` and `fn vdbEmissionIrradiance(world: vec3f, normal: vec3f) -> vec3f`.
 
 ### 2.6 Volume shadows on meshes
 
 ```ts
 interface VDBVolumeShadowRequest {
   size: number;                                  // castShadowMapSize
-  view?: { viewProjection: Float32Array; near: number; far: number; orthographic: boolean }   // spot / point face: the host's shadow camera
+  view?: { viewProjection: Float32Array; near: number; far: number; orthographic: boolean }   // spot, point face
        | { cascades: { viewProjection: Float32Array; near: number; far: number }[]; breaks: number[] } // directional CSM
-       | "fit";                                  // core fits around the casters (tools/frame/shadows.ts cascade maths)
+       | "fit";                                  // fitted around the casters (tools/frame/shadows.ts)
 }
 interface VDBVolumeShadowMap {
-  texture: GPUTexture; spectral: GPUTexture | null;   // rgba16float (τ·first depth, τ·last depth, 0, τ); cube: 6 layers
-  drawn: { viewProjection: Float32Array[]; origin: VDBVec3; forward: VDBVec3; far: number; perspective: boolean;
-           breaks: number[] } ; // the state the map was drawn with
-  revision: number;                              // bumps when any piece was redrawn
+  texture: GPUTexture;                           // rgba16float 2d-array: cascades or 6 cube faces as layers (+ spectral layers)
+  drawn: { viewProjection: Float32Array[]; origin: VDBVec3; forward: VDBVec3; far: number; perspective: boolean; breaks: number[] };
+  revision: number;
 }
 ```
 
-The host passes the same camera its own depth shadow map uses, so both maps share one texel grid; the core never
-reads the host's depth map (the receiver multiplies the host's opaque shadow by `vdbVolumeShadow`, as three's
-`filterNode` does today). Receivers project the world position with `drawn`, so a map drawn last frame is read
-with last frame's camera: his 62a6e3e (spot/point looked up with three's current `shadowCoord`, not the light state
-the map was drawn with; our `volume-shadows.ts` L618 has the same pattern) is impossible. The per-update budget
-(`castShadowUpdatesPerFrame`, oldest piece first, the oldest always drawn) counts only lights in this frame's
-`lights` (his c13f2d5).
-
-The K6 brief had the host hand over its depth shadow map too. Volume-on-mesh shadows don't need it: the Beer map
-stores the first and last volume depth along each texel's ray and the receiver compares its own depth. It would be
-needed for meshes shadowing volumes, which his renderer does not do; `VDBVolumeShadowRequest` leaves room for an
-`occluder: { depth: GPUTextureView }` field (Q10).
+The host passes the camera its own depth map uses, so both maps share one texel grid. Receivers project with
+`drawn`, the state the map was drawn with: his 62a6e3e (lookups with the current `shadowCoord`) is impossible. The
+per-update budget (`castShadowUpdatesPerFrame`, oldest piece first) counts only lights in this frame's `lights`
+(his c13f2d5).
 
 ### 2.7 Sequences and coarse-first
 
-Sequences stay host-driven: `VDBSequence` calls `pool.replace` (sparse) or `source.replace` (dense). The renderer
-polls in `update()`: a grid whose `imageRevision` moved marks its pyramid stale (rebuilt in the same encoder after
-`pool.update`, which is valid in one encoder; the three-only rule "rebuild after the update was submitted" goes
-away) and moves the caster signature; a dense source's `version` bump re-reads its box (RV(8)). The sequence-wide
-mean stays a param (`densityMean`, V66). Coarse-first: `vdbSparseSourceGpu(..., { followImage: true })` re-reads
-boxes, transform and pyramid size from `pool.info` once the new image is resident; boxes, sizes and the LOD range
-are uniforms, and `types` was fixed at renderer creation, so a swap creates zero pipelines and zero shader
-modules (G16a's test moves to the core harness).
+`VDBSequence` moves to core (Q7) and calls `pool.replace` (sparse) or `source.replace` (dense). `update()` polls: a
+grid whose `imageRevision` moved marks its pyramid stale (rebuilt in the same encoder after `pool.update`) and
+moves the caster signature. `densityMean` stays a param (V66). Coarse-first: `followImage` re-reads boxes and the
+pyramid size once the new image is resident; boxes, sizes and LOD ranges are uniforms and `types` is fixed at
+creation, so a swap creates zero pipelines and zero shader modules (G16a's test moves to the core harness).
 
-## 3. Pass graph
+## 3. Kernel graph
 
-### 3.1 Shared bindings
+### 3.1 Bindings and order
 
-Every pipeline layout is groups 0..2 with no gaps (Traps: a skipped `@group` silently zeroes outputs); group 3 is
-unused.
+| Group | Contents |
+|---|---|
+| 0 frame | `uniform VdbFrameUniforms` (camera, froxel layout, area, previous area, jitter, fade, settings, phase, octaves, MS), `uniform VdbFrameLights`, `uniform VdbFrameEnvironment` (the GPU environment buffer bound as uniform), samplers (linear clamp, nearest clamp, comparison), LUTs (Mie / Mie RGB, emission colour) |
+| 1 pass | `uniform VdbFrameVolumes` (array, 512 B per visible volume), `uniform VdbFrameGroup` (dynamic offset: first, count, isFirst, isLast), the pass's sampled and storage textures, occluder maps |
+| 2 source | `source.layoutEntries({ group: 2, firstBinding: 0 })`: the pool (one storage buffer) + packed pyramid atlas, or dense textures. Source-free kernels: their one storage buffer here (MLP weights, environment result) or nothing |
 
-| Group | Binding | Contents |
-|---|---|---|
-| 0 frame | 0 | `uniform VdbFrameUniforms` (camera, froxel layout, range, jitter, fade, settings, phase, octaves, ms, grid layout) |
-| | 1 | `uniform VdbFrameLights` (`frameMaxLights` 16, hemisphere 4, probe SH9, environment 12, shadow slots 6) |
-| | 2 | `uniform VdbFrameVolume`, dynamic offset, 512 B per volume (matrices, colours, extinction spectrum, flags) |
-| | 3, 4 | linear-clamp and nearest-clamp samplers |
-| | 5, 6 | LUTs: Mie / Mie RGB (`texture_2d<f32>`, 2048 texels); emission colour (256 texels, one row per distinct `emissionColor`, row index in the volume block) |
-| | 7 | `uniform VdbFrameNeural`, his 20 → 32 → 32 → 1 weights, 1,761 f32 (≈ 7 KiB) |
-| 1 pass | 0.. | the pass's inputs (previous passes' textures) |
-| 2 source | `source.layoutEntries({ group: 2, firstBinding: 0 })` | sparse: the pool (1 storage buffer) + pyramid base/atlas (r16float); dense: channel textures + mip atlases |
+Per update, 'volume' lighting: pyramids → [environment] → `froxelGather` per source group → `froxelResolve`.
+'frame' lighting: pyramids → [environment] → `gridDensity` per caster group (stale cascades) → [grid mips] →
+`gridTransmittance` → `environmentGrid` → `volumeShadow` (budgeted) → emission → `froxelGather` per source group
+(the last fuses lighting) → `froxelResolve`. Brackets: only on a signature or revision change. Stale signature
+caches skip kernels exactly as today (V44 fields + light ids + environment revision + occluder revisions).
 
-Storage buffers per stage: at most 1 (the pool). Uniform structs are packed by one TS packer per struct, checked
-by a unit test against the WGSL struct's offsets (the struct text is generated from the same field list).
+### 3.2 Texture conventions
 
-### 3.2 Pass list
+- **Froxel textures** are `W × H × D` 3D (`D` = slices; the prefix has `D + 1` boundary layers). Texel (x, y, z) is
+  his froxel (x, y) of slice z. The jitter noise keeps his formula on the virtual atlas coordinate during the A/B
+  (bit-equal noise), so parity is not lost to noise.
+- **Stacked textures**: several logical 3D grids of one size (cascades × targets) are sub-volumes of one 3D texture,
+  tiled along x, then y, then z within 2048 per axis (`vdbFrameStackLayout`, twin in `tools/frame`). Reads clamp the
+  coordinate to the sub-volume's half-texel box, which equals clamp-to-edge per sub-volume. One binding per stack
+  keeps storage writes ≤ 2 and sampled reads ≤ 12 per kernel.
+- **Zero outside the area**: each froxel kernel dispatches over the bounding box of this frame's and last frame's
+  areas and writes 0 outside this frame's area. Texels outside both were zeroed earlier, so "zero outside the area"
+  holds every frame without clears (his targets were cleared; same values).
+- **Multi-group partials**: when a frame has more than one source group, groups before the last accumulate additive
+  sums in place in a stacked `r32uint` texture of `pack2x16float` pairs (read-write is core for `r32uint`). The last
+  group reads them, adds its own, and writes the result. One group allocates nothing.
 
-Atlas = `getAtlasLayout(tileW, tileH, tiles)` z-slice atlas (unchanged). "Cached" = redrawn only when its
-signature changes (`tools/frame/grid.ts`). All TSL files are under `packages/vdb/src/three/frame/`.
+### 3.3 Kernel table
 
-| Pass (WGSL entry) | Reads | Writes (format, blend) | When | Replaces | CPU twin (`tools/frame`) |
-|---|---|---|---|---|---|
-| `pyramid` (exists, compute) | pool grid | r16float base + atlas | grid `imageRevision` moved | — (core already) | `vdbBoxPyramid` |
-| `inject` (`vdbFrameInjectFs`), 'volume' lighting | source (froxel lod, march lod), lights, env lights | froxel atlas rgba16float (+ rg16float alpha spectral), his blend | per visible volume, instanced slices | `inject-material.ts` | `vdbFrameInjectSlice`, `vdbFrameShadowMarch`, `vdbFrameInjectIsotropicIrradiance`, spectral twins |
-| `shadowDensity` (`vdbFrameShadowDensityFs`) | source at grid-voxel lod | grid atlas rg16float (spectral 2 × rgba16float), additive | per caster per cascade, cached | `shadow-density-material.ts` | `vdbFrameShadowAbsorption` + source twin; **new** voxel twin |
-| `gridMips` | last cascade | 4 levels rg16float | neural, on grid redraw | `grid-mip-material.ts` | `vdbFrameGridMipLevel` |
-| `gridMipsMultiScale` (K7.3, compute) | last cascade | binomial mips | `'multi-scale'`, on redraw | — (K7.3 writes it in core) | K7.3's twin |
-| `transmittance` (`vdbFrameTransmittanceFs`) | grid atlas, mips, neural weights | 4 × rgba16float (spectral: 3 layers per slot group of one 2D array) | cached | `transmittance-material.ts`, `neural.ts` | `vdbFrameTransmittanceVoxel`, `vdbFrameSpectralTransmittanceVoxel`, `vdbFrameNeuralLight` |
-| `environmentMap` | `environment.radiance` | 64 × 32 rgba32float + readback | environment revision | `environment-material.ts` (map) | `vdbFrameEnvironmentMapDirection`, `VDBFrameEnvironmentLights` |
-| `environmentGrid` | last cascade, env lights | rgba16float R³ atlas | cached | `environment-grid-material.ts` | `vdbFrameEnvironmentGridVoxel` (+ spectral) |
-| `density` (`vdbFrameDensityFs`) | source (froxel lod), transmittance, env grid, irradiance | 4 × rgba16float (spectral 3), additive, nearest | per visible volume, instanced slices | `density-material.ts` | `vdbFrameDensityFroxel`, `vdbFrameSpectralDensityFroxel` |
-| `lighting` (`vdbFrameLightingFs`) | density targets, transmittance array (spectral), LUTs | froxel atlas (+ alpha), no blend | once | `lighting-material.ts` | `vdbFrameLightingFroxel`, `vdbFrameSpectralLightingFroxel` |
-| `temporal` | atlas, history | history ping-pong (2 × atlas) | `temporal` | `temporal-material.ts` | `vdbFrameReproject` |
-| `composite` / `vdbFrameIntegrate` | atlas (or history), depth, scene colour | host colour, premultiplied or self-blended | `render()` or host pass | `integrate-material.ts` | `vdbFrameIntegrate`, `vdbFrameSrgbBlend`, `vdbFrameSpectralIntegrate` |
-| `volumeShadow` (`vdbFrameVolumeShadowFs`) | last cascade | rgba16float tiles / cube layers (+ spectral) | budgeted per light piece | `volume-shadow-material.ts`, the A half of `volume-shadows.ts` | `vdbFrameShadowMapTexel`, `vdbFrameShadowReceiver`, cascade twins |
-| `emissionDirection`, `emissionReduce`, `emissionProbe` | source emission (lod 0) + extinction; reduce; emitters | rgba32float 2 × (16 directions × slots; 8² rays each), 2 × (1 × slots); probes 3 × rgba16float atlas | on volume / cascade change | the pass half of `emission-light.ts` | `vdbFrameEmissionDirectionTexel`, `vdbFrameEmissionReduce`, `vdbFrameEmissionProbe`, `vdbFrameEmissionProbeGrid` |
-| `levelSet` (`vdbLevelSetSurfaceFs`) | pool (level set) | host colour + depth (`frag_depth`), or a G-buffer | per level-set draw | trace part of `level-set-material.ts` (§3.6) | `levelSetHit`, `levelSetNormal` |
-| `points` (`vdbPointsVs/Fs`) | point vertex buffer | host colour + depth | per draw | `points.ts` (§3.6) | **new** sprite size twin |
+WG = workgroup size. All formats are core unless marked; "→ fallback" is used without the feature.
 
-Order inside `update()` for 'frame' lighting: pyramids → shadowDensity → gridMips → transmittance →
-environmentMap → environmentGrid → volumeShadow → emission → density → lighting → temporal. 'volume' lighting:
-pyramids → inject → temporal (+ the shadow grid only when `castShadows` needs it, as today's `usesShadowGrid`).
+| Kernel | Dispatch, WG | Reads | Writes (format) | When | CPU twin (`tools/frame`) | Replaces |
+|---|---|---|---|---|---|---|
+| `pyramid` (exists) | per grid, 4×4×4 | pool | packed r16float atlas (copy) | `imageRevision` moved | `vdbBoxPyramid` | — |
+| `froxelGather` 'volume' | area bbox × D, 8×8×1 (a screen tile of one slice: coherent rays) | source, lights, env buffer, occluders | grey: scatter rgba16float (premultiplied rgb, α); spectral: + scatterAlpha rgba16float (α r, b); multi-group: partials r32uint | per source group | `vdbFrameInjectSlice`, `vdbFrameShadowMarch`, **new** `vdbFrameGatherFroxel` (mixture) | `inject-material.ts` |
+| `froxelGather` 'frame' (fused) | same | source, transmittance stack, env grid, LUTs, occluders, partials | scatter (+ scatterAlpha); non-last groups: partials | per source group | `vdbFrameDensityFroxel` + `vdbFrameLightingFroxel` (+ spectral), **new** `vdbFrameFusedFroxel` | `density-material.ts`, `lighting-material.ts` |
+| `froxelResolve` | area bbox columns, 8×8×1 | scatter (load, 6 neighbours), history (trilinear) | history' rgba16float (if `temporal`), integrated rgba16float (L rgb, τ) (+ integratedAlpha: τ r, b → rg16float tier1, fallback rgba16float) | every update | `vdbFrameReproject`, **new** `vdbFrameTemporalFroxel`, `vdbFrameScanColumn` | `temporal-material.ts`, the slice loop of `integrate-material.ts` |
+| `gridDensity` | cascade R³, 4×4×4 | source at grid lod | shadow grid stack rg16float tier1 → rgba16float (spectral: 2 stacks rgba16float); multi-group partials | stale cascade, per caster group | `vdbFrameShadowAbsorption`, **new** `vdbFrameGridDensityVoxel` | `shadow-density-material.ts` |
+| `gridMips` | per level, 4×4×4 | last cascade | mip stack (rg16float tier1 → rgba16float) | MS needs mips, on grid redraw | `vdbFrameGridMipLevel`; K7.3's twin for `'multi-scale'` | `grid-mip-material.ts` |
+| `gridTransmittance` | cascades × R³, 4×4×4 | grid stack, mips, occluders, MLP weights (its one storage buffer) | transmittance stack rgba16float (4 targets × cascades; spectral 3 per slot group) | stale | `vdbFrameTransmittanceVoxel`, spectral twin, `vdbFrameNeuralLight` → `vdbFrameMlpForward` | `transmittance-material.ts`, `neural.ts` |
+| `envPrefilter` | 128 × 64, 8×8×1 | host env texture (`textureLoad`, exact-area box) | env work map rgba32float | env revision | **new** `vdbFrameEnvironmentPrefilter` | `environment-material.ts` (PMREM sampling) |
+| `envReduce` | 1 workgroup of 256 | work map | env buffer (storage; later bound as uniform): SH9 irradiance, ≤ 12 lights | env revision or env settings | `VDBFrameEnvironmentLights` (directional, SH lights), **new** `vdbFrameEnvironmentSh` | the CPU readback path |
+| `environmentGrid` | last cascade R³, 4×4×4 | grid stack, env buffer | env grid rgba16float (spectral stack) | stale | `vdbFrameEnvironmentGridVoxel` (+ spectral) | `environment-grid-material.ts` |
+| `volumeShadow` | size² × layers, 8×8×1 | last cascade | map rgba16float 2d-array (τ·first, τ·last, 0, τ; + spectral layers) | budgeted per piece | `vdbFrameShadowMapTexel`, `vdbFrameShadowReceiver` | `volume-shadow-material.ts`, half of `volume-shadows.ts` |
+| `emissionDirection`, `emissionReduce`, `emissionProbe` | rays 8×8×1; 1 WG of 256 per slot; probes 4×4×4 | source emission + extinction; reduce; emitters | rgba32float; probe stack rgba16float (3 sub-volumes) | volume or cascade change | `vdbFrameEmissionDirectionTexel`, `vdbFrameEmissionReduce`, `vdbFrameEmissionProbe` | the pass half of `emission-light.ts` |
+| composite (fragment) / `vdbFrameIntegrate` | pixel rect | integrated (2 taps), depth, scene colour | host colour | `render()` or host | **new** `vdbFrameIntegratePrefix`, `vdbFrameSrgbBlend` | `integrate-material.ts` |
+| `levelSetSurface` (fragment), points (vertex/fragment) | per draw | pool / point buffer | host colour + `frag_depth` | per draw | `levelSetHit`, `levelSetNormal`, **new** sprite-size twin | §3.9 |
 
-### 3.3 'volume' lighting (K6.1)
+Workgroup shapes are chosen for locality (8×8 screen tiles share view rays and source leaves; 4³ grid blocks share
+cells) and 64 lanes fit every vendor's SIMD width and compat. Tuning them is deferred (§5.4).
 
-The inject entry lights each froxel of one volume: sub-steps across the slice at the froxel lod
-(`vdbFrameBoxSteps`), then per light a shadow march through the source. In TSL every march was inlined (V55: up to
-8 marches per shader). In WGSL the march is one function, `vdbFrameShadowMarch(v, o, d, steps, lod) -> vec4f`,
-called from one loop over the light list and the isotropic directions, so the source's `vdbSample` / `vdbSampleFast`
-appears at two call sites per entry (the slice sub-steps and the march), not one per light. The level-set trace taught why it matters: six inlined sample sites took
-98–168 s to compile on SwiftShader, one site 10–19 s ([K3-7](../../archive/handoffs/K3-7.md), `core/wgsl/level-set.ts`).
-Light terms are loops over uniform counts rather than compiled-in sets (V55's per-scene rebuild goes away); if a
-hardware A/B shows the zero-count loops cost time, the light-kind mask becomes a pipeline key.
+### 3.4 Froxels: gather, mixture, scan, composite
 
-### 3.4 'frame' lighting (K6.2)
+**Gather (K6.1).** One thread per froxel loops over its source group's volumes (`VdbFrameGroup.first..count`): a
+rect and slice-range early-out from the volume record, then his pre-integration across the slice (sub-steps at the
+froxel lod), the visible position, and the light loop. The shadow march is one WGSL function,
+`vdbFrameShadowMarch(v, o, d, steps, lod) -> vec4f`, called from one loop over the light list and the isotropic
+directions, so `vdbSrcDensity` appears at two call sites per entry (sub-steps and march). The K3.7 level-set trace
+showed why: six inlined sample sites took 98–168 s to compile on SwiftShader, one site 10–19 s. Light terms are
+loops over uniform counts (Q8); V55's compiled-in sets go away.
 
-Ported pass for pass. The CPU side is already engine-free: cascades, caster ranges and signatures
-(`tools/frame/grid.ts`), environment lights (`tools/frame/environment.ts`). The signature cache keeps V44's fields
-plus the light list's ids. `prepareShadowGrid` (the shadow grid drawn early for mesh-shadow receivers, K3.6)
-becomes an ordering fact of `update()`: grid passes always precede `volumeShadow`.
+**Mixture.** His inject blends each volume "over" in draw order, which is scene-traversal order: two volumes in one
+froxel give different colours if the scene lists them the other way round. The core default (`froxelMix:
+'mixture'`) treats volumes sharing a froxel as co-located media: it sums `τᵢ` and `τᵢ·Lᵢ` (Lᵢ the volume's
+unpremultiplied slice radiance) and writes α = 1 − exp(−Στᵢ), premultiplied L = (ΣτᵢLᵢ / Στᵢ)·α. It is
+order-independent and makes multi-group accumulation additive. One volume per froxel gives identical values. `'over'`
+stays internal for the TSL A/B; K6.R decides with the reference, and K6.8 deletes the loser.
 
-### 3.5 Scattering, spectral, emission (K6.3–K6.5)
+**Fusion ('frame' lighting, K6.2).** The density sums (his 4 targets: extinction-weighted albedo, emission, visible t,
+shadow slots, environment) live in registers while the thread loops its group; the last group then lights the
+froxel (his lighting pass) and writes scatter. No intermediate targets for one group; multi-group frames use the
+packed partials (§3.2).
 
-- **Phase:** HG, dual-lobe, Lorenz-Mie and Mie RGB from the committed tables (`tools/frame/mie-table.ts`, V47) as
-  LUT textures with `textureLoad` + lerp, as his `load`; `phaseGExponent` per channel.
-- **Multiple scattering:** `false`, `true` (1D diffusion), `'two-sided'`, `'octaves'`, `'neural'` (weights in group 0
-  binding 7; a swapped network rewrites the buffer and redraws, no pipeline build), and `'multi-scale'` (K7.3,
-  written once in core, before K6.3). The mode family is a pipeline key; its numbers are uniforms.
-- **Spectral:** a pipeline key. Slot-group transmittance targets become layers of one `texture_2d_array`
-  (4 groups × 3); render passes write three layers as three colour attachments.
-- **Emission colour:** a 256-texel LUT (temperature → rgb), built on the CPU by the blackbody twin
-  (`tools/frame/blackbody.ts`, D33's analytic CMF) or given by the host (`{ lut }`, which is how the parity harness
-  injects the exact CIE table). It replaces the TSL `emissionColor` hook (Q9).
+**Resolve: temporal + z-scan.** One thread per (x, y) column walks z = 0..D−1. With `temporal`, each froxel is his
+reprojection (`vdbFrameReproject`: the previous froxel grid sampled with hardware trilinear, which equals his
+bilinear-in-tile + linear-between-slices with his clamps), clamped to the 6 current neighbours (x±1, y±1 by
+`textureLoad`; z±1 from the column), blended, and written to history'. Then the column accumulates his integrate
+loop: stop adding once T < 0.001 (his break), and write boundary k+1 = (Σ radiance, Σ optical depth τ). Boundary 0
+is (0, 0). τ, not T, is stored: f16 keeps relative precision near τ = 0 (thin media), and the composite gets his
+partial-slice formula exactly (below). History' is the next frame's history; the scatter texture is only read here.
 
-### 3.6 Level sets and points (K6.6)
+**Composite.** Scene depth → fractional slice s (his log mapping), k = ⌊s⌋, c = s − k. Two taps of the prefix at the
+boundary layers k and k + 1 (bilinear in x, y; exactly on z texel centres): A, B. With α = 1 − exp(−(B.τ − A.τ)):
 
-The trace is already core WGSL (`vdbLevelSetHit`, `vdbLevelSetNormal`, opt-in helper `levelSet`). Surfaces are
-lit by the host's own BRDF, lights and shadows, so the core does not take over three's shading. It adds:
-`vdbLevelSetSurfaceWgsl()`, a fragment-stage wrapper `fn vdbLevelSetSurface(g, pixel, invViewProjection, camera)
--> VdbSurfaceHit { hit, t, world, normal, ndcDepth }` with the pixel-centre ray of V57; and a reference raw pass
-(`vdbCreateLevelSetPassGpu`) that writes `frag_depth` plus a Lambert + ambient shade or a G-buffer (normal,
-depth), for engine-free hosts and the K6.9 demo. `VDBLevelSetMaterial` stays a `MeshStandardNodeMaterial` calling
-the same function through `wgslFn`. Points: the vertex layout from `vdbPointRenderData` and the sprite size and
-attenuation maths (his `pointsCore`) become core WGSL (`vdbPointSpriteVertex`), used by a raw sprite pass and by
-`VDBPoints`' TSL vertex; the disc and its mipmapped map stay in the adapters.
+    radiance = A.L + (B.L − A.L) · (1 − (1 − α)^c) / α        (→ c as α → 0)
+    T        = exp(−A.τ) · (1 − α)^c
+
+which is his `sliceAlpha` coverage formula. One difference remains: x, y filtering now acts on the composited prefix
+instead of on per-slice froxels before compositing (they differ at volume silhouettes by sub-froxel amounts; DIVERGES
+row). A one-tap linear lookup (Hillaire 2015) is a deferred timing option, not the default. Spectral reads the
+second prefix for τ r, b and composites against the scene colour itself (one hardware alpha), as his.
+
+**Memory** at his 512 × 512 × 24, grey: scatter 48 MiB + history 2 × 48 + prefix 50 = 194 MiB. His 'frame' lighting
+used atlas 48 + history 96 + density targets 192 = 336 MiB. Multi-group frames add 192 MiB of partials ('frame') or
+48 ('volume'). Spectral adds the alpha textures (≈ +50 %).
+
+### 3.5 'frame' lighting grids and environment (K6.2)
+
+- **Shadow grid.** `gridDensity` gathers casters per voxel per stale cascade into the stacked grid (extinction,
+  absorption). Cascades, ranges and signatures stay CPU code (`tools/frame/grid.ts`).
+- **Transmittance.** Source-free; marches the grid stack with hardware trilinear toward 6 slots and sky up/down; 16
+  values per voxel → 4 sub-volumes per cascade in one stack (spectral: 3 per slot group, one dispatch per group).
+- **Environment (Q3).** `envPrefilter` reduces the host texture to a 128 × 64 rgba32float work map by exact texel
+  area (equirect) or direction-binned `textureLoad` (cube), then a separable cone blur standing in for his PMREM
+  roughness 0.4. `envReduce` (one workgroup) projects SH L2 with solid-angle weights (irradiance by the Ramamoorthi–
+  Hanrahan cosine convolution) and runs his 'directional' extraction (brightest texel, fixed sky seeds, nearest-seed
+  binning, energy centroids) and 'spherical-harmonics' lights on the 64 × 32 downsample, then writes one
+  `VdbFrameEnvironment` struct. Every later pass binds that buffer as a uniform. No readback: the first frame already
+  has its environment lights (the 'outward' first-frame fallback trap goes away). 'outward' irradiance comes from the
+  SH, not from PMREM roughness 1 (DIVERGES row).
+- **Environment grid.** As his, from the env buffer.
+
+### 3.6 Phase and multiple scattering (K6.3)
+
+- **Phase**: HG, dual-lobe, Lorenz-Mie and Mie RGB from the committed tables as LUTs (V47); a uniform.
+- **Multiple scattering is a pluggable term**: `false`, `true` (1D diffusion), `'two-sided'`, `'octaves'`,
+  `'multi-scale'` (K7.3: binomial grid mips + 5 taps per level, written by K7.3 as core compute over a 3D texture,
+  format-agnostic; K6.3 wires its kernel into `gridMips`/`gridTransmittance`), and `'mlp'` (experimental). The family
+  is a pipeline key; its numbers are uniforms. The default is picked in K6.3 by quality: K6.R's reference decides
+  between diffusion and multi-scale on the K3 scene set and the WDAS cloud; his 'neural' default is not matched.
+- **MLP (experimental, Q5).** A generic small-MLP evaluator: layer count, widths and activations are uniforms;
+  weights and biases are a storage buffer (the transmittance kernel is source-free, so this is its one storage
+  buffer, D10). Width ≤ 64 per layer (two `array<f32, 64>` ping-pong locals). A new network is new data: no rebuild,
+  no code change. API: `settings.multipleScattering = 'mlp'` with `renderer.mlp: VDBFrameMlp | null` (default: his
+  weights, V48, credit kept), documented as experimental. Twin: `vdbFrameMlpForward` (generalises
+  `vdbFrameNeuralForward`).
+
+### 3.7 Shadows (K6.5, K6.5b)
+
+- **Volume → mesh (K6.5).** `volumeShadow` writes Beer maps from the last cascade per requested light piece,
+  budgeted; receivers use `vdbVolumeShadow` with `drawn` (§2.6).
+- **Mesh → volume (K6.5b, new).** `occluders` are the host's depth shadow maps. Separation of terms: the
+  transmittance stack keeps the slot's *direct* transmittance unoccluded and multiplies the *scattered/total* term by
+  the voxel's occluder visibility (so light diffusing into a mesh shadow is smooth at grid resolution); the fused
+  gather multiplies the direct term by the occluder visibility at the froxel's visible position (sharp at froxel
+  resolution); 'volume' lighting multiplies both terms of its march at the lit position. A map test at the start of
+  a march toward the light is the march stopping at the occluder. Up to 4 maps bound per kernel (fixed slots,
+  placeholder depth textures, count in a uniform: no pipeline key); more are warned and ignored. Default on when the
+  host passes maps (`occlusion: true`). Twin: **new** `vdbFrameOccluderVisibility` (PCF as the host's filter: 1 tap
+  or 2×2 comparison).
+- **Self-shadowing**: the volume's own march ('volume') or the shadow grid ('frame'), as now.
+
+### 3.8 Emission (K6.5)
+
+Colour is data: `emissionColor: 'white' | { spectrum: 'planck' | 'soot'; exponent } | { lut: Float32Array /* 256 × rgb */ }`,
+packed into one row of the emission LUT (D33's analytic CMF; harnesses inject the exact CIE table as a LUT). An optional
+hook `{ wgsl: string }` defines `fn vdbUserEmissionColor(t: f32, emission: f32) -> vec3f` (t = normalised temperature);
+every top-level name must start with `vdbUser`. The renderer validates it once (names, reserved words, back-ticks,
+then `createShaderModule` + `getCompilationInfo` under `pushErrorScope('validation')`) and throws
+`VDBError('VDB_BAD_WGSL')` naming the line. A hook is a pipeline key (hash of its text).
+
+### 3.9 Level sets and points (K6.6)
+
+The trace is core WGSL already (`vdbLevelSetHit`, `vdbLevelSetNormal`). K6.6 adds `vdbLevelSetSurfaceWgsl()`, a
+fragment wrapper returning `{ hit, t, world, normal, ndcDepth }` with the pixel-centre ray (V57), and a raw reference
+pass that writes `frag_depth` plus a Lambert + ambient shade or a G-buffer, for engine-free hosts and demo 17.
+`VDBLevelSetMaterial` calls the same function through `wgslFn`. Points: the sprite size and attenuation become core
+WGSL (`vdbPointSpriteVertex`) for a raw pass and `VDBPoints`' TSL vertex.
 
 ## 4. Resources, ownership, caching
 
@@ -360,228 +432,223 @@ attenuation maths (his `pointsCore`) become core WGSL (`vdbPointSpriteVertex`), 
 
 | Resource | Owner | Lifetime |
 |---|---|---|
-| Device, encoder, queue submits | host | — |
-| Pools, sources | host (sources from `vdbSparseSourceGpu` / `vdbDenseSource`) | the source owns its pyramid textures and scratch (K3.2a) |
-| Froxel atlas, history, density MRT, grid atlases, mips, transmittance, env grid/map, readback buffer, emission targets, volume shadow maps, uniform buffers, LUTs, query sets | renderer | until reallocated (retired) or `dispose()` |
-| Outputs created through `allocator` | host | the core calls `release`, never `destroy` |
-| Pipelines, layouts, shader modules | per-device cache in the core (WeakMap) | the device |
+| Device, encoder, submits | host | — |
+| Pools, sources (incl. the packed pyramid atlas) | host creates; the source owns its textures | `source.dispose()` |
+| Environment texture, occluder maps, composite targets | host | — |
+| Froxel, history, prefix, partial, grid, transmittance, env, shadow-map, emission textures; uniform and env buffers; LUTs; query sets | renderer | until retired or `dispose()` |
+| Pipelines, layouts, modules | per-device cache (WeakMap) | the device |
 
-### 4.2 The retire queue
+The Q2 allocator hook is gone: storage textures must be core-allocated. A host that wants its own memory wraps the
+outputs (`./three` does, §6).
 
-A texture or buffer replaced in `update()` (resize, spectral toggle, a pyramid of a new size under `followImage`,
-a cascade count change) is not destroyed at once: three r187 destroys at once and K3.5/RV(5) had to defer it
-(Traps). The core keeps it in a retire list tagged with the update count and destroys (or `release`s) it two
-updates later, the pool's contract: "submit each update's encoder before the second update after it" (demo 08,
-K1-core §1.4). `dispose()` drains the list.
+### 4.2 Retire queue
 
-### 4.3 How the K5.9 / RV lessons map
+A replaced texture or buffer is kept in a list tagged with the update count and destroyed two updates later (the
+pool's contract). three r187 destroys at once (K3.5/RV(5)); the core never does. `dispose()` drains the list.
+
+### 4.3 How the K3–K7 lessons map
 
 | Lesson | In the core |
 |---|---|
-| K5.9a: a uniform's `onRenderUpdate` overwrote the per-draw density scale | No callbacks. Per-volume bytes are packed once per update from `params` and the source's stats; one writer per field. A test changes `densityScale` on dense and sparse and checks the froxel atlas moves on both (the bug's regression). |
-| K5.9b: three caches a `Fn().setLayout()` body per backend across builders | WGSL is plain text; nothing is cached but pipelines, keyed by the hash of the full text plus layout and target formats. |
-| RV(4): source listeners outlived their volumes | The renderer registers nothing on sources or pools; it compares `pool.version`, `pool.revision`, `info(id).imageRevision`, `source.version`, `environment.revision` each update. Nothing to unsubscribe. |
-| RV(5) / Traps: `texture.dispose()` destroys immediately | Retire queue (§4.2). |
-| V53: three's `TextureNode` uniform hash shares bindings by texture uuid | Bind groups are explicit; unused slot groups bind their own placeholder (or are layers of one array texture). |
-| Traps: build the bind group after `pool.update` | `update()` builds groups after reading `pool.version`; the documented host order puts `pool.update` first. |
-| Traps: one VDB module per shader; the source needs the union of helpers | The renderer computes the union for each pipeline (`march` + `cellBoundTrilinear`, `hddaCellEnd`, `nodeAverage`, `fastTrilinear` as the source asks) and generates one module. |
-| G16a: a grid swap rebuilt five pipelines | `types` at creation; boxes and LOD range in uniforms; a test counts `create*Pipeline*` / `createShaderModule` calls across a swap (must be 0). |
+| K5.9a: a uniform callback overwrote the per-draw density scale | No callbacks; `params` packed once per update, one writer per field. Test: `densityScale` moves the froxels on dense and sparse. |
+| K5.9b: three caches a layout function per backend across builders | Plain WGSL text; pipelines keyed by the text hash + layout + formats. |
+| RV(4): source listeners outlived volumes | Nothing registered; `update()` polls `version`/`revision`/`imageRevision`. |
+| RV(5): `texture.dispose()` destroys immediately | Retire queue. |
+| V53: TextureNode bindings shared by uuid | Explicit bind groups; placeholders are their own textures. |
+| Traps: bind group after `pool.update` | `update()` builds groups after reading `pool.version`; documented host order. |
+| One VDB module per shader | The renderer builds one module per pipeline from the union of helpers the sources ask for. |
+| G16a: a grid swap rebuilt five pipelines | `types` at creation, boxes in uniforms; a test counts `create*Pipeline*` / `createShaderModule` across a swap (0). |
+| K7.1 (62a6e3e, c13f2d5) | Drawn-view receivers; budget over this frame's lights. |
+| K7.2 (720c38f) | Compute kernels + composite function (§2.5). |
+| The 'outward' first-frame environment fallback | GPU environment reduction, no readback (§3.5). |
 
-Caches: the signature caches stay as today (V44's fields plus light ids). The temporal history is invalid after a
-layout change, a camera `id` change or a skipped frame (`frameId` not previous + 1).
+Temporal history is invalid after a layout change, a camera `id` change or a skipped `frameId`.
 
-## 5. Shader composition
+## 5. Shader composition and budgets
 
 ### 5.1 Text of one pipeline
 
 ```
-vdbModuleWgsl({ slot: { group: 2, firstBinding: 0 }, types, profile: 'march', helpers })   // only for source passes
-+ source.wgsl({ slot: { group: 2, firstBinding: 0 }, profile, channels })                   // vdbSrc* (exists for dense)
-+ frameUniformsWgsl()                                                                       // group 0 structs + bindings
-+ frameChunksWgsl(roots)                                                                    // closure of the vdbFrame* functions the entry calls
-+ passWgsl(pass, features)                                                                  // group 1 bindings + entry
+vdbModuleWgsl({ slot: { group: 2, firstBinding: 0 }, types, profile: 'march', helpers })   // source kernels only
++ source.wgsl({ slot: { group: 2, firstBinding: 0 }, profile, channels })                   // vdbSrc*
++ frameUniformsWgsl()                                                                       // group 0, generated from the packer's field list
++ frameChunksWgsl(roots)                                                                    // closure of vdbFrame* functions, fixed order
++ kernelWgsl(kernel, features)                                                              // group 1 + entry
 ```
 
-`frameChunksWgsl` works like the generator: each chunk declares its dependencies, the closure is emitted in a fixed
-order, so the same features give the same bytes and Dawn's cache hits. Names: `vdbFrame*` / `VdbFrame*` functions
-and structs, `vdbSrc*` for sources; both sit inside the reserved `vdb`/`Vdb` prefixes and never collide with the
-generated module (a test runs bvh's `wgslNameProblems` port, the reserved-word list (`active`, `set`, `filter`,
-`target`) and a duplicate-symbol scan over every composed pipeline). Back-ticks in WGSL comments are rejected
-by the same test (Traps).
+Chunks declare dependencies; the closure is emitted in a fixed order (same features, same bytes). Names: `vdbFrame*`
+/ `VdbFrame*` and `vdbSrc*`; a test runs the reserved-word list (`active`, `set`, `filter`, `target`), a duplicate
+symbol scan and the back-tick check over every composed pipeline. Uniform structs come from one field list that
+generates both the WGSL struct and the TS packer; a unit test checks offsets.
 
-### 5.2 Compile-out (D10)
+### 5.2 Pipeline keys (compile time) vs uniforms
 
-| Pipeline key (compile time) | Runtime (uniform) |
+| Pipeline key | Uniform |
 |---|---|
-| lighting mode, spectral, MS family, `temporal` (its own pass), source kind + channels + LOD mode + `hdda` + grid types, emission on/off, composite format and `srgbBlending` | light counts and kinds, phase mode and parameters, MS numbers, octaves, jitter, cascade count, grid sizes, boxes, LOD range, densities, all volume params |
+| kernel; lighting mode; spectral; MS family (incl. `'mlp'`); `froxelMix` (until K6.8); `temporal`; source layout (kind, channels, LOD mode, `hdda`, `types`); emission on/off + hook hash; storage formats (tier1 or fallback); multi-group (first/middle/last role); composite formats + `srgbBlending` | light counts and kinds, occluder count, phase and its parameters, MS numbers, MLP shape, octaves, jitter, cascade count, grid sizes, boxes, LOD ranges, all volume params, areas |
 
-A first-frame 'frame' scene with one sparse source compiles about 11 pipelines (pyramid already warm: shadowDensity,
-gridMips, transmittance, environmentMap, environmentGrid, density, lighting, temporal, composite, volumeShadow,
-emission ×3 when used). A second volume with the same source layout reuses them (text-keyed; V30/V42's
-one-material-per-source becomes one pipeline per source *layout*). `prepare()` creates every variant the settings
-and current sources reach with `createRenderPipelineAsync`, so hosts can warm before the first frame, and toggling
-`spectral` or `lighting` at runtime can be pre-warmed with `prepare({ spectral: [false, true] })`.
+A first 'frame' frame with one sparse source compiles ≈ 9 compute pipelines (gridDensity, transmittance,
+envPrefilter, envReduce, environmentGrid, fused gather, resolve, + volumeShadow / emission when used) and 1 render
+pipeline (composite). `prepare()` creates them with `create*PipelineAsync`, every creation under
+`pushErrorScope('validation')`.
 
 ### 5.3 Budgets (D21)
 
-Measured at K6.1 and committed as `core/frame/size-snapshot.json` (CI fails on growth not committed), with these
-caps to start, in KiB of minified WGSL, module included:
+Sizes are measured at K6.1 and committed as `core/frame/size-snapshot.json` (CI fails on uncommitted growth), with
+these caps in KiB of minified WGSL, module included: source-free kernels 24 (transmittance with MLP 28); source
+kernels (gather, gridDensity, emissionDirection) with `march` + source helpers 56; `levelSet` surface: its budget + 4.
+Sizes are bytes, not timings, so they gate.
 
-| Pass class | Cap | Why |
-|---|---|---|
-| source-free (lighting, transmittance, env grid, temporal, composite, volume shadow, grid mips) | 24 (transmittance with neural 28) | the neural forward is ~3 KiB of code once the weights leave the text |
-| source passes, `march` + source helpers, Float + Fp8 + FpN (inject, density, shadowDensity, emissionDirection) | 52 | `march+nodeAverage+fastTrilinear` is budgeted at 34 KiB (`size-budgets.json`) + `vdbSrc*` ≈ 3 + pass ≈ 10–14 |
-| `levelSet` surface | `march+levelSet` budget + 4 | |
+### 5.4 Deferred: timing
 
-Compile time is measured per pass (Metal; D3D12/DXC on the owner's Windows machine when available) and recorded as
-provisional (D25). The rule that pays most: as few source-sample call sites per entry as the pass allows (§3.3).
+No quiet machine is available (owner, 2026-11-25; D25). Every choice below is made on design or correctness grounds
+now; the A/Bs are one deferred task (K6.T), run when a quiet machine exists, each as a paired run under a setting:
 
-### 5.4 Composing with P1
+1. Workgroup shapes per kernel (8×8×1 vs 4×4×4 vs 16×16×1).
+2. Composite: two-tap exact partial slice (default) vs one-tap linear.
+3. Temporal fused into the scan (default) vs a separate kernel.
+4. Light terms: uniform-count loops (default, Q8) vs compiled-in light-kind sets (V55).
+5. Per-froxel volume loop (default) vs a tile/cluster volume list.
+6. HDDA in the gather and grid kernels (D30/D31 re-measure); `vdbSampleFast` in compute.
+7. MLP: weights from storage vs a workgroup cache; `shader-f16` arithmetic (precision gate first).
+8. `subgroups` in `envReduce` and `emissionReduce`.
+9. `texture-formats-tier1` rg16float grid vs the rgba16float fallback (bandwidth).
+10. Multi-group partials: packed `r32uint` in place (default) vs rgba16float ping-pong or tier2 read-write.
+11. Stacked textures vs separate bindings.
+12. Compile time per pipeline (Metal; D3D12/DXC); `prepare()` cost.
+13. Core vs TSL frame time on WDAS and demo 10 (the former Q1 second gate); his ≥ 60 fps WDAS target (K3.9).
+14. Default froxel size / `pixelsPerFroxel`; `castShadowUpdatesPerFrame`.
 
-P1 adds the `majorant` profile and the lean reader to the generator in parallel. The renderer does not use either
-and takes only opt-in helpers, so default module bytes don't move under it (Traps). The one shared file is
-`size-snapshot.json`; conflicts there are regenerated, never hand-merged. The renderer's own snapshot is separate.
+### 5.5 Composing with P1
 
-## 6. The three adapter after K6
+P1 adds the `majorant` profile and the lean reader. The renderer takes only opt-in helpers, so default module bytes
+don't move under it. Shared file: `size-snapshot.json`, regenerated on conflict, never hand-merged.
 
-**What stays in `./three`** (estimate ≈ 2k lines, from ≈ 11.4k today: 9.8k in `three/frame`, 1.7k in the two sources):
-- `VDBFrameVolume` (`Group` + proxy box), holding a `VDBFrameVolumeGpu`; props map onto `params`.
-- `VDBFrameRenderer`: wraps one `VDBFrameRendererGpu` per three renderer (`getDevice(renderer)`); in the first
-  proxy's `onBeforeRender` (as today) it collects volumes and casters (`FrameVolumeCollector`, three traversal and
-  layers), extracts camera, lights (three light → `VDBFrameLight`, `shadow.camera` → `VDBVolumeShadowRequest`),
-  environment (PMREM → equirect bake on change), creates an encoder, calls `update()`, and submits. three submits its
-  own frame after that, so the queue order is correct; the pool's update was already submitted by `grids.update()`.
-- The integrate proxy material: a `NodeMaterial` whose fragment is `wgslFn(vdbFrameIntegrate)` over three
-  `viewportDepthTexture` / `viewportTexture`. Because it is an ordinary material in the scene pass, three's MRT
-  and post-processing see one material, not a nested renderer (K7.2).
-- Mesh shadows: the `filterNode` install and light reset (internals 1–2, self-tested, V60) sampling the core's
-  maps through `vdbVolumeShadowWgsl` with the drawn view. Emission: the `AnalyticLightNode` reading the core's
-  probes through `vdbEmissionProbeWgsl`.
-- Output textures: the adapter is the `allocator`: it creates three `RenderTarget`s (which three allocates with
-  `RENDER_ATTACHMENT | TEXTURE_BINDING`), `renderer.initRenderTarget`, and returns `getGPUTexture`; a self-test
-  checks the usage flags (`VDB_ENGINE_MISMATCH` otherwise).
-- `vdbSparseSource(grids, ...)` and `vdbDenseTextures` become thin wrappers over `vdbSparseSourceGpu` /
-  `vdbDenseSource`; `vdbVolumeNodes` / `vdbVolumeUniforms` stay for `VDBVolumeMaterial` and custom TSL users.
-- `VDBLevelSetMaterial`, `VDBPoints`, `VDBVolumeMaterial`, `VDBGridNode`, `VDBSequence` re-export.
+## 6. The three adapter after K6 (K6.8)
 
-**What changes for users (0.2.0; 0.x minors may break, no aliases, D32):**
-- Unchanged: `VDBFrameVolume` props, `VDBFrameRenderer.settings` (names, defaults), `vdbFrameRenderer()`,
-  `vdbSparseSource` / `vdbDenseTextures` signatures, `VDBFrameEmissionLight` props, `VDBLevelSetMaterial`,
-  `VDBPoints`, `VDBSequence`.
-- Removed: pass materials and their fields (`injectMaterial`, `densityMaterial`, `shadowDensityMaterial`,
-  `emissionDirectionMaterial` on `VDBFrameVolume`; the TSL uniform fields typed `any` on `VDBFrameRenderer` and
-  `VDBFrameEmissionLight`, the K5.5 follow-up); `VDBFrameVolumeShadows` / `VDBFrameVolumeShadowNode` exports
-  (`three/internal.ts`).
-- Changed: `emissionColor` takes `VDBEmissionColor` (data or LUT) instead of a TSL hook; `vdbFrameBlackbodyEmission`
-  returns that data (Q9). `passHook` timings come from the core's timestamp writes, so `begin`/`end` bracket recorded
-  passes, not three renders; `VDBFramePass` names stay. `renderFroxels` / `holdFroxels` (V34) map onto
-  `update(..., { froxels: false })`.
-- New: `VDBFrameRenderer.core` (the `VDBFrameRendererGpu`, for hosts mixing raw passes).
+**What stays in `./three`** (≈ 2k lines from ≈ 11.4k):
+- `VDBFrameVolume` (Group + proxy box) holding a `VDBFrameVolumeGpu`; props map onto `params`.
+- `VDBFrameRenderer`: one `VDBFrameRendererGpu` per three renderer on `getDevice(renderer)` (Q2). In the first proxy's
+  `onBeforeRender` it collects volumes and casters, converts lights (and `shadow.camera` → requests, `light.shadow.map`
+  → occluders), passes `scene.environment`'s texture, records `update()` into its own encoder and submits; three's
+  frame submits after, so queue order is right.
+- **Binding core textures into three** (Q2): a stand-in `Data3DTexture` / `DataArrayTexture` per output whose backend
+  record's `texture` is set to the core `GPUTexture` before three first sees it, re-set when `outputs.version` moves;
+  `backend.destroyTexture` is guarded so three never destroys a core texture. This is `VDBGridNode`'s pool-buffer
+  pattern for textures, self-tested once per backend (`VDB_ENGINE_MISMATCH` on another three) and counted by tests
+  that skip the self-test objects.
+- The integrate proxy: a `NodeMaterial` whose fragment is `wgslFn(vdbFrameIntegrate)` over `viewportDepthTexture` /
+  `viewportTexture`; three's MRT and `pass()` see one ordinary material (K7.2).
+- Mesh shadows: the `filterNode` install (V60) sampling core maps through `vdbVolumeShadowWgsl`; emission: the
+  `AnalyticLightNode` through `vdbEmissionProbeWgsl`.
+- `vdbSparseSource` / `vdbDenseTextures` become thin wrappers; `vdbVolumeNodes` stays for `VDBVolumeMaterial`.
+- Re-exports: `VDBSequence` (core), `VDBLevelSetMaterial`, `VDBPoints`, `VDBVolumeMaterial`, `VDBGridNode`.
 
-## 7. Verification plan
+**0.2.0 changes (Q6: break freely, no 0.1.x users, no aliases):** pass materials and their `any`-typed fields
+removed; `VDBFrameVolumeShadows` / `VDBFrameVolumeShadowNode` removed; `emissionColor` takes `VDBEmissionColor`;
+`neuralNetwork` becomes `mlp` (experimental); `passHook` brackets recorded kernels via timestamp writes;
+`renderFroxels`/`holdFroxels` map to `update(..., { froxels })`; settings gain the K6 fields; new
+`VDBFrameRenderer.core`.
 
-1. **CPU twins first (D11).** Each core pass gets a GPU-vs-twin probe in a raw-WebGPU harness
-   (`examples/src/harness/k6-core.{html,ts}`, no three): render the pass alone into its target, read back N texels
-   (N ≥ 512, fixed seeds), compare to the `tools/frame` twin within the f16 bounds of today's `k3-frame-lighting`
-   spec. Twins missing today: the shadow-density voxel (source sample at grid lod → extinction/absorption), an
-   end-to-end inject froxel (composes existing twins), the point sprite size. Each new twin gets a fail-before
-   mutation, as the K3.6 specs do.
-2. **Pixel A/B, TSL vs core, while both exist.** During K6.1–K6.7 `VDBFrameRenderer` gets a temporary setting
-   `backend: 'tsl' | 'core'` (internal, not exported, removed in K6.8). The harness renders the same scene both ways
-   on one device and compares every intermediate target texel by texel (bar: ≤ 2 f16 ulp on ≥ 99.9 % of texels; the
-   rest explained by fma/ordering) and the final image (max |Δ| ≤ 1/255, PSNR ≥ 60 dB), on the K3 scene list of
-   that step (Step 1 for K6.1 … Step 7 for K6.6), dense and sparse.
-3. **Gates.** `pnpm k3:parity` against his captures at `75e7345` through the core-backed adapter: 48/48 strict
-   (46 bit-identical today; any newly non-identical scene needs an explanation in the step handoff), Step 7 IoU
-   ≥ 0.99 and 9,802 points. Demo goldens (02, 04–09 snapshots) unchanged; demos 10–16 structural specs unchanged;
-   demo 16's zero-build swap still 0; `test/boundaries.test.ts`, `api-surface.test.ts` (with the reviewed diff).
-4. **Which specs move.** `k3-frame*.spec.ts` keep testing through `./three` (they become adapter tests) and gain
-   core twins in `e2e/k6-core.spec.ts`; `k3-pyramid` and `core-parity` stay; `k3-levelset` gains a raw-pass variant;
-   the timing harness (`k3-timing`, `time-hardware.mjs`) switches to core timestamp writes in K6.8; new
-   `e2e/demo-17.spec.ts` (K6.9 raw demo, readback presentation, golden on SwiftShader).
-5. **Limits.** A unit test builds every pipeline descriptor for the key matrix and checks the §1 limits; WGSL
-   validity of every variant runs in `pnpm wgsl:variants` (extended), under `pushErrorScope('validation')`.
+## 7. Verification (N1)
 
-## 8. Migration order, sizes, risks
+1. **Kernel ↔ CPU twin.** Each kernel runs alone in the raw-WebGPU harness (`examples/src/harness/k6-core.{html,ts}`,
+   no three) on fixed seeds; N ≥ 512 texels read back and compared to the `tools/frame` twin within 2 f16 ulp, or a
+   bound justified in the step handoff (e.g. SwiftShader's ~12-bit division on sharp data, Traps). Every new twin
+   gets a fail-before mutation (break one term, the probe must fail). Spec: `e2e/k6-core.spec.ts`.
+2. **Frames vs the TSL path.** While both exist, the K3 harnesses take `?backend=core`. Per step, its K3 scenes
+   (Step 1 for K6.1 … Step 7 for K6.6), dense and sparse: PSNR ≥ 45 dB and ≤ 0.2 % pixels > 4/255 against the TSL
+   frame, same device.
+3. **Frames vs his K3 captures** (`pnpm k3:parity` through `backend: 'core'`): his strict bar (PSNR ≥ 40 dB, ≤ 0.5 %
+   pixels > 8/255) on every scene that passes it today; Step 7 IoU ≥ 0.99 and 9,802 points. A regression report lists
+   each scene's numbers for both backends. Intentional improvements (mixture, SH irradiance, GPU environment lights,
+   MS default, mesh→volume shadows) are listed with their DIVERGES row and the reference result, and excluded from
+   the bar. Bit-identity (the old 48/48) is not a gate.
+4. **Quality reference (K6.R).** A brute-force march: per pixel, a fixed fine step (≤ ½ voxel) through the source at
+   level 0, a full-resolution shadow march per light per sample (no grid, no froxels), the environment from the
+   reference SH and lights, and multiple scattering by many-sample random walks with ratio tracking against the
+   source's `stats.max`, accumulated in rgba32float over frames until the change per frame is < 1e-4. CPU twin on
+   64 × 64 crops. "Better" means lower error against it (PSNR and mean relative luminance error per scene); the
+   pathtracer replaces it after P1.
+5. **Structural.** `test/boundaries.test.ts`; `api-surface.test.ts` (one reviewed diff in K6.8); a limits test that
+   builds every pipeline descriptor of the key matrix and checks §1's limits; `pnpm wgsl:variants` over every
+   variant under `pushErrorScope('validation')`; G16a's zero-build swap in the core harness; demo goldens 02, 04–09
+   and demos 10–16 structural specs after K6.8 (re-baselined only with a listed reason).
 
-| Task | Content | Size | Depends on | Risk |
+## 8. Migration order and sizes
+
+| Task | Content | Size | Depends on | Parallel with |
 |---|---|---|---|---|
-| K6.1 | Renderer skeleton (options, settings, lifecycle, retire queue, pipeline cache, group 0 packer, allocator hook, composite + `vdbFrameIntegrate`), froxel layout/view maths to core, inject, temporal; dense source; A/B harness; `backend` setting | L | K6.0 approval | Skeleton churn: every later step builds on it. Mitigation: K6.1 also runs the Q2 spike. |
-| K6.7 | `vdbSparseSourceGpu` (K3.2b): `vdbSrc*` over the pool, pyramid, `followImage`, `skipEmpty` | M | K6.1 group 2 contract | Low: the WGSL exists inside the TSL source's `wgslFn`s. Runs **in parallel** with K6.1 after the source contract lands. |
-| K6.2 | shadow density, cascades/signatures, transmittance, environment map + readback, env grid, density, lighting | L | K6.1, K6.7 | Env bake (Q3) parity. |
-| K6.3 | phase LUTs, MS modes, neural in a uniform buffer, grid mips; wire K7.3 multi-scale | M | K6.2, **K7.3** | Neural ulps (Q5). |
-| K6.4 | spectral: pipeline key, array targets | M | K6.3 | 32 B/sample and 16-texture limits. |
-| K6.5 | volume shadow maps and emission passes in core; drawn-view receivers; the three filterNode / AnalyticLightNode over them | M core + L adapter | K6.2 | Highest: three internals (V60), budget behaviour. |
-| K6.6 | level-set surface wrapper + raw pass; point sprite WGSL + raw pass | S–M | K6.1 | Low. |
-| K6.8 | Adapter thin: delete TSL passes, `backend` setting gone, API changes of §6, timing harness | L | K6.1–K6.7 | Parity drift found late; mitigated by per-step A/B. |
-| K6.9 | Raw-WebGPU demo 17 (WDAS, 'frame', mesh shadows on a ground, emission from the explosion) + docs "Rendering without three" | M | K6.5 | — |
+| K6.1 | Skeleton (options, settings, lifecycle, retire queue, pipeline cache, uniform packers), froxel layout/view maths in `tools/frame`, 'volume' lighting: gather + resolve + composite pass + `vdbFrameIntegrate`; dense source; `k6-core` harness; `backend` A/B in `./three`. [Brief](./K6.1-brief.md). | L | — | K6.7, K6.R (after K6.1's first commit freezes the group-2 contract) |
+| K6.7 | `vdbSparseSourceGpu`: one source per pool, `vdbSrc*(v, …)`, packed pyramid atlas, `followImage`, `skipEmpty` | M | group-2 contract | K6.1, K6.R |
+| K6.R | Reference renderer (§7.4) + CPU twin + report script | L | group-2 contract | K6.1, K6.7 |
+| K6.2 | 'frame' lighting: gridDensity, transmittance (stacked), envPrefilter + envReduce (GPU), env grid, fused gather, multi-group partials | L | K6.1, K6.7 | K6.6 |
+| K6.3 | Phase LUTs; MS family incl. K7.3 `'multi-scale'` and the experimental MLP; grid mips; pick the MS default with K6.R | M | K6.2, **K7.3**, K6.R | K6.5, K6.5b |
+| K6.4 | Spectral: keys, stacked spectral targets, alpha prefix | M | K6.3 | K6.5, K6.5b |
+| K6.5 | Volume→mesh Beer maps (drawn view, budget), emission kernels, emission data + WGSL hook | M core + L adapter | K6.2 | K6.3, K6.4, K6.5b |
+| K6.5b | Mesh→volume occluder maps in transmittance, fused gather and the 'volume' march | M | K6.2 (K6.5's light/shadow types) | K6.3, K6.4 |
+| K6.6 | Level-set surface wrapper + raw pass; point sprite WGSL + raw pass | S–M | K6.1 | everything after K6.1 |
+| K6.8 | `./three` thin (§6): delete the TSL passes and `backend`, `VDBSequence` to core, the 0.2.0 API, timing harness on timestamp writes | L | K6.1–K6.7, K6.5b | — |
+| K6.9 | Raw-WebGPU demo 17 (WDAS, 'frame', mesh shadows both ways, emission) + docs "Rendering without three" | M | K6.5, K6.5b | K6.8 |
 | K6.10 | Gate review (separate agent) | S | all | — |
+| K6.T | Deferred timing A/Bs (§5.4) | M | a quiet machine | — |
 
-**Parallel tracks.** K7.1 and K7.2 fix the shipping TSL path first (users have it now); their repro tests become
-K6.5 / K6.8 tests and the core design makes them structural. K7.3 writes `'multi-scale'` as core compute next to
-`core/compute/pyramid.ts`, reading the shadow grid as a `GPUTexture` with the atlas layout of
-`tools/frame/grid.ts` and writing textures from an allocator or `targets`; the TSL path binds them through
-`getGPUTexture` until K6.3 consumes them natively. P1 touches the generator and its snapshot only (§5.4). K6.6 can
-run any time after K6.1.
+K7.1 is merged into the TSL path (V74); its repro (`e2e/k7-volume-shadow-stale.spec.ts`) becomes a K6.5 test. K7.2 is
+superseded by the composite seam. K7.3 writes `'multi-scale'` as core compute with a CPU twin over a 3D texture input (rg16float or
+rgba16float, channel selectable); K6.3 wires it. P1 touches only the generator and its snapshot.
 
-## 9. Open questions for the owner
+## 9. Owner decisions recorded (2026-11-25)
 
-**Q1. Fragment passes on 2D atlases, or compute on 3D textures?** *Suggest:* fragment/atlas for K6; a compute
-graph later behind a setting, A/B'd. Pro: texel-identical A/B against the TSL path, the same additive blending,
-the 48/48 bar is reachable step by step. Con: keeps his WebGL-era layout (manual z lerp, tile edges) and more
-render passes. *Settles it:* the K6.1 A/B shows ≤ 2 f16 ulp on the froxel atlas; then a quiet-machine timing A/B
-(D25) of a compute prototype of the density + lighting passes on WDAS.
+| Q | Decision | Why |
+|---|---|---|
+| Q1 | B: compute on 3D textures, gather, fused density + lighting, z-scan, fragment only at seams | WebGPU-native; matches the compute-only consumers (cloud system, pathtracer); removes atlas tiles, blending scatter and the 32 B/sample limit. |
+| Q2 | The core runs the kernels on the host's (three's) device and allocates its storage textures; `./three` binds them by backend-record swap with a self-test | Storage textures need `STORAGE_BINDING`; one orchestration for every host; the same pattern as the other pmndrs libraries and `VDBGridNode`. |
+| Q3 | Environment: a host equirect or cube texture; GPU prefilter, SH projection and light extraction, no readback | Fits compute PMREM and pmndrs/sky outputs; removes the first-frame fallback. |
+| Q4 | `Gpu` suffix for core objects | D32's rule. |
+| Q5 | The MLP is an experiment: generic evaluator, shapes as uniforms, weights as data; MS default by quality | New networks need no rebuild; his default is not the spec. |
+| Q6 | Break `./three` freely in 0.2.0 | No 0.1.x users. |
+| Q7 | `VDBSequence` moves to core | Engine-free already; raw hosts get sequences. |
+| Q8 | Light terms as uniform-count loops; compiled-in sets deferred | Fewer variants, no rebuild per light; the alternative needs timing. |
+| Q9 | Emission colour as data + an optional validated WGSL hook | Engine-free, still extensible. |
+| Q10 | Volume→mesh, mesh→volume and self-shadowing all land in K6 | Shadows are first-class. |
+| N1–N3 | Correctness/quality gates; core features + default limits baseline; TSL path is the reference until K6.8 | §7, §1, §8. |
 
-**Q2. Core runs the passes on three's device (own encoder, submitted from the first proxy's `onBeforeRender`), or
-three keeps orchestrating and only the shading becomes `wgslFn(coreWgsl)`?** *Suggest:* core runs them. Pro: one
-orchestration for every host, the K7.2 class gone, the adapter shrinks to ≈ 2k lines. Con: a submit inside three's
-render call, output textures need the allocator hook (three internals for usage flags), timing moves off three's
-timestamps. *Settles it:* a K6.1 spike: demo 10 in 'volume' lighting through the core under a three `pass()` with
-MRT (GTAO) renders with no validation errors and equals the TSL path ≤ 1/255.
+**Notes, not blocking.** (a) A `GPUTextureView` exposes no dimension in JS (WebGPU IDL), so the environment input is
+a `GPUTexture` with an optional `projection`, inferred from the layer count. (b) `VDB_BAD_WGSL` is a new
+`VDBErrorCode` for the emission hook (a type change, no new export). (c) The `'mixture'` froxel mix is a planned
+departure decided by K6.R; until then both modes exist.
 
-**Q3. Environment input: baked equirect textures, or SH only?** *Suggest:* the host gives equirect radiance (and
-optionally irradiance); `./three` bakes PMREM roughness-1 radiance × π into a 128 × 64 rgba16float equirect on
-environment change. Pro: one input any engine has; no CUBE_UV decoding in the core. Con: one bilinear resample of
-a very smooth function; a bake pass per environment change. *Settles it:* Step 3 `*-env-isolated` scenes through
-the bake vs today's PMREM path: PSNR ≥ 50 dB and the strict parity bar still met.
+No new owner questions block K6.1.
 
-**Q4. Core names: `VDBFrameRendererGpu` / `vdbCreateFrameRenderer` / `vdbSparseSourceGpu`, or new nouns
-(`VDBFroxelRenderer`)?** *Suggest:* the `Gpu` suffix (D32's rule, `VDBBoxPyramidGpu` precedent). Pro: one concept,
-one name, search finds both. Con: `Gpu` on a class reads oddly. *Settles it:* the api-surface naming test plus a
-docs read-through of "Rendering without three".
-
-**Q5. Neural weights in a uniform buffer instead of shader constants?** *Suggest:* yes. Pro: ~7 KiB less WGSL per
-transmittance variant, a swapped network needs no rebuild, constants were the slow-compile pattern on DXC (R1 §8).
-Con: values may move by f32 ulps (constant folding vs loads). *Settles it:* `vdbFrameNeuralLight` twin parity and
-Step 4 strict parity unchanged; transmittance compile ms before/after (provisional).
-
-**Q6. Accept the `./three` breaks of §6 in 0.2.0?** *Suggest:* yes, with CHANGELOG migration notes, no aliases
-(D32). Pro: removes `any`-typed internals from the public d.ts; the user-facing props stay. Con: anyone who
-touched pass materials or the TSL `emissionColor` hook must change code. *Settles it:* the reviewed
-`api-surface/three.txt` diff and demos 10–16 compiling unchanged (they use only the user-facing API).
-
-**Q7. Move `VDBSequence` to the core?** *Suggest:* yes, in K6.8 (one declaration, re-exported by `./three`). Pro:
-raw hosts and the cloud system get sequences, ping-pong and prefetch. Con: export churn in two snapshots.
-*Settles it:* `sequence.test.ts` and demos 05/12 unchanged; `boundaries.test.ts` green.
-
-**Q8. Light terms as loops over uniform counts, or compiled-in light sets (V55)?** *Suggest:* loops. Pro: no
-rebuild when a light or environment appears; fewer variants. Con: possible cost of empty loops in the hottest pass.
-*Settles it:* inject and density pass ms on the Apple GPU with 0 vs 4 hemisphere/env lights, loops vs compiled-in
-(provisional, D25); switch to a light-kind key only if loops cost > 5 %.
-
-**Q9. Emission colour as data (named spectrum or a 256-texel LUT) instead of a TSL hook?** *Suggest:* yes. Pro:
-engine-free; the parity harness still injects the exact CIE table as a LUT (D33). Con: arbitrary per-voxel colour
-functions are no longer possible without a custom pass. *Settles it:* Step 6 emission scenes (`explosion-emission*`)
-strict parity with the LUT path, and the LUT twin within 1/1024 of `vdbFrameBlackbodyEmission`.
-
-**Q10. Meshes shadowing volumes (the host's depth shadow map stopping the grid and inject marches)?** *Suggest:*
-not in K6; a follow-up after K6.5 behind a setting, default off. Pro: K6 stays a port with a parity gate; the
-interface already has the field. Con: hosts with a solid occluder between sun and cloud keep an unshadowed cloud.
-*Settles it:* a test scene (a box between the sun and the bunny cloud) darkens the cloud behind the box only, and
-the 48 parity scenes are bit-unchanged with the setting off.
-
-## 10. DECISIONS entry draft (for the owner; not in DECISIONS.md)
+## 10. D34 text (for DECISIONS.md)
 
 | ID | Date | Decision | Why |
 |---|---|---|---|
-| D34 | 2026-11-?? | **Proposed: the K6 core renderer** ([docs/dev/design/K6-core-renderer.md](./K6-core-renderer.md)). The froxel renderer, volume shadow maps, emission probes and the level-set/point surface functions run in `core` as WGSL fragment passes on the K3 atlases and formats, recorded into the host's encoder on the host's device, with camera, lights, environment and shadow cameras as plain data and outputs in core- or host-allocated textures. Composite is either a core pass or the WGSL function `vdbFrameIntegrate` the host places (the MRT seam); volume shadows are read with the view they were drawn with. `./three` becomes an adapter: it collects scene data, runs `update()` on its own encoder before three's frame, composites through a material, and installs shadow filters and the emission light node over core outputs. Core names take `Gpu` where `./three` has the plain name. Each pass ports with a CPU twin and a texel A/B against the TSL path; K3 parity 48/48 and demo goldens gate K6.8. | D8 and D18 intended shared foundations in `core`; the cloud system and other adapters (R6) need the renderer without three; his post-0.26 fixes (62a6e3e, c13f2d5, 720c38f) and our K5.9/RV bugs all came from engine coupling (shadow coordinates, light collection, MRT inheritance, uniform callbacks, cached TSL layouts, immediate texture destruction), which plain-data inputs, explicit bind groups and a retire queue remove. Fragment passes on the same atlases keep the port checkable texel by texel. |
+| D34 | 2026-11-25 | **The K6 core renderer is compute on 3D textures** ([docs/dev/design/K6-core-renderer.md](./design/K6-core-renderer.md)). The froxel renderer, the 'frame' lighting grids, the environment reduction, volume shadow maps and emission run in `core` as WGSL compute kernels on the host's device, recorded into the host's encoder; the core allocates its storage textures. Froxels, shadow grids, transmittance and environment grids are `texture_3d` (written through `texture_storage_3d`, stacked when several grids share a size), read with hardware trilinear. One thread per froxel gathers the visible volumes (overlapping volumes mix order-independently); 'frame' lighting fuses density and lighting; a per-column z-scan (with temporal reprojection) writes integrated radiance and optical depth, which the composite reads at the scene depth. Fragment shaders exist only at host seams: the composite (a core pass, or the WGSL function `vdbFrameIntegrate` the host places), level-set `frag_depth`, points. Inputs are plain data: camera, lights, a host equirect/cube environment texture (reduced on the GPU to SH and lights, no readback), host depth shadow maps (mesh→volume shadows), shadow requests (volume→mesh maps read with the view they were drawn with). Multiple scattering is pluggable (default chosen by quality against a brute-force reference; the MLP is experimental, weights as data). Emission colour is data plus an optional validated WGSL hook. Baseline: WebGPU core features and default limits; `texture-formats-tier1`, `shader-f16` and `subgroups` are fast paths with fallbacks. Gates: every kernel matches its CPU twin (≤ 2 f16 ulp or a justified bound) with a fail-before mutation; frames match the TSL path and his K3 captures within tolerance, with intentional improvements listed; a reference renderer judges "better". K3 bit-identity is no longer a gate; timing A/Bs wait for a quiet machine (D25). The TSL path is the reference during K6.1–K6.7 and is deleted in K6.8; `./three` 0.2.0 becomes a thin adapter. Core objects take `Gpu` (D32); `VDBSequence` moves to core. Owner decisions 2026-11-25 (Q1–Q10, N1–N3). | Owner: the best VDB library on the web, WebGPU-first, with mjurczyk's renderer as a benchmark and collaborator, not the spec. Compute on 3D textures is the WebGPU-native design and what the compute-only consumers (the cloud system, the pathtracer) need; it removes his WebGL-era atlas tiles, scatter-by-blending, the 4 × rgba16float density targets and the 32 B/sample limit. His post-0.26 fixes (62a6e3e, c13f2d5, 720c38f) and our K5.9/RV bugs came from engine coupling, which plain-data inputs, explicit bind groups, a retire queue and a composite function remove. No quiet machine is available, so the design is chosen on correctness and quality, and every timing question is one deferred task. |
+
+## 11. Planned DIVERGES rows
+
+One line each; the implementing step writes the row (source: mjurczyk `75e7345` unless noted).
+
+1. K6.1 — Froxels are 3D textures written by compute, not his z-slice 2D atlas drawn by instanced fragment passes (`FrameRenderer`, `frameLayout.js`).
+2. K6.1 — One thread per froxel gathers the volumes of a source group instead of one blended draw per volume (`FrameInjectMaterial` blending).
+3. K6.1 — Overlapping volumes in a froxel mix order-independently (`froxelMix: 'mixture'`) instead of draw-order premultiplied "over"; decided by K6.R.
+4. K6.1 — Integration is a per-column prefix of (radiance, optical depth) and the composite reads two boundary taps; x, y filtering acts on the prefix, not on per-slice froxels (`FrameIntegrateMaterial` L219–294).
+5. K6.1 — Temporal reprojection runs inside the z-scan; the history is sampled with hardware trilinear (same clamps as his bilinear + slice lerp) (`FrameTemporalMaterial`).
+6. K6.1 — Froxel size is capped at `maxTextureDimension3D` (2048) per axis; at most 128 visible volumes per frame (uniform binding size), warned.
+7. K6.1 — Light terms are loops over uniform counts (reverses V55's compiled-in light sets; values unchanged).
+8. K6.2 — 'frame' lighting fuses the density and lighting passes in one kernel; no 4 × rgba16float density targets (`FrameDensityMaterial`, `FrameLightingMaterial`).
+9. K6.2 — Shadow grid, transmittance and environment grid are stacked 3D textures with hardware trilinear, not 2D atlases with manual z lerp (`frameGrid.js`).
+10. K6.2 — Without `texture-formats-tier1` the shadow grid and grid mips are rgba16float (his RG half float); values in `.xy` unchanged (platform).
+11. K6.2 — Environment input is a host equirect/cube texture prefiltered by our kernel, not three's PMREM at roughness 0.4 (`FrameRenderer` env map).
+12. K6.2 — 'outward' environment irradiance is SH L2 (Ramamoorthi–Hanrahan), not PMREM roughness 1 × π.
+13. K6.2 — Environment lights ('directional', 'spherical-harmonics') are extracted on the GPU into a buffer; no CPU readback, no first-frame 'outward' fallback (`frameEnvironment.js`).
+14. K6.3 — Multiple scattering default is chosen by quality against K6.R between diffusion and multi-scale; his `'neural'` default is not followed (V67 note).
+15. K6.3 — The neural network runs in a generic MLP evaluator (shapes as uniforms, weights in a storage buffer), experimental, `'mlp'` (`frameNeuralChunks.js`; extends V48).
+16. K6.3 — `'multi-scale'` comes from K7.3's core compute on 3D textures (his 4e2d46f is past the pin).
+17. K6.5 — Volume shadow receivers read with the view the map was drawn with (his 62a6e3e, by construction) and the update budget counts only lights in the frame (his c13f2d5).
+18. K6.5 — Emission colour is data (named spectrum or LUT) plus an optional validated WGSL hook (supersedes V24/V62 for the core).
+19. K6.5b — Meshes shadow volumes through the host's depth shadow maps (not in his renderer): direct term at froxel resolution, scattered term in the grid.
+20. K6.7 — One sparse source serves every volume of a pool, with pyramids packed in one atlas (replaces V30/V42's one material per source).
+21. K6.8 — The MRT/post seam is a composite function in the host's material (his 720c38f solved structurally); `passHook` times recorded kernels via timestamp writes (extends V34/V46/V49).
+22. K6.8 — `VDBSequence` lives in core (engine-free), re-exported by `./three`.

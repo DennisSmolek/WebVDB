@@ -168,24 +168,27 @@ needs the owner's asset release (`examples-assets-v1`, RELEASING §4). K5.3 clou
 
 ## K6 — Renderer in the core (pure WebGPU) 🟨
 
-**Status 2026-11-24:** K6.0 design written ([design/K6-core-renderer.md](design/K6-core-renderer.md), D34 draft in §10);
-waiting on the owner's answers to its open questions Q1–Q10 before K6.1 starts.
+**Status 2026-11-25:** K6.0 done. The owner chose compute on 3D textures (D34,
+[design/K6-core-renderer.md](design/K6-core-renderer.md)); K6.1 is in progress ([brief](design/K6.1-brief.md)).
+Timing A/Bs are deferred to K6.T (no quiet machine); nothing in K6 gates on speed.
 
 The froxel renderer, level-set tracer and points live in `./three` as TSL today. K6 moves them into the engine-free
-core as WGSL passes, as D8 intended: the core takes the host's `GPUDevice`, records into the host's encoder and
-renders into host targets; cameras, lights and shadow maps come in as plain data. `./three` becomes a thin adapter
-over those passes, and other engines (R6: babylon, pixi) can follow.
+core as WebGPU compute on 3D textures: the core takes the host's `GPUDevice`, records into the host's encoder and
+allocates its own storage textures; cameras, lights, environment and shadow maps come in as plain data. Fragment
+shaders remain only at host seams (the composite, level-set depth, points). `./three` becomes a thin adapter, and
+other engines (R6: babylon, pixi) can follow. The goal is the best VDB renderer on the web: mjurczyk's renderer is a
+benchmark and collaborator, not the spec.
 
-- Design first (K6.0): the pass graph, resource ownership, how the `vdb` module composes with renderer WGSL (one
-  module per shader), a core-side shadow-map interface (the host gives the light's view-projection and depth; this
-  also removes the class of three-specific shadow bugs K7.1 fixes), and the seam for host post-processing (MRT).
-- Port pass by pass, each with a CPU twin and a pixel A/B against today's TSL path, in the K3 step order.
-- The K3 parity captures (his renderer at `75e7345`) keep gating: the three adapter over core passes must still pass
-  48/48.
+- Each kernel has a CPU twin and a fail-before mutation (≤ 2 f16 ulp or a justified bound).
+- Frames match the TSL path and his K3 captures within tolerance (a regression report); intentional improvements are
+  listed in DIVERGES. K3 bit-identity is no longer a gate.
+- A brute-force reference renderer (K6.R), later the pathtracer (P1), judges quality choices such as the
+  multiple-scattering default.
+- Shadows both ways: volumes on meshes (K6.5) and meshes on volumes (K6.5b).
 
-**Exit gate:** a raw-WebGPU demo renders the WDAS cloud with 'frame' lighting, mesh shadows and emission without
-importing three; `./three` draws through the core passes with the K3 parity suite and demo goldens unchanged; every
-core pass has CPU-twin parity; `test/boundaries.test.ts` still holds.
+**Exit gate:** a raw-WebGPU demo renders the WDAS cloud with 'frame' lighting, shadows both ways and emission without
+importing three; `./three` draws through the core with the gates above and demo goldens explained; every core kernel
+has CPU-twin parity; `test/boundaries.test.ts` still holds; the TSL passes are deleted.
 
 ## K7 — Upstream sync 🟨
 
