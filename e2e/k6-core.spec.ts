@@ -36,6 +36,7 @@ interface Result {
   environmentGridStats?: Stats;
   environment?: { runs: { prefilter: number; blur: number; reduce: number }[]; count: number; mode: number; valid: number; directions: number[][]; colors: number[][] };
   frame?: { cascades: number; redraw: unknown };
+  occluders?: { maps: number; transmittance: number; density: number; lighting: number; gather: number };
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
   receiverStats?: Stats;
@@ -481,6 +482,51 @@ for (const p of GATHER_ENV_PROBES) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
       expect(bad.error, detail(bad)).toBeUndefined();
       expect(bad.stats!.over, `mutation ${m} must fail: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad.stats!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.5b (design §3.7): host occluder maps (mesh → volume shadows). Three synthetic maps of the probe lights
+// (k6-occluders-synth.ts): a depth32float orthographic map drawn by a render pass (directional, bilinear PCF, a bias), an
+// r32float cube (point, bilinear) and an r32float reversed-depth perspective map (spot, one texel). The transmittance,
+// the fused 'frame' gather and the 'volume' gather against their twins with `vdbFrameOccluderVisibility`; the twin
+// without the maps, with the scattered part unoccluded, or with one texel everywhere must fail.
+const OCCLUDER_PROBES: { name: string; query: string; frame: boolean; mutations: Record<string, StatsKey> }[] = [
+  { name: "'frame' lighting, dense", query: "?probe=frame&occluders=1", frame: true, mutations: { occluder: "stats", "occluder-scattered": "transmittanceStats", "occluder-filter": "stats" } },
+  { name: "'frame' lighting, sparse, two groups, single scattering", query: "?probe=frame&occluders=1&source=sparse&groups=2&ms=0", frame: true, mutations: { occluder: "stats" } },
+  { name: "'volume' gather, dense", query: "?probe=gather&occluders=1", frame: false, mutations: { occluder: "stats", "occluder-filter": "stats" } },
+  { name: "'volume' gather, sparse", query: "?probe=gather&occluders=1&source=sparse&lod=none", frame: false, mutations: { occluder: "stats" } },
+];
+
+for (const p of OCCLUDER_PROBES) {
+  test(`K6.5b probe: occluder maps in ${p.name} match the CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.occluders!.maps, detail(r)).toBe(3);
+    // the maps shadow something in every kernel the probe checks
+    if (p.frame) {
+      expect(r.occluders!.transmittance, detail(r)).toBeGreaterThan(50);
+      expect(r.occluders!.density, detail(r)).toBeGreaterThan(20);
+    } else expect(r.occluders!.gather, detail(r)).toBeGreaterThan(20);
+    for (const key of p.frame ? (["transmittanceStats", "stats"] as const) : (["stats"] as const)) {
+      const s = r[key]!;
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(200);
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] occluders ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over; occluded lookups ${JSON.stringify(r.occluders)}`);
+    }
+    if (p.frame) {
+      // a map with a revision that does not move lets the transmittance skip its redraw
+      const redraw = r.frame!.redraw as { transmittance: { drawn: number; skipped: number } };
+      expect(redraw.transmittance, detail(r)).toEqual({ drawn: 1, skipped: 1 });
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
     }
     expect(errors).toEqual([]);
   });
