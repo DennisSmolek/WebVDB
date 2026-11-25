@@ -461,16 +461,16 @@ then `createShaderModule` + `getCompilationInfo` under `pushErrorScope('validati
 
 *K6.5 as built:* `params.emissionColor: VDBEmissionColor` (`'white'`, `{ spectrum, exponent }`, `{ lut }` = 256 × rgb over
 log temperature 500–40,000 K, or `{ wgsl }`). Every LUT is a row of one rgba32float texture bound in **group 1** of the
-kernels with an emission source (gather 'volume' binding 4, 'frame' 5, emission direction 3), not group 0 (K6.2b's
-environment buffer goes there); the record's `march.w` holds the colour code (mode, row). `{ spectrum }` rows are his
+kernels with an emission source (gather 'volume' binding 4, 'frame' 6, emission direction 3), not group 0 (K6.2b's
+environment buffer is there); the record's `march.w` holds the colour code (mode, row). `{ spectrum }` rows are his
 blackbody table pre-blended to the soot exponent (bilinear is separable; twin `vdbFrameEmissionLutRow` /
 `vdbFrameEmissionLutColor`). The hook is `fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f` (t normalized,
 temperature in kelvin; the design's `emission` argument is t). One hook per source group. A hook still validating draws
 white (an invalid pipeline would invalidate the host's command buffer); `prepare()` awaits validation; a failed hook
 throws at the next `update()`. Emission light: `VDBFrameInput.emissionLight` (his `FrameEmissionLight` props) →
 `outputs.emissionProbes` (`texture` stack, `grid` uniform buffer, `layout`, `state`); receivers
-`vdbEmissionProbeWgsl()` → `vdbEmissionIrradiance(probes, smp, grid, world, normal)`. The group record gains `emitters`
-(first item of the emitter list, count).
+`vdbEmissionProbeWgsl()` → `vdbEmissionIrradiance(probes, smp, grid, world, normal)`. The direction kernel reads its
+source group's segment of the emitter list at a dynamic offset.
 
 ### 3.9 Level sets and points (K6.6)
 
