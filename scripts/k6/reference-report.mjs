@@ -73,7 +73,14 @@ const MANIFEST = existsSync(need.captures) ? JSON.parse(readFileSync(need.captur
 // 'volume' lighting uses the volume's phase (k3-frame: his frame.js dual-lobe 0.8 / −0.3 / 0.2); 'frame' lighting the
 // renderer's settings phase (read from the frame's `settings`; k3-frame sets 0.8 / −0.3 / 0.2 too).
 const VOLUME_PHASE = [0.8, -0.3, 0.2];
-const MULTI_SCALE_SLOT = { label: "frame ms multi-scale (K7.3; K6.3 wires it: no frame yet)", slot: true };
+// K6.3: the core's own MS modes ('multi-scale' both edge modes, the A/B for V75; the core's two-sided / octaves / neural)
+const coreMsRows = (make, base) => [
+  make("core ms two-sided", `${base}&ms=two-sided&backend=core`, { lighting: "frame" }),
+  make("core ms octaves", `${base}&ms=octaves&backend=core`, { lighting: "frame" }),
+  make("core ms neural (generic MLP, his weights)", `${base}&ms=neural&backend=core`, { lighting: "frame" }),
+  make("core ms multi-scale (edge zero)", `${base}&ms=multi-scale&msEdge=zero&backend=core`, { lighting: "frame" }),
+  make("core ms multi-scale (edge clamp, his)", `${base}&ms=multi-scale&msEdge=clamp&backend=core`, { lighting: "frame" }),
+];
 const k3 = (label, query, extra = {}) => ({ label, page: "k3-frame", query, ...extra });
 const k6 = (label, query, extra = {}) => ({ label, page: "k6-scene", query, ...extra });
 // The renderer rows of a scene group: both lightings, TSL and core, every multiple-scattering mode each path has.
@@ -89,7 +96,7 @@ const sceneRows = (scene) => [
   k6("frame TSL ms two-sided", `scene=${scene}&lighting=frame&ms=two-sided`, { lighting: "frame" }),
   k6("frame TSL ms octaves", `scene=${scene}&lighting=frame&ms=octaves`, { lighting: "frame" }),
   k6("frame TSL ms neural", `scene=${scene}&lighting=frame&ms=neural`, { lighting: "frame" }),
-  MULTI_SCALE_SLOT,
+  ...coreMsRows((label, query, extra) => k6(`frame ${label}`, query, extra), `scene=${scene}&lighting=frame`),
 ];
 const GROUP_DEFS = {
   volume: {
@@ -117,7 +124,7 @@ const GROUP_DEFS = {
       k3("TSL ms two-sided", "scene=step3-default-dir-isolated&ms=two-sided", { lighting: "frame", capture: "step4-multiple-scattering-two-sided-dir-isolated" }),
       k3("TSL ms octaves", "scene=step3-default-dir-isolated&ms=octaves", { lighting: "frame", capture: "step4-multiple-scattering-octaves-dir-isolated" }),
       k3("TSL ms neural (his v0.26 default)", "scene=step3-default-dir-isolated&ms=neural", { lighting: "frame", capture: "step4-default-neural-dir-isolated" }),
-      MULTI_SCALE_SLOT,
+      ...coreMsRows(k3, "scene=step3-default-dir-isolated"),
     ],
   },
   two: {

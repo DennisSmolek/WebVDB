@@ -184,6 +184,12 @@ const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Reco
   { name: "frame, 'neural' (= 'mlp'), sparse, two groups", query: "?probe=frame&ms=neural&source=sparse&groups=2", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "mlp-weights": "transmittanceStats" } },
   { name: "frame, 'multi-scale' (edge zero)", query: "?probe=frame&ms=multi-scale", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats", "ms-levels": "transmittanceStats" } },
   { name: "frame, 'multi-scale' (edge clamp, 4 levels)", query: "?probe=frame&ms=multi-scale&edge=clamp&levels=4", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats" } },
+  // K6.5b × K6.3: host occluder maps with each mode's own scattered term (octaves: occluded in the gather)
+  { name: "frame, 'octaves' with occluder maps", query: "?probe=frame&ms=octaves&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { occluder: "stats" } },
+  { name: "frame, 'two-sided' with occluder maps", query: "?probe=frame&ms=two-sided&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  { name: "frame, 'mlp' with occluder maps", query: "?probe=frame&ms=mlp&occluders=1", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  { name: "frame, 'multi-scale' with occluder maps", query: "?probe=frame&ms=multi-scale&occluders=1", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  { name: "gather, 'two-sided' with occluder maps", query: "?probe=gather&ms=two-sided&occluders=1", keys: ["stats"], mutations: { occluder: "stats" } },
 ];
 
 for (const p of K63_PROBES) {

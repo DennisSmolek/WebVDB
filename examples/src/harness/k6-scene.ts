@@ -3,7 +3,8 @@
  * thin bunnies, a point light) through `./three` `VDBFrameRenderer`, read back for scripts/k6/reference-report.mjs.
  * The reference page (`k6-reference.html?case=scene`) renders the same definition.
  *
- * Query: `?scene=<name>` (K6_SCENES), `?lighting=volume|frame`, `?ms=0|1|two-sided|octaves|neural`,
+ * Query: `?scene=<name>` (K6_SCENES), `?lighting=volume|frame`, `?ms=0|1|two-sided|octaves|neural` (K6.3, core only:
+ * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`),
  * `?backend=tsl|core` (K6.1/K6.2 internal A/B), `?froxelMix=mixture|over`, `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
  * Jitter and temporal reprojection off (deterministic); no MSAA (no meshes).
@@ -104,6 +105,9 @@ async function main(): Promise<void> {
   const frameRenderer = new VDBFrameRenderer();
   frameRenderer.backend = params.get("backend") === "core" ? "core" : "tsl";
   frameRenderer.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
+  // K6.3: the core's 'multi-scale' settings (the V75 edge A/B)
+  if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
+  if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
   result.backend = frameRenderer.backend;
   result.froxelMix = frameRenderer.froxelMix;
   Object.assign(frameRenderer.settings, {
