@@ -394,3 +394,21 @@ From v1; details in docs/archive/handoffs/.
   (three copies the view camera's layers into the shadow camera only when its mask is just layer 0).
 - A gate mask for "pixels behind an occluder" must weight the view ray by the cloud's visibility (a CPU density march):
   a dense cloud shows its front, so "every sample of the ray in the shadow" almost never holds (K6.5b's first mask: 0 px).
+- Installed Chrome headless (`channel: 'chrome'`) on the owner's Mac presents to a WebGPU canvas (Metal), unlike headless
+  SwiftShader: a direct-presentation screenshot of a raw-WebGPU demo works there (K6.9's `hardware-direct-high.png`).
+- His explosion `.wvdb` keeps the temperature in a grid named `flames`: `wvdbDenseVolume(file, { emission: "flames",
+  scales: { flames: 6 } })`, else it has no emission channel (`wvdbDenseToNvdb({ channel: 'emission' })` throws). Its
+  128³ texels span a non-cubic box (221 × 256 × 282, Z-up): size a volume from `dense.bbox`, not the dimensions.
+- His explosion frame 10 at his frame.js values (0–3000 K, emissive 15, extinction 100, #555555) is black smoke with a few
+  embers (his own capture looks so); demo 17 runs it hotter to read as fire (V130). Don't take a black blob for a bug.
+- Pass one `VDBFrameOccluder` object per drawn depth map: the 'frame' transmittance signature compares the view object,
+  so a new `createView()` each update redraws it every frame (with `jitter` on it redraws every frame anyway, his rule).
+- A render pass that writes a depth texture cannot also bind it (the sun-map pass of demo 17): give the depth-only
+  pipeline a layout without the lighting group that samples that map.
+- Host-side composite (`vdbFrameIntegrate` + `vdbFrameComposite`): skip pixels with `transmittance ≥ 1` as the core's
+  pass does; `vdbFrameCompositeColor` divides by α and makes NaN there.
+- Demo 17 (and any raw-WebGPU demo) imports the gallery UI from `showcase-ui.ts`, never `showcase-shell.ts` (three):
+  `examples/test/demo-08-imports.test.ts` walks its module graph.
+- Two `vdbCreateLevelSetPassGpu` instances with the same formats share one pipeline (the cache key has no label): use a
+  second instance for a light's depth map (one `record()` per instance per encoder); its pass needs a colour attachment
+  of the pass's `colorFormat` beside the depth (no depth-only variant yet).
