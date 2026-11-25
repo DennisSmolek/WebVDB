@@ -736,7 +736,11 @@ function densityFroxelTail(
       // passed as (direct·v, total − direct·(1 − v)) so the scattered part total − direct is unchanged)
       const v = p.occluderAt ? p.occluderAt(index, visibleWorld) : 1;
       const direct = directs[index]!;
-      s[c] = vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [direct * v, s[c]! - direct * (1 - v)])[1];
+      // K6.3 octaves: the slot keeps 1 / (1 + depth) unoccluded in the transmittance; both terms take v here
+      s[c] =
+        octaves[0] > 0
+          ? vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [direct, s[c]!])[1] * v
+          : vdbFrameShadowedLightColor(p.phase, phaseSpectrum, octaves, ray, lightDir, [direct * v, s[c]! - direct * (1 - v)])[1];
     } else {
       s[c] = vdbFrameShadowTotal(s[c]!, octaves);
     }

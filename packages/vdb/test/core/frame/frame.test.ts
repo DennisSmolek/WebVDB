@@ -22,6 +22,7 @@ import {
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameGridMipSpec,
   vdbFrameVolumeShadowSpec,
   vdbFrameEmissionDirectionSpec,
   vdbFrameEmissionReduceSpec,
@@ -104,6 +105,8 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
     }
   }
   compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
+  // K6.3: the transmittance's scattered-light variants and the 'mlp' feature mips
+  compute.push(vdbFrameTransmittanceSpec({ scattering: "mlp" }), vdbFrameTransmittanceSpec({ scattering: "multi-scale" }), vdbFrameGridMipSpec({ first: true }), vdbFrameGridMipSpec({ first: false }));
   // K6.2b: the environment kernels (source-free)
   compute.push(vdbFrameEnvPrefilterSpec("equirect"), vdbFrameEnvPrefilterSpec("cube"), vdbFrameEnvBlurSpec(), vdbFrameEnvReduceSpec(), vdbFrameEnvironmentGridSpec());
   compute.push(vdbFrameVolumeShadowSpec(), vdbFrameEmissionReduceSpec(), vdbFrameEmissionProbeSpec());
@@ -186,7 +189,10 @@ describe("K6.1 device limits (design §1)", () => {
     // before the occluders (design §3.2).
     expect(all.filter((e) => e.texture).length).toBeLessThanOrEqual(16);
     expect(all.filter((e) => e.buffer?.type === "storage" || e.buffer?.type === "read-only-storage").length).toBeLessThanOrEqual(1);
-    expect(all.filter((e) => e.buffer?.type === "uniform").length).toBeLessThanOrEqual(5);
+    // Uniform buffers (default limit 12): frame, lights, environment, volumes, group, and K6.3's Lorenz-Mie table (16 KiB
+    // of binary16 in group 0, which keeps the sampled textures at 15); the 'multi-scale' / 'mlp' transmittance adds its
+    // group-2 uniform but has no volumes or group record
+    expect(all.filter((e) => e.buffer?.type === "uniform").length).toBeLessThanOrEqual(6);
     expect(all.filter((e) => e.sampler).length).toBeLessThanOrEqual(16);
     // the environment prefilter / blur / reduce kernels have their own group 0 (their parameters; K6.2b)
     expect([GROUP0_LAYOUT, ENV_GROUP0_LAYOUT]).toContain(spec.groups[0]);
@@ -233,10 +239,11 @@ describe("K6.1 retire queue", () => {
 });
 
 describe("K6.1 settings", () => {
-  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix and occlusion", () => {
+  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix, occlusion and the K6.3 multi-scale fields", () => {
     const core = vdbFrameDefaultSettings();
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
-    const { froxelMix, occlusion, ...shared } = core;
+    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, ...shared } = core;
+    expect([multiScaleLevels, multiScaleEdge]).toEqual([6, "zero"]);
     expect(froxelMix).toBe("mixture");
     // K6.5b: host occluder maps shadow the volumes by default (core only)
     expect(occlusion).toBe(true);
@@ -319,7 +326,9 @@ describe("K6.1 WGSL sizes (D21; design §5.3)", () => {
     expect(Object.keys(snap.kernels).sort()).toEqual(Object.keys(sizes).sort());
     for (const [label, s] of Object.entries(sizes)) {
       expect(s.min, `${label}: WGSL size changed; if intended run K6_WRITE_SIZES=1 pnpm vitest run packages/vdb/test/core/frame and commit`).toBe(snap.kernels[label]!.min);
-      expect(s.min).toBeLessThanOrEqual(label.includes("gather") || label.includes("grid density") || label.includes("emission direction") ? CAP_SOURCE : CAP_FREE);
+      // design §5.3: the transmittance with the MLP (and K7.3's lookup) may take 28 KiB
+      const cap = label.includes("gather") || label.includes("grid density") || label.includes("emission direction") ? CAP_SOURCE : label.includes("transmittance (") ? 28 * 1024 : CAP_FREE;
+      expect(s.min).toBeLessThanOrEqual(cap);
     }
   });
 });

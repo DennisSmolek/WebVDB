@@ -16,10 +16,15 @@ import { GATHER_BINDINGS, vdbFrameGatherWgsl } from "./wgsl/gather.js";
 import {
   FRAME_GATHER_BINDINGS,
   GRID_DENSITY_BINDINGS,
+  GRID_MIP_BINDINGS,
   TRANSMITTANCE_BINDINGS,
+  TRANSMITTANCE_MLP_BINDINGS,
+  TRANSMITTANCE_MULTI_SCALE_BINDINGS,
   vdbFrameGridDensityWgsl,
+  vdbFrameGridMipWgsl,
   vdbFrameLightingGatherWgsl,
   vdbFrameTransmittanceWgsl,
+  type VDBFrameScatteringKernel,
 } from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS, vdbFrameResolveWgsl } from "./wgsl/resolve.js";
 import {
@@ -62,6 +67,8 @@ export const GROUP0_LAYOUT: GPUBindGroupLayoutDescriptor = {
     { binding: 2, visibility: COMPUTE_FRAGMENT, sampler: { type: "filtering" } },
     // K6.2b: the environment buffer (written by envReduce, read as a uniform by the kernels after it)
     { binding: 3, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
+    // K6.3: the Lorenz-Mie phase tables (V47): 2048 texels as binary16 in a 16 KiB uniform (no sampled texture)
+    { binding: 4, visibility: COMPUTE_FRAGMENT, buffer: { type: "uniform" } },
   ],
 };
 
@@ -159,21 +166,67 @@ export function vdbFrameGridDensitySpec(source: VDBVolumeSource, key: VDBFrameGr
   };
 }
 
-/** The transmittance kernel's spec (K6.2; source-free). */
-export function vdbFrameTransmittanceSpec(): VDBComputeSpec {
+/**
+ * The transmittance kernel's spec (K6.2; source-free). K6.3: `scattering` (a pipeline key) adds group 2: `'mlp'` the
+ * weights (the kernel's one storage buffer, D10), the shape uniform and the feature mips; `'multi-scale'` K7.3's
+ * parameters and mips.
+ */
+export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKernel } = {}): VDBComputeSpec {
   const b = TRANSMITTANCE_BINDINGS;
+  const scattering = o.scattering ?? "none";
+  const groups: GPUBindGroupLayoutDescriptor[] = [
+    GROUP0_LAYOUT,
+    {
+      entries: [
+        { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+        { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+        // K6.5b: the host occluder maps (4 fixed slots)
+        ...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE),
+      ],
+    },
+  ];
+  if (scattering === "mlp") {
+    const m = TRANSMITTANCE_MLP_BINDINGS;
+    groups.push({
+      entries: [
+        { binding: m.weights, visibility: STAGE.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: m.shape, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+        { binding: m.mips, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+      ],
+    });
+  } else if (scattering === "multi-scale") {
+    const m = TRANSMITTANCE_MULTI_SCALE_BINDINGS;
+    groups.push({
+      entries: [
+        { binding: m.params, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+        { binding: m.mips, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+      ],
+    });
+  }
   return {
-    label: "vdb frame transmittance",
-    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameTransmittanceWgsl()}`,
+    label: `vdb frame transmittance${scattering === "none" ? "" : ` (${scattering})`}`,
+    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameTransmittanceWgsl({ scattering })}`,
     entryPoint: "vdbFrameTransmittanceCs",
+    groups,
+  };
+}
+
+/**
+ * K6.3 `gridMips`: the box mips of the `'mlp'` feature levels (source-free). `first` reads the last shadow grid
+ * cascade from the stack, else a one-mip view of the level before; writes one mip (rgba16float storage).
+ */
+export function vdbFrameGridMipSpec(o: { first: boolean }): VDBComputeSpec {
+  const b = GRID_MIP_BINDINGS;
+  return {
+    label: `vdb frame grid mip${o.first ? " (from the shadow grid)" : ""}`,
+    code: `${vdbFrameUniformsWgsl()}\n${vdbFrameGridMipWgsl()}`,
+    entryPoint: o.first ? "vdbFrameGridMipFirstCs" : "vdbFrameGridMipCs",
     groups: [
       GROUP0_LAYOUT,
       {
         entries: [
-          { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
-          { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
-          // K6.5b: the host occluder maps (4 fixed slots)
-          ...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE),
+          { binding: b.source, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "3d" } },
+          { binding: b.out, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
         ],
       },
     ],
@@ -410,7 +463,7 @@ export function vdbFrameCompositeSpec(key: VDBFrameCompositeKey): VDBRenderSpec 
 
 /** Values per row of the chunk probe: inputs, then outputs. */
 export const CHUNK_PROBE_INPUTS = 12;
-export const CHUNK_PROBE_OUTPUTS = 24;
+export const CHUNK_PROBE_OUTPUTS = 29;
 const ROW = CHUNK_PROBE_INPUTS + CHUNK_PROBE_OUTPUTS;
 
 /**
@@ -421,7 +474,7 @@ const ROW = CHUNK_PROBE_INPUTS + CHUNK_PROBE_OUTPUTS;
  */
 export function vdbFrameChunkProbeSpec(): VDBComputeSpec {
   const code = `${vdbFrameUniformsWgsl()}
-${frameChunksWgsl(["constants", "froxel", "noise", "fade", "box", "lod", "phase", "shadow"])}
+${frameChunksWgsl(["constants", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves"])}
 ${VDB_FRAME_SLICE_COORD_WGSL}
 ${VDB_FRAME_INTEGRATE_TAPS_WGSL}
 ${VDB_FRAME_COMPOSITE_COLOR_WGSL}
@@ -460,7 +513,7 @@ fn vdbFrameChunkProbeCs(@builtin(global_invocation_id) gid: vec3u) {
   vdbFrameProbe[o + 13u] = st.z;
   let depths = st * 3.0;
   vdbFrameProbe[o + 14u] = vdbFrameShadowDepth(depths, x[9]);
-  let tr = vdbFrameShadowTransmittance(depths, x[9]);
+  let tr = vdbFrameShadowTransmittance(depths, x[9], vec4f(0.0));
   vdbFrameProbe[o + 15u] = tr.x;
   vdbFrameProbe[o + 16u] = tr.y;
   vdbFrameProbe[o + 17u] = vdbFrameIsotropicDiffusion(st.z, x[8], st.y);
@@ -473,6 +526,13 @@ fn vdbFrameChunkProbeCs(@builtin(global_invocation_id) gid: vec3u) {
   let composite = vdbFrameCompositeColor(vec4f(x[1] * 0.5, x[2] * 0.5, x[6] * 0.5, 1.0 - x[11]), vec4f(x[0], x[5] * 0.5 + 0.5, x[10], 1.0), 1u, 1u);
   vdbFrameProbe[o + 22u] = composite.x;
   vdbFrameProbe[o + 23u] = composite.w;
+  // K6.3: the Lorenz-Mie phases (the LUT), two-sided diffusion, the octave total and phased octave light (count 3, a 0.6, b 0.45, c 0.7)
+  vdbFrameProbe[o + 24u] = vdbFramePhaseWeight(vec4f(x[6], -0.3, 0.2, 0.5), x[5]);
+  vdbFrameProbe[o + 25u] = vdbFramePhaseColor(vec4f(0.0, 0.0, 0.0, 2.0), vec3f(1.0), x[5]).x;
+  vdbFrameProbe[o + 26u] = vdbFrameTwoSidedDiffusion(tr.x, depths.z, depths.y, x[8]);
+  let octaves = vec4f(3.0, 0.6, 0.45, 0.7);
+  vdbFrameProbe[o + 27u] = vdbFrameShadowTotal(x[11], octaves);
+  vdbFrameProbe[o + 28u] = vdbFrameOctaveLight(octaves, x[7], vec4f(x[6], -0.3, 0.2, 0.0), x[5]);
 }
 `;
   return {

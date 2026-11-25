@@ -67,7 +67,7 @@ inside `./three` (three shades them; §3.9). Any speed claim (no quiet machine; 
 | `maxSampledTexturesPerShaderStage` / `maxSamplersPerShaderStage` | 16 / 16 | Stacking keeps sampled counts ≤ 12 incl. a dense source's 8 (4 maps + 4 mip atlases). |
 | `maxStorageBuffersPerShaderStage` | 8 (fragment 8; compat 4) | We use ≤ 1 (D10). |
 | `maxUniformBufferBindingSize` | 65,536 B (compat 16,384) | The visible-volume array: 512 B each → ≤ 128 volumes per frame (compat 32), warned beyond. |
-| `maxUniformBuffersPerShaderStage` | 12 | ≤ 5 used (frame, lights, environment, volumes, group). |
+| `maxUniformBuffersPerShaderStage` | 12 | ≤ 7 used (frame, lights, environment, K6.3's Lorenz-Mie table, volumes, group, a sparse source's table). |
 | `maxComputeInvocationsPerWorkgroup` | 256 (compat 128) | All kernels use 64 (fits compat). |
 | `maxComputeWorkgroupSizeX/Y/Z` | 256 / 256 / 64 (compat 128 / 128 / 64) | Shapes 8×8×1 and 4×4×4. |
 | `maxComputeWorkgroupStorageSize` | 16,384 B | Reductions use ≤ 8 KiB (256 × vec4f × 2). His MLP (1,761 f32 = 6.9 KiB) fits a workgroup cache (deferred A/B). |
@@ -435,6 +435,25 @@ flipY / cube reflection); a CUBE_UV atlas is drawn once into a 1024 × 512 lat-l
   no code change. API: `settings.multipleScattering = 'mlp'` with `renderer.mlp: VDBFrameMlp | null` (default: his
   weights, V48, credit kept), documented as experimental. Twin: `vdbFrameMlpForward` (generalises
   `vdbFrameNeuralForward`).
+
+*K6.3 as built (handoff K6-3.md):* the Lorenz-Mie tables are one **uniform buffer at group 0 binding 4** (every frame
+kernel's layout has it; the `phase` chunk declares it): 2048 texels × rgba as binary16, two texels per `vec4u` (16 KiB,
+compat's uniform limit), read with a linear blend (his frameMieTexel). Not a sampled texture: K6.5b's occluder slots
+left the dense 'frame' gather at 15 of 16 sampled textures.
+Octaves and `'two-sided'` are uniforms (`VdbFrameUniforms.octaves`, `lighting.y`) in both lightings; the transmittance's
+scattered-light term is a pipeline key (`VDBFrameScatteringKernel`: `'none'` | `'mlp'` | `'multi-scale'`) whose resources
+sit in the transmittance kernel's **group 2** (it is source-free): `'mlp'` = weights (`read-only-storage`, its one
+storage buffer), the shape uniform (`VdbFrameMlp`: layer count, feature levels, output transform; per layer inputs,
+outputs, activation, weight offset) and the feature mips; `'multi-scale'` = K7.3's `VdbFrameMultiScale` uniform and
+`mips.view` (the sampler is group 0's linear clamp, the base the shadow grid stack at the last cascade's origin). The
+MLP's feature mips (`gridMips`, `vdbFrameGridMipSpec`) are one rgba16float 3D texture of side R/2 with ≤ 5 mips
+(mip j = his level j + 1 = max(1, R >> (j + 1)); a level past the chain reads the last mip, which equals his), drawn
+in the update's pass after the grid; K7.3's chain records its own pass, so the update ends its pass, records the chain,
+and begins a new one. Both redraw with the shadow grid (a draw counter, not the grid version: a new grid texture with
+the same version redraws too). `'neural'` and `'mlp'` are the same kernel; `renderer.mlp` (`VDBFrameMlp`, default
+`vdbFrameMlpFromNeural(vdbFrameNeuralWeights)`, null → 1D diffusion) is data; the `./three` adapter passes
+`neuralNetwork`. New settings: `multiScaleLevels` (6), `multiScaleEdge` (`'zero'`), core-only (`./three`
+`coreSettings`). The default stays `'neural'` until K6.R1's report decides (owner).
 
 ### 3.7 Shadows (K6.5, K6.5b)
 

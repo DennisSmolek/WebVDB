@@ -264,6 +264,8 @@ export type {
 export {
   vdbFrameMieTable,
   vdbFrameMieTexels,
+  vdbFrameMieLutWords,
+  vdbFrameMieTexelsHalf,
   vdbFrameMieTexel,
   vdbFrameMiePhase,
   vdbFrameMieRgbPhase,
@@ -289,6 +291,22 @@ export {
 } from "./frame/neural.js";
 export type { VDBFrameNeuralNetwork, VDBFrameNeuralMip } from "./frame/neural.js";
 export { vdbFrameNeuralWeights } from "./frame/neural-weights.js";
+// K6.3: the experimental generic MLP of the core's 'mlp' multiple scattering (twins)
+export {
+  VDB_FRAME_MLP_MAX_LAYERS,
+  VDB_FRAME_MLP_MAX_LEVELS,
+  VDB_FRAME_MLP_MAX_WIDTH,
+  vdbFrameMlpCheck,
+  vdbFrameMlpForward,
+  vdbFrameMlpFromNeural,
+  vdbFrameMlpInputs,
+  vdbFrameMlpMipSizes,
+  vdbFrameMlpMipTexel,
+  vdbFrameMlpOffsets,
+  vdbFrameMlpSampleLevel,
+  vdbFrameMlpShape,
+} from "./frame/mlp.js";
+export type { VDBFrameMlp, VDBFrameMlpLayer } from "./frame/mlp.js";
 export {
   VDB_FRAME_MULTI_SCALE_MAX_LEVELS,
   VDB_FRAME_MULTI_SCALE_DEFAULT_LEVELS,

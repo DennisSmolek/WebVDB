@@ -140,8 +140,8 @@ for (const c of SHADOW_CASES) {
 // K6.5 gate 2/3 (design §7.2, §7.3): his K3 Step 6 scenes (examples/src/harness/k3-frame.ts) through `?backend=core`
 // vs `?backend=tsl` on the same device (bar PSNR ≥ 45 dB, ≤ 0.2 % pixels > 4/255), 1280 × 720 with his froxels. The
 // `*-shadow-only-dir-isolated` scenes show only the shadows on his floor (the core's maps, received by three) and gate;
-// the other Step 6 scenes are reported (his 'neural' multiple scattering runs as diffusion in the core until K6.3, and
-// the `-asis` ones need K6.2b's environment). Images go to artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs
+// K6.3: the full cast-shadow scenes (his 'neural') gate too, the core with `occlusion=0` (K6.5b's mesh → volume shadows
+// are not in his renderer); the explosion scenes are reported (V80 silhouette). Images go to artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs
 // against his captures (the regression report). Opt in with K6_CORE_AB=1 (needs fixtures/k3).
 // ---------------------------------------------------------------------------------------------------------------
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -149,11 +149,13 @@ const AB_STEP6: { scene: string; gate: boolean }[] = [
   { scene: "step6-cast-shadow-shadow-only-dir-isolated", gate: true },
   { scene: "step6-cast-shadow-obstacle-shadow-only-dir-isolated", gate: true },
   { scene: "step6-cast-shadow-obstacle-cascades-4-shadow-only-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-dir-isolated", gate: false },
-  { scene: "step6-cast-shadow-obstacle-dir-isolated", gate: false },
-  { scene: "step6-cast-shadow-obstacle-cascades-4-dir-isolated", gate: false },
-  { scene: "step6-cast-shadow-obstacle-coarse-dir-isolated", gate: false },
-  { scene: "step6-cast-shadow-two-bunnies-dir-isolated", gate: false },
+  // K6.3: his 'neural' runs in the core (the generic MLP): the full cast-shadow scenes gate, with the core's mesh → volume
+  // shadows off (K6.5b: his renderer has none; the obstacle shadows the bunny in the core otherwise)
+  { scene: "step6-cast-shadow-dir-isolated", gate: true },
+  { scene: "step6-cast-shadow-obstacle-dir-isolated", gate: true },
+  { scene: "step6-cast-shadow-obstacle-cascades-4-dir-isolated", gate: true },
+  { scene: "step6-cast-shadow-obstacle-coarse-dir-isolated", gate: true },
+  { scene: "step6-cast-shadow-two-bunnies-dir-isolated", gate: true },
   { scene: "step6-explosion-emission-env-isolated", gate: false },
   { scene: "step6-explosion-emission-cascades-4-env-isolated", gate: false },
   { scene: "step6-explosion-emission-probes-8-env-isolated", gate: false },
@@ -184,7 +186,7 @@ for (const { scene, gate } of AB_STEP6) {
     test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
     test.setTimeout(2_400_000);
     const tsl = await k3(page, `?scene=${scene}&backend=tsl`);
-    const core = await k3(page, `?scene=${scene}&backend=core`);
+    const core = await k3(page, `?scene=${scene}&backend=core&occlusion=0`);
     expect(tsl.error, JSON.stringify({ ...tsl, rgba: undefined })).toBeUndefined();
     expect(core.error, JSON.stringify({ ...core, rgba: undefined })).toBeUndefined();
     expect(core.uncaptured, JSON.stringify({ ...core, rgba: undefined })).toEqual([]);

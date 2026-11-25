@@ -34,6 +34,7 @@ interface Result {
   mapStats?: Stats;
   bufferStats?: Stats;
   environmentGridStats?: Stats;
+  mipStats?: Stats;
   environment?: { runs: { prefilter: number; blur: number; reduce: number }[]; count: number; mode: number; valid: number; directions: number[][]; colors: number[][] };
   frame?: { cascades: number; redraw: unknown };
   occluders?: { maps: number; transmittance: number; density: number; lighting: number; gather: number };
@@ -70,7 +71,7 @@ test("K6.1 every frame pipeline variant compiles", async ({ page }) => {
 });
 
 const PROBES: { name: string; query: string; minCovered: number; mutations: string[] }[] = [
-  { name: "view chunks", query: "?probe=view", minCovered: 512, mutations: ["coverage"] },
+  { name: "view chunks", query: "?probe=view", minCovered: 512, mutations: ["coverage", "mie", "octaves", "two-sided"] },
   { name: "gather (mixture, one group)", query: "?probe=gather&mix=mixture&groups=1", minCovered: 300, mutations: ["mix", "phase", "extinction", "fade"] },
   { name: "gather (over, one group)", query: "?probe=gather&mix=over&groups=1", minCovered: 300, mutations: ["mix"] },
   { name: "gather (mixture, two groups)", query: "?probe=gather&mix=mixture&groups=2", minCovered: 300, mutations: ["mix"] },
@@ -142,6 +143,69 @@ for (const p of FRAME_PROBES) {
       expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "stats" ? 200 : 250);
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
       console.log(`[k6-core] frame ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.3 (design §3.6): phase functions (the Lorenz-Mie LUT, per-channel g) and every multiple scattering mode in both
+// lightings, each kernel against its twin from the read-back input before it ('mlp' / 'multi-scale': grid → mips →
+// transmittance). `mutations` maps a twin term to the stats it must break.
+type K63Key = "stats" | "gridStats" | "transmittanceStats" | "environmentGridStats" | "mipStats";
+const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Record<string, K63Key> }[] = [
+  { name: "gather, 'lorenz-mie'", query: "?probe=gather&phase=lorenz-mie", keys: ["stats"], mutations: { mie: "stats" } },
+  { name: "gather, 'lorenz-mie-rgb'", query: "?probe=gather&phase=lorenz-mie-rgb&source=sparse&lod=none", keys: ["stats"], mutations: { mie: "stats" } },
+  { name: "gather, 'octaves'", query: "?probe=gather&ms=octaves", keys: ["stats"], mutations: { octaves: "stats" } },
+  { name: "gather, 'octaves' with the environment ('directional')", query: "?probe=gather&ms=octaves&env=directional", keys: ["stats"], mutations: { octaves: "stats" } },
+  { name: "gather, 'two-sided'", query: "?probe=gather&ms=two-sided", keys: ["stats"], mutations: { "two-sided": "stats" } },
+  { name: "frame, 'lorenz-mie'", query: "?probe=frame&phase=lorenz-mie", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { mie: "stats" } },
+  { name: "frame, 'lorenz-mie-rgb'", query: "?probe=frame&phase=lorenz-mie-rgb", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { mie: "stats" } },
+  { name: "frame, henyey-greenstein, phaseGExponent 1.5", query: "?probe=frame&phase=henyey-greenstein&exponent=1.5", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { slots: "stats" } },
+  { name: "frame, 'octaves'", query: "?probe=frame&ms=octaves", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { octaves: "transmittanceStats" } },
+  {
+    name: "frame, 'octaves', environment 'directional' (slot + grid)",
+    query: "?probe=frame&ms=octaves&env=directional",
+    keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"],
+    mutations: { octaves: "environmentGridStats" },
+  },
+  { name: "frame, 'two-sided'", query: "?probe=frame&ms=two-sided", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "two-sided": "transmittanceStats" } },
+  { name: "frame, 'two-sided', sparse, environment 'spherical-harmonics'", query: "?probe=frame&ms=two-sided&source=sparse&env=spherical-harmonics", keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"], mutations: {} },
+  {
+    name: "frame, 'mlp' (his network)",
+    query: "?probe=frame&ms=mlp",
+    keys: ["gridStats", "mipStats", "transmittanceStats", "stats"],
+    mutations: { "mlp-mip": "mipStats", "mlp-weights": "transmittanceStats", "mlp-depth": "transmittanceStats" },
+  },
+  { name: "frame, 'neural' (= 'mlp'), sparse, two groups", query: "?probe=frame&ms=neural&source=sparse&groups=2", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "mlp-weights": "transmittanceStats" } },
+  { name: "frame, 'multi-scale' (edge zero)", query: "?probe=frame&ms=multi-scale", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats", "ms-levels": "transmittanceStats" } },
+  { name: "frame, 'multi-scale' (edge clamp, 4 levels)", query: "?probe=frame&ms=multi-scale&edge=clamp&levels=4", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats" } },
+  // K6.5b × K6.3: host occluder maps with each mode's own scattered term (octaves: occluded in the gather)
+  { name: "frame, 'octaves' with occluder maps", query: "?probe=frame&ms=octaves&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { occluder: "stats" } },
+  { name: "frame, 'two-sided' with occluder maps", query: "?probe=frame&ms=two-sided&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  { name: "frame, 'mlp' with occluder maps", query: "?probe=frame&ms=mlp&occluders=1", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  { name: "frame, 'multi-scale' with occluder maps", query: "?probe=frame&ms=multi-scale&occluders=1", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  { name: "gather, 'two-sided' with occluder maps", query: "?probe=gather&ms=two-sided&occluders=1", keys: ["stats"], mutations: { occluder: "stats" } },
+];
+
+for (const p of K63_PROBES) {
+  test(`K6.3 probe: ${p.name} matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.warnings, detail(r)).toEqual([]);
+    for (const key of p.keys) {
+      const s = r[key]!;
+      expect(s, `${key} missing: ${detail(r)}`).toBeDefined();
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "mipStats" ? 64 : 512);
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] K6.3 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
     }
     for (const [m, key] of Object.entries(p.mutations)) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
@@ -339,6 +403,62 @@ for (const { scene, source } of AB_FRAME) {
       }
     }
     console.log(`[k6-ab-frame] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
+    expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// K6.3 gate 2 (design §7.2): his K3 Step 4 scenes (phase functions, multiple scattering modes, octave settings, his
+// 'neural' default) through `?backend=core` vs `?backend=tsl`, same device, same bar (PSNR ≥ 45 dB, ≤ 0.2 % pixels >
+// 4/255). Opt in with K6_CORE_AB=1; images and JSON go to artifacts/k6/ab-step4/ and the core / TSL frames to
+// artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs (his captures: the regression report).
+// ---------------------------------------------------------------------------------------------------------------
+const AB_STEP4 = [
+  "step4-default-neural-dir-isolated",
+  "step4-frame-phase-dual-lobe-dir-isolated",
+  "step4-frame-phase-dual-lobe-back-g-high-dir-isolated",
+  "step4-frame-phase-dual-lobe-back-weight-high-dir-isolated",
+  "step4-frame-phase-g-exponent-dir-isolated",
+  "step4-frame-phase-g-low-dir-isolated",
+  "step4-frame-phase-isotropic-dir-isolated",
+  "step4-frame-phase-lorenz-mie-dir-isolated",
+  "step4-frame-phase-lorenz-mie-rgb-dir-isolated",
+  "step4-lighting-volume-phase-g-low-dir-isolated",
+  "step4-multiple-scattering-octaves-dir-isolated",
+  "step4-multiple-scattering-two-sided-dir-isolated",
+  "step4-octave-contribution-high-dir-isolated",
+  "step4-octave-extinction-high-dir-isolated",
+  "step4-octave-phase-low-dir-isolated",
+  "step4-octaves-1-dir-isolated",
+  "step4-octaves-8-dir-isolated",
+];
+const AB_STEP4_DIR = path.join(REPO, "artifacts", "k6", "ab-step4");
+
+for (const scene of AB_STEP4) {
+  test(`K6.3 A/B core vs TSL: ${scene}`, async ({ page }) => {
+    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
+    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
+    test.setTimeout(1_800_000);
+    const tsl = await k3(page, `?scene=${scene}&backend=tsl`);
+    const core = await k3(page, `?scene=${scene}&backend=core`);
+    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
+    expect(core.error, k3Detail(core)).toBeUndefined();
+    expect(core.uncaptured, k3Detail(core)).toEqual([]);
+    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
+    // K6.3: no 'not in the core yet' warnings (phase, multiple scattering)
+    expect(core.warnings.filter((w) => /K6\.3/.test(w)), k3Detail(core)).toEqual([]);
+    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
+    mkdirSync(AB_STEP4_DIR, { recursive: true });
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-tsl.png`), encodePng(k3Image(tsl)));
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-core.png`), encodePng(k3Image(core)));
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
+    writeFileSync(path.join(AB_STEP4_DIR, `${scene}.json`), JSON.stringify({ scene, ...cmp, coreWarnings: core.warnings }, null, 2));
+    for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
+      mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
+      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
+      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
+    }
+    console.log(`[k6-ab-step4] ${scene}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
     expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
   });
 }
