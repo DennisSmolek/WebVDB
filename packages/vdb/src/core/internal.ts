@@ -74,3 +74,5 @@ export {
 export * from "./frame/index.js";
 // K6.6: level-set surfaces and point sprites (public in K6.8).
 export * from "./surface/index.js";
+// K6.R: the reference renderer (brute-force path tracer over a volume source; internal only).
+export * from "./reference/index.js";

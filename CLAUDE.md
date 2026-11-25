@@ -304,3 +304,21 @@ From v1; details in docs/archive/handoffs/.
   data (< ~3/255 per texel) and a static camera for the temporal taps; SwiftShader filters exactly.
 - The agent sandbox refuses Bash commands whose text contains the bare word `source` followed by a path, and long
   compound commands: use `sourc?` globs and run steps as separate commands (or a script file in the scratchpad).
+- WGSL lets an implementation assume no ±∞ or NaN: never rely on `1.0 / 0.0` (a slab test of an axis-parallel ray).
+  Guard the divisor and use finite sentinels (the K6.R kernel: `abs(d) < 1e-12` → inside or miss, ±1e30 bounds); the
+  CPU twin must make the same branch or the shared random stream diverges.
+- The froxel renderer's punctual lights are 4× three's Lambert convention: 'volume' lighting adds `color · phasê · T`
+  (phasê = phase / (1/4π)) and divides by π, so a directional light of colour C is irradiance 4C to a physical
+  renderer; point and spot lights have no distance falloff. Ambient C is a uniform radiance C/π (unshadowed in the
+  renderer). Map lights with `vdbReferenceLightsFromFrame` (K6.R) or a comparison shows a 4× "error".
+- A GPU path tracer and its CPU twin agree path for path only if they draw random numbers in the same order (K6.R:
+  > 99 % of values equal). When they drift, diff the draw order before the maths; f32 vs f64 flips a few branches.
+- Statistical gates on batch means: σ from a few batches has few degrees of freedom and grazing pixels are rare-event
+  Bernoulli, so a fixed k·σ per value fails by chance. Allow a small share over k·σ and gate the image's mean error
+  (Σ e / √Σ σ² < 4); a real bug moves many values or the mean (every K6.R mutation does).
+- Installed Chrome headless (`channel: 'chrome'`, `headless: true`) reported the Metal adapter ("apple metal-3") on the
+  owner's Mac (2026-11-25), so non-timing hardware scripts can run without a window; check the `adapter` they record.
+- His Step 1 bunny is optically very thick (extinction 100 over the box side at the mean density, albedo 1): multiple
+  scattering carries most of its light, a path tracer needs hundreds of bounces (512: no path reached the cap), and
+  its noise per pixel stays at several % after thousands of 1-spp batches. Compare aggregates (luminance bias,
+  median relative error), not single pixels.
