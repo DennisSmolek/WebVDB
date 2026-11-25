@@ -8,7 +8,8 @@
 // volume); the shadow march is one function called from one loop over the hemisphere and scene lights
 // (two density call sites per kernel); the light terms are loops over uniform counts (V55's compiled-in
 // sets go away); overlapping volumes mix order-independently by default ('mixture'); multi-group frames
-// accumulate in packed partials. Environment terms: K6.2; octaves, two-sided, Lorenz-Mie: K6.3;
+// accumulate in packed partials; the environment (K6.2b) reads the GPU environment buffer (its lights, or the
+// 'outward' SH irradiance instead of three's PMREM). Octaves, two-sided, Lorenz-Mie: K6.3;
 // spectral: K6.4. Divergences: DIVERGES.md (K6.1 rows).
 
 /**
@@ -222,7 +223,7 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
   }`
     : `  textureStore(vdbFrameScatter, cell, vdbFrameFinish(sum, count, single));`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "sh"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "sh", "envSh"])}
 ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
@@ -320,10 +321,15 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
     irradiance += vdbFrameShIrradiance(outwardNormal);
   }
 
-  // One loop over the hemisphere lights (a sky and ground march pair each) and the scene lights (one
-  // march each): the kernel's only shadow-march call site.
+  // One loop over the hemisphere lights (a sky and ground march pair each), the scene lights (one march each) and
+  // the environment (K6.2b: its lights, one march each and the opposite one with diffusion; without lights the
+  // 'outward' SH irradiance along the outward normal): the kernel's only shadow-march call site.
   let hemiCount = select(0u, u32(vdbFrameLights.ambient.w), (lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u);
-  let items = hemiCount + vdbFrameLights.counts.x;
+  let sceneCount = vdbFrameLights.counts.x;
+  let envOn = (lightMask & VDB_FRAME_LIGHT_ENVIRONMENT) != 0u && vdbFrameEnv.info.z != 0u;
+  let envLights = select(0u, vdbFrameEnv.info.x, envOn);
+  let items = hemiCount + sceneCount + select(0u, max(envLights, 1u), envOn);
+  var environment = vec3f(0.0);
   for (var item = 0u; item < items; item++) {
     var direction = vec3f(0.0, 1.0, 0.0);
     var maxDistance = 1e6;
@@ -331,10 +337,13 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
     var lightColor = vec3f(0.0);
     var lightDirection = vec3f(0.0, 1.0, 0.0);
     var spotAttenuation = 1.0;
+    let li = item - hemiCount;
     if (item < hemiCount) {
       direction = worldToLocalDirection * vdbFrameLights.hemiUp[item].xyz;
+    } else if (li >= sceneCount) {
+      direction = worldToLocalDirection * select(outwardNormal, vdbFrameEnv.direction[min(li - sceneCount, 11u)].xyz, envLights > 0u);
+      marches = select(1u, 2u, diffusion);
     } else {
-      let li = item - hemiCount;
       let position = vdbFrameLights.position[li];
       let color = vdbFrameLights.color[li];
       let spot = vdbFrameLights.spot[li];
@@ -374,11 +383,22 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
       }
       irradiance += vdbFrameLights.hemiSky[item].xyz * 0.5 * sky;
       irradiance += vdbFrameLights.hemiGround[item].xyz * 0.5 * ground;
-    } else {
+    } else if (li < sceneCount) {
       let light = vdbFramePhaseColor(phase, phaseSpectrumMs.xyz, dot(rayDirection, lightDirection)) * front.x + vec3f(front.y - front.x);
       irradiance += lightColor * light * spotAttenuation;
+    } else if (envLights > 0u) {
+      // an environment light: isotropic, no phase (diffusion: the two-sided total)
+      environment += vdbFrameEnv.color[min(li - sceneCount, 11u)].xyz * select(front.y, vdbFrameIsotropicDiffusion(front.z, back.z, front.w), diffusion);
+    } else if (diffusion) {
+      // 'outward': the outward and the inward irradiance, each with its two-sided total (uniform light gives E)
+      irradiance += vdbFrameEnvIrradiance(outwardNormal) * (vdbFrameIsotropicDiffusion(front.z, back.z, front.w) * 0.5);
+      irradiance += vdbFrameEnvIrradiance(-outwardNormal) * (vdbFrameIsotropicDiffusion(back.z, front.z, back.w) * 0.5);
+    } else {
+      irradiance += vdbFrameEnvIrradiance(outwardNormal) * front.y;
     }
   }
+  // SH lights can be negative: the environment sum is clamped (his max(environment, 0))
+  irradiance += max(environment, vec3f(0.0));
 
   let scatter = vdbFrameVolumes.v[vi].scatterOpacity.xyz;
   let radiance = max(scatter, albedo * irradiance * (1.0 / VDB_FRAME_PI)) + vdbFrameEmission(vi, localPosition, readLod);

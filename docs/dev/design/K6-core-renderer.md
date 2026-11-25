@@ -389,6 +389,18 @@ then casters that are not drawn. Multi-group 'frame' partials hold the 16 densit
 froxel (r32uint, 8·D layers); the grid's partials are one word per voxel. The environment (`envPrefilter`,
 `envReduce`, `environmentGrid`, the environment light slot and 'outward' SH) is K6.2b.
 
+*K6.2b as built (handoff K6-2b.md):* `envPrefilter` is two kernels: the exact-area (equirect) or k×k supersampled
+(cube) 128 × 64 rgba32float work map **in map space**, then a GGX roughness-0.4 convolution (D(h)·n·l, three's PMREM
+filter, not a cone blur) straight into his 64 × 32 map in world space (the rotation applies there and in the SH).
+`envReduce` is one workgroup of **64** (compat), writes `VdbFrameEnvironment` (count, mode, valid; SH9 × intensity; 12
+directions and colours). The environment kernels have their own group 0 (`VdbFrameEnvParams`), because the buffer they
+write is group 0 binding 3 (uniform) of every other kernel. Texel directions and solid angles come from f32 tables in
+the WGSL (WGSL sin / cos are 2^-11 accurate); near-ties of the extraction use a 1e-5 tolerance. `VdbFrameUniforms`
+gains `environment` (slot in use, first grid light, grid holds lights, present); slot, grid and 'outward' are decided
+on the GPU from the buffer's count. 'volume' lighting marches every environment light (or 'outward' SH) in the
+gather's one march loop. The `./three` adapter passes `scene.environment`'s texture with three's rotation (and the
+flipY / cube reflection); a CUBE_UV atlas is drawn once into a 1024 × 512 lat-long.
+
 ### 3.6 Phase and multiple scattering (K6.3)
 
 - **Phase**: HG, dual-lobe, Lorenz-Mie and Mie RGB from the committed tables as LUTs (V47); a uniform.
