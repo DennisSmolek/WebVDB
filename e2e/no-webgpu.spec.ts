@@ -7,7 +7,7 @@ import { expect, test } from "@playwright/test";
 const DEMOS = [
   "01-hello-nvdb", "02-cloud", "03-gpu-read", "04-atlas-fallback", "05-embergen-sequence", "06-explorer", "07-builder",
   "08-webgpu-smoke", "09-coarse-first", "10-frame-renderer", "11-sky-clouds", "12-explosion", "13-level-sets",
-  "14-points", "15-full-res-vs-dense", "16-streaming",
+  "14-points", "15-full-res-vs-dense", "16-streaming", "17-raw-webgpu",
 ];
 
 test.describe("no WebGPU", () => {

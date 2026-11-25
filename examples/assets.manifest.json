@@ -36,7 +36,7 @@
       "licence": "CC BY-SA 3.0",
       "licenceUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
       "modified": "Modified: reduced to quarter resolution and converted from OpenVDB to NanoVDB (Fp8 quantised, plus a coarse preview). The ShareAlike licence applies to these derivatives.",
-      "usedBy": [2, 10, 11, 15, 16],
+      "usedBy": [2, 10, 11, 15, 16, 17],
       "files": [
         "wdas/wdas_cloud_quarter_fp8.nvdb",
         "wdas/wdas_cloud_quarter.coarse.nvdb",
@@ -51,7 +51,7 @@
       "licence": "CC BY-SA 4.0",
       "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
       "modified": "Modified: the .vdb files are served as published (mirrored from the MIT-licensed mjurczyk/openvdb repository); demos resample or re-encode them in the browser only.",
-      "usedBy": [6, 8, 9, 10, 13, 14, 15, 16],
+      "usedBy": [6, 8, 9, 10, 13, 14, 15, 16, 17],
       "files": [
         "vdb-samples/smoke.vdb",
         "vdb-samples/sphere.vdb",
@@ -69,7 +69,7 @@
       "licence": "CC0 1.0",
       "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
       "modified": "Converted to the .wvdb dense-frame format.",
-      "usedBy": [10, 12],
+      "usedBy": [10, 12, 17],
       "files": ["k3/ground_explosion/frames.json", "k3/ground_explosion/LICENSE.txt", "k3/ground_explosion/README.txt"],
       "globs": [{ "pattern": "k3/ground_explosion/ground_explosion_*.wvdb", "count": 200 }]
     },
@@ -93,7 +93,7 @@
       "licence": "CC0 1.0",
       "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
       "modified": "Converted to the .wvdb dense-frame format.",
-      "usedBy": [11],
+      "usedBy": [11, 17],
       "licensingRows": ["CloudPackVDB_wvdb/"],
       "files": [
         "gallery/CloudPackVDB_wvdb/cloud_02_variant_0000.wvdb",

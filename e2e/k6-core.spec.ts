@@ -705,3 +705,76 @@ for (const { scene, extra, capture } of AB_ENV) {
     if (!extra.includes("outward")) expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// K6.1c: the raw `?scene=` mode (no three.js; the host frame loop of demo 17) vs the same scene through `./three`'s
+// core path (`k3-frame ?backend=core`), same device and kernels: the host seams (camera, lights, targets, composite)
+// must add nothing, so the bar is the K6.1 A/B's (PSNR ≥ 45 dB, ≤ 0.2 % pixels > 4/255). `smoke` is k3-frame's own
+// CC0 scene (runs on CI); his Step 1 / Step 3 isolated scenes need the bunny and run with K6_CORE_AB=1 (1280 × 720,
+// 512 × 512 × 24), writing PNGs to artifacts/k6/ours-raw/ for scripts/k3/compare.mjs against his captures.
+// ---------------------------------------------------------------------------------------------------------------
+interface RawScene {
+  name: string;
+  placement: string;
+  volumes: number;
+  nonBackground: number;
+  inPageIdentical: boolean;
+  secondBuilds: number;
+}
+const RAW_DIR = path.join(REPO, "artifacts", "k6", "raw");
+const rawImage = (r: Result & { width?: number; height?: number; rgba?: string }) => ({ width: r.width!, height: r.height!, data: new Uint8Array(Buffer.from(r.rgba!, "base64")) });
+
+async function rawVsCore(page: Page, scene: string, query: string, k3Query: string): Promise<void> {
+  const errors = collectErrors(page);
+  const raw = (await run(page, `?scene=${scene}${query}`, 1_200_000)) as Result & { scene?: RawScene; width?: number; height?: number; rgba?: string };
+  const rawDetail = JSON.stringify({ ...raw, rgba: undefined }, null, 2);
+  expect(raw.error, rawDetail).toBeUndefined();
+  expect(raw.uncaptured, rawDetail).toEqual([]);
+  expect(raw.scene!.inPageIdentical, rawDetail).toBe(true);
+  expect(raw.scene!.secondBuilds, rawDetail).toBe(0);
+  expect(raw.scene!.nonBackground, rawDetail).toBeGreaterThan(500);
+  const core = await k3(page, `?scene=${scene}${k3Query}&backend=core`);
+  expect(core.error, k3Detail(core)).toBeUndefined();
+  const cmp = compareImages(rawImage(raw), k3Image(core), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
+  mkdirSync(RAW_DIR, { recursive: true });
+  const name = `${scene}${query.replace(/[&=]/g, "-")}`;
+  writeFileSync(path.join(RAW_DIR, `${name}-raw.png`), encodePng(rawImage(raw)));
+  writeFileSync(path.join(RAW_DIR, `${name}-three-core.png`), encodePng(k3Image(core)));
+  writeFileSync(path.join(RAW_DIR, `${name}-diff.png`), encodePng(diffHeatmap(rawImage(raw), k3Image(core), { threshold: 4, fullScale: 16 })));
+  writeFileSync(path.join(RAW_DIR, `${name}.json`), JSON.stringify({ scene, query, ...cmp, raw: raw.scene, rawWarnings: raw.warnings }, null, 2));
+  if (!query) {
+    mkdirSync(path.join(REPO, "artifacts", "k6", "ours-raw"), { recursive: true });
+    writeFileSync(path.join(REPO, "artifacts", "k6", "ours-raw", `${scene}.png`), encodePng(rawImage(raw)));
+  }
+  console.log(`[k6-raw] ${name} (${raw.scene!.placement}): raw vs three core PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff}); ${raw.scene!.nonBackground} volume px`);
+  expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
+  expect(errors, rawDetail).toEqual([]);
+}
+
+test("K6.1c raw scene: CC0 smoke, no three, equals the ./three core path", async ({ page }) => {
+  test.setTimeout(900_000);
+  await rawVsCore(page, "smoke", "", "");
+});
+
+test("K6.1c raw scene: CC0 smoke through the sparse source equals the ./three core path", async ({ page }) => {
+  test.setTimeout(900_000);
+  await rawVsCore(page, "smoke", "&source=sparse", "&source=sparse");
+});
+
+const RAW_HIS = [
+  "step1-volume-dir-ms-off-isolated",
+  "step1-volume-dir-ms-on-isolated",
+  "step3-default-dir-isolated",
+  "step3-shadow-cascades-4-dir-isolated",
+  "step3-shadow-grid-high-dir-isolated",
+  "step3-two-bunnies-dir-isolated",
+];
+for (const scene of RAW_HIS) {
+  test(`K6.1c raw scene vs ./three core: ${scene}`, async ({ page }) => {
+    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
+    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
+    test.setTimeout(1_800_000);
+    // k3-frame renders his scenes with 4× MSAA (his page); the volume-only isolated frames have no mesh edges
+    await rawVsCore(page, scene, "", "");
+  });
+}

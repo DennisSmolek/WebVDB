@@ -16,7 +16,7 @@
     <h1>@pmndrs/vdb examples</h1>
     <p>
       Sparse OpenVDB/NanoVDB volumes on WebGPU: the engine-free core, the tools and the three.js adapter.
-      Demos 01–09 show the building blocks, 10 the froxel renderer with every control, and 11–16 are the gallery.
+      Demos 01–09 show the building blocks, 10 the froxel renderer with every control, and 11–17 are the gallery.
     </p>
     <ol id="demo-list">
       <li>01 · <a href="./src/demos/01-hello-nvdb/index.html">hello-nvdb</a> — read voxels in a TSL compute pass (VDBGridNode)</li>
@@ -42,6 +42,7 @@
       <li>14 · <a href="./src/demos/14-points/index.html">Points</a> — OpenVDB point grids decoded by our parser in a worker (the 9.5 M-point waterfall when present locally), coloured by Cd or speed</li>
       <li>15 · <a href="./src/demos/15-full-res-vs-dense/index.html">Full-res vs 128³</a> — one volume split by a divider: sparse full resolution against a dense <code>.wvdb</code> bake, with GPU bytes, file size and error per side</li>
       <li>16 · <a href="./src/demos/16-streaming/index.html">Streaming</a> — coarse-first <code>.nvdb</code> into the froxel renderer: a 14 KiB preview, then the full grid in place</li>
+      <li>17 · <a href="./src/demos/17-raw-webgpu/index.html">Rendering without three</a> — the froxel renderer on raw WebGPU, no three.js: the WDAS cloud, an emissive explosion and a level set, shadows both ways between our own meshes and the volumes</li>
     </ul>
     <p><a href="https://pmndrs.github.io/vdb/">Documentation</a> for the package behind these demos.</p>
     <p><a href="./attribution.html">Credits and licences</a> for the volumes, skies and models these demos load.</p>

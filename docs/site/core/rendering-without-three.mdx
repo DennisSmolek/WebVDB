@@ -1,0 +1,243 @@
+---
+title: Rendering without three
+description: The froxel renderer in the core on raw WebGPU, the host frame loop, and shadows both ways with your own meshes.
+nav: 13
+sourcecode: examples/src/demos/17-raw-webgpu/main.ts
+---
+
+Live: [rendering without three](https://pmndrs.github.io/vdb/examples/src/demos/17-raw-webgpu/index.html) (demo 17, source in
+`examples/src/demos/17-raw-webgpu`; locally, `pnpm dev`) renders the WDAS cloud, an emissive EmberGen explosion and a
+level set with no three.js: the page's own passes draw the sky, the ground and an obelisk, read the volumes' shadow map
+and fire light, and hand their own depth map back so the obelisk shadows the cloud.
+
+> [!WARNING]
+> The APIs on this page are **internal until 0.2.0**. They live in the core's internal entry point
+> (`packages/vdb/src/core/internal.ts`), which demo 17 and the samples below import by path; `@pmndrs/vdb` 0.1 does not
+> export them. K6.8 makes them public (one reviewed API change) and turns `@pmndrs/vdb/three`'s froxel renderer into a
+> thin adapter over them. Names and shapes may still move until then.
+
+The froxel renderer (the same lighting as [Froxel renderer](/three/frame-renderer), ported from mjurczyk's
+`FrameRenderer`) runs in the core as WGSL compute kernels on 3D textures (D34). It takes the host's `GPUDevice`, records
+into the host's command encoder, allocates its own textures and reads only plain data: a camera, lights, an environment
+texture and depth maps. Nothing in it knows about an engine, so a raw WebGPU page, a three.js adapter, the cloud system
+and the pathtracer all drive it the same way.
+
+## The frame loop
+
+One frame is one command encoder, in this order:
+
+1. **Your pool**: `pool.update(encoder)` uploads staged grids (a growth replaces `pool.buffer`).
+2. **The core source**: `source.update(encoder)` builds pyramids and writes the volume table, after the pool's update in
+   the same encoder.
+3. **Your depth maps** of the lights, if meshes should shadow the volumes (mesh → volume), recorded before the core reads
+   them.
+4. **The core**: `frame.update(encoder, input)` records every kernel the frame needs: the 'frame' lighting shadow grid
+   and transmittance, the environment reduction, the volume shadow maps, the emission probes, the froxel gather and the
+   per-column scan. It returns `outputs`: textures and uniform buffers your shaders read.
+5. **Your opaque passes**, reading the volume shadow maps (volume → mesh) and the emission probes.
+6. **The composite**: `frame.render(encoder, targets)` draws the volumes over your colour target up to your depth, or
+   your own shader calls `vdbFrameIntegrate` (the host-side seam).
+7. **Present** (tone mapping, sRGB) and `device.queue.submit`. The contract is one `update()` per submitted encoder.
+
+## Set up
+
+A sparse source serves every volume of one pool through one table, so a cloud and an explosion in the same pool are one
+bind group and one dispatch. A volume's `matrixWorld` maps the unit box `[-0.5, 0.5]³` to the world; its other
+parameters are those of `VDBFrameVolume` (extinction, colours, emission, phase overrides).
+
+{/* snippet: frame-setup */}
+```ts
+// The device is yours; the pool and the renderer record into encoders you submit.
+const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
+const pool = await VDBGridPool.create(device);
+
+// One sparse source serves every volume of one pool: one bind group, one dispatch per frame.
+const source = vdbSparseSourceGpu(pool, { types: ['fp8', 'float'] });
+const cloudSlot = source.volume({ density: pool.add(cloudImage) }, { image: cloudImage });
+const fireSlot = source.volume({ density: pool.add(fireDensity), emission: pool.add(fireTemperature) });
+
+// The renderer's composite pass draws into your colour target and reads your depth.
+const frame = vdbCreateFrameRenderer(device, { composite: { colorFormat: 'rgba16float', depthFormat: 'depth32float' } });
+Object.assign(frame.settings, { lighting: 'frame', castShadows: true, width: 256, height: 256, depth: 24 });
+
+// matrixWorld maps the unit box [-0.5, 0.5]^3 to the world (column-major).
+const cloud = frame.addVolume(cloudSlot, { matrixWorld: [200, 0, 0, 0, 0, 120, 0, 0, 0, 0, 160, 0, 0, 140, 0, 1], extinction: 40 });
+const fire = frame.addVolume(fireSlot, {
+    matrixWorld: [60, 0, 0, 0, 0, 80, 0, 0, 0, 0, 60, 0, -120, 40, 0, 1],
+    temperatureRange: [0, 4500],
+    emissiveIntensity: 150,
+    emissionColor: { spectrum: 'planck' },
+});
+await frame.prepare(); // optional: builds every pipeline up front, with the async creators
+```
+
+`frame.settings` has mjurczyk's names and defaults (`lighting`, `width` / `height` / `depth` froxels, `subSteps`,
+`multipleScattering`, `castShadows`, `temporal`, `jitter`, …) and is read at the next `update()`. A dense `.wvdb` source
+(`vdbDenseSource(device, wvdbDenseVolume(readWvdb(bytes)))`) is its own slot.
+
+## Each frame
+
+{/* snippet: frame-loop */}
+```ts
+const encoder = device.createCommandEncoder();
+pool.update(encoder); // 1. your pool first (uploads, growth)
+source.update(encoder); // 2. the core source after it: pyramids, the volume table (same encoder)
+
+// 3. the core: shadow grid, transmittance, environment, volume shadow maps, emission probes, froxels
+const input: VDBFrameInput = {
+    frameId,
+    camera: { view: camera.view, projection: camera.projection, near: camera.near, far: camera.far },
+    viewport: { drawingBuffer: size, canvas: size },
+    lights: [{ id: 'sun', kind: 'directional', direction: [-0.6, -0.7, -0.4], color: [2.4, 2.3, 2.1], shadow: { size: 1024, view: 'fit' } }],
+    environment: { id: 'sky', revision: 1, texture: sky, projection: 'equirect', intensity: 1 },
+    occluders: [{ light: 'sun', depth: sunDepth.createView({ dimension: '2d-array' }), viewProjection: [sunViewProjection], revision: sunRevision }],
+    emissionLight: { resolution: 16 },
+};
+const u = frame.update(encoder, input);
+
+// 4. your opaque passes, reading u.outputs (volume shadow maps, emission probes) and writing colour + depth
+drawOpaque(encoder, u);
+
+// 5. the volumes over them: the core's composite pass (his sRGB blend reads a copy of the colour)
+encoder.copyTextureToTexture({ texture: targets.color }, { texture: targets.sceneColor }, size);
+frame.render(encoder, {
+    color: targets.color.createView(),
+    size,
+    depth: targets.depth.createView(),
+    sceneColor: targets.sceneColor.createView(),
+    clampColors: false, // you tone map afterwards
+});
+present(encoder); // tone map + sRGB into the canvas
+device.queue.submit([encoder.finish()]); // one update() per submitted encoder
+```
+
+Conventions: matrices are column-major (three's `elements` order), the projection has WebGPU depth (`[0, 1]`; set
+`camera.reversedDepth` for a reversed one), colours are linear and already multiplied by intensity, and a light's
+`direction` is the way the light travels. `frameId` must grow by one per frame: a skipped id drops the temporal
+history. With `settings.srgbBlending` (his default) the composite reads `targets.sceneColor`, a copy of the colour
+target made before it; turn it off for a premultiplied blend that needs no copy. `frame.render()` is single-sample:
+an MSAA host composites after its resolve.
+
+## Volume → mesh shadows and the fire light
+
+Give a light a `shadow` request and the core draws a Beer shadow map of every volume for it
+(`settings.castShadows`): `'fit'` cascades around the volumes for a directional light, the host's own camera for a spot
+light, a cube for a point light. `outputs.volumeShadows.get(lightId)` holds the map and a uniform buffer of the view it
+was **drawn** with, so a receiver never projects with a newer camera than the map's. With `emissionLight` in the input,
+the emissive volumes fill irradiance probes, `outputs.emissionProbes`.
+
+Your surfaces read both through two WGSL functions the core gives you:
+
+{/* snippet: frame-receivers */}
+```ts
+// A receiver's WGSL: the core's two receiver functions (they declare their structs) and your bindings.
+const receiverWgsl = /* wgsl */ `
+${vdbVolumeShadowWgsl()}
+${vdbEmissionProbeWgsl()}
+@group(1) @binding(0) var volumeShadowMap: texture_2d_array<f32>;
+@group(1) @binding(1) var<uniform> volumeShadowView: VdbVolumeShadowView;
+@group(1) @binding(2) var linearSampler: sampler;
+@group(1) @binding(3) var emissionProbes: texture_3d<f32>;
+@group(1) @binding(4) var<uniform> emissionGrid: VdbEmissionGrid;
+
+fn lit(world: vec3f, n: vec3f, albedo: vec3f, sun: vec3f, toSun: vec3f, viewDepth: f32, fireIntensity: f32) -> vec3f {
+    // volume -> mesh: the Beer map, read with the view the core drew it with
+    let shadow = vdbVolumeShadow(volumeShadowMap, linearSampler, volumeShadowView, world, viewDepth);
+    // the volumes' emission as irradiance (a Lambert surface: albedo * E / pi)
+    let fire = vdbEmissionIrradiance(emissionProbes, linearSampler, emissionGrid, world, n) * fireIntensity / 3.14159265;
+    return albedo * (sun * max(dot(n, toSun), 0.0) * shadow + fire);
+}`;
+```
+
+{/* snippet: frame-receiver-bind */}
+```ts
+// Rebuild when u.outputs.version moves (a texture is a new object). Before the first map: bind placeholders
+// (a zeroed view buffer reads 1, a zeroed grid 0).
+const map = u.outputs.volumeShadows.get('sun');
+const probes = u.outputs.emissionProbes;
+if (!map || !probes) return null;
+return device.createBindGroup({
+    layout,
+    entries: [
+        { binding: 0, resource: map.texture.createView({ dimension: '2d-array' }) },
+        { binding: 1, resource: { buffer: map.view } },
+        { binding: 2, resource: linear },
+        { binding: 3, resource: probes.texture.createView({ dimension: '3d' }) },
+        { binding: 4, resource: { buffer: probes.grid } },
+    ],
+});
+```
+
+`viewDepth` is the receiver's distance in front of the camera (it picks the cascade). A point light's map is read
+through a cube view with `vdbVolumeShadowCube`.
+
+## Mesh → volume shadows
+
+The other direction needs only a depth map you already have: draw your meshes from the light into a depth texture and
+pass it as an **occluder** (`input.occluders`), with the view-projection it was drawn with. The core tests each lit
+position against it, as volumetric fog does with a light's shadow map: the 'frame' transmittance keeps the direct part
+unoccluded and occludes the scattered part per grid voxel, the gather occludes the direct part at each froxel, and
+'volume' lighting stops the march. Pass a `'2d-array'` view (cascades or cube faces as layers, up to 6; an `r32float`
+texture works too), and bump `revision` when the map is redrawn: without one the transmittance is redrawn every frame.
+At most 4 maps are bound. Demo 17 draws its obelisk and level set into the sun's map, and the obelisk's shadow crosses
+the cloud.
+
+## The environment
+
+`input.environment` takes any linear float texture with `TEXTURE_BINDING`: an equirect (`u = atan2(d.z, d.x) / 2π + ½`
+along x, row 0 the zenith) or a cube (6 layers). The core reduces it on the GPU, with no readback, to spherical harmonics
+and up to 12 lights (`settings.environmentLighting`), so a compute PMREM, a sky model or an HDR loader's output plugs
+straight in. A new `id` or `revision` re-runs the reduction; `rotation` (3 × 3, world → map) turns it. Demo 17 writes a
+procedural sky into an `rgba16float` equirect and draws the same texture as its background.
+
+## Composite in your own shader
+
+`frame.render()` is one fullscreen pass. If the volumes should land inside your own pass (a post chain, a deferred
+resolve, a custom blend), call the integrate function there instead:
+
+{/* snippet: frame-host-composite */}
+```ts
+// Composite in your own fragment shader instead of frame.render(): bind the integrated froxels at a slot of
+// your choice and call vdbFrameIntegrate with the pixel's screen uv (bottom-left) and its view depth.
+const code = /* wgsl */ `
+${vdbFrameIntegrateWgsl({ slot: { group: 1, firstBinding: 0 } })}
+fn overScene(sceneColor: vec3f, screenUv: vec2f, viewDepth: f32) -> vec3f {
+    let i = vdbFrameIntegrate(screenUv, viewDepth);
+    if (i.transmittance.y >= 1.0) {
+        return sceneColor; // no volume in front of this pixel
+    }
+    return vdbFrameComposite(i, vec4f(sceneColor, 1.0), true).rgb; // his sRGB blend
+}`;
+const layout = device.createBindGroupLayout({ entries: vdbFrameIntegrateEntries({ group: 1, firstBinding: 0 }) });
+const group = device.createBindGroup({
+    layout,
+    entries: [
+        { binding: 0, resource: u.outputs.froxels!.integrated.createView({ dimension: '3d' }) },
+        { binding: 1, resource: linear },
+        { binding: 2, resource: { buffer: u.outputs.uniforms } },
+    ],
+});
+```
+
+Demo 17 has both: its "composite" control switches between `frame.render()` and its present shader, and its e2e checks
+that the two give the same image (within one 8-bit step).
+
+## Level sets and points
+
+Level sets are surfaces, not media, so they are drawn in your render pass: `vdbCreateLevelSetPassGpu(device, pool,
+{ colorFormat, depthFormat, output })` rasterizes each grid's box and traces the pixel-centre ray, writing `frag_depth`
+(so it depth-tests against your meshes and the volumes composite in front of or behind it) and either a Lambert shade or
+a G-buffer texel (world normal, ray distance) for your own lighting. Call `record(renderPass, { view, projection,
+viewport }, [{ grid }])` after the pool's update. The same pass with a light's orthographic camera draws the level set
+into that light's depth map. `vdbCreatePointPassGpu` draws point grids as sprites the same way. See
+[Level sets and points](/three/level-sets-and-points) for the three.js materials over the same WGSL.
+
+## Things to know
+
+- Build bind groups that read `pool.buffer` or the core's outputs **after** the updates of the frame, and rebuild them
+  when `pool.version` or `outputs.version` moves: a growth or a resize makes new objects, and the old ones stay alive
+  for two frames, so a stale bind group draws the previous frame's data without a validation error.
+- `dispose()` frees what the renderer made (textures, buffers, pipelines' resources); the device, the pools, the
+  sources and your textures stay yours.
+- Every kernel has a CPU twin in `@pmndrs/vdb/tools` and matches it within 2 f16 ulp. Through the same kernels, demo
+  17's frame loop and the three adapter give byte-identical frames for mjurczyk's reference scenes (K6.1c).

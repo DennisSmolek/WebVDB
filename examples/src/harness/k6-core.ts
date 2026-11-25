@@ -13,6 +13,8 @@
  * - `?probe=integrate`: the composite pass on a synthetic prefix and r32float depth vs
  *   `vdbFrameSliceCoord` + `vdbFrameIntegratePrefix`.
  * - `?probe=compile`: every K6.1 pipeline variant compiles (`getCompilationInfo`, validation scope).
+ * - K6.1c `?scene=<name>`: his Step 1 / Step 3 scenes (and k3-frame's CC0 `smoke`) rendered by the core on raw WebGPU,
+ *   no three.js, through the host frame loop of demo 17 (`k6-raw-scene.ts`); `result.scene`, `width`, `height`, `rgba`.
  * - `?mutate=<term>`: flips one twin term (`mix`, `phase`, `extinction`, `fade`, `scan-stop`,
  *   `temporal-clamp`, `coverage`, `taps`); the probe must then fail.
  *
@@ -166,6 +168,7 @@ import {
   type WvdbDenseVolume,
 } from "../../../packages/vdb/src/tools/internal.js";
 import { synthOccluders, type SynthOccluders } from "./k6-occluders-synth.js";
+import { runRawScene, type RawSceneResult } from "./k6-raw-scene.js";
 import {
   albedoAt,
   denseSampler,
@@ -227,6 +230,11 @@ interface Result {
   probeStats?: Stats;
   irradianceStats?: Stats;
   emission?: Record<string, unknown>;
+  /** K6.1c `?scene=`: the raw scene render (`rgba`: base64 sRGB RGBA8, top row first). */
+  scene?: RawSceneResult;
+  width?: number;
+  height?: number;
+  rgba?: string;
   warnings: string[];
   uncaptured: string[];
 }
@@ -238,7 +246,8 @@ declare global {
 }
 
 const params = new URLSearchParams(location.search);
-const PROBE = params.get("probe") ?? "view";
+const SCENE = params.get("scene");
+const PROBE = SCENE ? "scene" : (params.get("probe") ?? "view");
 const MUTATE = (params.get("mutate") ?? "none") as TwinMutation;
 /** K6.2b `?env=directional|spherical-harmonics|outward`: a synthetic environment for the frame and gather probes. */
 const ENV_MODE = params.get("env");
@@ -2190,7 +2199,8 @@ async function main(): Promise<void> {
   result.adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" ");
   const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
-  if (PROBE === "view") await probeView(device);
+  if (SCENE) await runRawScene(device, SCENE, params, result);
+  else if (PROBE === "view") await probeView(device);
   else if (PROBE === "gather") await probeGather(device);
   else if (PROBE === "resolve") await probeResolve(device);
   else if (PROBE === "integrate") await probeIntegrate(device);
@@ -2204,6 +2214,7 @@ async function main(): Promise<void> {
   const s = result.stats;
   if (s) log(`${PROBE}${MUTATE !== "none" ? ` (mutate ${MUTATE})` : ""}: ${s.compared} texels (${s.covered} non-zero), max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over ${s.bound}`, s.over === 0 ? "ok" : "fail");
   if (result.compile) log(`compile: ${result.compile.variants} variants, ${result.compile.errors.length} errors\n${result.compile.errors.join("\n")}`, result.compile.errors.length ? "fail" : "ok");
+  if (result.scene) log(`scene ${result.scene.name} (${result.scene.lighting}, ${result.scene.source}, ${result.scene.placement}): ${result.width}x${result.height}, ${result.scene.nonBackground} volume px, repeat identical ${result.scene.inPageIdentical}, second-update builds ${result.scene.secondBuilds}`, result.scene.inPageIdentical && result.scene.secondBuilds === 0 ? "ok" : "fail");
   if (result.builds) log(`builds: ${result.builds.first} in the first update, ${result.builds.second} in the second`, result.builds.second === 0 ? "ok" : "fail");
 }
 
