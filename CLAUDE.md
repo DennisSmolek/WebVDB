@@ -268,3 +268,12 @@ From v1; details in docs/archive/handoffs/.
 - A volume-shadow test that moves a light must make the map wait, or it can't see a lookup that follows the wrong light
   state. The budget always draws the oldest piece: add a second shadow light (older piece) to the scene first
   (entries go in install order). See `k3-frame-shadows ?case=stale` (K7.1).
+- rg16float and r16float are not storage-texture formats in core WebGPU (only with `texture-formats-tier1`). Write f16
+  words into a storage buffer and `copyBufferToTexture` (rows padded to 256 bytes): core-valid and still filterable
+  (K7.3 `core/compute/multi-scale.ts`).
+- `textureSampleLevel` normalises coordinates by each mip's own size: address level k at base texel / 2^k over that
+  mip's dimensions and pad the chain so it halves exactly, or odd sizes drift up to half a texel per level.
+- A ≤ 1-ulp f16 parity gate misses a truncating pack: also bound the share of texels at 1 ulp when the pack rounds to
+  nearest.
+- Agent worktrees can start at an old commit (seen at `c3732d0`, not main): compare `git log -1` with main and
+  `git merge --ff-only main` first. They also lack the git-ignored fixtures: `cp -n` them from the main checkout.

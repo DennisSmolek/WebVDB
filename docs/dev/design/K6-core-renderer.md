@@ -387,6 +387,15 @@ used atlas 48 + history 96 + density targets 192 = 336 MiB. Multi-group frames a
   format-agnostic; K6.3 wires its kernel into `gridMips`/`gridTransmittance`), and `'mlp'` (experimental). The family
   is a pipeline key; its numbers are uniforms. The default is picked in K6.3 by quality: K6.R's reference decides
   between diffusion and multi-scale on the K3 scene set and the WDAS cloud; his 'neural' default is not matched.
+  *K7.3 as built (V75):* `vdbCreateMultiScaleMips(device, { size, levels ≤ 8 })`; per shadow-grid redraw
+  `mips.record(encoder, gridTexture, { origin: [0, 0, R·lastCascade] })` (only on signature change); `mips.resize`
+  on resolution change, rebuild bind groups on `mips.version`. The kernel writes f16 through a storage buffer and
+  `copyBufferToTexture`, so r16float/rg16float mips need no tier1. Shader: prepend `vdbFrameMultiScaleWgsl()`, bind
+  `base: texture_3d<f32>` (filterable), `mips = mips.view`, a sampler from `VDB_FRAME_MULTI_SCALE_SAMPLER`, and a
+  64 B `VdbFrameMultiScale` uniform from `vdbFrameMultiScaleParams(...)`; per voxel and light
+  `vdbFrameMultiScaleLight(base, mips, smp, ms, world, dirToLight, maxDistance)`, then `min(direct + scattered, 1)`.
+  Grey only (spectral and 'volume' fall back to diffusion). Builds from two origins need two submits (the origin
+  is a `writeBuffer` uniform). Edge mode (zero vs his clamp) and σ = 2^k levels are K6.3 A/B candidates.
 - **MLP (experimental, Q5).** A generic small-MLP evaluator: layer count, widths and activations are uniforms;
   weights and biases are a storage buffer (the transmittance kernel is source-free, so this is its one storage
   buffer, D10). Width ≤ 64 per layer (two `array<f32, 64>` ping-pong locals). A new network is new data: no rebuild,
