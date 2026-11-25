@@ -352,3 +352,35 @@ export {
   frameBlackbodyTableSize as vdbFrameBlackbodyTableSize,
   frameBlackbodyTableRows as vdbFrameBlackbodyTableRows,
 } from "./frame/blackbody.js";
+// K6.1: the core frame renderer's froxel view maths and froxel-stage twins.
+export {
+  vdbMat4Multiply,
+  vdbMat4Invert,
+  vdbMat4Point,
+  vdbMat4Vec4,
+  vdbMat4MaxScale,
+  vdbFrustumPlanes,
+  vdbUnitBoxBounds,
+  vdbFrameClipCamera,
+  vdbFrameClipVolume,
+  vdbFrameFroxelRect,
+  vdbFrameFroxelArea,
+  vdbFroxelAreaEmpty,
+  vdbFrameVolumeSlices,
+  vdbFroxelAreaUnion,
+  vdbFrameAtlasLayout,
+  vdbFroxelHeldSize,
+  vdbFrameFroxelSize,
+  vdbFrameClipRect,
+} from "./frame/view.js";
+export type { VDBMat4, VDBFrameClipCamera, VDBFrameClippedVolume, VDBFroxelRect, VDBFroxelArea, VDBFroxelHeldSize } from "./frame/view.js";
+export {
+  vdbFrameGatherFroxel,
+  vdbFrameMaxOpticalDepth,
+  vdbFrameTemporalFroxel,
+  vdbFrameScanStop,
+  vdbFrameScanColumn,
+  vdbFrameIntegratePrefix,
+  vdbFrameSliceCoord,
+} from "./frame/froxel.js";
+export type { VDBFrameVolumeFroxel, VDBFrameFroxelMix, VDBFrameIntegrated } from "./frame/froxel.js";

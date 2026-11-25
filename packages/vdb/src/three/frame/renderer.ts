@@ -93,7 +93,14 @@ import { VDBFrameTransmittanceMaterial, frameNeuralMipLevels, frameShadowLightSl
 import { VDBFrameVolumeShadows } from "./volume-shadows.js";
 import { FrameVolumeCollector, getFrameFadeRadius, getFroxelArea, getFroxelRect, getFroxelSliceRange, type FrameVolumeEntry, type FrameVolumeRecord } from "./view.js";
 import type { VDBFrameVolume } from "./volume.js";
-import type { VDBVolumeUniforms } from "../volume-source.js";
+import type { VDBThreeDenseSource, VDBVolumeUniforms } from "../volume-source.js";
+import { VDBError } from "../../core/errors.js";
+import { vdbDenseSource, type VDBDenseSource } from "../../core/source/dense.js";
+import { vdbCreateFrameRenderer, type VDBFrameRendererGpu } from "../../core/frame/renderer.js";
+import type { VDBFrameLight, VDBFrameVolumeGpu, VDBFrameVolumeParams } from "../../core/frame/types.js";
+import { getDevice } from "../device.js";
+import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
+import { VDBFrameCoreIntegrateMaterial } from "./core-integrate-material.js";
 
 const { outputStruct, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
@@ -446,6 +453,23 @@ export class VDBFrameRenderer {
   passHook: VDBFramePassHook | null = null;
 
   /**
+   * @internal K6.1 A/B: `'core'` renders `'volume'` lighting on dense sources through the core frame renderer
+   * (compute kernels on three's device) and composites with `VDBFrameCoreIntegrateMaterial`; `'tsl'` (default)
+   * is the TSL path, the reference until K6.8. Set it before making volumes (their proxy material follows it).
+   */
+  backend: "tsl" | "core" = "tsl";
+  /** @internal K6.1 A/B: the core's froxel mix (`'mixture'` default; `'over'` is his blend). */
+  froxelMix: "mixture" | "over" = "mixture";
+  /** @internal The core renderer of `backend: 'core'` (made on first use, per device). */
+  core: VDBFrameRendererGpu | null = null;
+  private coreDevice: GPUDevice | null = null;
+  private coreMaterial: VDBFrameCoreIntegrateMaterial | null = null;
+  private readonly corePrefix = new VDBCoreTextureBinding();
+  private coreSources = new WeakMap<object, VDBDenseSource>();
+  private coreVolumes = new Map<VDBFrameVolume, VDBFrameVolumeGpu>();
+  private coreFrameId = 0;
+
+  /**
    * Timing/debug hook: proxies draw the integrate pass over the last froxel atlas without rendering
    * the froxels again (the per-pass timing harness times integrate alone with it). Not his.
    */
@@ -755,6 +779,11 @@ export class VDBFrameRenderer {
       return;
     }
 
+    if (this.backend === "core") {
+      this.renderCore(renderer, scene, camera, proxy);
+      return;
+    }
+
     // NOTE Puts the volume shadow filter on new shadow lights (and frees the maps of removed ones)
     this.volumeShadows.update(renderer, scene);
 
@@ -795,6 +824,13 @@ export class VDBFrameRenderer {
     }
 
     return volumes.length;
+  }
+
+  /** The material a new volume proxy draws: the TSL integrate material, or the core one with `backend: 'core'`. */
+  proxyMaterial(): THREE.Material {
+    if (this.backend !== "core") return this.integrateMaterial;
+    this.coreMaterial ??= new VDBFrameCoreIntegrateMaterial();
+    return this.coreMaterial;
   }
 
   // NOTE A quad. The integrate material puts it on the screen rectangle of the froxel area.
@@ -2207,6 +2243,193 @@ export class VDBFrameRenderer {
     return result;
   }
 
+
+  /** K6.1 `backend: 'core'`: the frame through the core renderer, recorded into its own encoder and submitted. */
+  private renderCore(renderer: RendererLike, scene: SceneLike, camera: THREE.Camera, proxy: THREE.Mesh<THREE.InstancedBufferGeometry>): void {
+    const material = this.proxyMaterial() as VDBFrameCoreIntegrateMaterial;
+    // NOTE three draws the material it chose before onBeforeRender: a swapped proxy draws the core material from the next frame
+    if (proxy.material !== material) proxy.material = material;
+    if (this.settings.lighting !== "volume") {
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer: backend 'core' renders 'volume' lighting in K6.1; 'frame' lighting comes with K6.2.");
+    }
+    const device = getDevice(renderer as never);
+    if (!this.core || this.coreDevice !== device) {
+      vdbCoreTextureSelfTest(renderer as never, device);
+      this.core?.dispose();
+      this.core = vdbCreateFrameRenderer(device, { label: "vdb three core frame" });
+      this.coreDevice = device;
+      this.coreSources = new WeakMap();
+      this.coreVolumes = new Map();
+    }
+    const core = this.core;
+    Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
+    if (scene.environment) this.warnOnce("core-environment", "backend 'core': the scene environment is K6.2; K6.1 ignores it.");
+
+    const seen = new Set<VDBFrameVolumeGpu>();
+    scene.traverseVisible((object) => {
+      const frameVolume = object as VDBFrameVolume;
+      if (!frameVolume.isVDBFrameVolume || frameVolume.frameRenderer !== this || !frameVolume.proxy.layers.test(camera.layers)) return;
+      frameVolume.syncSource();
+      const handle = this.coreVolumeOf(frameVolume, device);
+      const record = frameVolume.volumes[0]!;
+      record.matrixWorld.multiplyMatrices(frameVolume.matrixWorld, record.matrix);
+      this.setCoreParams(handle.params, frameVolume, record.matrixWorld);
+      handle.visible = record.ready;
+      seen.add(handle);
+    });
+    for (const [frameVolume, handle] of this.coreVolumes) {
+      if (seen.has(handle)) continue;
+      handle.visible = false;
+      if (!frameVolume.parent) {
+        handle.remove();
+        this.coreVolumes.delete(frameVolume);
+      }
+    }
+
+    const cam = camera as THREE.PerspectiveCamera & { isOrthographicCamera?: boolean };
+    const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const canvas = renderer.getSize(new THREE.Vector2());
+    const encoder = device.createCommandEncoder({ label: "vdb three core frame" });
+    const u = core.update(encoder, {
+      frameId: this.coreFrameId++,
+      camera: {
+        view: camera.matrixWorldInverse.elements,
+        projection: camera.projectionMatrix.elements,
+        near: cam.near,
+        far: cam.far,
+        orthographic: !!cam.isOrthographicCamera,
+        reversedDepth: !!(renderer as unknown as { reversedDepthBuffer?: boolean }).reversedDepthBuffer,
+        id: camera.id,
+      },
+      viewport: { drawingBuffer: [buffer.x, buffer.y], canvas: [canvas.x, canvas.y] },
+      lights: this.coreLights(scene, camera),
+    });
+    device.queue.submit([encoder.finish()]);
+    if (u.recorded && u.outputs.froxels) {
+      if (this.corePrefix.set(u.outputs.froxels.integrated)) material.prefix.value = this.corePrefix.texture;
+      material.setLayout(u.outputs.froxels.layout, cam);
+      material.setSrgbBlending(this.settings.srgbBlending && renderer.outputColorSpace === THREE.SRGBColorSpace, renderer.toneMapping === THREE.NoToneMapping);
+    }
+    this.cachedFrame = renderer.info.render.calls;
+    this.cachedCamera = camera;
+    proxy.geometry.instanceCount = u.recorded ? 1 : 0;
+  }
+
+  /** The core volume of a frame volume (its dense source uploaded once on the core side). */
+  private coreVolumeOf(frameVolume: VDBFrameVolume, device: GPUDevice): VDBFrameVolumeGpu {
+    if (frameVolume.source.kind !== "dense") {
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer: backend 'core' with a sparse source is adapter work after K6.7 (vdbSparseSourceGpu); use a dense source or backend 'tsl'.");
+    }
+    const three = frameVolume.source as VDBThreeDenseSource;
+    let source = this.coreSources.get(three);
+    if (!source) {
+      source = vdbDenseSource(device, three.volume, { label: "vdb three core dense" });
+      this.coreSources.set(three, source);
+    } else if (source.volume !== three.volume) {
+      source.replace(three.volume);
+    }
+    let handle = this.coreVolumes.get(frameVolume);
+    if (handle && handle.slot.source !== source) {
+      handle.remove();
+      handle = undefined;
+    }
+    if (!handle) {
+      handle = this.core!.addVolume(source);
+      this.coreVolumes.set(frameVolume, handle);
+    }
+    if (frameVolume.emissionColor) this.warnOnce("core-emission", "backend 'core': emission colour hooks are K6.5; K6.1 draws white emission.");
+    return handle;
+  }
+
+  /** setVolumeUniforms for the core: a frame volume's props as plain params. */
+  private setCoreParams(p: VDBFrameVolumeParams, v: VDBFrameVolume, matrixWorld: THREE.Matrix4): void {
+    const wrap = v.wrap3D === THREE.RepeatWrapping ? "repeat" : v.wrap3D === THREE.MirroredRepeatWrapping ? "mirror" : "clamp";
+    const params: VDBFrameVolumeParams = {
+      matrixWorld: matrixWorld.elements.slice(),
+      baseColor: [v.baseColor.r, v.baseColor.g, v.baseColor.b],
+      scatterColor: [v.scatterColor.r, v.scatterColor.g, v.scatterColor.b],
+      extinction: v.extinction,
+      extinctionScale: [v.extinctionScale.x, v.extinctionScale.y, v.extinctionScale.z],
+      angstromExponent: typeof v.angstromExponent === "number" ? v.angstromExponent : 0,
+      densityScale: v.densityScale,
+      normalizeDensity: v.normalizeDensity,
+      densityMean: v.densityMean,
+      densityCutoff: v.densityCutoff,
+      absorbance: v.absorbance,
+      opacity: v.opacity,
+      emissiveIntensity: v.emissiveIntensity,
+      temperatureRange: [v.temperatureRange.x, v.temperatureRange.y],
+      offset3D: [v.offset3D.x, v.offset3D.y, v.offset3D.z],
+      wrap3D: wrap,
+      lights: v.lights,
+      shadowSteps: v.shadowSteps,
+      mipmaps: v.mipmaps,
+      hdda: v.hdda,
+      phase: v.phase,
+      phaseG: v.phaseG,
+      phaseBackG: v.phaseBackG,
+      phaseBackWeight: v.phaseBackWeight,
+      phaseGExponent: v.phaseGExponent,
+    };
+    Object.assign(p, params);
+  }
+
+  /** The scene's lights in the camera's layers as core lights (his visitLight). */
+  private coreLights(scene: THREE.Object3D, camera: THREE.Camera): VDBFrameLight[] {
+    const out: VDBFrameLight[] = [];
+    const position = new THREE.Vector3();
+    const target = new THREE.Vector3();
+    scene.traverseVisible((object) => {
+      const light = object as THREE.Light & {
+        isAmbientLight?: boolean;
+        isHemisphereLight?: boolean;
+        isLightProbe?: boolean;
+        isDirectionalLight?: boolean;
+        isSpotLight?: boolean;
+        isPointLight?: boolean;
+        groundColor?: THREE.Color;
+        sh?: { coefficients: THREE.Vector3[] };
+        target?: THREE.Object3D;
+        angle?: number;
+        penumbra?: number;
+        distance?: number;
+        decay?: number;
+      };
+      if (!light.isLight || !light.layers.test(camera.layers)) return;
+      const i = light.intensity;
+      const color: [number, number, number] = [light.color.r * i, light.color.g * i, light.color.b * i];
+      position.setFromMatrixPosition(light.matrixWorld);
+      const id = light.id;
+      if (light.isAmbientLight) out.push({ id, kind: "ambient", color });
+      else if (light.isHemisphereLight) {
+        const g = light.groundColor!;
+        const up = position.lengthSq() > 0 ? position.clone().normalize() : new THREE.Vector3(0, 1, 0);
+        out.push({ id, kind: "hemisphere", sky: color, ground: [g.r * i, g.g * i, g.b * i], up: [up.x, up.y, up.z] });
+      } else if (light.isLightProbe) {
+        out.push({ id, kind: "probe", sh: light.sh!.coefficients.flatMap((c) => [c.x * i, c.y * i, c.z * i]) });
+      } else if (light.isDirectionalLight) {
+        target.setFromMatrixPosition(light.target!.matrixWorld).sub(position).normalize();
+        out.push({ id, kind: "directional", direction: [target.x, target.y, target.z], color });
+      } else if (light.isSpotLight) {
+        target.setFromMatrixPosition(light.target!.matrixWorld).sub(position).normalize();
+        out.push({
+          id,
+          kind: "spot",
+          position: [position.x, position.y, position.z],
+          direction: [target.x, target.y, target.z],
+          color,
+          distance: light.distance!,
+          decay: light.decay!,
+          cosAngle: Math.cos(light.angle!),
+          cosPenumbra: Math.cos(light.angle! * (1.0 - light.penumbra!)),
+        });
+      } else if (light.isPointLight) {
+        out.push({ id, kind: "point", position: [position.x, position.y, position.z], color, distance: light.distance!, decay: light.decay! });
+      }
+    });
+    return out;
+  }
+
   /** Disposes the renderer's targets, materials and shadow filters. A later render makes them again. */
   dispose(): void {
     // NOTE Puts back the shadow filter of each light; the new instance installs again on the next render
@@ -2253,6 +2476,13 @@ export class VDBFrameRenderer {
     }
 
     this.areaGeometry.dispose();
+    // K6.1 backend 'core': the core renderer and its stand-ins (the core sources die with their WeakMap)
+    this.core?.dispose();
+    this.core = null;
+    this.coreDevice = null;
+    this.corePrefix.dispose();
+    this.coreMaterial?.dispose();
+    this.coreVolumes = new Map();
     this.cachedFrame = -1;
     this.cachedCamera = null;
   }

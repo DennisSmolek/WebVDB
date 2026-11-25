@@ -59,8 +59,10 @@ export interface VDBVolumeSourceWgslOptions {
  *   fn vdbSrcSkipEmpty(v: u32, o: vec3f, d: vec3f, t0: f32, t1: f32) -> f32;
  *   fn vdbSrcMaxIn   (v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32;
  *
- * `uvw` is in [0, 1]³ of the source box, already offset and wrapped by the
- * caller; `lod` is in levels (log2 of the footprint in lod-0 voxels).
+ * `v` is the volume's source-local slot ({@link VDBVolumeSlot}; a dense source
+ * ignores it, its only volume is `v` = 0). `uvw` is in [0, 1]³ of the source box,
+ * already offset and wrapped by the caller; `lod` is in levels (log2 of the
+ * footprint in lod-0 voxels).
  */
 export interface VDBVolumeSource extends VDBVolumeSourceInfo {
   /** Returns the WGSL of the `vdbSrc*` functions for the given slot, profile and channels. */

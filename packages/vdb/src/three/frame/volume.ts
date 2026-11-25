@@ -305,7 +305,7 @@ export class VDBFrameVolume extends THREE.Group {
     this.sourceUniforms = vdbVolumeUniforms(source, { extinction, densityScale, normalizeDensity });
     this.sourceVersion = source.version;
 
-    this.proxy = new THREE.Mesh(frameRenderer.createProxyGeometry(), frameRenderer.integrateMaterial);
+    this.proxy = new THREE.Mesh(frameRenderer.createProxyGeometry(), frameRenderer.proxyMaterial());
     this.proxy.frustumCulled = false;
     this.proxy.renderOrder = frameRenderOrder;
     this.proxy.onBeforeRender = (renderer, scene, camera) => {
