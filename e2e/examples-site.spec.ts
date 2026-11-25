@@ -35,6 +35,7 @@ const DEMOS: DemoCase[] = [
   { n: "14", dir: "14-points", query: "?presentation=readback&still=1", ready: "ready" },
   { n: "15", dir: "15-full-res-vs-dense", query: "?presentation=readback&still=1&quality=low&temporal=0&asset=smoke", ready: "ready" },
   { n: "16", dir: "16-streaming", query: "?presentation=readback&test=1&still=1&asset=smoke&quality=low&temporal=0", ready: "done" },
+  { n: "17", dir: "17-raw-webgpu", query: "?presentation=readback&still=1&quality=low", ready: "ready" },
 ];
 
 /** Assets deliberately not hosted (see examples/assets.manifest.json `excluded` and the pending gallery rows). */
@@ -75,7 +76,7 @@ test.describe("examples site", () => {
     const seen = watch(page);
     await page.goto(`${SITE}/`);
     const hrefs = await page.$$eval("#demo-list a, #gallery-list a, a[href$='attribution.html']", (as) => as.map((a) => (a as HTMLAnchorElement).href));
-    expect(hrefs.length).toBeGreaterThanOrEqual(17);
+    expect(hrefs.length).toBeGreaterThanOrEqual(18);
     for (const href of hrefs) {
       expect(new URL(href).pathname.startsWith("/vdb/examples/"), href).toBe(true);
       expect((await page.request.get(href)).status(), href).toBe(200);

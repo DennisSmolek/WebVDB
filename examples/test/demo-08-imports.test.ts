@@ -34,7 +34,8 @@ function specifiers(source: string): string[] {
 function resolveRelative(from: string, spec: string): string {
   const base = path.resolve(path.dirname(from), spec);
   const candidates = [base, base.replace(/\.js$/, ".ts"), `${base}.ts`, path.join(base, "index.ts")];
-  const hit = candidates.find((c) => existsSync(c) && /\.(ts|js|mjs|wgsl)$/.test(c));
+  // `?url` assets (a committed binary the page fetches) are leaves of the graph
+  const hit = candidates.find((c) => existsSync(c) && /\.(ts|js|mjs|wgsl|wvdb|nvdb)$/.test(c));
   if (!hit) throw new Error(`cannot resolve ${spec} from ${path.relative(repo, from)}`);
   return hit;
 }
@@ -47,7 +48,7 @@ function moduleGraph(start: string): { files: Set<string>; packages: Set<string>
     const file = queue.pop()!;
     if (files.has(file)) continue;
     files.add(file);
-    if (file.endsWith(".wgsl")) continue;
+    if (!/\.(ts|js|mjs)$/.test(file)) continue;
     for (const spec of specifiers(readFileSync(file, "utf8"))) {
       if (spec.startsWith(".")) queue.push(resolveRelative(file, spec));
       else if (ALIASES[spec]) {
@@ -77,5 +78,25 @@ describe("demo 08 import graph (K1.7)", () => {
 
   it("depends only on the core, tools and their one runtime dependency", () => {
     expect([...packages].sort()).toEqual(["@pmndrs/vdb", "@pmndrs/vdb/tools", "fflate"]);
+  });
+});
+
+// K6.9: demo 17 renders volumes with the core frame renderer and no three.js; its module graph (the core's internal
+// entry point, the tools, the engine-free half of the gallery shell) must stay free of three.
+describe("demo 17 import graph (K6.9)", () => {
+  const { files, packages } = moduleGraph(path.join(repo, "examples/src/demos/17-raw-webgpu/main.ts"));
+  const rel = [...files].map((f) => path.relative(repo, f));
+
+  it("walks the core frame renderer, the level-set pass and the gallery UI", () => {
+    expect(rel).toContain("packages/vdb/src/core/frame/renderer.ts");
+    expect(rel).toContain("packages/vdb/src/core/surface/level-set-pass.ts");
+    expect(rel).toContain("packages/vdb/src/core/source/sparse.ts");
+    expect(rel).toContain("examples/src/demos/showcase-ui.ts");
+  });
+
+  it("reaches no three.js, no three adapter and not the three half of the gallery shell", () => {
+    expect([...packages].filter((p) => p === "three" || p.startsWith("three/") || p === "@pmndrs/vdb/three")).toEqual([]);
+    expect(rel.filter((f) => f.startsWith("packages/vdb/src/three/"))).toEqual([]);
+    expect(rel).not.toContain("examples/src/demos/showcase-shell.ts");
   });
 });
