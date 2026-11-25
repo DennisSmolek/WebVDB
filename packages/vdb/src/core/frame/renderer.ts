@@ -9,8 +9,8 @@
 // (K6.1 rows).
 
 /**
- * `vdbCreateFrameRenderer(device, options)`: the core froxel renderer (K6.1: 'volume' lighting on dense
- * sources). Per frame:
+ * `vdbCreateFrameRenderer(device, options)`: the core froxel renderer ('volume' lighting, K6.1; 'frame' lighting's
+ * shadow grid, transmittance and fused gather, K6.2; dense and sparse sources). Per frame:
  *
  *   const enc = device.createCommandEncoder();
  *   const u = frame.update(enc, { frameId, camera, viewport, lights });   // gather per source group, resolve

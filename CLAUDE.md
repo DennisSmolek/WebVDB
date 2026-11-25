@@ -297,3 +297,9 @@ From v1; details in docs/archive/handoffs/.
   data (< ~3/255 per texel) and a static camera for the temporal taps; SwiftShader filters exactly.
 - The agent sandbox refuses Bash commands whose text contains the bare word `source` followed by a path, and long
   compound commands: use `sourc?` globs and run steps as separate commands (or a script file in the scratchpad).
+- K6.2 'frame' probes (`k6-core ?probe=frame`) feed each kernel's twin with the **read-back** output of the kernel before
+  it (grid → transmittance → gather); twins fed with twins compound f16 rounding and hide which kernel moved.
+- Core vs TSL A/Bs assume his froxel density (1280 × 720, 512 × 512 froxels): with ~4 px per froxel the V80 silhouette
+  band alone exceeds the 0.2 % > 4/255 bar (WDAS at 640 × 360 / 160² froxels: 0.3 %, all on the outline).
+- The core's 'frame' casters are `castsShadow` volumes, drawn or not (`visible = false` still casts); a host that
+  hides a volume for good must clear both flags (`./three` does for volumes that left the scene).

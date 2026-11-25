@@ -303,7 +303,7 @@ WG = workgroup size. All formats are core unless marked; "→ fallback" is used 
 | `pyramid` (exists) | per grid, 4×4×4 | pool | packed r16float atlas (copy) | `imageRevision` moved | `vdbBoxPyramid` | — |
 | `froxelGather` 'volume' | area bbox × D, 8×8×1 (a screen tile of one slice: coherent rays) | source, lights, env buffer, occluders | grey: scatter rgba16float (premultiplied rgb, α); spectral: + scatterAlpha rgba16float (α r, b); multi-group: partials r32uint | per source group | `vdbFrameInjectSlice`, `vdbFrameShadowMarch`, **new** `vdbFrameGatherFroxel` (mixture) | `inject-material.ts` |
 | `froxelGather` 'frame' (fused) | same | source, transmittance stack, env grid, LUTs, occluders, partials | scatter (+ scatterAlpha); non-last groups: partials | per source group | `vdbFrameDensityFroxel` + `vdbFrameLightingFroxel` (+ spectral), **new** `vdbFrameFusedFroxel` | `density-material.ts`, `lighting-material.ts` |
-| `froxelResolve` | area bbox columns, 8×8×1 | scatter (load, 6 neighbours), history (trilinear) | history' rgba16float (if `temporal`), integrated rgba16float (L rgb, τ) (+ integratedAlpha: τ r, b → rg16float tier1, fallback rgba16float) | every update | `vdbFrameReproject`, **new** `vdbFrameTemporalFroxel`, `vdbFrameScanColumn` | `temporal-material.ts`, the slice loop of `integrate-material.ts` |
+| `froxelResolve` | area bbox columns, 8×8×1 | scatter (load, 6 neighbours), history (trilinear) | history' rgba16float (if `temporal`), integrated rgba16float (L rgb, opacity 1 − T; V80) (+ integratedAlpha: opacity r, b → rg16float tier1, fallback rgba16float) | every update | `vdbFrameReproject`, **new** `vdbFrameTemporalFroxel`, `vdbFrameScanColumn` | `temporal-material.ts`, the slice loop of `integrate-material.ts` |
 | `gridDensity` | cascade R³, 4×4×4 | source at grid lod | shadow grid stack rg16float tier1 → rgba16float (spectral: 2 stacks rgba16float); multi-group partials | stale cascade, per caster group | `vdbFrameShadowAbsorption`, **new** `vdbFrameGridDensityVoxel` | `shadow-density-material.ts` |
 | `gridMips` | per level, 4×4×4 | last cascade | mip stack (rg16float tier1 → rgba16float) | MS needs mips, on grid redraw | `vdbFrameGridMipLevel`; K7.3's twin for `'multi-scale'` | `grid-mip-material.ts` |
 | `gridTransmittance` | cascades × R³, 4×4×4 | grid stack, mips, occluders, MLP weights (its one storage buffer) | transmittance stack rgba16float (4 targets × cascades; spectral 3 per slot group) | stale | `vdbFrameTransmittanceVoxel`, spectral twin, `vdbFrameNeuralLight` → `vdbFrameMlpForward` | `transmittance-material.ts`, `neural.ts` |
@@ -344,20 +344,22 @@ packed partials (§3.2).
 reprojection (`vdbFrameReproject`: the previous froxel grid sampled with hardware trilinear, which equals his
 bilinear-in-tile + linear-between-slices with his clamps), clamped to the 6 current neighbours (x±1, y±1 by
 `textureLoad`; z±1 from the column), blended, and written to history'. Then the column accumulates his integrate
-loop: stop adding once T < 0.001 (his break), and write boundary k+1 = (Σ radiance, Σ optical depth τ). Boundary 0
-is (0, 0). τ, not T, is stored: f16 keeps relative precision near τ = 0 (thin media), and the composite gets his
-partial-slice formula exactly (below). History' is the next frame's history; the scatter texture is only read here.
+loop: stop adding once T < 0.001 (his break), and write boundary k+1 = (Σ radiance, opacity 1 − T). Boundary 0
+is (0, 0). As built (K6.1, V80) the prefix stores the opacity 1 − T, not the optical depth τ: bilinear filtering of
+the prefix then averages T (the coverage-correct box filter at silhouettes); f16 keeps T to 2.4e-4 near T = 1.
+History' is the next frame's history; the scatter texture is only read here.
 
 **Composite.** Scene depth → fractional slice s (his log mapping), k = ⌊s⌋, c = s − k. Two taps of the prefix at the
-boundary layers k and k + 1 (bilinear in x, y; exactly on z texel centres): A, B. With α = 1 − exp(−(B.τ − A.τ)):
+boundary layers k and k + 1 (bilinear in x, y; exactly on z texel centres): A, B (A.T = 1 − A.opacity). With
+α = 1 − B.T / A.T (the slice's own opacity):
 
     radiance = A.L + (B.L − A.L) · (1 − (1 − α)^c) / α        (→ c as α → 0)
-    T        = exp(−A.τ) · (1 − α)^c
+    T        = A.T · (1 − α)^c
 
 which is his `sliceAlpha` coverage formula. One difference remains: x, y filtering now acts on the composited prefix
 instead of on per-slice froxels before compositing (they differ at volume silhouettes by sub-froxel amounts; DIVERGES
 row). A one-tap linear lookup (Hillaire 2015) is a deferred timing option, not the default. Spectral reads the
-second prefix for τ r, b and composites against the scene colour itself (one hardware alpha), as his.
+second prefix for the opacity r, b and composites against the scene colour itself (one hardware alpha), as his.
 
 **Memory** at his 512 × 512 × 24, grey: scatter 48 MiB + history 2 × 48 + prefix 50 = 194 MiB. His 'frame' lighting
 used atlas 48 + history 96 + density targets 192 = 336 MiB. Multi-group frames add 192 MiB of partials ('frame') or
@@ -378,6 +380,14 @@ used atlas 48 + history 96 + density targets 192 = 336 MiB. Multi-group frames a
   has its environment lights (the 'outward' first-frame fallback trap goes away). 'outward' irradiance comes from the
   SH, not from PMREM roughness 1 (DIVERGES row).
 - **Environment grid.** As his, from the env buffer.
+
+*K6.2 as built (handoff K6-2.md):* shadow grid and transmittance are rgba16float stacks (`vdbFrameStackLayout`: R³
+sub-volumes along z, then x, then y; the tier1 rg16float grid is not used yet); the grid layout, stack origins, the
+'frame' phase and the multiple-scattering value are fields of `VdbFrameUniforms` (no new binding); the group record
+gains `casters` (first, count, role, index): in a source group the records are visible non-casters, visible casters,
+then casters that are not drawn. Multi-group 'frame' partials hold the 16 density sums as 8 `pack2x16float` words per
+froxel (r32uint, 8·D layers); the grid's partials are one word per voxel. The environment (`envPrefilter`,
+`envReduce`, `environmentGrid`, the environment light slot and 'outward' SH) is K6.2b.
 
 ### 3.6 Phase and multiple scattering (K6.3)
 
