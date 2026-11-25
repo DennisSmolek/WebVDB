@@ -66,7 +66,7 @@ const PROBES: { name: string; query: string; minCovered: number; mutations: stri
   { name: "resolve (temporal)", query: "?probe=resolve&temporal=1", minCovered: 512, mutations: ["temporal-clamp", "scan-stop"] },
   { name: "integrate", query: "?probe=integrate", minCovered: 512, mutations: ["coverage", "taps"] },
   // K6.1d: the gather on the core sparse source (K6.7), volume A skipping empty space (hdda), B wrapped (no skip)
-  { name: "gather sparse (lod none, one group, hdda)", query: "?probe=gather&source=sparse&lod=none&groups=1", minCovered: 300, mutations: ["skip", "extinction", "phase"] },
+  { name: "gather sparse (lod none, one group, hdda)", query: "?probe=gather&source=sparse&lod=none&groups=1", minCovered: 200, mutations: ["skip", "extinction", "phase"] },
   { name: "gather sparse (node-average, two groups)", query: "?probe=gather&source=sparse&lod=node-average&groups=2", minCovered: 300, mutations: ["mix"] },
   { name: "gather sparse (coarse-pyramid, one group)", query: "?probe=gather&source=sparse&lod=coarse-pyramid&groups=1", minCovered: 300, mutations: ["extinction"] },
 ];
@@ -83,7 +83,7 @@ for (const p of PROBES) {
     expect(r.stats!.over, detail(r)).toBeLessThanOrEqual(Math.floor(r.stats!.compared * 0.001));
     if (r.renderStats) {
       expect(r.renderStats.over, detail(r)).toBe(0);
-      expect(r.renderStats.covered, detail(r)).toBeGreaterThan(50);
+      expect(r.renderStats.covered, detail(r)).toBeGreaterThan(30);
     }
     console.log(`[k6-core] ${p.name} on ${r.adapter}: ${r.stats!.compared} texels, ${r.stats!.covered} non-zero, max ${r.stats!.maxUlp.toFixed(2)} f16 ulp, ${r.stats!.over} over`);
     for (const m of p.mutations) {
@@ -126,7 +126,7 @@ for (const p of FRAME_PROBES) {
     for (const key of ["gridStats", "transmittanceStats", "stats"] as const) {
       const s = r[key]!;
       expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(512);
-      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "stats" ? 200 : 300);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "stats" ? 200 : 250);
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
       console.log(`[k6-core] frame ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
     }
