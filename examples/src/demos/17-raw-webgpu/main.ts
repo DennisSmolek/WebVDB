@@ -40,7 +40,7 @@ import {
 import { MiB, PRESENTATION, QUALITY, STILL, fetchWithProgress, initialQuality, mountShowcase, params, probe, snapshotOf, type Quality, type Snapshot } from "../showcase-ui.js";
 import { RawPresenter, RawTargets, boxMatrix, lookAt, multiply, normalize, orthographic, perspective, rawCamera, type RawCamera, type Vec3 } from "./raw-frame.js";
 import { SKY_HEIGHT, SKY_WIDTH, skyAmbient, skyTexels } from "./sky.js";
-import { createPlaceholders, createScenePipelines, meshVertices, packScene, SCENE_FLOATS, type Box } from "./scene-passes.js";
+import { createPlaceholders, createScenePipelines, meshVertices, packScene, SCENE_FLOATS, VERTEX_FLOATS, type Box } from "./scene-passes.js";
 import cloudWvdbUrl from "../../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 import explosionWvdbUrl from "../../../../packages/vdb/test/tools/fixtures/wvdb/ground_explosion_0010.wvdb?url";
 
@@ -219,7 +219,7 @@ async function main(): Promise<void> {
       meshBuffer = device.createBuffer({ label: "demo-17 meshes", size: vertices.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     }
     device.queue.writeBuffer(meshBuffer, 0, vertices);
-    meshVertexCount = vertices.length / 10;
+    meshVertexCount = vertices.length / VERTEX_FLOATS;
     meshKey = key;
     return true;
   };
