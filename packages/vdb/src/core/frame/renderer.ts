@@ -48,13 +48,20 @@ import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, V
 import { RESOLVE_BINDINGS } from "./wgsl/resolve.js";
 import {
   vdbFrameCompositeSpec,
+  vdbFrameEmissionDirectionSpec,
+  vdbFrameEmissionProbeSpec,
+  vdbFrameEmissionReduceSpec,
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
   vdbFrameResolveSpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameVolumeShadowSpec,
   SOURCE_SLOT,
   type VDBFrameCompositeKey,
 } from "./kernels.js";
+import { VDBFrameShadowMaps } from "./shadows.js";
+import { VDBFrameEmissionColors, VDBFrameEmissionProbeSet, type VDBFrameEmissionPlan, type VDBFrameEmitterInput } from "./emission.js";
+import { EMISSION_DIRECTION_BINDINGS, EMISSION_PROBE_BINDINGS, EMISSION_REDUCE_BINDINGS, VDB_FRAME_EMISSION_DIRECTIONS } from "./wgsl/emission.js";
 import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "./pipelines.js";
 import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
 import { vdbFrameDefaultSettings, type VDBFrameSettings } from "./settings.js";
@@ -84,6 +91,8 @@ import {
   type VDBFrameVolumeGpu,
   type VDBFrameVolumeParams,
   type VDBFroxelLayout,
+  type VDBFrameEmissionProbes,
+  type VDBVolumeShadowMap,
 } from "./types.js";
 
 /** Options of {@link vdbCreateFrameRenderer}. */
@@ -113,6 +122,18 @@ export interface VDBFrameRendererGpu {
   dispose(): void;
 }
 
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+/** Shadow inputs of an update with nothing to draw (the maps are freed or disabled). */
+const EMPTY_SHADOWS = {
+  coarse: false,
+  steps: 1,
+  budget: 1,
+  cascades: 1,
+  castShadowDistance: 1,
+  camera: { view: IDENTITY, cameraWorld: IDENTITY, projectionInverse: IDENTITY, near: 1, far: 2, orthographic: false },
+  grid: null,
+  castVersion: 0,
+} as const;
 const DEPTH_FORMATS = new Set<GPUTextureFormat>(["depth16unorm", "depth24plus", "depth24plus-stencil8", "depth32float", "depth32float-stencil8"]);
 const WRAP_CODE = { clamp: 0, repeat: 1, mirror: 2 } as const;
 
@@ -145,6 +166,8 @@ interface VolumeRecord {
   count: number;
   visible: boolean;
   caster: boolean;
+  /** K6.5: its emission reaches the emission light (drawn, with an emission channel). */
+  emitter: boolean;
 }
 
 /** One source group of an update: its records (visible ones first, then casters) and where they sit. */
@@ -156,6 +179,8 @@ interface SourceGroup {
   visible: number;
   casterStart: number;
   casters: number;
+  /** K6.5: the validated emission colour hook of the group's volumes (a pipeline key), or null. */
+  hook: string | null;
 }
 
 interface Textures {
@@ -186,8 +211,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
     shadowDensity: { drawn: 0, skipped: 0 },
     transmittance: { drawn: 0, skipped: 0 },
     environmentGrid: { drawn: 0, skipped: 0 },
+    volumeShadows: { drawn: 0, waiting: 0 },
   };
-  readonly outputs: { version: number; froxels: { integrated: GPUTexture; integratedAlpha: GPUTexture | null; layout: VDBFroxelLayout } | null; uniforms: GPUBuffer };
+  readonly outputs: {
+    version: number;
+    froxels: { integrated: GPUTexture; integratedAlpha: GPUTexture | null; layout: VDBFroxelLayout } | null;
+    uniforms: GPUBuffer;
+    volumeShadows: ReadonlyMap<number | string, VDBVolumeShadowMap>;
+    emissionProbes: VDBFrameEmissionProbes | null;
+  };
 
   readonly #label: string;
   readonly #composite: { colorFormat: GPUTextureFormat; depthFormat: GPUTextureFormat } | null;
@@ -226,6 +258,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
   #transmittanceSignature: unknown[] = [];
   readonly #sourceIds = new WeakMap<object, number>();
   #nextSourceId = 1;
+  // K6.5: volume shadow maps, emission colours (LUT, hooks) and the emission probes
+  readonly #shadows: VDBFrameShadowMaps;
+  readonly #colors: VDBFrameEmissionColors;
+  readonly #probes: VDBFrameEmissionProbeSet;
 
   constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
     this.device = device;
@@ -248,7 +284,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
       addressModeV: "clamp-to-edge",
       addressModeW: "clamp-to-edge",
     });
-    this.outputs = { version: 0, froxels: null, uniforms: this.#frameBuffer };
+    this.#shadows = new VDBFrameShadowMaps(device, this.#label, this.#retire);
+    this.#colors = new VDBFrameEmissionColors(device, this.#label, this.#retire);
+    this.#probes = new VDBFrameEmissionProbeSet(device, this.#label, this.#retire);
+    this.outputs = { version: 0, froxels: null, uniforms: this.#frameBuffer, volumeShadows: this.#shadows.maps, emissionProbes: null };
   }
 
   // ---------------------------------------------------------------- volumes
@@ -282,15 +321,25 @@ class FrameRenderer implements VDBFrameRendererGpu {
   async prepare(options: { lighting?: ("volume" | "frame")[] } = {}): Promise<void> {
     this.#check();
     const modes = options.lighting ?? [this.settings.lighting];
+    // K6.5: the emission hooks validate first (a hook pipeline is built only once its hook is valid)
+    await this.#colors.settled(this.#volumes.map((v) => v.params.emissionColor));
     const jobs: Promise<void>[] = [];
     const sources = new Set(this.#volumes.map((v) => v.slot.source));
+    const shadows = modes.includes("frame") || this.settings.castShadows;
     for (const source of sources) {
-      for (const multi of [false, true]) {
-        for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting })));
-        if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes })));
+      const hooks = new Set<string | null>([null]);
+      if (source.channels.emission) for (const v of this.#volumes) if (v.slot.source === source) hooks.add(this.#colors.codeOf(v.params.emissionColor).hook);
+      for (const hook of hooks) {
+        for (const multi of [false, true]) {
+          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting, hook })));
+        }
+        if (source.channels.emission) jobs.push(prepareCompute(this.device, vdbFrameEmissionDirectionSpec(source, { maxVolumes: this.#maxVolumes, hook })));
       }
+      if (shadows) for (const multi of [false, true]) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes })));
     }
     if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec()));
+    if (this.settings.castShadows) jobs.push(prepareCompute(this.device, vdbFrameVolumeShadowSpec()));
+    if ([...sources].some((s) => s.channels.emission)) jobs.push(prepareCompute(this.device, vdbFrameEmissionReduceSpec()), prepareCompute(this.device, vdbFrameEmissionProbeSpec()));
     jobs.push(prepareCompute(this.device, vdbFrameResolveSpec({ temporal: this.settings.temporal })));
     const key = this.#compositeKey();
     if (key) jobs.push(prepareRender(this.device, vdbFrameCompositeSpec(key)));
@@ -306,14 +355,13 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const frameLighting = s.lighting === "frame";
     if (frame.environment) this.#warnOnce("environment", "the environment input (GPU prefilter, SH and environment lights) is K6.2b; this build ignores it.");
     if (frame.occluders && frame.occluders.length > 0) this.#warnOnce("occluders", "occluder maps (mesh → volume shadows) are K6.5b; they are ignored.");
-    if (frame.lights.some((l) => "shadow" in l && l.shadow)) this.#warnOnce("shadow", "volume shadow map requests are K6.5; they are ignored.");
     if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; the core renders grey.");
-    if (s.castShadows) this.#warnOnce("castShadows", "settings.castShadows is K6.5; it is ignored.");
     if (s.multipleScattering === "two-sided") this.#warnOnce("two-sided", "multipleScattering 'two-sided' is K6.3; it runs as true (1D diffusion).");
     if (s.multipleScattering === "octaves") this.#warnOnce("octaves", "multipleScattering 'octaves' is K6.3; it runs as false.");
     if (frameLighting && s.multipleScattering === "neural") this.#warnOnce("neural", "multipleScattering 'neural' (the MLP) is K6.3; 'frame' lighting runs it as true (1D diffusion).");
 
     if (options.froxels === false && this.#textures) return { outputs: this.outputs, recorded: this.#recorded, volumes: 0 };
+    const versions = [this.#shadows.version, this.#probes.version];
 
     // Froxel size (his getFroxelSize) and the textures
     const size = vdbFrameFroxelSize(s, frame.viewport, this.#held);
@@ -330,7 +378,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       D = Math.min(D, Math.floor(maxDim / layers));
     }
 
-    // Collect and clip the visible volumes (his FrameVolumeCollector); 'frame' lighting: every caster too
+    // Collect and clip the visible volumes (his FrameVolumeCollector)
     const cam = frame.camera;
     const clip = vdbFrameClipCamera(cam.view, cam.projection, { coordinateSystem: "webgpu", reversedDepth: !!cam.reversedDepth });
     let near = Infinity;
@@ -346,49 +394,67 @@ class FrameRenderer implements VDBFrameRendererGpu {
     }
     near = Math.max(near, s.near, cam.near);
     far = Math.min(far, s.far, cam.far);
-    if (clipped.length === 0 || far <= near) {
-      this.#recorded = false;
-      return { outputs: this.outputs, recorded: false, volumes: 0 };
+    const inRange = clipped.length > 0 && far > near;
+    if (!inRange) {
+      near = cam.near;
+      far = cam.far;
     }
     far = Math.max(far, near * 1.0001);
     const range: [number, number] = [near, far];
 
-    // Rects, slices and the froxel area
+    // Rects, slices and the froxel area (no froxel work without a volume in view)
     let visible: VolumeRecord[] = [];
-    for (const { volume, c } of clipped) {
-      const rect = vdbFrameFroxelRect(c.localToView, cam.projection, W, H);
-      if (!rect) continue;
-      const slices = vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, D);
-      visible.push({ volume, localToView: c.localToView, viewToLocal: c.viewToLocal, worldToLocal: c.worldToLocal, rect, first: slices.first, count: slices.count, visible: true, caster: frameLighting && volume.castsShadow });
+    if (inRange) {
+      for (const { volume, c } of clipped) {
+        const rect = vdbFrameFroxelRect(c.localToView, cam.projection, W, H);
+        if (!rect) continue;
+        const slices = vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, D);
+        visible.push({ volume, localToView: c.localToView, viewToLocal: c.viewToLocal, worldToLocal: c.worldToLocal, rect, first: slices.first, count: slices.count, visible: true, caster: false, emitter: false });
+      }
     }
     if (visible.length > this.#maxVolumes) {
       this.#warnOnce("volumes", `${visible.length} visible volumes exceed the ${this.#maxVolumes} a frame holds (uniform binding size); the rest are not drawn.`);
       visible = visible.slice(0, this.#maxVolumes);
     }
-    const area = vdbFrameFroxelArea(visible, W, H, D);
-    if (visible.length === 0 || area.count <= 0) {
+    const area = visible.length > 0 ? vdbFrameFroxelArea(visible, W, H, D) : null;
+    const froxelWork = !!area && area.count > 0;
+    if (!froxelWork) visible = [];
+
+    // K6.5: volume shadow maps need the shadow grid even without froxel work; the emission light needs its emitters
+    const shadowsWanted = VDBFrameShadowMaps.wanted(frame.lights, s.castShadows);
+    const usesGrid = (frameLighting && froxelWork) || shadowsWanted;
+    const emissionLight = frame.emissionLight ?? null;
+    if (!froxelWork && !shadowsWanted && !emissionLight) {
+      this.#shadows.update({ ...EMPTY_SHADOWS, lights: frame.lights, castShadows: s.castShadows });
+      this.#probes.plan(null, [], [0, 0, 0], 1);
+      this.#syncOutputs(versions);
       this.#recorded = false;
       return { outputs: this.outputs, recorded: false, volumes: 0 };
     }
-    // 'frame' lighting: casters out of view (or not drawn) still shadow the visible ones (his collector)
-    const casterOnly: VolumeRecord[] = [];
-    if (frameLighting) {
-      const drawn = new Set(visible.map((r) => r.volume));
-      for (const volume of this.#volumes) {
-        if (!volume.castsShadow || drawn.has(volume)) continue;
-        const localToView = vdbMat4Multiply(cam.view, volume.params.matrixWorld);
-        casterOnly.push({ volume, localToView, viewToLocal: vdbMat4Invert(localToView), worldToLocal: vdbMat4Invert(volume.params.matrixWorld), rect: [0, 0, 0, 0], first: 0, count: 0, visible: false, caster: true });
+    for (const r of visible) r.caster = usesGrid && r.volume.castsShadow;
+    // Casters out of view (or not drawn) still shadow (his collector); emitters out of view still light meshes
+    const extra: VolumeRecord[] = [];
+    const listed = new Set(visible.map((r) => r.volume));
+    for (const volume of this.#volumes) {
+      const caster = usesGrid && volume.castsShadow;
+      const emitter = !!emissionLight && volume.visible && !!volume.slot.channels.emission;
+      if (listed.has(volume)) {
+        if (emitter) visible.find((r) => r.volume === volume)!.emitter = true;
+        continue;
       }
-      if (visible.length + casterOnly.length > this.#maxVolumes) {
-        this.#warnOnce("casters", `${visible.length + casterOnly.length} volumes and casters exceed the ${this.#maxVolumes} a frame holds; some casters are left out.`);
-        casterOnly.length = Math.max(0, this.#maxVolumes - visible.length);
-      }
+      if (!caster && !emitter) continue;
+      const localToView = vdbMat4Multiply(cam.view, volume.params.matrixWorld);
+      extra.push({ volume, localToView, viewToLocal: vdbMat4Invert(localToView), worldToLocal: vdbMat4Invert(volume.params.matrixWorld), rect: [0, 0, 0, 0], first: 0, count: 0, visible: false, caster, emitter });
+    }
+    if (visible.length + extra.length > this.#maxVolumes) {
+      this.#warnOnce("casters", `${visible.length + extra.length} volumes, casters and emitters exceed the ${this.#maxVolumes} a frame holds; some are left out.`);
+      extra.length = Math.max(0, this.#maxVolumes - visible.length);
     }
 
-    // Source groups, in first-appearance order; in a group the visible non-casters, the visible casters, then the
-    // caster-only records (gather range: the visible ones; caster range: the casters)
+    // Source groups, in first-appearance order; in a group the visible non-casters, the visible casters, the
+    // casters that are not drawn, then emitters that are neither (gather range: the visible ones; caster range: the casters)
     const bySource = new Map<VDBVolumeSource, VolumeRecord[]>();
-    for (const r of [...visible, ...casterOnly]) {
+    for (const r of [...visible, ...extra]) {
       const list = bySource.get(r.volume.slot.source);
       if (list) list.push(r);
       else bySource.set(r.volume.slot.source, [r]);
@@ -396,7 +462,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const groups: SourceGroup[] = [];
     const ordered: VolumeRecord[] = [];
     for (const [source, list] of bySource) {
-      const sorted = [...list.filter((r) => r.visible && !r.caster), ...list.filter((r) => r.visible && r.caster), ...list.filter((r) => !r.visible)];
+      const sorted = [...list.filter((r) => r.visible && !r.caster), ...list.filter((r) => r.visible && r.caster), ...list.filter((r) => !r.visible && r.caster), ...list.filter((r) => !r.visible && !r.caster)];
       const g: SourceGroup = {
         source,
         records: sorted,
@@ -404,6 +470,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
         visible: sorted.filter((r) => r.visible).length,
         casterStart: sorted.findIndex((r) => r.caster),
         casters: sorted.filter((r) => r.caster).length,
+        hook: null,
       };
       if (g.casterStart < 0) g.casterStart = 0;
       groups.push(g);
@@ -413,8 +480,21 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const casterGroups = groups.filter((g) => g.casters > 0);
     const multi = gatherGroups.length > 1;
 
+    // K6.5 emission colour codes (LUT rows, validated hooks; one hook per source group)
+    const codes = ordered.map((r) => {
+      if (!r.volume.slot.channels.emission) return 0;
+      const c = this.#colors.codeOf(r.volume.params.emissionColor);
+      const g = groups.find((x) => x.source === r.volume.slot.source)!;
+      if (c.hook) {
+        if (g.hook && g.hook !== c.hook) throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu: volumes of one source use two different emission colour hooks; one hook per source (a pipeline key).");
+        g.hook = c.hook;
+      }
+      return c.code;
+    });
+    const lut = this.#colors.texture();
+
     // Textures (a new size or temporal / multi-group need retires the old ones and drops the history)
-    const tex = this.#ensureTextures(W, H, D, s.temporal, multi, layers);
+    const tex = froxelWork ? this.#ensureTextures(W, H, D, s.temporal, multi, layers) : null;
 
     // Temporal validity (his historyValid && historyCamera === camera; plus a consecutive frameId)
     const prev = this.#previous;
@@ -422,11 +502,13 @@ class FrameRenderer implements VDBFrameRendererGpu {
     if (!s.temporal) this.#historyValid = false;
 
     // The dispatch box: this area and every rect a texture this update writes still holds
-    const historyOut = tex.history ? tex.history[1 - this.#historyIndex]! : null;
-    let box: VDBFroxelArea = { rect: [...area.rect], first: 0, count: D };
-    for (const t of [tex.scatter, tex.integrated, historyOut]) {
-      const w = t && this.#written.get(t);
-      if (w) box = vdbFroxelAreaUnion(box, w);
+    const historyOut = tex?.history ? tex.history[1 - this.#historyIndex]! : null;
+    let box: VDBFroxelArea = area ? { rect: [...area.rect], first: 0, count: D } : { rect: [0, 0, 0, 0], first: 0, count: D };
+    if (tex) {
+      for (const t of [tex.scatter, tex.integrated, historyOut]) {
+        const w = t && this.#written.get(t);
+        if (w) box = vdbFroxelAreaUnion(box, w);
+      }
     }
 
     // Uniforms
@@ -441,8 +523,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "previousProjection", prev?.projection ?? cam.projection);
     fw.set(U, 0, "grid", [W, H, D, vdbFrameAtlasLayout(W, H, D).columns]);
     fw.set(U, 0, "range", [near, far, prev?.range[0] ?? near, prev?.range[1] ?? far]);
-    fw.set(U, 0, "areaRect", area.rect);
-    fw.set(U, 0, "areaSlices", [area.first, area.first + area.count]);
+    if (area) {
+      fw.set(U, 0, "areaRect", area.rect);
+      fw.set(U, 0, "areaSlices", [area.first, area.first + area.count]);
+    }
     fw.set(U, 0, "dispatchBox", [box.rect[0], box.rect[1], box.rect[2] - box.rect[0], box.rect[3] - box.rect[1]]);
     const jitter = s.jitter ? ((frame.frameId % 1024) * 0.618034) % 1.0 : -1.0;
     const fade = Number.isFinite(s.fadeRadius) && s.fadeRadius > 0 ? s.fadeRadius : 0;
@@ -450,15 +534,49 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "flags", [Math.max(1, Math.round(s.subSteps)), s.temporal ? 1 : 0, (cam.reversedDepth ? 1 : 0) | (cam.orthographic ? 2 : 0), 0]);
     fw.set(U, 0, "camera", [cam.near, cam.far, 0, 0]);
     const lightInfo = this.#packLights(frame.lights);
-    const grid = frameLighting ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter) : null;
+    const grid = usesGrid ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter, frameLighting && froxelWork) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
-    this.#packVolumes(ordered);
-    this.#packGroups(groups, gatherGroups, casterGroups);
+
+    // K6.5: the volume shadow map pieces (budgeted) and the emission probe work
+    const last = grid && grid.count > 0 ? grid.count - 1 : -1;
+    this.#shadows.update({
+      lights: frame.lights,
+      castShadows: s.castShadows,
+      coarse: s.castShadowCoarse,
+      steps: s.castShadowSteps,
+      budget: s.castShadowUpdatesPerFrame,
+      cascades: s.castShadowCascades,
+      castShadowDistance: s.castShadowDistance,
+      camera: { view: cam.view, cameraWorld, projectionInverse, near: cam.near, far: cam.far, orthographic: !!cam.orthographic },
+      grid: last >= 0 ? { min: [this.#gridMin[last]!.x, this.#gridMin[last]!.y, this.#gridMin[last]!.z], size: [this.#gridSize[last]!.x, this.#gridSize[last]!.y, this.#gridSize[last]!.z] } : null,
+      castVersion: this.#gridState.castVersion,
+    });
+    this.redrawStats.volumeShadows.drawn = this.#shadows.stats.drawn;
+    this.redrawStats.volumeShadows.waiting = this.#shadows.stats.waiting;
+    const emitters: VDBFrameEmitterInput[] = [];
+    if (emissionLight) {
+      ordered.forEach((r, i) => {
+        if (!r.emitter) return;
+        const p = r.volume.params;
+        const slot = r.volume.slot;
+        emitters.push({
+          record: i,
+          group: groups.findIndex((g) => g.source === slot.source),
+          matrixWorld: p.matrixWorld,
+          key: [this.#sourceId(slot.source), slot.v, slot.version, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.emissiveIntensity, ...p.temperatureRange, ...p.offset3D, WRAP_CODE[p.wrap3D] ?? 0, p.mipmaps ? 1 : 0, emissionLight.steps ?? 24, codes[i], groups.find((g) => g.source === slot.source)!.hook ?? "", ...Array.from({ length: 16 }, (_, k) => p.matrixWorld[k]!)].join(","),
+        });
+      });
+    }
+    const emission = this.#probes.plan(emissionLight, emitters, [cameraWorld[12]!, cameraWorld[13]!, cameraWorld[14]!], emissionLight?.steps ?? 24);
+
+    this.#packVolumes(ordered, codes);
+    this.#packGroups(groups, gatherGroups, casterGroups, emission?.groups ?? null);
 
     // Sparse sources (K6.7) record their own work after the host's pool.update(encoder); group 2 follows their version.
     for (const g of groups) (g.source as VDBVolumeSource & { update?: (e: GPUCommandEncoder) => unknown }).update?.(encoder);
 
-    // Record: ['frame': shadow grid per caster group, transmittance], gather per source group, then resolve
+    // Record: [shadow grid per caster group, volume shadow maps, transmittance], [emission], gather per source group,
+    // then resolve
     const pass = encoder.beginComputePass({ label: `${this.#label} froxels` });
     const group0 = this.#group0Bind();
     if (grid?.drawGrid) {
@@ -473,6 +591,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
         pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
       });
     }
+    if (this.#grid && grid && grid.count > 0) this.#shadows.record(pass, computePipeline(this.device, vdbFrameVolumeShadowSpec()), group0, this.#grid.shadow);
     if (grid?.drawTransmittance) {
       const gt = this.#grid!;
       const r = gt.resolution;
@@ -482,21 +601,29 @@ class FrameRenderer implements VDBFrameRendererGpu {
       pass.setBindGroup(1, this.#transmittanceBind(built.layouts[1]!, gt));
       pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
     }
-    gatherGroups.forEach((g) => {
-      const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting: s.lighting }));
-      pass.setPipeline(built.pipeline);
+    if (emission) this.#recordEmission(pass, group0, groups, emission, lut);
+    if (tex && area) {
+      gatherGroups.forEach((g) => {
+        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook }));
+        pass.setPipeline(built.pipeline);
+        pass.setBindGroup(0, group0);
+        pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi, frameLighting, g.source.channels.emission ? lut : null), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);
+        pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
+        pass.dispatchWorkgroups(Math.ceil((box.rect[2] - box.rect[0]) / 8), Math.ceil((box.rect[3] - box.rect[1]) / 8), D);
+      });
+      const resolve = computePipeline(this.device, vdbFrameResolveSpec({ temporal: s.temporal }));
+      pass.setPipeline(resolve.pipeline);
       pass.setBindGroup(0, group0);
-      pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi, frameLighting), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);
-      pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
-      pass.dispatchWorkgroups(Math.ceil((box.rect[2] - box.rect[0]) / 8), Math.ceil((box.rect[3] - box.rect[1]) / 8), D);
-    });
-    const resolve = computePipeline(this.device, vdbFrameResolveSpec({ temporal: s.temporal }));
-    pass.setPipeline(resolve.pipeline);
-    pass.setBindGroup(0, group0);
-    pass.setBindGroup(1, this.#resolveBind(resolve.layouts[1]!, tex, s.temporal));
-    pass.dispatchWorkgroups(Math.ceil((box.rect[2] - box.rect[0]) / 8), Math.ceil((box.rect[3] - box.rect[1]) / 8), 1);
+      pass.setBindGroup(1, this.#resolveBind(resolve.layouts[1]!, tex, s.temporal));
+      pass.dispatchWorkgroups(Math.ceil((box.rect[2] - box.rect[0]) / 8), Math.ceil((box.rect[3] - box.rect[1]) / 8), 1);
+    }
     pass.end();
+    this.#syncOutputs(versions);
 
+    if (!tex || !area) {
+      this.#recorded = false;
+      return { outputs: this.outputs, recorded: false, volumes: 0 };
+    }
     // Book-keeping: what each texture holds, the history swap, the previous frame
     for (const t of [tex.scatter, tex.integrated, historyOut]) if (t) this.#written.set(t, area);
     if (tex.history) {
@@ -508,6 +635,83 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.outputs.froxels = { integrated: tex.integrated, integratedAlpha: null, layout };
     this.#recorded = true;
     return { outputs: this.outputs, recorded: true, volumes: visible.length };
+  }
+
+  /** K6.5: the shadow maps and emission probes into the outputs (a new texture object bumps `outputs.version`). */
+  #syncOutputs(versions: readonly number[]): void {
+    if (this.#shadows.version !== versions[0] || this.#probes.version !== versions[1]) this.outputs.version++;
+    this.outputs.emissionProbes = this.#probes.outputs;
+  }
+
+  /** K6.5: the emission direction passes (per source group with changed emitters), the reduce and the probes. */
+  #recordEmission(pass: GPUComputePassEncoder, group0: GPUBindGroup, groups: readonly SourceGroup[], plan: VDBFrameEmissionPlan, lut: GPUTexture): void {
+    const P = this.#probes;
+    for (const [index, range] of plan.groups) {
+      const g = groups[index]!;
+      const built = computePipeline(this.device, vdbFrameEmissionDirectionSpec(g.source, { maxVolumes: this.#maxVolumes, hook: g.hook }));
+      const b = EMISSION_DIRECTION_BINDINGS;
+      pass.setPipeline(built.pipeline);
+      pass.setBindGroup(0, group0);
+      const group1 = this.#cached("emission-direction", [built.layouts[1]!, this.#groupsBuffer, lut, P.directionTexture!], () =>
+        this.device.createBindGroup({
+          label: `${this.#label} emission direction group 1`,
+          layout: built.layouts[1]!,
+          entries: [
+            { binding: b.volumes, resource: { buffer: this.#volumesBuffer } },
+            { binding: b.group, resource: { buffer: this.#groupsBuffer, size: VDB_FRAME_GROUP.size } },
+            { binding: b.emitters, resource: { buffer: P.listBuffer } },
+            { binding: b.lut, resource: lut.createView() },
+            { binding: b.directions, resource: P.directionTexture!.createView() },
+          ],
+        }),
+      );
+      pass.setBindGroup(1, group1, [index * VDB_FRAME_GROUP_STRIDE]);
+      pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
+      pass.dispatchWorkgroups(VDB_FRAME_EMISSION_DIRECTIONS, range.count, 1);
+    }
+    if (plan.reduce) {
+      const built = computePipeline(this.device, vdbFrameEmissionReduceSpec());
+      const b = EMISSION_REDUCE_BINDINGS;
+      pass.setPipeline(built.pipeline);
+      pass.setBindGroup(0, group0);
+      pass.setBindGroup(
+        1,
+        this.#cached("emission-reduce", [built.layouts[1]!, P.directionTexture!, P.emitterTexture!], () =>
+          this.device.createBindGroup({
+            label: `${this.#label} emission reduce group 1`,
+            layout: built.layouts[1]!,
+            entries: [
+              { binding: b.emitters, resource: { buffer: P.listBuffer } },
+              { binding: b.directions, resource: P.directionTexture!.createView() },
+              { binding: b.out, resource: P.emitterTexture!.createView() },
+            ],
+          }),
+        ),
+      );
+      pass.dispatchWorkgroups(Math.ceil(P.slots / 64), 1, 1);
+    }
+    if (plan.probes && P.outputs) {
+      const built = computePipeline(this.device, vdbFrameEmissionProbeSpec());
+      const b = EMISSION_PROBE_BINDINGS;
+      const r = P.outputs.state.resolution;
+      pass.setPipeline(built.pipeline);
+      pass.setBindGroup(0, group0);
+      pass.setBindGroup(
+        1,
+        this.#cached("emission-probes", [built.layouts[1]!, P.emitterTexture!, P.probeTexture!], () =>
+          this.device.createBindGroup({
+            label: `${this.#label} emission probes group 1`,
+            layout: built.layouts[1]!,
+            entries: [
+              { binding: b.grid, resource: { buffer: P.gridBuffer } },
+              { binding: b.emitters, resource: P.emitterTexture!.createView() },
+              { binding: b.probes, resource: P.probeTexture!.createView({ dimension: "3d" }) },
+            ],
+          }),
+        ),
+      );
+      pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * P.outputs.state.count) / 4));
+    }
   }
 
   /** A stable number per source object (the caster signature's source identity). */
@@ -526,6 +730,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     cameraWorld: ArrayLike<number>,
     lights: { sorted: readonly number[][]; sky: readonly number[] },
     jitter: number,
+    transmittance = true,
   ): { count: number; drawGrid: boolean; drawTransmittance: boolean } {
     const s = this.settings;
     const fw = this.#frameWriter;
@@ -590,6 +795,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       else this.redrawStats.shadowDensity.skipped++;
       this.#gridDrawn = this.#gridState.gridVersion;
     }
+    // K6.5: the volume shadow maps alone ('volume' lighting, or no volume in view) need only the grid
+    if (!transmittance) return { count, drawGrid, drawTransmittance: false };
     const signature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky];
     for (let i = 0; i < shadowSlots; i++) signature.push(...lights.sorted[i]!.slice(0, 4));
     const drawTransmittance = count > 0 && (jitter >= 0 || !vdbSameValues(signature, this.#transmittanceSignature));
@@ -700,10 +907,11 @@ class FrameRenderer implements VDBFrameRendererGpu {
     return group;
   }
 
-  #gatherBind(layout: GPUBindGroupLayout, tex: Textures, multi: boolean, frameLighting: boolean): GPUBindGroup {
+  #gatherBind(layout: GPUBindGroupLayout, tex: Textures, multi: boolean, frameLighting: boolean, lut: GPUTexture | null): GPUBindGroup {
     const b = frameLighting ? FRAME_GATHER_BINDINGS : GATHER_BINDINGS;
     const transmittance = frameLighting ? this.#grid!.transmittance : null;
-    return this.#cached(`gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}`, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance] : []), this.#groupsBuffer], () =>
+    const name = `gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}${lut ? "-lut" : ""}`;
+    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance] : []), ...(lut ? [lut] : []), this.#groupsBuffer], () =>
       this.device.createBindGroup({
         label: `${this.#label} gather group 1`,
         layout,
@@ -713,6 +921,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: b.scatter, resource: tex.scatter.createView({ dimension: "3d" }) },
           ...(multi ? [{ binding: b.partials, resource: tex.partials!.createView({ dimension: "3d" }) }] : []),
           ...(transmittance ? [{ binding: FRAME_GATHER_BINDINGS.transmittance, resource: transmittance.createView({ dimension: "3d" }) }] : []),
+          ...(lut ? [{ binding: b.emissionLut, resource: lut.createView() }] : []),
         ],
       }),
     );
@@ -873,7 +1082,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     return p.normalizeDensity && mean > 0 ? p.densityScale / mean : p.densityScale;
   }
 
-  #packVolumes(records: readonly VolumeRecord[]): void {
+  #packVolumes(records: readonly VolumeRecord[], codes: readonly number[]): void {
     const w = this.#volumesWriter;
     const V = VDB_FRAME_VOLUME;
     records.forEach((r, i) => {
@@ -901,14 +1110,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
       w.set(V, base, "phaseSpectrumMs", [...vdbFramePhaseSpectrum(phaseFields), ms]);
       w.set(V, base, "density", [this.#densityScaleOf(p, slot), p.densityCutoff, vdbMat4MaxScale(p.matrixWorld), p.absorbance]);
       w.set(V, base, "emission", [p.emissiveIntensity, p.temperatureRange[0], p.temperatureRange[1], levels]);
-      w.set(V, base, "march", [Math.max(0, Math.round(p.shadowSteps)), p.mipmaps && levels > 0 ? 1 : 0, p.hdda ? 1 : 0, 0]);
+      w.set(V, base, "march", [Math.max(0, Math.round(p.shadowSteps)), p.mipmaps && levels > 0 ? 1 : 0, p.hdda ? 1 : 0, codes[i] ?? 0]);
       w.set(V, base, "extinctionSpectrum", [1, 1, 1, 0]);
     });
     this.device.queue.writeBuffer(this.#volumesBuffer, 0, w.buffer, 0, Math.max(1, records.length) * VDB_FRAME_VOLUME_BYTES);
   }
 
   /** One record per source group: its gather range and role among the gather groups, its casters and their role. */
-  #packGroups(groups: readonly SourceGroup[], gatherGroups: readonly SourceGroup[], casterGroups: readonly SourceGroup[]): void {
+  #packGroups(groups: readonly SourceGroup[], gatherGroups: readonly SourceGroup[], casterGroups: readonly SourceGroup[], emitters: ReadonlyMap<number, { first: number; count: number }> | null): void {
     const bytes = Math.max(4, groups.length) * VDB_FRAME_GROUP_STRIDE;
     if (this.#groupsBuffer.size < bytes) {
       this.#retire.retire(this.#groupsBuffer);
@@ -924,6 +1133,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       w.clear(i * VDB_FRAME_GROUP_STRIDE, VDB_FRAME_GROUP_STRIDE);
       w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "range", [g.first, g.visible, role(gatherGroups, g), gatherGroups.indexOf(g)]);
       w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "casters", [g.first + g.casterStart, g.casters, role(casterGroups, g), casterGroups.indexOf(g)]);
+      const e = emitters?.get(i);
+      w.set(VDB_FRAME_GROUP, i * VDB_FRAME_GROUP_STRIDE, "emitters", [e?.first ?? 0, e?.count ?? 0, 0, 0]);
     });
     this.device.queue.writeBuffer(this.#groupsBuffer, 0, w.buffer, 0, groups.length * VDB_FRAME_GROUP_STRIDE);
   }
@@ -1004,6 +1215,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
       g.partials?.destroy();
     }
     this.#grid = null;
+    this.#shadows.dispose();
+    this.#probes.dispose();
+    this.#colors.dispose();
+    this.outputs.emissionProbes = null;
     this.#retire.drain();
     this.#frameBuffer.destroy();
     this.#lightsBuffer.destroy();
@@ -1016,6 +1231,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
   /** @internal The textures (harness probes and tests). */
   get debugTextures(): Readonly<Textures> | null {
     return this.#textures;
+  }
+
+  /** @internal The emission textures (harness probes): direction and emitter textures, slots, the list buffer. */
+  get debugEmission(): { directions: GPUTexture | null; emitters: GPUTexture | null; probes: GPUTexture | null; slots: number } {
+    const P = this.#probes;
+    return { directions: P.directionTexture, emitters: P.emitterTexture, probes: P.probeTexture, slots: P.slots };
   }
 
   /** @internal The 'frame' lighting grid textures and the live cascade layout (harness probes and tests). */
@@ -1045,6 +1266,11 @@ export function vdbCreateFrameRenderer(device: GPUDevice, options: VDBFrameRende
 /** @internal The froxel textures of a renderer from {@link vdbCreateFrameRenderer} (harness probes). */
 export function vdbFrameRendererTextures(r: VDBFrameRendererGpu): { scatter: GPUTexture; integrated: GPUTexture; history: readonly GPUTexture[] | null; partials: GPUTexture | null; size: readonly number[] } | null {
   return (r as unknown as { debugTextures: Textures | null }).debugTextures;
+}
+
+/** @internal The emission textures of a renderer (harness probes). */
+export function vdbFrameRendererEmission(r: VDBFrameRendererGpu): { directions: GPUTexture | null; emitters: GPUTexture | null; probes: GPUTexture | null; slots: number } {
+  return (r as unknown as { debugEmission: ReturnType<typeof vdbFrameRendererEmission> }).debugEmission;
 }
 
 /** @internal The 'frame' lighting grid of a renderer (harness probes): stacks, their layouts and the live cascades. */

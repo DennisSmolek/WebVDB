@@ -221,7 +221,7 @@ export const VDB_FRAME_VOLUME = vdbUniformStruct(
     { name: "density", type: "vec4f" },
     // emissiveIntensity, temperature min, max, lod levels the read may use (mipmaps ? levels : 0)
     { name: "emission", type: "vec4f" },
-    // shadow steps, mipmaps (0/1), hdda (0/1), spare
+    // shadow steps, mipmaps (0/1), hdda (0/1), K6.5 emission colour code (bits 0-1: 0 white, 1 LUT row, 2 user hook; bits 2+: row)
     { name: "march", type: "vec4u" },
     // K6.4: extinction spectrum (rgb), spare
     { name: "extinctionSpectrum", type: "vec4f" },
@@ -235,6 +235,8 @@ export const VDB_FRAME_GROUP = vdbUniformStruct("VdbFrameGroup", [
   { name: "range", type: "vec4u" },
   // K6.2: the group's shadow casters (first record, count, role among the caster groups, caster group index)
   { name: "casters", type: "vec4u" },
+  // K6.5: the group's emitters whose direction pass runs (first item of the emitter list, count)
+  { name: "emitters", type: "vec4u" },
 ]);
 
 /** The WGSL of the frame structs and the group-0 bindings every frame kernel declares. */

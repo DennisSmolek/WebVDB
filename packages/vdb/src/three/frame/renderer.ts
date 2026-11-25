@@ -101,7 +101,8 @@ import type { VDBGridTypeName } from "../../core/types.js";
 import { VDBError } from "../../core/errors.js";
 import { vdbDenseSource, type VDBDenseSource } from "../../core/source/dense.js";
 import { vdbCreateFrameRenderer, type VDBFrameRendererGpu } from "../../core/frame/renderer.js";
-import type { VDBFrameLight, VDBFrameVolumeGpu, VDBFrameVolumeParams } from "../../core/frame/types.js";
+import type { VDBEmissionColor, VDBFrameLight, VDBFrameVolumeGpu, VDBFrameVolumeParams } from "../../core/frame/types.js";
+import { vdbFrameEmissionLutRow } from "../../tools/frame/blackbody.js";
 import { getDevice } from "../device.js";
 import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
 import { VDBFrameCoreIntegrateMaterial } from "./core-integrate-material.js";
@@ -470,6 +471,8 @@ export class VDBFrameRenderer {
   private coreMaterial: VDBFrameCoreIntegrateMaterial | null = null;
   private readonly corePrefix = new VDBCoreTextureBinding();
   private coreSources = new WeakMap<object, VDBDenseSource>();
+  /** K6.5: blackbody hook LUT rows per table and soot exponent (one array each: the core keys LUTs by identity). */
+  private coreLutRows = new WeakMap<object, Map<number, Float32Array>>();
   /** K6.1d: core sparse sources per pool and options, and each TSL sparse source's slot. */
   private coreSparseSources = new Map<object, Map<string, VDBSparseSourceGpu>>();
   private coreSparseSlots = new WeakMap<object, VDBSparseVolumeGpu>();
@@ -2343,7 +2346,6 @@ export class VDBFrameRenderer {
       handle = this.core!.addVolume(source);
       this.coreVolumes.set(frameVolume, handle);
     }
-    if (frameVolume.emissionColor) this.warnOnce("core-emission", "backend 'core': emission colour hooks are K6.5; K6.1 draws white emission.");
     return handle;
   }
 
@@ -2432,8 +2434,30 @@ export class VDBFrameRenderer {
       phaseBackG: v.phaseBackG,
       phaseBackWeight: v.phaseBackWeight,
       phaseGExponent: v.phaseGExponent,
+      emissionColor: this.coreEmissionColor(v),
     };
     Object.assign(p, params);
+  }
+
+  /**
+   * K6.5: a frame volume's emission colour hook as core data: `vdbFrameBlackbodyEmission` ('planck' / 'soot') becomes
+   * its table's LUT row at the hook's soot exponent (the same table, so the same colours); other TSL hooks cannot run
+   * in the core (white, warned once).
+   */
+  private coreEmissionColor(v: VDBFrameVolume): VDBEmissionColor {
+    const hook = v.emissionColor as unknown as { spectrum?: string; sootExponent?: { value: number }; table?: { image?: { data?: ArrayLike<number> } } } | undefined;
+    if (!hook) return "white";
+    const table = hook.table?.image?.data;
+    if (table && hook.sootExponent && (hook.spectrum === "planck" || hook.spectrum === "soot")) {
+      const exponent = hook.sootExponent.value;
+      let rows = this.coreLutRows.get(table);
+      if (!rows) this.coreLutRows.set(table, (rows = new Map()));
+      let row = rows.get(exponent);
+      if (!row) rows.set(exponent, (row = vdbFrameEmissionLutRow(exponent, table)));
+      return { lut: row };
+    }
+    this.warnOnce("core-emission", "backend 'core': a TSL emissionColor hook other than vdbFrameBlackbodyEmission cannot run in the core; it draws white emission (use the core's emissionColor data or a WGSL hook).");
+    return "white";
   }
 
   /** The scene's lights in the camera's layers as core lights (his visitLight). */

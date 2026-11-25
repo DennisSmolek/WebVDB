@@ -23,7 +23,17 @@ import {
 import { RESOLVE_BINDINGS, vdbFrameResolveWgsl } from "./wgsl/resolve.js";
 import { VDB_FRAME_COMPOSITE_COLOR_WGSL, VDB_FRAME_INTEGRATE_TAPS_WGSL, VDB_FRAME_SLICE_COORD_WGSL, vdbFrameCompositeWgsl } from "./wgsl/integrate.js";
 import { VDB_FRAME_MAX_VOLUMES, vdbFrameUniformsWgsl } from "./uniforms.js";
-import type { VDBComputeSpec, VDBRenderSpec } from "./pipelines.js";
+import { vdbHashText, type VDBComputeSpec, type VDBRenderSpec } from "./pipelines.js";
+import { VOLUME_SHADOW_BINDINGS, vdbFrameVolumeShadowWgsl } from "./wgsl/shadows.js";
+import {
+  EMISSION_DIRECTION_BINDINGS,
+  EMISSION_PROBE_BINDINGS,
+  EMISSION_REDUCE_BINDINGS,
+  vdbFrameEmissionDirectionWgsl,
+  vdbFrameEmissionProbeWgsl,
+  vdbFrameEmissionReduceWgsl,
+} from "./wgsl/emission.js";
+import { vdbFrameSourceFunctionsWgsl } from "./wgsl/gather.js";
 import { STAGE } from "./resources.js";
 
 /** Where a source's group-2 bindings start. */
@@ -47,6 +57,8 @@ export interface VDBFrameGatherKey {
   readonly maxVolumes?: number;
   /** K6.2: `'frame'` lighting fuses his density and lighting passes (the mix does not apply: his sums are additive). */
   readonly lighting?: "volume" | "frame";
+  /** K6.5: a validated user emission colour hook compiled into the group's kernels (sources with emission). */
+  readonly hook?: string | null;
 }
 
 /** The source's VDB module (sparse, K6.7) and its `vdbSrc*` WGSL at group 2, then the frame uniforms. */
@@ -65,10 +77,11 @@ function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined):
 
 /** The gather kernel's WGSL for `source` (its `vdbSrc*` at group 2). */
 export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameGatherKey): string {
+  const hook = source.channels.emission ? (key.hook ?? null) : null;
   const body =
     key.lighting === "frame"
-      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels })
-      : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels });
+      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels, hook })
+      : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels, hook });
   return `${sourcePrelude(source, key.maxVolumes)}\n${body}`;
 }
 
@@ -87,8 +100,10 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
   ];
   if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
   if (frame) group1.push({ binding: FRAME_GATHER_BINDINGS.transmittance, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
+  if (source.channels.emission) group1.push({ binding: b.emissionLut, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } });
+  const hooked = source.channels.emission && key.hook ? `, hook ${vdbHashText(key.hook)}` : "";
   return {
-    label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}; ${sourceChannels(source)})`,
+    label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}; ${sourceChannels(source)}${hooked})`,
     code: vdbFrameGatherKernelWgsl(source, key),
     entryPoint: "vdbFrameGatherCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
@@ -132,6 +147,97 @@ export function vdbFrameTransmittanceSpec(): VDBComputeSpec {
         entries: [
           { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
           { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** K6.5: the volume shadow map kernel's spec (source-free: the shadow grid stack; one dispatch per map piece). */
+export function vdbFrameVolumeShadowSpec(): VDBComputeSpec {
+  const b = VOLUME_SHADOW_BINDINGS;
+  return {
+    label: "vdb frame volume shadow map",
+    code: `${vdbFrameUniformsWgsl()}\n${frameChunksWgsl(["grid"])}\n${vdbFrameVolumeShadowWgsl()}`,
+    entryPoint: "vdbFrameVolumeShadowCs",
+    groups: [
+      GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.piece, visibility: STAGE.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
+          { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+          { binding: b.map, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d-array" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** K6.5: the emission direction kernel's spec (per source group with emitters; the source must have emission). */
+export function vdbFrameEmissionDirectionSpec(source: VDBVolumeSource, key: { maxVolumes?: number; hook?: string | null }): VDBComputeSpec {
+  if (!source.channels.emission) throw new VDBError("VDB_BAD_OPTION", "vdbFrameEmissionDirectionSpec: the source has no emission channel.");
+  const b = EMISSION_DIRECTION_BINDINGS;
+  const hook = key.hook ?? null;
+  const code = `${sourcePrelude(source, key.maxVolumes)}
+${frameChunksWgsl(["constants", "box", "lod"])}
+@group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
+@group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
+${vdbFrameSourceFunctionsWgsl(source.channels, { lutBinding: b.lut, hook })}
+${vdbFrameEmissionDirectionWgsl()}`;
+  return {
+    label: `vdb frame emission direction; ${sourceChannels(source)}${hook ? `, hook ${vdbHashText(hook)}` : ""}`,
+    code,
+    entryPoint: "vdbFrameEmissionDirectionCs",
+    groups: [
+      GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.volumes, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+          { binding: b.group, visibility: STAGE.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
+          { binding: b.emitters, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+          { binding: b.lut, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+          { binding: b.directions, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" } },
+        ],
+      },
+      { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) },
+    ],
+  };
+}
+
+/** K6.5: the emission reduce kernel's spec (source-free). */
+export function vdbFrameEmissionReduceSpec(): VDBComputeSpec {
+  const b = EMISSION_REDUCE_BINDINGS;
+  return {
+    label: "vdb frame emission reduce",
+    code: `${vdbFrameUniformsWgsl()}\n${vdbFrameEmissionReduceWgsl()}`,
+    entryPoint: "vdbFrameEmissionReduceCs",
+    groups: [
+      GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.emitters, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+          { binding: b.directions, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+          { binding: b.out, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba32float", viewDimension: "2d" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** K6.5: the emission probe kernel's spec (source-free). */
+export function vdbFrameEmissionProbeSpec(): VDBComputeSpec {
+  const b = EMISSION_PROBE_BINDINGS;
+  return {
+    label: "vdb frame emission probes",
+    code: `${vdbFrameUniformsWgsl()}\n${vdbFrameEmissionProbeWgsl()}`,
+    entryPoint: "vdbFrameEmissionProbeCs",
+    groups: [
+      GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.grid, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+          { binding: b.emitters, visibility: STAGE.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+          { binding: b.probes, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
         ],
       },
     ],

@@ -21,6 +21,7 @@
 
 import type { VDBVolumeChannels } from "../../source/types.js";
 import { frameChunksWgsl } from "./chunks.js";
+import { vdbFrameEmissionColorWgsl } from "./emission.js";
 
 /** Pipeline-key options of the gather kernel. */
 export interface VDBFrameGatherOptions {
@@ -30,24 +31,28 @@ export interface VDBFrameGatherOptions {
   readonly multi: boolean;
   /** The source's channels (absent ones compile to constants). */
   readonly channels: VDBVolumeChannels;
+  /** K6.5: a validated user emission colour hook (WGSL), or none. */
+  readonly hook?: string | null;
 }
 
 /** Group-1 bindings of the gather kernel. */
-export const GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3 } as const;
+export const GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, emissionLut: 4 } as const;
 
 /**
  * The volume-record functions every source kernel shares (gather 'volume' and 'frame', gridDensity): his gridUv,
  * sampleExtinction, sampleAlbedo and sampleEmission over the group-2 source, reading `vdbFrameVolumes` (group 1).
  */
-export function vdbFrameSourceFunctionsWgsl(channels: VDBVolumeChannels): string {
+export function vdbFrameSourceFunctionsWgsl(channels: VDBVolumeChannels, color: { lutBinding: number | null; hook: string | null } = { lutBinding: null, hook: null }): string {
+  // K6.5: the colour is the volume's (march.w: white, a LUT row or the user hook; core/frame/wgsl/emission.ts)
   const emission = channels.emission
     ? `  let e = vdbFrameVolumes.v[vi].emission;
   let value = vdbSrcEmission(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
   let temperature = mix(e.y, e.z, value);
   let power = pow(temperature / max(e.z, 1.0), 4.0);
-  return select(vec3f(0.0), vec3f(1.0), temperature > 0.0) * power * e.x;`
+  let color = vdbFrameEmissionColor(vdbFrameVolumes.v[vi].march.w, value, temperature);
+  return select(vec3f(0.0), color, temperature > 0.0) * power * e.x;`
     : `  return vec3f(0.0);`;
-  return `fn vdbFrameMirror(x: f32) -> f32 {
+  return `${channels.emission ? vdbFrameEmissionColorWgsl(color) : ""}fn vdbFrameMirror(x: f32) -> f32 {
   let period = x - 2.0 * floor(x / 2.0);
   return select(period, 2.0 - period, period > 1.0);
 }
@@ -75,7 +80,7 @@ fn vdbFrameExtinction(vi: u32, localPosition: vec3f, lod: f32) -> f32 {
 fn vdbFrameAlbedo(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
   return vdbFrameVolumes.v[vi].baseExtinction.xyz * vdbSrcAlbedo(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
 }
-// sampleEmission (colour white; emission colour data and hooks: K6.5)
+// sampleEmission: the volume's emission colour (K6.5) x (temperature / max)^4 x intensity
 fn vdbFrameEmission(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
 ${emission}
 }
@@ -227,7 +232,7 @@ ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
 
-${vdbFrameSourceFunctionsWgsl(o.channels)}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
 ${VDB_FRAME_SLICE_WGSL}
 // The inject pass's shadow march inside one volume: (direct, total, reduced depth, effective depth).
 // The one march of the kernel (one density call site), stopping when the depth passes 8. Samples sit at

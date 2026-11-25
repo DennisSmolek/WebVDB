@@ -130,6 +130,40 @@ export function vdbFrameBlackbodyColor(temperature: number, exponent: number, cm
   return mixv(mixv(texel(0, 0), texel(1, 0), bx), mixv(texel(0, 1), texel(1, 1), bx), by);
 }
 
+/**
+ * K6.5: one emission colour LUT row of the core renderer (`emissionColor: { spectrum }`): the table's two exponent
+ * rows around `exponent` blended into 256 rgb texels over log temperature (500–40,000 K). Bilinear filtering is
+ * separable, so {@link vdbFrameEmissionLutColor} on this row equals {@link vdbFrameBlackbodyColor} (up to rounding).
+ * `table`: a {@link vdbFrameBlackbodyTable} (256 × 16 rgba; default the analytic CMF fit, D33).
+ */
+export function vdbFrameEmissionLutRow(exponent: number, table: ArrayLike<number> = vdbFrameBlackbodyTable()): Float32Array {
+  const y = Math.min(1, Math.max(0, exponent / frameMaxSootExponent)) * (frameBlackbodyTableRows - 1);
+  const row = Math.min(Math.trunc(y), frameBlackbodyTableRows - 2);
+  const by = y - row;
+  const out = new Float32Array(frameBlackbodyTableSize * 3);
+  for (let x = 0; x < frameBlackbodyTableSize; x++) {
+    for (let c = 0; c < 3; c++) {
+      const a = table[(row * frameBlackbodyTableSize + x) * 4 + c]!;
+      const b = table[((row + 1) * frameBlackbodyTableSize + x) * 4 + c]!;
+      out[x * 3 + c] = a + (b - a) * by;
+    }
+  }
+  return out;
+}
+
+/**
+ * K6.5: the core emission LUT read (CPU twin of `vdbFrameEmissionLutColor` in core/frame/wgsl/emission.ts): a
+ * 256-texel rgb row over log temperature (500–40,000 K), linear between texels, clamped at the ends.
+ */
+export function vdbFrameEmissionLutColor(row: ArrayLike<number>, temperature: number): Vec3 {
+  const scale = Math.log(frameBlackbodyMaxTemperature / frameBlackbodyMinTemperature);
+  const x = Math.min(1, Math.max(0, Math.log(Math.max(temperature, 1e-3) / frameBlackbodyMinTemperature) / scale)) * (frameBlackbodyTableSize - 1);
+  const column = Math.min(Math.trunc(x), frameBlackbodyTableSize - 2);
+  const bx = x - column;
+  const at = (i: number, c: number) => row[i * 3 + c]!;
+  return [0, 1, 2].map((c) => at(column, c) + (at(column + 1, c) - at(column, c)) * bx) as Vec3;
+}
+
 /** His `getFrameEmissionSpectrum` for the ported spectra: (table weight 1, soot exponent); 'planck' is exponent 0. An invalid soot exponent gives his 1.39. */
 export function vdbFrameEmissionSpectrum(spectrum: "planck" | "soot", sootExponent = 1.39): Vec2 {
   if (spectrum === "planck") return [1, 0];

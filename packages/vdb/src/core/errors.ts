@@ -14,6 +14,8 @@ export type VDBErrorCode =
   | "VDB_LAYOUT_MISMATCH"
   | "VDB_BAD_OPTION"
   | "VDB_DISPOSED"
+  /** User WGSL (the frame renderer's emission colour hook) failed validation; the message names the line. */
+  | "VDB_BAD_WGSL"
   /** An engine adapter found the engine's internals not behaving as the adapter expects (e.g. a renderer version it wasn't built for). */
   | "VDB_ENGINE_MISMATCH";
 

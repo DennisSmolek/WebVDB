@@ -17,6 +17,12 @@ import {
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameVolumeShadowSpec,
+  vdbFrameEmissionDirectionSpec,
+  vdbFrameEmissionReduceSpec,
+  vdbFrameEmissionProbeSpec,
+  vdbVolumeShadowWgsl,
+  vdbEmissionProbeWgsl,
   vdbFrameIntegrateWgsl,
   vdbFrameResolveSpec,
   vdbUniformStruct,
@@ -76,6 +82,9 @@ function denseVolume(o: { albedo?: boolean; mask?: boolean; emission?: boolean; 
 
 const sources = () => [vdbDenseSource(fakeDevice(), denseVolume({ albedo: true, mask: true, emission: true, mips: true })), vdbDenseSource(fakeDevice(), denseVolume())];
 
+/** A user emission colour hook (K6.5): every top-level name starts with vdbUser. */
+const TEST_HOOK = "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(t, 0.5 * t, 0.25) * clamp(temperature / 3000.0, 0.0, 1.0);\n}\n";
+
 /** Every K6.1 pipeline (the key matrix): gather × mix × multi × source layout, resolve × temporal, composite × depth × sRGB. */
 function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
   const compute: VDBComputeSpec[] = [];
@@ -83,8 +92,14 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
     for (const mix of ["mixture", "over"] as const) for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix, multi }));
     // K6.2 'frame' lighting: the fused gather and the shadow grid density per source layout
     for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" }), vdbFrameGridDensitySpec(s, { multi }));
+    // K6.5: the emission direction pass (sources with emission), with and without a user colour hook
+    if (s.channels.emission) {
+      compute.push(vdbFrameEmissionDirectionSpec(s, {}), vdbFrameEmissionDirectionSpec(s, { hook: TEST_HOOK }));
+      compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi: false, hook: TEST_HOOK }), vdbFrameGatherSpec(s, { mix: "mixture", multi: false, lighting: "frame", hook: TEST_HOOK }));
+    }
   }
   compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
+  compute.push(vdbFrameVolumeShadowSpec(), vdbFrameEmissionReduceSpec(), vdbFrameEmissionProbeSpec());
   const render: VDBRenderSpec[] = [];
   for (const depth of ["depth", "r32float"] as const) for (const srgb of [false, true]) render.push(vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb }));
   return { compute, render };
@@ -134,7 +149,7 @@ describe("K6.1 uniform structs", () => {
 describe("K6.1 composed WGSL", () => {
   const { compute, render } = allSpecs();
   const texts = [...compute, ...render, vdbFrameChunkProbeSpec()].map((s) => [s.label, s.code] as const);
-  texts.push(["vdbFrameIntegrateWgsl", vdbFrameIntegrateWgsl()]);
+  texts.push(["vdbFrameIntegrateWgsl", vdbFrameIntegrateWgsl()], ["vdbVolumeShadowWgsl", vdbVolumeShadowWgsl()], ["vdbEmissionProbeWgsl", vdbEmissionProbeWgsl()]);
 
   it.each(texts)("%s: no reserved words, no function/variable clashes, no back-ticks, no duplicate declarations", (_, code) => {
     expect(wgslNameProblems(code)).toEqual([]);
@@ -279,7 +294,7 @@ describe("K6.1 WGSL sizes (D21; design §5.3)", () => {
     expect(Object.keys(snap.kernels).sort()).toEqual(Object.keys(sizes).sort());
     for (const [label, s] of Object.entries(sizes)) {
       expect(s.min, `${label}: WGSL size changed; if intended run K6_WRITE_SIZES=1 pnpm vitest run packages/vdb/test/core/frame and commit`).toBe(snap.kernels[label]!.min);
-      expect(s.min).toBeLessThanOrEqual(label.includes("gather") || label.includes("grid density") ? CAP_SOURCE : CAP_FREE);
+      expect(s.min).toBeLessThanOrEqual(label.includes("gather") || label.includes("grid density") || label.includes("emission direction") ? CAP_SOURCE : CAP_FREE);
     }
   });
 });

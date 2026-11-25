@@ -2,124 +2,159 @@
   "unit": "bytes of minified WGSL (scripts/lib/wgsl-variants.mjs wgslSizes)",
   "kernels": {
     "vdb frame gather (mixture; dense density+mask+albedo+emission+mips)": {
-      "raw": 29202,
-      "min": 21853,
-      "gz": 5812
+      "raw": 30161,
+      "min": 22498,
+      "gz": 6005
     },
     "vdb frame gather (mixture, multi-group; dense density+mask+albedo+emission+mips)": {
-      "raw": 30024,
-      "min": 22529,
-      "gz": 6010
+      "raw": 30983,
+      "min": 23174,
+      "gz": 6201
     },
     "vdb frame gather (over; dense density+mask+albedo+emission+mips)": {
-      "raw": 29035,
-      "min": 21746,
-      "gz": 5773
+      "raw": 29994,
+      "min": 22391,
+      "gz": 5969
     },
     "vdb frame gather (over, multi-group; dense density+mask+albedo+emission+mips)": {
-      "raw": 29857,
-      "min": 22422,
-      "gz": 5971
+      "raw": 30816,
+      "min": 23067,
+      "gz": 6164
     },
     "vdb frame gather (frame lighting; dense density+mask+albedo+emission+mips)": {
-      "raw": 29353,
-      "min": 21841,
-      "gz": 5782
+      "raw": 30312,
+      "min": 22486,
+      "gz": 5975
     },
     "vdb frame grid density; dense density+mask+albedo+emission+mips": {
-      "raw": 15889,
-      "min": 12197,
-      "gz": 3183
+      "raw": 16107,
+      "min": 12371,
+      "gz": 3230
     },
     "vdb frame gather (frame lighting, multi-group; dense density+mask+albedo+emission+mips)": {
-      "raw": 30542,
-      "min": 22827,
-      "gz": 6025
+      "raw": 31501,
+      "min": 23472,
+      "gz": 6213
     },
     "vdb frame grid density (multi-group); dense density+mask+albedo+emission+mips": {
-      "raw": 16249,
-      "min": 12498,
-      "gz": 3284
+      "raw": 16467,
+      "min": 12672,
+      "gz": 3332
+    },
+    "vdb frame emission direction; dense density+mask+albedo+emission+mips": {
+      "raw": 17381,
+      "min": 13535,
+      "gz": 3599
+    },
+    "vdb frame emission direction; dense density+mask+albedo+emission+mips, hook ac65142384852047": {
+      "raw": 17592,
+      "min": 13708,
+      "gz": 3646
+    },
+    "vdb frame gather (mixture; dense density+mask+albedo+emission+mips, hook ac65142384852047)": {
+      "raw": 30372,
+      "min": 22671,
+      "gz": 6053
+    },
+    "vdb frame gather (frame lighting; dense density+mask+albedo+emission+mips, hook ac65142384852047)": {
+      "raw": 30523,
+      "min": 22659,
+      "gz": 6019
     },
     "vdb frame gather (mixture; dense density)": {
-      "raw": 24275,
-      "min": 17583,
-      "gz": 5293
+      "raw": 24314,
+      "min": 17598,
+      "gz": 5298
     },
     "vdb frame gather (mixture, multi-group; dense density)": {
-      "raw": 25097,
-      "min": 18259,
-      "gz": 5490
+      "raw": 25136,
+      "min": 18274,
+      "gz": 5496
     },
     "vdb frame gather (over; dense density)": {
-      "raw": 24108,
-      "min": 17476,
-      "gz": 5253
+      "raw": 24147,
+      "min": 17491,
+      "gz": 5258
     },
     "vdb frame gather (over, multi-group; dense density)": {
-      "raw": 24930,
-      "min": 18152,
-      "gz": 5450
+      "raw": 24969,
+      "min": 18167,
+      "gz": 5455
     },
     "vdb frame gather (frame lighting; dense density)": {
-      "raw": 24426,
-      "min": 17571,
-      "gz": 5280
+      "raw": 24465,
+      "min": 17586,
+      "gz": 5285
     },
     "vdb frame grid density; dense density": {
-      "raw": 10962,
-      "min": 7927,
-      "gz": 2665
+      "raw": 11001,
+      "min": 7942,
+      "gz": 2670
     },
     "vdb frame gather (frame lighting, multi-group; dense density)": {
-      "raw": 25615,
-      "min": 18557,
-      "gz": 5524
+      "raw": 25654,
+      "min": 18572,
+      "gz": 5529
     },
     "vdb frame grid density (multi-group); dense density": {
-      "raw": 11322,
-      "min": 8228,
-      "gz": 2765
+      "raw": 11361,
+      "min": 8243,
+      "gz": 2771
     },
     "vdb frame transmittance": {
-      "raw": 10070,
-      "min": 6964,
-      "gz": 2426
+      "raw": 10089,
+      "min": 6979,
+      "gz": 2431
     },
     "vdb frame resolve": {
-      "raw": 4044,
-      "min": 3121,
-      "gz": 1223
+      "raw": 4063,
+      "min": 3136,
+      "gz": 1228
     },
     "vdb frame resolve (temporal)": {
-      "raw": 6949,
-      "min": 5209,
-      "gz": 1859
+      "raw": 6968,
+      "min": 5224,
+      "gz": 1865
+    },
+    "vdb frame volume shadow map": {
+      "raw": 7371,
+      "min": 5268,
+      "gz": 1897
+    },
+    "vdb frame emission reduce": {
+      "raw": 2815,
+      "min": 2277,
+      "gz": 871
+    },
+    "vdb frame emission probes": {
+      "raw": 4044,
+      "min": 3185,
+      "gz": 1136
     },
     "vdb frame composite (premultiplied, depth)": {
-      "raw": 6274,
-      "min": 4896,
-      "gz": 1734
+      "raw": 6293,
+      "min": 4911,
+      "gz": 1739
     },
     "vdb frame composite (sRGB blend, depth)": {
-      "raw": 6366,
-      "min": 4983,
-      "gz": 1747
+      "raw": 6385,
+      "min": 4998,
+      "gz": 1752
     },
     "vdb frame composite (premultiplied, r32float)": {
-      "raw": 6275,
-      "min": 4897,
-      "gz": 1732
+      "raw": 6294,
+      "min": 4912,
+      "gz": 1737
     },
     "vdb frame composite (sRGB blend, r32float)": {
-      "raw": 6367,
-      "min": 4984,
-      "gz": 1741
+      "raw": 6386,
+      "min": 4999,
+      "gz": 1746
     },
     "vdb frame chunk probe": {
-      "raw": 12712,
-      "min": 9402,
-      "gz": 3167
+      "raw": 12731,
+      "min": 9417,
+      "gz": 3172
     }
   }
 }
