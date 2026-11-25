@@ -49,6 +49,11 @@ interface Result {
   gpuBytes?: { source: number; pyramid: number; pyramidScratch: number };
   lodLevels?: number;
   setupMs?: number;
+  /** `?image=1` (K6.1d/K6.2 A/B): the frame as display RGBA8 (base64, top row first), no timing. */
+  width?: number;
+  height?: number;
+  rgba?: string;
+  backend?: string;
   warnings: string[];
   uncaptured: string[];
 }
@@ -79,6 +84,28 @@ const DENSE_RES = Number(params.get("denseRes") ?? 128);
 const FAST = params.has("fast") ? params.get("fast") !== "0" : undefined;
 const CACHE = params.has("cache") ? params.get("cache") !== "0" : undefined;
 const BACKGROUND = new THREE.Color(0x598eff);
+// K6.1d / K6.2 A/B: `?image=1` reads one frame back instead of timing; `?backend=core` renders it through the core.
+const IMAGE = params.get("image") === "1";
+const BACKEND = params.get("backend") === "core" ? "core" : "tsl";
+
+/** The half-float target, display RGBA8 (NoToneMapping, sRGB OETF) as base64. */
+async function readImage(renderer: WebGPURenderer, rt: THREE.RenderTarget): Promise<string> {
+  const raw = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, W, H)) as unknown as Uint16Array;
+  const stride = raw.length / H;
+  const out = new Uint8Array(W * H * 4);
+  const oetf = (x: number) => (x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055);
+  const byte = (v: number) => Math.round(Math.min(1, Math.max(0, oetf(v))) * 255);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const i = y * stride + x * 4;
+      const o = (y * W + x) * 4;
+      for (let c = 0; c < 3; c++) out[o + c] = byte(THREE.DataUtils.fromHalfFloat(raw[i + c]!));
+      out[o + 3] = 255;
+    }
+  let s = "";
+  for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
+  return btoa(s);
+}
 
 const root = document.getElementById("demo-root")!;
 const result: Result = { done: false, warnings: [], uncaptured: [] };
@@ -157,6 +184,8 @@ async function main(): Promise<void> {
 
   const asset = await loadAsset();
   const frameRenderer = new VDBFrameRenderer();
+  frameRenderer.backend = BACKEND;
+  result.backend = BACKEND;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
@@ -250,6 +279,19 @@ async function main(): Promise<void> {
   }
   await timer?.collect();
   result.setupMs = Math.round(performance.now() - t0);
+  if (IMAGE) {
+    frame();
+    await device.queue.onSubmittedWorkDone();
+    result.width = W;
+    result.height = H;
+    result.rgba = await readImage(renderer, rt);
+    log(`${ASSET} ${SOURCE} ${LIGHTING} backend ${BACKEND}: ${W}x${H} image`, "ok");
+    timer?.dispose();
+    volume.dispose();
+    source.dispose();
+    rt.dispose();
+    return;
+  }
 
   const passes: Record<string, number>[] = [];
   const redraw: Record<string, number>[] = [];

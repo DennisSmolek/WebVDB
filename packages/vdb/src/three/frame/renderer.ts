@@ -94,6 +94,10 @@ import { VDBFrameVolumeShadows } from "./volume-shadows.js";
 import { FrameVolumeCollector, getFrameFadeRadius, getFroxelArea, getFroxelRect, getFroxelSliceRange, type FrameVolumeEntry, type FrameVolumeRecord } from "./view.js";
 import type { VDBFrameVolume } from "./volume.js";
 import type { VDBThreeDenseSource, VDBVolumeUniforms } from "../volume-source.js";
+import type { VDBIndexBox, VDBThreeSparseSource } from "../sparse-source.js";
+import { vdbSparseSourceGpu, type VDBSparseSourceGpu, type VDBSparseVolumeGpu } from "../../core/source/sparse.js";
+import type { VDBGridPool } from "../../core/pool/pool.js";
+import type { VDBGridTypeName } from "../../core/types.js";
 import { VDBError } from "../../core/errors.js";
 import { vdbDenseSource, type VDBDenseSource } from "../../core/source/dense.js";
 import { vdbCreateFrameRenderer, type VDBFrameRendererGpu } from "../../core/frame/renderer.js";
@@ -466,6 +470,9 @@ export class VDBFrameRenderer {
   private coreMaterial: VDBFrameCoreIntegrateMaterial | null = null;
   private readonly corePrefix = new VDBCoreTextureBinding();
   private coreSources = new WeakMap<object, VDBDenseSource>();
+  /** K6.1d: core sparse sources per pool and options, and each TSL sparse source's slot. */
+  private coreSparseSources = new Map<object, Map<string, VDBSparseSourceGpu>>();
+  private coreSparseSlots = new WeakMap<object, VDBSparseVolumeGpu>();
   private coreVolumes = new Map<VDBFrameVolume, VDBFrameVolumeGpu>();
   private coreFrameId = 0;
 
@@ -2249,9 +2256,6 @@ export class VDBFrameRenderer {
     const material = this.proxyMaterial() as VDBFrameCoreIntegrateMaterial;
     // NOTE three draws the material it chose before onBeforeRender: a swapped proxy draws the core material from the next frame
     if (proxy.material !== material) proxy.material = material;
-    if (this.settings.lighting !== "volume") {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer: backend 'core' renders 'volume' lighting in K6.1; 'frame' lighting comes with K6.2.");
-    }
     const device = getDevice(renderer as never);
     if (!this.core || this.coreDevice !== device) {
       vdbCoreTextureSelfTest(renderer as never, device);
@@ -2260,10 +2264,11 @@ export class VDBFrameRenderer {
       this.coreDevice = device;
       this.coreSources = new WeakMap();
       this.coreVolumes = new Map();
+      this.disposeCoreSparse();
     }
     const core = this.core;
     Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
-    if (scene.environment) this.warnOnce("core-environment", "backend 'core': the scene environment is K6.2; K6.1 ignores it.");
+    if (scene.environment) this.warnOnce("core-environment", "backend 'core': the scene environment (GPU prefilter, SH, environment lights) is K6.2b; it is ignored.");
 
     const seen = new Set<VDBFrameVolumeGpu>();
     scene.traverseVisible((object) => {
@@ -2275,11 +2280,14 @@ export class VDBFrameRenderer {
       record.matrixWorld.multiplyMatrices(frameVolume.matrixWorld, record.matrix);
       this.setCoreParams(handle.params, frameVolume, record.matrixWorld);
       handle.visible = record.ready;
+      // his collector: every ready volume in the camera's layers casts into the 'frame' shadow grid, also out of view
+      handle.castsShadow = record.ready;
       seen.add(handle);
     });
     for (const [frameVolume, handle] of this.coreVolumes) {
       if (seen.has(handle)) continue;
       handle.visible = false;
+      handle.castsShadow = false;
       if (!frameVolume.parent) {
         handle.remove();
         this.coreVolumes.delete(frameVolume);
@@ -2317,9 +2325,7 @@ export class VDBFrameRenderer {
 
   /** The core volume of a frame volume (its dense source uploaded once on the core side). */
   private coreVolumeOf(frameVolume: VDBFrameVolume, device: GPUDevice): VDBFrameVolumeGpu {
-    if (frameVolume.source.kind !== "dense") {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer: backend 'core' with a sparse source is adapter work after K6.7 (vdbSparseSourceGpu); use a dense source or backend 'tsl'.");
-    }
+    if (frameVolume.source.kind !== "dense") return this.coreSparseVolumeOf(frameVolume);
     const three = frameVolume.source as VDBThreeDenseSource;
     let source = this.coreSources.get(three);
     if (!source) {
@@ -2339,6 +2345,62 @@ export class VDBFrameRenderer {
     }
     if (frameVolume.emissionColor) this.warnOnce("core-emission", "backend 'core': emission colour hooks are K6.5; K6.1 draws white emission.");
     return handle;
+  }
+
+  /**
+   * K6.1d: the core volume of a frame volume on a TSL sparse source: one `vdbSparseSourceGpu` per pool and source
+   * options (its pyramids are the core's own), one slot per three source with the same grids, boxes and stats.
+   */
+  private coreSparseVolumeOf(frameVolume: VDBFrameVolume): VDBFrameVolumeGpu {
+    const three = frameVolume.source as VDBThreeSparseSource & {
+      auxBoxes?: Record<"mask" | "albedo" | "emission", VDBIndexBox | null>;
+      pyramidMaxOption?: { pyramidMax?: number };
+    };
+    const pool = three.grids.pool as unknown as VDBGridPool;
+    const types = (three.grids.options as { types?: readonly VDBGridTypeName[] }).types;
+    const options = {
+      lod: three.lod,
+      normalize: three.normalize,
+      followImage: three.followImage,
+      fastTrilinear: three.fastTrilinear,
+      cacheAccessor: three.cacheAccessor,
+      ...(three.pyramidMaxOption?.pyramidMax !== undefined ? { pyramidMax: three.pyramidMaxOption.pyramidMax } : {}),
+      ...(types ? { types } : {}),
+    };
+    const key = JSON.stringify(options);
+    let byKey = this.coreSparseSources.get(pool);
+    if (!byKey) this.coreSparseSources.set(pool, (byKey = new Map()));
+    let source = byKey.get(key);
+    if (!source) {
+      source = vdbSparseSourceGpu(pool, { ...options, label: "vdb three core sparse" });
+      byKey.set(key, source);
+    }
+    let handle = this.coreVolumes.get(frameVolume);
+    const slots = this.coreSparseSlots;
+    let slot = slots.get(three);
+    if (!slot || slot.source !== source || slot.removed) {
+      slot?.remove();
+      const aux = three.auxBoxes ?? { mask: null, albedo: null, emission: null };
+      const auxIndexBoxes = Object.fromEntries(Object.entries(aux).filter(([, b]) => b)) as Partial<Record<"mask" | "albedo" | "emission", VDBIndexBox>>;
+      slot = source.volume(three.ids, three.followImage ? { stats: three.stats } : { indexBox: three.indexBox, auxIndexBoxes, stats: three.stats });
+      slots.set(three, slot);
+    }
+    if (handle && handle.slot !== slot) {
+      handle.remove();
+      handle = undefined;
+    }
+    if (!handle) {
+      handle = this.core!.addVolume(slot);
+      this.coreVolumes.set(frameVolume, handle);
+    }
+    return handle;
+  }
+
+  /** Frees the core sparse sources (their slots and pyramids); the pools are the host's. */
+  private disposeCoreSparse(): void {
+    for (const byKey of this.coreSparseSources.values()) for (const s of byKey.values()) s.dispose();
+    this.coreSparseSources = new Map();
+    this.coreSparseSlots = new WeakMap();
   }
 
   /** setVolumeUniforms for the core: a frame volume's props as plain params. */
@@ -2483,6 +2545,7 @@ export class VDBFrameRenderer {
     this.corePrefix.dispose();
     this.coreMaterial?.dispose();
     this.coreVolumes = new Map();
+    this.disposeCoreSparse();
     this.cachedFrame = -1;
     this.cachedCamera = null;
   }
