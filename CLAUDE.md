@@ -362,3 +362,14 @@ From v1; details in docs/archive/handoffs/.
 - Core vs TSL A/Bs of a term on meshes (volume shadows, the emission light): compare on − off per backend outside the
   volume's dilated coverage; inside it the term is seen through the froxel composite, whose silhouette differs by V80
   (30/255 on the explosion's edge otherwise).
+- K6.3: the core's Lorenz-Mie phase LUT is group 0 binding 4 of every frame kernel (`GROUP0_LAYOUT`). A probe that builds
+  group 0 by hand needs it too (`mieEntry` in `k6-core.ts`), or the bind group is invalid and the dispatch writes nothing.
+- K6.3: K7.3's `mips.record(encoder, …)` opens its own compute pass. The core renderer ends its update pass, records the
+  chain and begins a new pass ('multi-scale' only); anything recorded between them must follow the same order.
+- K6.3 'mlp' / 'multi-scale' render in the core only (`backend: 'core'`); the TSL path runs them as 1D diffusion (warned).
+  `'neural'` in the core is the generic MLP running `renderer.mlp` (the adapter passes `neuralNetwork`).
+- Fail-before mutations on edge-only or far-field terms can pass silently: on the k6-core 16³ grid the 6th multi-scale level
+  samples outside the box (levels − 1 changes nothing) and an edge-clamp change only moves texels where density reaches the
+  border. Mutate something every voxel reads (2 levels, a shifted box).
+- WGSL lets a local shadow a builtin (`let length = …`), and a later `length(v)` in that scope then fails to compile. Don't
+  name locals after builtins.
