@@ -263,6 +263,12 @@ From v1; details in docs/archive/handoffs/.
   C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).
 - NanoVDB v14 stores root tiles in another order than the a532de55 bake: `treeNodes` order differs between a native
   v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
+- The fake device's `queue.writeBuffer` (`test/core/fake-gpu.ts`) reads `data.buffer`: pass an `ArrayBufferView`
+  (`new Uint8Array(bytes)`), never a bare `ArrayBuffer`, or it writes zeros silently (real WebGPU accepts both).
+- The core sparse source (K6.7, `vdbSparseSourceGpu`) serves every volume of a pool through one uniform table indexed
+  by `v`: call `source.update(encoder)` after `pool.update(encoder)` in the same encoder, then (re)build bind group 2
+  when `source.version` moved. Its `wgsl()` has no VDB module (compose `source.module`'s helpers into the shader's one
+  module), and per-volume info (`texels`, `stats`, `lodLevels`, `bbox`) is on the slot, not the source.
 - `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
   and other explicit-type modules are byte-identical).
 - A volume-shadow test that moves a light must make the map wait, or it can't see a lookup that follows the wrong light
