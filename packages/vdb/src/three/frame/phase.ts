@@ -16,7 +16,11 @@ import { frameSpectrumWavelengths } from "./spectrum.js";
 export type VDBFramePhase = "isotropic" | "henyey-greenstein" | "dual-lobe" | "lorenz-mie" | "lorenz-mie-rgb";
 
 /** Multiple scattering modes (his `frameRenderer.settings.multipleScattering`). */
-export type VDBFrameMultipleScattering = boolean | "two-sided" | "octaves" | "neural";
+/**
+ * Multiple scattering modes (his `frameRenderer.settings.multipleScattering`). K6.3: `'mlp'` (EXPERIMENTAL generic
+ * MLP evaluator) and `'multi-scale'` (K7.3) render with `backend: 'core'` only; the TSL path runs them as 1D diffusion.
+ */
+export type VDBFrameMultipleScattering = boolean | "two-sided" | "octaves" | "neural" | "mlp" | "multi-scale";
 
 export interface VDBFramePhaseSource {
   phase: VDBFramePhase;

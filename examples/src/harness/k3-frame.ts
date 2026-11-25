@@ -746,6 +746,9 @@ async function main(): Promise<void> {
   // K6.1: `?backend=core` renders through the core frame renderer (internal A/B); `?froxelMix=mixture|over`
   frameRenderer.backend = params.get("backend") === "core" ? "core" : "tsl";
   frameRenderer.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
+  // K6.3 `?msEdge=zero|clamp`, `?msLevels=`: the core's 'multi-scale' settings (with `?ms=multi-scale`, backend core)
+  if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
+  if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
   result.backend = frameRenderer.backend;
   result.froxelMix = frameRenderer.froxelMix;
   Object.assign(frameRenderer.settings, {

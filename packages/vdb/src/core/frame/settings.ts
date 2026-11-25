@@ -13,7 +13,11 @@
 export type VDBFramePhaseName = "isotropic" | "henyey-greenstein" | "dual-lobe" | "lorenz-mie" | "lorenz-mie-rgb";
 
 /** Multiple scattering modes (his `multipleScattering`). */
-export type VDBFrameMultipleScatteringMode = boolean | "two-sided" | "octaves" | "neural";
+/**
+ * Multiple scattering modes (his `multipleScattering`, plus K6.3: `'mlp'` the EXPERIMENTAL generic MLP evaluator of
+ * `renderer.mlp` (his `'neural'` runs his network through it) and `'multi-scale'` (K7.3, his 4e2d46f)).
+ */
+export type VDBFrameMultipleScatteringMode = boolean | "two-sided" | "octaves" | "neural" | "mlp" | "multi-scale";
 
 /** The settings; see `VDBFrameRendererSettings` in `./three` for each of his fields. */
 export interface VDBFrameSettings {
@@ -60,6 +64,13 @@ export interface VDBFrameSettings {
    * for the A/B against the TSL path (K6.R decides; K6.8 deletes the loser). One volume per froxel: the same values.
    */
   froxelMix: "mixture" | "over";
+  /** K6.3 `'multi-scale'`: levels read, base included (2–8; his `multiScaleLevels`, default 6). */
+  multiScaleLevels: number;
+  /**
+   * K6.3 `'multi-scale'`: the mip edge rule (V75): `'zero'` (default; density outside the grid is 0) or his
+   * `'clamp'` (clamp-to-edge). An A/B setting for K6.R1.
+   */
+  multiScaleEdge: "zero" | "clamp";
 }
 
 /** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`. */
@@ -103,5 +114,7 @@ export function vdbFrameDefaultSettings(): VDBFrameSettings {
     castShadowUpdatesPerFrame: 1,
     castShadowCoarse: false,
     froxelMix: "mixture",
+    multiScaleLevels: 6,
+    multiScaleEdge: "zero",
   };
 }

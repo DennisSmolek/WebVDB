@@ -14,7 +14,20 @@
  */
 
 import { vdbFrameFindCascade, vdbFrameGridMarch, vdbFrameGridUvw, vdbFrameIsotropicDiffusion, type VDBFrameGridLayout, type VDBFrameShadowLight } from "./grid.js";
-import { vdbFrameNoise, vdbFrameShadowAbsorption, vdbFrameShadowDepth, vdbFrameShadowStep, vdbFrameShadowTransmittance, type Vec2, type Vec3, type Vec4 } from "./index.js";
+import {
+  vdbFrameNoise,
+  vdbFrameOctavesOff,
+  vdbFrameShadowAbsorption,
+  vdbFrameShadowDepth,
+  vdbFrameShadowMarchDepth,
+  vdbFrameShadowStep,
+  vdbFrameShadowTotal,
+  vdbFrameShadowTransmittance,
+  vdbFrameTwoSidedDiffusion,
+  type Vec2,
+  type Vec3,
+  type Vec4,
+} from "./index.js";
 
 /** Where the sub-volumes of a stack sit. */
 export interface VDBFrameStackLayout {
@@ -129,10 +142,24 @@ export function vdbFrameGridDensityVoxel(world: Vec3, voxelSize: number, casters
   return [extinction, absorption];
 }
 
+/** K6.3: the multiple scattering terms of {@link vdbFrameTransmittanceVoxel3d} beyond the diffusion value. */
+export interface VDBFrameTransmittanceModes3d {
+  /** `getFrameScatteringOctaves` (count 0: off). */
+  octaves?: Vec4;
+  /** 'two-sided': each slot also marches away from the light (frameTwoSidedDiffusion). */
+  twoSided?: boolean;
+  /**
+   * 'mlp' / 'multi-scale': a slot's total from its direct transmittance, the voxel's world position, the unit direction
+   * to the light, the direct optical depth and the march length (e.g. direct + `vdbFrameMlpForward(...)`).
+   */
+  slotTotal?: ((direct: number, world: Vec3, direction: Vec3, opticalDepth: number, maxDistance: number) => number) | null;
+}
+
 /**
- * The transmittance pass (grey, octaves / two-sided / neural off) at voxel `cell` of `cascade`, through a grid sampled
- * by `gridAt(cascade, uvw)` ((extinction, absorption) of that cascade): the 4 targets of `vdbFrameTransmittanceCs`.
- * `lights` are the slots (≤ 6), `jitter` the frame's (< 0: off); the noise reads his grid atlas pixel.
+ * The transmittance pass (grey) at voxel `cell` of `cascade`, through a grid sampled by `gridAt(cascade, uvw)`
+ * ((extinction, absorption) of that cascade): the 4 targets of `vdbFrameTransmittanceCs`. `lights` are the slots
+ * (≤ 6), `jitter` the frame's (< 0: off); the noise reads his grid atlas pixel. K6.3 `modes`: octaves, two-sided and
+ * the slot total of 'mlp' / 'multi-scale'.
  */
 export function vdbFrameTransmittanceVoxel3d(
   gridAt: (cascade: number, uvw: Vec3) => Vec2,
@@ -143,6 +170,7 @@ export function vdbFrameTransmittanceVoxel3d(
   skyDirection: Vec3,
   multipleScattering: number,
   jitter: number,
+  modes: VDBFrameTransmittanceModes3d = {},
 ): [Vec4, Vec4, Vec4, Vec4] {
   const out: [Vec4, Vec4, Vec4, Vec4] = [
     [1, 1, 1, 1],
@@ -168,16 +196,25 @@ export function vdbFrameTransmittanceVoxel3d(
     return l > 0 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
   };
   const sky = n(skyDirection);
+  const octaves = modes.octaves ?? vdbFrameOctavesOff;
   const slot = (i: number): Vec4 => {
     if (i >= lights.length) return [1, 1, 0, 0];
     const l = lights[i]!;
     const isDirection = l[3] < 1.5;
     const toLight: Vec3 = [l[0] - world[0], l[1] - world[1], l[2] - world[2]];
-    return vdbFrameGridMarch(extinctionAt, grid, world, isDirection ? n([l[0], l[1], l[2]]) : n(toLight), isDirection ? 1e20 : Math.hypot(...toLight), noise, multipleScattering);
+    const dir = isDirection ? n([l[0], l[1], l[2]]) : n(toLight);
+    const maxDistance = isDirection ? 1e20 : Math.hypot(...toLight);
+    const optical = { opticalDepth: 0 };
+    const r = vdbFrameGridMarch(extinctionAt, grid, world, dir, maxDistance, noise, multipleScattering, octaves, optical);
+    // K6.3 'two-sided': the slab between the light side and the far side
+    if (modes.twoSided) r[1] = vdbFrameTwoSidedDiffusion(r[0], r[2], r[3], vdbFrameGridMarch(extinctionAt, grid, world, [-dir[0], -dir[1], -dir[2]], 1e20, noise, multipleScattering, octaves)[2]);
+    // K6.3 'mlp' / 'multi-scale': the total from the direct transmittance
+    if (modes.slotTotal) r[1] = modes.slotTotal(r[0], world, dir, optical.opticalDepth, maxDistance);
+    return r;
   };
   const ls = [0, 1, 2, 3, 4, 5].map(slot);
-  const up = vdbFrameGridMarch(extinctionAt, grid, world, sky, 1e20, noise, multipleScattering);
-  const down = vdbFrameGridMarch(extinctionAt, grid, world, [-sky[0], -sky[1], -sky[2]], 1e20, noise, multipleScattering);
+  const up = vdbFrameGridMarch(extinctionAt, grid, world, sky, 1e20, noise, multipleScattering, octaves);
+  const down = vdbFrameGridMarch(extinctionAt, grid, world, [-sky[0], -sky[1], -sky[2]], 1e20, noise, multipleScattering, octaves);
   const skyTotal = (f: Vec4, b: Vec4) => (multipleScattering > 0 ? vdbFrameIsotropicDiffusion(f[2], b[2], f[3]) : f[1]);
   out[0] = [skyTotal(up, down), skyTotal(down, up), ls[0]![1], ls[1]![1]];
   out[1] = [ls[2]![1], ls[3]![1], ls[4]![1], ls[5]![1]];
@@ -217,10 +254,11 @@ export function vdbFrameStackShadows(targetAt: (cascade: number, k: number, uvw:
 }
 
 /**
- * The environment grid pass (grey, octaves off; K6.2b) at voxel `cell` of the last cascade, through a grid sampled by
+ * The environment grid pass (grey; K6.2b) at voxel `cell` of the last cascade, through a grid sampled by
  * `gridAt(cascade, uvw)`: `unshadowed` (the colour sum of `lights`, ≥ 0) where no extinction is within half a voxel,
  * else Σ colour × total of one-voxel-step marches that stay in the last cascade (with diffusion the two-sided total of
- * the march and the opposite one), ≥ 0. His FrameEnvironmentGridMaterial on a 3D grid.
+ * the march and the opposite one), ≥ 0. His FrameEnvironmentGridMaterial on a 3D grid. K6.3 `octaves`: the march
+ * stops at the last octave's depth, totals are octave sums, and the unshadowed light gets the octave total of 1.
  */
 export function vdbFrameEnvironmentGridVoxel3d(
   gridAt: (cascade: number, uvw: Vec3) => Vec2,
@@ -228,6 +266,7 @@ export function vdbFrameEnvironmentGridVoxel3d(
   cell: Vec3,
   lights: readonly { direction: Vec3; color: Vec3 }[],
   multipleScattering: number,
+  octaves: Vec4 = vdbFrameOctavesOff,
 ): Vec4 {
   const cascade = grid.count - 1;
   const world = vdbFrameGridVoxelWorld(grid, cascade, cell);
@@ -240,14 +279,15 @@ export function vdbFrameEnvironmentGridVoxel3d(
     const c: Vec3 = [(i & 1) - 0.5, ((i >> 1) & 1) - 0.5, ((i >> 2) & 1) - 0.5];
     near += gridAt(cascade, uvwOf([world[0] + c[0] * voxel[0], world[1] + c[1] * voxel[1], world[2] + c[2] * voxel[2]]))[0];
   }
-  if (!(near > 0)) return [Math.max(unshadowed[0], 0), Math.max(unshadowed[1], 0), Math.max(unshadowed[2], 0), 1];
+  const outside = vdbFrameShadowTotal(1, octaves);
+  if (!(near > 0)) return [Math.max(unshadowed[0], 0) * outside, Math.max(unshadowed[1], 0) * outside, Math.max(unshadowed[2], 0) * outside, 1];
   const marchDepths = (dir: Vec3): Vec3 => {
     const step = 1 / Math.max(Math.abs(dir[0]) / voxel[0], Math.abs(dir[1]) / voxel[1], Math.abs(dir[2]) / voxel[2]);
     const probe: Vec3 = [world[0] + dir[0] * step * 0.5, world[1] + dir[1] * step * 0.5, world[2] + dir[2] * step * 0.5];
     const depths: Vec3 = [0, 0, 0];
     for (let i = 0; i < 1024; i++) {
       const uvw = uvwOf(probe);
-      if (uvw.some((v) => v < 0 || v > 1) || vdbFrameShadowDepth(depths, multipleScattering) > 6) break;
+      if (uvw.some((v) => v < 0 || v > 1) || vdbFrameShadowMarchDepth(depths, multipleScattering, octaves) > 6) break;
       const s = gridAt(cascade, uvw);
       const d = vdbFrameShadowStep(s[0], s[1], multipleScattering);
       for (let c = 0; c < 3; c++) {
@@ -263,7 +303,7 @@ export function vdbFrameEnvironmentGridVoxel3d(
     const total =
       multipleScattering > 0
         ? vdbFrameIsotropicDiffusion(depths[2], marchDepths([-l.direction[0], -l.direction[1], -l.direction[2]])[2], depths[1])
-        : vdbFrameShadowTransmittance(depths, multipleScattering)[1];
+        : vdbFrameShadowTotal(vdbFrameShadowTransmittance(depths, multipleScattering, octaves)[1], octaves);
     for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + l.color[c]! * total;
   }
   return [Math.max(irradiance[0], 0), Math.max(irradiance[1], 0), Math.max(irradiance[2], 0), 1];

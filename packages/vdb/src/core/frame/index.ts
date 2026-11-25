@@ -3,7 +3,7 @@
  * export through `core/internal.ts` only; the public surface lands in K6.8 (design §2.1).
  */
 
-export { vdbCreateFrameRenderer, vdbFrameRendererEmission, vdbFrameRendererEnvironment, vdbFrameRendererGrid, vdbFrameRendererTextures } from "./renderer.js";
+export { vdbCreateFrameRenderer, vdbFrameRendererEmission, vdbFrameRendererEnvironment, vdbFrameRendererGrid, vdbFrameRendererScattering, vdbFrameRendererTextures } from "./renderer.js";
 // K6.5: volume shadow maps, emission colour data + hooks, the emission probes and their host WGSL
 export { VDBFrameShadowMaps } from "./shadows.js";
 export type { VDBFrameShadowInputs } from "./shadows.js";
@@ -107,6 +107,7 @@ export {
   vdbFrameGatherKernelWgsl,
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
+  vdbFrameGridMipSpec,
   vdbFrameResolveKernelWgsl,
   vdbFrameResolveSpec,
   vdbFrameTransmittanceSpec,
@@ -116,7 +117,20 @@ export {
   vdbFrameEmissionProbeSpec,
 } from "./kernels.js";
 export type { VDBFrameCompositeKey, VDBFrameGatherKey, VDBFrameGridDensityKey } from "./kernels.js";
-export { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
+export {
+  FRAME_GATHER_BINDINGS,
+  GRID_DENSITY_BINDINGS,
+  GRID_MIP_BINDINGS,
+  TRANSMITTANCE_BINDINGS,
+  TRANSMITTANCE_MLP_BINDINGS,
+  TRANSMITTANCE_MULTI_SCALE_BINDINGS,
+  VDB_FRAME_MLP_MAX_LAYERS,
+  VDB_FRAME_MLP_MAX_WIDTH,
+  VDB_FRAME_SUM_WORDS,
+} from "./wgsl/lighting.js";
+export type { VDBFrameScatteringKernel } from "./wgsl/lighting.js";
+export { VDBFrameScattering } from "./scattering.js";
+export type { VDBFrameMlp, VDBFrameMlpLayer } from "../../tools/frame/mlp.js";
 export { computePipeline, renderPipeline, prepareCompute, prepareRender, vdbHashText } from "./pipelines.js";
 export type { VDBCachedPipeline, VDBComputeSpec, VDBRenderSpec } from "./pipelines.js";
 export { VDBRetireQueue, createFroxelTexture } from "./resources.js";

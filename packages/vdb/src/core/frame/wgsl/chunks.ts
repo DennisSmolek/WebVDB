@@ -7,14 +7,25 @@
 //   three.js r187 getShIrradianceAt (MIT).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TSL → WGSL for the core compute kernels (K6.1); the froxel of a 3D texel replaces the atlas
-// pixel (the noise keeps his virtual atlas coordinate); octaves, Lorenz-Mie and spectral chunks wait for
-// K6.3/K6.4. CPU twins: tools/frame (index.ts, froxel.ts). Divergences: DIVERGES.md (K3.1, K6.1 rows).
+// pixel (the noise keeps his virtual atlas coordinate); K6.3: the Lorenz-Mie table reads (frameMieTexel, L206–271), octaves
+// (L316–399: frameShadowMarchDepth, frameOctaveLight, frameShadowTotal, frameShadowedLight) and frameTwoSidedDiffusion
+// (L416–451); spectral chunks wait for K6.4. CPU twins: tools/frame (index.ts, froxel.ts, mie.ts). Divergences:
+// DIVERGES.md (K3.1, K6.1 rows).
+
+import { vdbFrameMieAsymmetry, vdbFrameMieRgbMode, vdbFrameMieTableSize } from "../../../tools/frame/mie.js";
+import { vdbFrameMaxScatteringOctaves } from "../../../tools/frame/index.js";
 
 /**
  * `frameChunksWgsl(roots)`: the source-free `vdbFrame*` WGSL functions the frame kernels share, emitted
  * as the dependency closure of `roots` in one fixed order (same roots, same bytes). They read the group-0
  * uniforms `vdbFrame` / `vdbFrameLights` (`vdbFrameUniformsWgsl`).
  */
+
+/** Lorenz-Mie table texels (his `frameMieTableSize`), its asymmetry and the 'lorenz-mie-rgb' mode (tools/frame/mie.ts). */
+const MIE_SIZE = vdbFrameMieTableSize;
+const MIE_ASYMMETRY = vdbFrameMieAsymmetry;
+const MIE_RGB_MODE = vdbFrameMieRgbMode;
+const MAX_OCTAVES = vdbFrameMaxScatteringOctaves;
 
 interface Chunk {
   readonly deps: readonly string[];
@@ -185,7 +196,7 @@ fn vdbFrameBoxSteps(localNear: vec3f, localFar: vec3f, segment: f32, sampledLod:
   [
     "phase",
     {
-      deps: [],
+      deps: ["constants"],
       code: `// frameHenyeyGreenstein: HG over the isotropic phase; g = 0 gives 1
 fn vdbFrameHenyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
   let g2 = g * g;
@@ -195,14 +206,33 @@ fn vdbFrameHenyeyGreensteinColor(cosTheta: f32, g: vec3f) -> vec3f {
   let g2 = g * g;
   return (vec3f(1.0) - g2) / pow(max(vec3f(1.0) + g2 - g * 2.0 * cosTheta, vec3f(1e-4)), vec3f(1.5));
 }
-// framePhaseWeight: (forward g, back g, back weight, Lorenz-Mie mode); Lorenz-Mie: K6.3
-fn vdbFramePhaseWeight(phase: vec4f, cosTheta: f32) -> f32 {
-  return mix(vdbFrameHenyeyGreenstein(cosTheta, phase.x), vdbFrameHenyeyGreenstein(cosTheta, phase.y), phase.z);
+// K6.3: the Lorenz-Mie tables (V47; rgb 'lorenz-mie-rgb', a 'lorenz-mie'), ${MIE_SIZE} texels at the angle PI u^2, read
+// with textureLoad and a linear blend (his frameMieTexel)
+@group(0) @binding(4) var vdbFrameMieLut: texture_2d<f32>;
+fn vdbFrameMieTexel(cosTheta: f32) -> vec4f {
+  let u = sqrt(acos(clamp(cosTheta, -1.0, 1.0)) * (1.0 / VDB_FRAME_PI));
+  let texel = u * ${MIE_SIZE - 1}.0;
+  let index = min(i32(texel), ${MIE_SIZE - 2});
+  let a = textureLoad(vdbFrameMieLut, vec2i(index, 0), 0);
+  let b = textureLoad(vdbFrameMieLut, vec2i(index + 1, 0), 0);
+  return mix(a, b, vec4f(texel - f32(index)));
 }
-// framePhaseColor: spectrum (red g scale, blue g scale, flag); flag 0: one phase for all channels
+// framePhaseWeight: (forward g, back g, back weight, Lorenz-Mie mode); mode > 0 mixes the 'lorenz-mie' table in
+fn vdbFramePhaseWeight(phase: vec4f, cosTheta: f32) -> f32 {
+  let w = mix(vdbFrameHenyeyGreenstein(cosTheta, phase.x), vdbFrameHenyeyGreenstein(cosTheta, phase.y), phase.z);
+  if (phase.w > 0.0) {
+    return mix(w, vdbFrameMieTexel(cosTheta).w, phase.w);
+  }
+  return w;
+}
+// framePhaseColor: spectrum (red g scale, blue g scale, flag); flag 0: one phase for all channels; 'lorenz-mie-rgb'
+// (mode 2): its three tables
 fn vdbFramePhaseColor(phase: vec4f, spectrum: vec3f, cosTheta: f32) -> vec3f {
   if (spectrum.z < 0.5) {
     return vec3f(vdbFramePhaseWeight(phase, cosTheta));
+  }
+  if (phase.w > ${MIE_RGB_MODE - 0.5}) {
+    return vdbFrameMieTexel(cosTheta).xyz;
   }
   let scale = vec3f(spectrum.x, 1.0, spectrum.y);
   return mix(
@@ -210,6 +240,11 @@ fn vdbFramePhaseColor(phase: vec4f, spectrum: vec3f, cosTheta: f32) -> vec3f {
     vdbFrameHenyeyGreensteinColor(cosTheta, clamp(scale * phase.y, vec3f(-0.99), vec3f(0.99))),
     vec3f(phase.z),
   );
+}
+// framePhaseWeightScaled: every g x gScale; the Lorenz-Mie modes use HG with the table asymmetry x gScale
+fn vdbFramePhaseWeightScaled(phase: vec4f, cosTheta: f32, gScale: f32) -> f32 {
+  let lobes = mix(vdbFrameHenyeyGreenstein(cosTheta, phase.x * gScale), vdbFrameHenyeyGreenstein(cosTheta, phase.y * gScale), phase.z);
+  return mix(lobes, vdbFrameHenyeyGreenstein(cosTheta, gScale * ${MIE_ASYMMETRY}), min(phase.w, 1.0));
 }
 `,
     },
@@ -232,13 +267,116 @@ fn vdbFrameShadowStep(extinction: f32, absorption: f32, multipleScattering: f32)
 fn vdbFrameShadowDepth(depths: vec3f, multipleScattering: f32) -> f32 {
   return select(depths.x, min(depths.x, depths.y + log(depths.z * 0.75 + 1.0)), multipleScattering > 0.0);
 }
-// frameShadowTransmittance: (direct, total); octaves: K6.3
-fn vdbFrameShadowTransmittance(depths: vec3f, multipleScattering: f32) -> vec2f {
+// K6.3 frameShadowMarchDepth: the depth that stops a march; octaves (count, a, b, c): the last octave's sigma a^N depth
+fn vdbFrameShadowMarchDepth(depths: vec3f, multipleScattering: f32, octaves: vec4f) -> f32 {
+  if (octaves.x > 0.0) {
+    return depths.x * pow(octaves.y, octaves.x);
+  }
+  return vdbFrameShadowDepth(depths, multipleScattering);
+}
+// frameShadowTransmittance: (direct, total); octaves: total holds 1 / (1 + optical depth) (K6.3)
+fn vdbFrameShadowTransmittance(depths: vec3f, multipleScattering: f32, octaves: vec4f) -> vec2f {
+  if (octaves.x > 0.0) {
+    return vec2f(exp(-depths.x), 1.0 / (depths.x + 1.0));
+  }
   return vec2f(exp(-depths.x), exp(-vdbFrameShadowDepth(depths, multipleScattering)));
 }
 // frameIsotropicDiffusion: two-sided slab total of isotropic light (white furnace), z0 = 2/3
 fn vdbFrameIsotropicDiffusion(frontReduced: f32, backReduced: f32, frontEffective: f32) -> f32 {
   return (backReduced + 2.0 / 3.0) * 2.0 / (frontReduced + backReduced + 4.0 / 3.0) * exp(-frontEffective);
+}
+// K6.3 frameTwoSidedDiffusion ('two-sided'): 1D slab diffusion with a collimated source between the light side (front
+// reduced depth f) and the far side (back b), the lowest side mode k^2 = 2 (PI / (f + b + 2 z0))^2, Robin boundaries
+// z0 = 2/3; the diffuse plus the reduced beam exp(-f), times exp(-effective front), never below the direct light
+fn vdbFrameTwoSidedDiffusion(direct: f32, frontReduced: f32, frontEffective: f32, backReduced: f32) -> f32 {
+  let z0 = 2.0 / 3.0;
+  let slab = frontReduced + backReduced;
+  let k0 = 4.442882938158366 / (slab + 2.0 * z0);
+  let k = k0 + (1.0 - step(0.01, abs(1.0 - k0 * k0))) * 0.01;
+  let p = -3.0 / (1.0 - k * k);
+  let kl = k * slab;
+  let coshKl = (exp(kl) + exp(-kl)) * 0.5;
+  let sinhKl = (exp(kl) - exp(-kl)) * 0.5;
+  let c12 = k * -z0;
+  let r1 = p * -(1.0 + z0);
+  let c21 = coshKl + k * z0 * sinhKl;
+  let c22 = sinhKl + k * z0 * coshKl;
+  let r2 = -p * exp(-slab) * (1.0 - z0);
+  let det = c22 - c12 * c21;
+  let c = (r1 * c22 - c12 * r2) / det;
+  let d = (r2 - c21 * r1) / det;
+  let kf = k * frontReduced;
+  let beam = exp(-frontReduced);
+  let diffuse = p * beam + c * (exp(kf) + exp(-kf)) * 0.5 + d * (exp(kf) - exp(-kf)) * 0.5;
+  return max(direct, (diffuse + beam) * exp(-frontEffective));
+}
+`,
+    },
+  ],
+  [
+    "octaveTotal",
+    {
+      deps: ["shadow"],
+      code: `// K6.3 multipleScattering 'octaves' (count N, extinction a, contribution b, phase c), isotropic light
+// frameShadowOpticalDepth: the optical depth back from the octave shadow value 1 / (1 + depth)
+fn vdbFrameShadowOpticalDepth(shadowY: f32) -> f32 {
+  return max(1.0 / max(shadowY, 1e-6) - 1.0, 0.0);
+}
+// frameOctaveLight of isotropic light: sum over n = 1..N of b^n exp(-a^n depth)
+fn vdbFrameOctaveSum(octaves: vec4f, opticalDepth: f32) -> f32 {
+  var light = 0.0;
+  var extinctionScale = 1.0;
+  var contribution = 1.0;
+  for (var i = 0u; i < ${MAX_OCTAVES}u; i++) {
+    if (f32(i + 1u) > octaves.x) {
+      break;
+    }
+    extinctionScale *= octaves.y;
+    contribution *= octaves.z;
+    light += contribution * exp(-opticalDepth * extinctionScale);
+  }
+  return light;
+}
+// frameShadowTotal: total transmittance of isotropic light from the y shadow value; octaves: exp(-depth) + the octaves
+fn vdbFrameShadowTotal(shadowY: f32, octaves: vec4f) -> f32 {
+  if (octaves.x > 0.0) {
+    let depth = vdbFrameShadowOpticalDepth(shadowY);
+    return exp(-depth) + vdbFrameOctaveSum(octaves, depth);
+  }
+  return shadowY;
+}
+`,
+    },
+  ],
+  [
+    "octaves",
+    {
+      deps: ["phase", "octaveTotal"],
+      code: `// frameOctaveLight: sum over n = 1..N of b^n phase(g c^n) exp(-a^n depth)
+fn vdbFrameOctaveLight(octaves: vec4f, opticalDepth: f32, phase: vec4f, cosTheta: f32) -> f32 {
+  var light = 0.0;
+  var extinctionScale = 1.0;
+  var contribution = 1.0;
+  var gScale = 1.0;
+  for (var i = 0u; i < ${MAX_OCTAVES}u; i++) {
+    if (f32(i + 1u) > octaves.x) {
+      break;
+    }
+    extinctionScale *= octaves.y;
+    contribution *= octaves.z;
+    gScale *= octaves.w;
+    light += contribution * vdbFramePhaseWeightScaled(phase, cosTheta, gScale) * exp(-opticalDepth * extinctionScale);
+  }
+  return light;
+}
+// frameShadowedLight of each channel: phase x direct + the scattered light (total - direct, isotropic), or with
+// octaves their phased sum from the octave shadow value
+fn vdbFrameShadowedLight(phase: vec4f, spectrum: vec3f, octaves: vec4f, cosTheta: f32, shadow: vec2f) -> vec3f {
+  let direct = vdbFramePhaseColor(phase, spectrum, cosTheta) * shadow.x;
+  if (octaves.x > 0.0) {
+    return direct + vec3f(vdbFrameOctaveLight(octaves, vdbFrameShadowOpticalDepth(shadow.y), phase, cosTheta));
+  }
+  return direct + vec3f(shadow.y - shadow.x);
 }
 `,
     },
@@ -350,7 +488,7 @@ fn vdbFrameSrgbEotf(color: vec3f) -> vec3f {
 const BY_NAME = new Map(CHUNKS);
 
 /** Names of the chunks {@link frameChunksWgsl} knows. */
-export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "sh" | "envSh" | "grid" | "srgb";
+export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "octaveTotal" | "octaves" | "sh" | "envSh" | "grid" | "srgb";
 
 /** The closure of `roots` (with dependencies), in the fixed chunk order. */
 export function frameChunksWgsl(roots: Iterable<VDBFrameChunk>): string {

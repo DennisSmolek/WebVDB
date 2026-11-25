@@ -22,6 +22,7 @@ import {
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameGridMipSpec,
   vdbFrameVolumeShadowSpec,
   vdbFrameEmissionDirectionSpec,
   vdbFrameEmissionReduceSpec,
@@ -104,6 +105,8 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
     }
   }
   compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
+  // K6.3: the transmittance's scattered-light variants and the 'mlp' feature mips
+  compute.push(vdbFrameTransmittanceSpec({ scattering: "mlp" }), vdbFrameTransmittanceSpec({ scattering: "multi-scale" }), vdbFrameGridMipSpec({ first: true }), vdbFrameGridMipSpec({ first: false }));
   // K6.2b: the environment kernels (source-free)
   compute.push(vdbFrameEnvPrefilterSpec("equirect"), vdbFrameEnvPrefilterSpec("cube"), vdbFrameEnvBlurSpec(), vdbFrameEnvReduceSpec(), vdbFrameEnvironmentGridSpec());
   compute.push(vdbFrameVolumeShadowSpec(), vdbFrameEmissionReduceSpec(), vdbFrameEmissionProbeSpec());
@@ -219,10 +222,11 @@ describe("K6.1 retire queue", () => {
 });
 
 describe("K6.1 settings", () => {
-  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix", () => {
+  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix and the K6.3 multi-scale fields", () => {
     const core = vdbFrameDefaultSettings();
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
-    const { froxelMix, ...shared } = core;
+    const { froxelMix, multiScaleLevels, multiScaleEdge, ...shared } = core;
+    expect([multiScaleLevels, multiScaleEdge]).toEqual([6, "zero"]);
     expect(froxelMix).toBe("mixture");
     expect(shared).toEqual(three);
   });
@@ -303,7 +307,9 @@ describe("K6.1 WGSL sizes (D21; design §5.3)", () => {
     expect(Object.keys(snap.kernels).sort()).toEqual(Object.keys(sizes).sort());
     for (const [label, s] of Object.entries(sizes)) {
       expect(s.min, `${label}: WGSL size changed; if intended run K6_WRITE_SIZES=1 pnpm vitest run packages/vdb/test/core/frame and commit`).toBe(snap.kernels[label]!.min);
-      expect(s.min).toBeLessThanOrEqual(label.includes("gather") || label.includes("grid density") || label.includes("emission direction") ? CAP_SOURCE : CAP_FREE);
+      // design §5.3: the transmittance with the MLP (and K7.3's lookup) may take 28 KiB
+      const cap = label.includes("gather") || label.includes("grid density") || label.includes("emission direction") ? CAP_SOURCE : label.includes("transmittance (") ? 28 * 1024 : CAP_FREE;
+      expect(s.min).toBeLessThanOrEqual(cap);
     }
   });
 });

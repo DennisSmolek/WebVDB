@@ -26,7 +26,7 @@
  */
 
 import { VDBFrameEnvironmentLights, frameEnvironmentMapHeight, frameEnvironmentMapWidth, frameEnvironmentModes, frameMaxEnvironmentLights, vdbFrameEnvironmentMapDirection } from "./environment.js";
-import type { Vec3 } from "./index.js";
+import { vdbFrameOctavesOff, vdbFrameShadowTotal, type Vec3, type Vec4 } from "./index.js";
 
 /** Work map size (design §3.3 envPrefilter). */
 export const VDB_FRAME_ENV_WORK_WIDTH = 128;
@@ -298,7 +298,7 @@ export interface VDBFrameEnvironmentFlags {
  * unshadowed sum of those lights); with only the slot light nothing (the lighting adds it); else 'outward' SH
  * irradiance along `outward`, shadowed between the sky down and up totals (diffusion: the outward and inward halves).
  */
-export function vdbFrameEnvironmentDensityTerm(env: VDBFrameEnvironmentGpuResult, flags: VDBFrameEnvironmentFlags, outward: Vec3, sky: Vec3, skyTotals: [number, number], gridAt: () => Vec3 | null): Vec3 {
+export function vdbFrameEnvironmentDensityTerm(env: VDBFrameEnvironmentGpuResult, flags: VDBFrameEnvironmentFlags, outward: Vec3, sky: Vec3, skyTotals: [number, number], gridAt: () => Vec3 | null, octaves: Vec4 = vdbFrameOctavesOff): Vec3 {
   if (!env.valid) return [0, 0, 0];
   const first = flags.slot ? 1 : 0;
   if (flags.useShadows && flags.grid && env.count > first) {
@@ -306,7 +306,9 @@ export function vdbFrameEnvironmentDensityTerm(env: VDBFrameEnvironmentGpuResult
     if (inside) return inside;
     const sum: Vec3 = [0, 0, 0];
     for (let i = first; i < env.count; i++) for (let c = 0; c < 3; c++) sum[c] = sum[c]! + env.colors[i]![c]!;
-    return [Math.max(sum[0], 0), Math.max(sum[1], 0), Math.max(sum[2], 0)];
+    // K6.3: the unshadowed light gets the octave total of 1
+    const total = vdbFrameShadowTotal(1, octaves);
+    return [Math.max(sum[0], 0) * total, Math.max(sum[1], 0) * total, Math.max(sum[2], 0) * total];
   }
   if (flags.useShadows && flags.slot && env.count > 0) return [0, 0, 0];
   const blend = (outward[0] * sky[0] + outward[1] * sky[1] + outward[2] * sky[2]) * 0.5 + 0.5;

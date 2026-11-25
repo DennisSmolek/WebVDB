@@ -9,8 +9,11 @@
 // the density and lighting passes are one kernel (the density sums live in registers while a thread loops its
 // source group; his 4 rgba16float density targets are gone); several source groups accumulate in packed partials.
 // The environment terms (K6.2b) read the GPU environment buffer: the dominant 'directional' light in the next free
-// slot, the environment grid, or the 'outward' SH irradiance. Octaves, two-sided, neural and spectral wait for
-// K6.3 / K6.4. CPU twins: tools/frame (grid.ts, stack.ts). Divergences: DIVERGES.md.
+// slot, the environment grid, or the 'outward' SH irradiance. K6.3: octaves and 'two-sided' (FrameTransmittanceMaterial
+// L180–214, FrameDensityMaterial L272–294, FrameLightingMaterial L310–325); the grid mips and the network of 'neural'
+// (FrameGridMipMaterial L10–66, frameNeuralChunks.js L14–129) run as a generic MLP evaluator (shapes as uniforms,
+// weights in a storage buffer); K7.3's 'multi-scale' lookup (mjurczyk 4e2d46f). Spectral waits for K6.4. CPU twins:
+// tools/frame (grid.ts, stack.ts, mlp.ts, multi-scale.ts). Divergences: DIVERGES.md.
 
 /**
  * The 'frame' lighting kernels of the core renderer (K6.2):
@@ -27,6 +30,7 @@
 import type { VDBVolumeChannels } from "../../source/types.js";
 import { frameChunksWgsl } from "./chunks.js";
 import { VDB_FRAME_SLICE_WGSL, vdbFrameSourceFunctionsWgsl } from "./gather.js";
+import { vdbFrameMultiScaleWgsl } from "../../compute/multi-scale.js";
 
 /** Group-1 bindings of the shadow grid density kernel. */
 export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 3 } as const;
@@ -99,13 +103,177 @@ ${store}
 `;
 }
 
-/** The transmittance kernel (after `vdbFrameUniformsWgsl()`; source-free). */
-export function vdbFrameTransmittanceWgsl(): string {
+/**
+ * K6.3: the scattered-light term of the transmittance kernel's light slots, a pipeline key (design §3.6, §5.2). `'none'`
+ * covers single scattering, 1D diffusion, 'two-sided' and 'octaves' (uniforms); `'mlp'` and `'multi-scale'` bind their
+ * resources in group 2 (the kernel is source-free: the MLP weights are its one storage buffer, D10).
+ */
+export type VDBFrameScatteringKernel = "none" | "mlp" | "multi-scale";
+
+/** K6.3: group-2 bindings of the transmittance kernel's `'mlp'` and `'multi-scale'` variants. */
+export const TRANSMITTANCE_MLP_BINDINGS = { weights: 0, shape: 1, mips: 2 } as const;
+export const TRANSMITTANCE_MULTI_SCALE_BINDINGS = { params: 0, mips: 1 } as const;
+
+/** Most MLP layers and the widest layer the generic evaluator takes (K6.3, design §3.6). */
+export const VDB_FRAME_MLP_MAX_LAYERS = 8;
+export const VDB_FRAME_MLP_MAX_WIDTH = 64;
+
+/**
+ * K6.3: the experimental generic MLP evaluator (design §3.6, Q5) and its inputs, his `'neural'` features (frameNeuralChunks
+ * L60–129): log(1 + σ h 2^k) of the feature levels at the voxel, toward the light and away from it, log(1 + direct optical
+ * depth) and √(absorption / extinction) of level 1. Level 0 is the last shadow grid cascade, level k ≥ 1 the box mip
+ * k − 1 of `vdbFrameNeuralMips` (the last mip past the chain). The shape is a uniform, the weights a storage buffer.
+ */
+const MLP_WGSL = `struct VdbFrameMlp {
+  // layer count, feature levels, output (0 linear, 1 exp(min(o, 4))), input count
+  info: vec4u,
+  // per layer: inputs, outputs, activation (0 linear, 1 ReLU), weight offset (outputs x inputs row-major, then the biases)
+  layers: array<vec4u, ${VDB_FRAME_MLP_MAX_LAYERS}>,
+};
+@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.weights}) var<storage, read> vdbFrameMlpWeights: array<f32>;
+@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.shape}) var<uniform> vdbFrameMlp: VdbFrameMlp;
+@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.mips}) var vdbFrameNeuralMips: texture_3d<f32>;
+
+// The forward pass: each layer's outputs from the last one's (two ${VDB_FRAME_MLP_MAX_WIDTH}-wide locals), then the output transform
+fn vdbFrameMlpForward(input: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>) -> f32 {
+  var a = input;
+  var b: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>;
+  let count = min(vdbFrameMlp.info.x, ${VDB_FRAME_MLP_MAX_LAYERS}u);
+  for (var l = 0u; l < count; l++) {
+    let shape = vdbFrameMlp.layers[l];
+    let n = min(shape.x, ${VDB_FRAME_MLP_MAX_WIDTH}u);
+    let m = min(shape.y, ${VDB_FRAME_MLP_MAX_WIDTH}u);
+    let bias = shape.w + shape.y * shape.x;
+    for (var j = 0u; j < m; j++) {
+      var s = vdbFrameMlpWeights[bias + j];
+      let row = shape.w + j * shape.x;
+      for (var i = 0u; i < n; i++) {
+        s += vdbFrameMlpWeights[row + i] * a[i];
+      }
+      b[j] = select(s, max(s, 0.0), shape.z == 1u);
+    }
+    a = b;
+  }
+  return select(a[0], exp(min(a[0], 4.0)), vdbFrameMlp.info.z == 1u);
+}
+
+// sampleLevel: (extinction, absorption) of feature level k at a world position, 0 outside the last cascade
+fn vdbFrameNeuralSample(level: u32, world: vec3f) -> vec2f {
+  let cascade = u32(vdbFrame.gridLayout.x) - 1u;
+  let uvw = vdbFrameGridUvw(cascade, world);
+  if (any(uvw < vec3f(0.0)) || any(uvw > vec3f(1.0))) {
+    return vec2f(0.0);
+  }
+  if (level == 0u) {
+    return vdbFrameStackSample(vdbFrameShadowGrid, vdbFrame.shadowOrigin[cascade].xyz, uvw).xy;
+  }
+  let mip = min(level - 1u, textureNumLevels(vdbFrameNeuralMips) - 1u);
+  let dims = vec3f(textureDimensions(vdbFrameNeuralMips, mip));
+  let p = clamp(uvw * dims, vec3f(0.5), dims - vec3f(0.5));
+  return textureSampleLevel(vdbFrameNeuralMips, vdbFrameLinear, p / dims, f32(mip)).xy;
+}
+
+// h: the largest voxel side of the last cascade
+fn vdbFrameNeuralUnit() -> f32 {
+  let v = vdbFrame.gridVoxel[u32(vdbFrame.gridLayout.x) - 1u].xyz;
+  return max(v.x, max(v.y, v.z));
+}
+
+// getLocalInputs: the inputs that do not depend on the light (the voxel's levels at [0, L), the albedo input at 3L + 1)
+fn vdbFrameMlpLocal(world: vec3f) -> array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}> {
+  var input: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>;
+  let levels = min(vdbFrameMlp.info.y, 21u);
+  let h = vdbFrameNeuralUnit();
+  for (var k = 0u; k < levels; k++) {
+    let s = vdbFrameNeuralSample(k, world);
+    input[k] = log(s.x * (h * f32(1u << k)) + 1.0);
+    if (k == 1u && s.x > 0.0) {
+      input[3u * levels + 1u] = sqrt(clamp(s.y / max(s.x, 1e-20), 0.0, 1.0));
+    }
+  }
+  return input;
+}
+
+// neuralLight: the network's scattered light (total - direct) of a slot for the unit direction to the light
+fn vdbFrameMlpLight(world: vec3f, direction: vec3f, opticalDepth: f32, local: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>) -> f32 {
+  var input = local;
+  let levels = min(vdbFrameMlp.info.y, 21u);
+  let h = vdbFrameNeuralUnit();
+  for (var k = 0u; k < levels; k++) {
+    let reach = h * f32(1u << k);
+    input[levels + k] = log(vdbFrameNeuralSample(k, world + direction * reach).x * reach + 1.0);
+    input[2u * levels + k] = log(vdbFrameNeuralSample(k, world - direction * reach).x * reach + 1.0);
+  }
+  input[3u * levels] = log(opticalDepth + 1.0);
+  return vdbFrameMlpForward(input);
+}
+`;
+
+/** K6.3: the box mip kernels of the `'mlp'` feature levels (his grid mip pass, design §3.3 `gridMips`). */
+export const GRID_MIP_BINDINGS = { source: 0, out: 1 } as const;
+
+/**
+ * K6.3 `gridMips` (his FrameGridMipMaterial, the box branch): texel x of mip k is the mean of the 2 × 2 × 2 texels 2x + i
+ * of level k − 1, each clamped to that level's last texel. `vdbFrameGridMipFirstCs` reads the last shadow grid cascade
+ * in the stack (level 0), `vdbFrameGridMipCs` a one-mip view of the level before. rgba16float (his RG half float in .xy).
+ */
+export function vdbFrameGridMipWgsl(): string {
+  const b = GRID_MIP_BINDINGS;
+  return `@group(1) @binding(${b.source}) var vdbFrameMipSource: texture_3d<f32>;
+@group(1) @binding(${b.out}) var vdbFrameMipOut: texture_storage_3d<rgba16float, write>;
+
+fn vdbFrameMipBox(gid: vec3u, origin: vec3u, size: vec3u) {
+  if (any(gid >= textureDimensions(vdbFrameMipOut))) {
+    return;
+  }
+  var sum = vec4f(0.0);
+  for (var i = 0u; i < 8u; i++) {
+    let p = min(gid * 2u + vec3u(i & 1u, (i >> 1u) & 1u, (i >> 2u) & 1u), size - vec3u(1u));
+    sum += textureLoad(vdbFrameMipSource, origin + p, 0);
+  }
+  textureStore(vdbFrameMipOut, gid, vec4f(sum.xy / 8.0, 0.0, 0.0));
+}
+
+@compute @workgroup_size(4, 4, 4)
+fn vdbFrameGridMipFirstCs(@builtin(global_invocation_id) gid: vec3u) {
+  let cascade = u32(vdbFrame.gridLayout.x) - 1u;
+  vdbFrameMipBox(gid, vec3u(vdbFrame.shadowOrigin[cascade].xyz), vec3u(u32(vdbFrame.gridLayout.y)));
+}
+
+@compute @workgroup_size(4, 4, 4)
+fn vdbFrameGridMipCs(@builtin(global_invocation_id) gid: vec3u) {
+  vdbFrameMipBox(gid, vec3u(0u), textureDimensions(vdbFrameMipSource));
+}
+`;
+}
+
+/** The transmittance kernel (after `vdbFrameUniformsWgsl()`; source-free). K6.3: `scattering` picks the slot term. */
+export function vdbFrameTransmittanceWgsl(o: { scattering?: VDBFrameScatteringKernel } = {}): string {
   const b = TRANSMITTANCE_BINDINGS;
+  const scattering = o.scattering ?? "none";
+  const msb = TRANSMITTANCE_MULTI_SCALE_BINDINGS;
+  const extra =
+    scattering === "mlp"
+      ? MLP_WGSL
+      : scattering === "multi-scale"
+        ? `${vdbFrameMultiScaleWgsl({ baseChannels: [0, 1], mipChannels: 2 })}
+@group(2) @binding(${msb.params}) var<uniform> vdbFrameMsParams: VdbFrameMultiScale;
+@group(2) @binding(${msb.mips}) var vdbFrameMsMips: texture_3d<f32>;
+`
+        : "";
+  const local = scattering === "mlp" ? `    let local = vdbFrameMlpLocal(world);\n` : "";
+  const slotTerm =
+    scattering === "mlp"
+      ? `      // 'mlp' (experimental; his 'neural'): total = direct + the network's scattered light
+      results[i].y = results[i].x + vdbFrameMlpLight(world, s.xyz, opticalDepths[i], local);\n`
+      : scattering === "multi-scale"
+        ? `      // 'multi-scale' (K7.3): total = direct + the multi-scale scattered light, at most 1
+      results[i].y = min(results[i].x + vdbFrameMultiScaleLight(vdbFrameShadowGrid, vdbFrameMsMips, vdbFrameLinear, vdbFrameMsParams, world, s.xyz, s.w), 1.0);\n`
+        : "";
   return `${frameChunksWgsl(["constants", "noise", "shadow", "grid"])}
 @group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
 @group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceOut: texture_storage_3d<rgba16float, write>;
-
+${extra}
 // gridExtinction: (extinction, absorption) of the finest cascade at the position, 0 outside the grid
 fn vdbFrameGridExtinction(world: vec3f) -> vec2f {
   let c = vdbFrameFindCascade(world, 0u);
@@ -118,15 +286,21 @@ fn vdbFrameGridExtinction(world: vec3f) -> vec2f {
 
 // His march: one voxel of the finest cascade at the probe per step on the direction's fastest axis (coarser
 // cascades after leaving a fine one), each step sampled jitter of the way along it; stops outside the grid, at
-// maxDistance or past depth 6. (direct, total, reduced depth, effective depth).
-fn vdbFrameGridMarch(origin: vec3f, direction: vec3f, maxDistance: f32, jitter: f32) -> vec4f {
+// maxDistance or past march depth 6 (K6.3: octaves march to the last octave's depth). t: (direct, total, reduced depth,
+// effective depth); depth: the direct optical depth (the MLP's input).
+struct VdbFrameGridMarchResult {
+  t: vec4f,
+  depth: f32,
+};
+fn vdbFrameGridMarch(origin: vec3f, direction: vec3f, maxDistance: f32, jitter: f32) -> VdbFrameGridMarchResult {
   let ms = vdbFrame.lighting.x;
+  let octaves = vdbFrame.octaves;
   var depths = vec3f(0.0);
   var traveled = 0.0;
   var probe = origin;
   for (var i = 0u; i < 1024u; i++) {
     let c = vdbFrameFindCascade(probe, 0u);
-    if (c < 0 || traveled >= maxDistance || vdbFrameShadowDepth(depths, ms) > 6.0) {
+    if (c < 0 || traveled >= maxDistance || vdbFrameShadowMarchDepth(depths, ms, octaves) > 6.0) {
       break;
     }
     let perUnit = abs(direction) / vdbFrame.gridVoxel[u32(c)].xyz;
@@ -136,8 +310,8 @@ fn vdbFrameGridMarch(origin: vec3f, direction: vec3f, maxDistance: f32, jitter: 
     probe += direction * stepLength;
     traveled += stepLength;
   }
-  let t = vdbFrameShadowTransmittance(depths, ms);
-  return vec4f(t.x, t.y, depths.z, depths.y);
+  let t = vdbFrameShadowTransmittance(depths, ms, octaves);
+  return VdbFrameGridMarchResult(vec4f(t.x, t.y, depths.z, depths.y), depths.x);
 }
 
 // His transmittance pass at one voxel: 4 targets (sky up total, sky down total, slot 0, 1 total), (slots 2–5
@@ -157,38 +331,65 @@ ${GRID_CELL}
   }
   if (near > 0.0) {
     let ms = vdbFrame.lighting.x;
+    let twoSided = vdbFrame.lighting.y > 0.5;
     let jitter = vdbFrameNoise(vdbFrame.jitterFade.x, vdbFrameGridFragCoord(cascade, cell));
     let sky = normalize(vdbFrameLights.sky.xyz);
     let slots = u32(vdbFrame.gridLayout.w);
     // K6.2b: the dominant 'directional' environment light takes the next free slot (its direction from the buffer)
     let envSlot = vdbFrame.environment.x > 0.5;
-    // marches 0..5: the light slots; 6, 7: sky up and down (one march call site)
-    var results: array<vec4f, 8>;
-    for (var m = 0u; m < 8u; m++) {
+    // the slots' unit directions to the light and march lengths (w < 0: no slot)
+    var slotDirection: array<vec4f, 6>;
+    for (var i = 0u; i < 6u; i++) {
+      slotDirection[i] = vec4f(0.0, 1.0, 0.0, -1.0);
+      if (i >= slots + select(0u, 1u, envSlot)) {
+        continue;
+      }
+      if (i == slots) {
+        if (vdbFrameEnv.info.z != 0u && vdbFrameEnv.info.x != 0u) {
+          slotDirection[i] = vec4f(normalize(vdbFrameEnv.direction[0].xyz), 1e20);
+        }
+      } else {
+        let light = vdbFrameLights.position[i];
+        let toLight = light.xyz - world;
+        let isDirection = light.w < 1.5;
+        slotDirection[i] = vec4f(select(normalize(toLight), normalize(light.xyz), isDirection), select(length(toLight), 1e20, isDirection));
+      }
+    }
+    // marches 0..5: the light slots; 6, 7: sky up and down; K6.3 'two-sided' 8..13: the slots away from the light
+    // (one march call site)
+    var results: array<vec4f, 14>;
+    var opticalDepths: array<f32, 6>;
+    let marches = select(8u, 14u, twoSided);
+    for (var m = 0u; m < marches; m++) {
       var direction = sky;
       var maxDistance = 1e20;
       results[m] = vec4f(1.0, 1.0, 0.0, 0.0);
-      if (m < 6u) {
-        if (m >= slots + select(0u, 1u, envSlot)) {
+      if (m < 6u || m >= 8u) {
+        let s = slotDirection[select(m, m - 8u, m >= 8u)];
+        if (s.w < 0.0) {
           continue;
         }
-        if (m == slots) {
-          if (vdbFrameEnv.info.z == 0u || vdbFrameEnv.info.x == 0u) {
-            continue;
-          }
-          direction = normalize(vdbFrameEnv.direction[0].xyz);
-        } else {
-          let light = vdbFrameLights.position[m];
-          let toLight = light.xyz - world;
-          let isDirection = light.w < 1.5;
-          direction = select(normalize(toLight), normalize(light.xyz), isDirection);
-          maxDistance = select(length(toLight), 1e20, isDirection);
-        }
+        direction = select(s.xyz, -s.xyz, m >= 8u);
+        maxDistance = select(s.w, 1e20, m >= 8u);
       } else if (m == 7u) {
         direction = -sky;
       }
-      results[m] = vdbFrameGridMarch(world, direction, maxDistance, jitter);
+      let r = vdbFrameGridMarch(world, direction, maxDistance, jitter);
+      results[m] = r.t;
+      if (m < 6u) {
+        opticalDepths[m] = r.depth;
+      }
     }
+${local}    for (var i = 0u; i < 6u; i++) {
+      let s = slotDirection[i];
+      if (s.w < 0.0) {
+        continue;
+      }
+      if (twoSided) {
+        // 'two-sided': diffusion of the slab between the light side and the far side
+        results[i].y = vdbFrameTwoSidedDiffusion(results[i].x, results[i].z, results[i].w, results[i + 8u].z);
+      }
+${slotTerm}    }
     let up = results[6];
     let down = results[7];
     var skyUp = up.y;
@@ -251,7 +452,7 @@ export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVol
   }
   textureStore(vdbFrameScatter, cell, out);`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "sh", "envSh", "grid"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh", "grid"])}
 @group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
 @group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
 @group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;
@@ -332,6 +533,10 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
   var emission = vdbFrameEmission(vi, local, s.readLod) + vdbFrameVolumes.v[vi].scatterOpacity.xyz;
   let world = (vdbFrame.cameraWorld * vec4f(mix(f.viewNear, f.viewFar, vec3f(visibleT)), 1.0)).xyz;
   let shadows = vdbFrameShadowsAt(world);
+  // K6.3: isotropic slots (sky up and down, the environment slot) hold total transmittance (octaves: their sum)
+  let octaves = vdbFrame.octaves;
+  let skyUp = vdbFrameShadowTotal(shadows[0].x, octaves);
+  let skyDown = vdbFrameShadowTotal(shadows[0].y, octaves);
   let envMode = vdbFrameEnvDensityMode();
   if (envMode == 1u) {
     // along the outward direction from the volume centre; its shadow between the sky down and up totals
@@ -341,10 +546,10 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
       outward = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (vdbFrameMat3(vdbFrameVolumes.v[vi].localToView) * local));
     }
     let skyBlend = dot(outward, skyDirection) * 0.5 + 0.5;
-    let envShadow = mix(shadows[0].y, shadows[0].x, skyBlend);
+    let envShadow = mix(skyDown, skyUp, skyBlend);
     if (vdbFrame.lighting.w > 0.5) {
       // diffusion: the outward and the inward irradiance, each with its two-sided total
-      let inward = mix(shadows[0].x, shadows[0].y, skyBlend);
+      let inward = mix(skyUp, skyDown, skyBlend);
       emission += albedo * ((vdbFrameEnvIrradiance(outward) * envShadow + vdbFrameEnvIrradiance(-outward) * inward) * 0.5) * (1.0 / VDB_FRAME_PI);
     } else {
       emission += albedo * vdbFrameEnvIrradiance(outward) * envShadow * (1.0 / VDB_FRAME_PI);
@@ -360,7 +565,7 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
       for (var i = u32(vdbFrame.environment.y); i < vdbFrameEnv.info.x; i++) {
         environment += vdbFrameEnv.color[i].xyz;
       }
-      environment = max(environment, vec3f(0.0));
+      environment = max(environment, vec3f(0.0)) * vdbFrameShadowTotal(1.0, octaves);
     }
     emission += albedo * environment * (1.0 / VDB_FRAME_PI);
   }
@@ -368,15 +573,19 @@ fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums 
   var slot = array<f32, 6>(shadows[0].z, shadows[0].w, shadows[1].x, shadows[1].y, shadows[1].z, shadows[1].w);
   var direct = array<f32, 6>(shadows[2].x, shadows[2].y, shadows[2].z, shadows[2].w, shadows[3].x, shadows[3].y);
   let sceneSlots = min(u32(vdbFrame.gridLayout.w), 6u);
-  for (var i = 0u; i < sceneSlots; i++) {
-    let light = vdbFrameLights.position[i];
-    let direction = select(normalize(light.xyz - world), light.xyz, light.w < 1.5);
-    let phase = vdbFramePhaseColor(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, dot(ray, direction));
-    slot[i] = phase.y * direct[i] + (slot[i] - direct[i]);
+  for (var i = 0u; i < 6u; i++) {
+    if (i < sceneSlots) {
+      // frameShadowedLight(...).g: the green phase x direct + the scattered light (octaves: their phased sum)
+      let light = vdbFrameLights.position[i];
+      let direction = select(normalize(light.xyz - world), light.xyz, light.w < 1.5);
+      slot[i] = vdbFrameShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, octaves, dot(ray, direction), vec2f(direct[i], slot[i])).y;
+    } else {
+      slot[i] = vdbFrameShadowTotal(slot[i], octaves);
+    }
   }
   out.a = vec4f(albedo * extinction, extinction);
   out.e = vec4f(emission * extinction, visibleT * extinction);
-  out.s0 = min(vec4f(shadows[0].x, shadows[0].y, slot[0], slot[1]) * extinction, vec4f(6.0e4));
+  out.s0 = min(vec4f(skyUp, skyDown, slot[0], slot[1]) * extinction, vec4f(6.0e4));
   out.s1 = min(vec4f(slot[2], slot[3], slot[4], slot[5]) * extinction, vec4f(6.0e4));
   return out;
 }
@@ -430,7 +639,8 @@ fn vdbFrameLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> vec4f {
     let direction = select(normalize(lightVector), position.xyz, position.w < 1.5);
     let phase = vdbFramePhaseColor(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, dot(ray, direction));
     let hasSlot = i < shadowLights && i < 6u;
-    var factor = phase;
+    // no slot: no shadow (K6.3: octaves still add their light)
+    var factor = vdbFrameShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, vdbFrame.octaves, dot(ray, direction), vec2f(1.0));
     if (hasSlot) {
       factor = vec3f(slot[i]);
       if (colorPhase) {

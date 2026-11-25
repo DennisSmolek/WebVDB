@@ -551,7 +551,7 @@ fn vdbFrameEnvReduceCs(@builtin(local_invocation_index) t: u32) {
  */
 export function vdbFrameEnvironmentGridWgsl(): string {
   const b = ENV_GRID_BINDINGS;
-  return `${frameChunksWgsl(["constants", "shadow", "grid"])}
+  return `${frameChunksWgsl(["constants", "shadow", "octaveTotal", "grid"])}
 @group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
 @group(1) @binding(${b.out}) var vdbFrameEnvGridOut: texture_storage_3d<rgba16float, write>;
 
@@ -565,7 +565,7 @@ fn vdbFrameEnvGridMarch(cascade: u32, world: vec3f, direction: vec3f, ms: f32) -
   var depths = vec3f(0.0);
   for (var i = 0u; i < 1024u; i++) {
     let uvw = vdbFrameGridUvw(cascade, probe);
-    if (any(uvw < vec3f(0.0)) || any(uvw > vec3f(1.0)) || vdbFrameShadowDepth(depths, ms) > 6.0) {
+    if (any(uvw < vec3f(0.0)) || any(uvw > vec3f(1.0)) || vdbFrameShadowMarchDepth(depths, ms, vdbFrame.octaves) > 6.0) {
       break;
     }
     let s = vdbFrameStackSample(vdbFrameShadowGrid, origin, uvw);
@@ -596,7 +596,8 @@ fn vdbFrameEnvironmentGridCs(@builtin(global_invocation_id) gid: vec3u) {
     let corner = vec3f(f32(i & 1u), f32((i >> 1u) & 1u), f32((i >> 2u) & 1u)) - 0.5;
     near += vdbFrameStackSample(vdbFrameShadowGrid, origin, vdbFrameGridUvw(cascade, world + corner * voxel)).x;
   }
-  var result = vec4f(max(unshadowed, vec3f(0.0)), 1.0);
+  // K6.3: the unshadowed light gets the octaves too
+  var result = vec4f(max(unshadowed, vec3f(0.0)) * vdbFrameShadowTotal(1.0, vdbFrame.octaves), 1.0);
   if (near > 0.0) {
     let ms = vdbFrame.lighting.x;
     var irradiance = vec3f(0.0);
@@ -617,7 +618,7 @@ fn vdbFrameEnvironmentGridCs(@builtin(global_invocation_id) gid: vec3u) {
       if (ms > 0.0) {
         total = vdbFrameIsotropicDiffusion(front.z, back.z, front.y);
       } else {
-        total = vdbFrameShadowTransmittance(front, ms).y;
+        total = vdbFrameShadowTotal(vdbFrameShadowTransmittance(front, ms, vdbFrame.octaves).y, vdbFrame.octaves);
       }
       irradiance += vdbFrameEnv.color[i].xyz * total;
     }

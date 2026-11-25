@@ -85,6 +85,8 @@ import { VDBFrameLightingMaterial } from "./lighting-material.js";
 import { getFramePhase, getFramePhaseSpectrum, getFrameMultipleScattering, getFrameScatteringOctaves, getFrameTwoSidedDiffusion, isFrameDiffusion, type VDBFrameMultipleScattering, type VDBFramePhase } from "./phase.js";
 import { VDBFrameGridMipMaterial } from "./grid-mip-material.js";
 import { vdbFrameNeuralCheck, type VDBFrameNeuralNetwork } from "../../tools/frame/neural.js";
+import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
+import type { VDBFrameSettings } from "../../core/frame/settings.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
 import { getFrameExtinctionSpectrum, getFrameSpectralGroups } from "./spectrum.js";
@@ -174,7 +176,9 @@ export interface VDBFrameRendererSettings {
    * Multiple scattering in the shadow marches: false (single scattering), true (1D diffusion toward the
    * light), `'two-sided'` (2D slab diffusion toward and away from the light), `'octaves'` (indirect light
    * octaves, `scatteringOctave*`) or `'neural'` (default, his: the scattered light of the scene light
-   * slots from a small network in `'frame'` lighting, diffusion elsewhere; `neuralNetwork`).
+   * slots from a small network in `'frame'` lighting, diffusion elsewhere; `neuralNetwork`). K6.3, `backend: 'core'`
+   * only: `'mlp'` (EXPERIMENTAL: `neuralNetwork` run by the core's generic MLP evaluator, as `'neural'` is there) and
+   * `'multi-scale'` (K7.3); the TSL path runs those two as 1D diffusion (warned).
    */
   multipleScattering: VDBFrameMultipleScattering;
   /** `'octaves'`: octaves N (1–8, default 4). Octave n has extinction × aⁿ, light × bⁿ, phase g × cⁿ. */
@@ -467,6 +471,10 @@ export class VDBFrameRenderer {
   backend: "tsl" | "core" = "tsl";
   /** @internal K6.1 A/B: the core's froxel mix (`'mixture'` default; `'over'` is his blend). */
   froxelMix: "mixture" | "over" = "mixture";
+  /** @internal K6.3 A/B: core-only settings over `settings` (`multiScaleLevels`, `multiScaleEdge`). */
+  coreSettings: Partial<Pick<VDBFrameSettings, "multiScaleLevels" | "multiScaleEdge">> = {};
+  /** @internal K6.3: `neuralNetwork` as the core's MLP (kept per network object). */
+  private coreMlp: { network: VDBFrameNeuralNetwork | null; mlp: VDBFrameMlp | null } | null = null;
   /** @internal The core renderer of `backend: 'core'` (made on first use, per device). */
   core: VDBFrameRendererGpu | null = null;
   private coreDevice: GPUDevice | null = null;
@@ -912,6 +920,9 @@ export class VDBFrameRenderer {
     const s = this.settings;
     if (this.isFrameLighting() && s.multipleScattering === "neural" && !this.neuralNetwork) {
       this.warnOnce("neural", "multipleScattering 'neural' has no network (neuralNetwork is null); the scene light slots use 1D diffusion (true).");
+    }
+    if (this.backend !== "core" && (s.multipleScattering === "mlp" || s.multipleScattering === "multi-scale")) {
+      this.warnOnce("core-only-ms", `multipleScattering '${s.multipleScattering}' renders with backend 'core' only (K6.3); the TSL path runs it as 1D diffusion (true).`);
     }
   }
 
@@ -2299,7 +2310,13 @@ export class VDBFrameRenderer {
       this.disposeCoreSparse();
     }
     const core = this.core;
-    Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix });
+    Object.assign(core.settings, this.settings, { froxelMix: this.froxelMix }, this.coreSettings);
+    // K6.3: 'neural' / 'mlp' run neuralNetwork through the core's generic MLP evaluator (null: 1D diffusion)
+    if (!this.coreMlp || this.coreMlp.network !== this.neuralNetwork) {
+      const network = this.neuralNetwork;
+      this.coreMlp = { network, mlp: network && !vdbFrameNeuralCheck(network) ? vdbFrameMlpFromNeural(network) : null };
+    }
+    core.mlp = this.coreMlp.mlp;
     // K6.5: the volume shadow filter on each shadow light (receivers build with it from the next render)
     this.volumeShadows.update(renderer, scene);
 

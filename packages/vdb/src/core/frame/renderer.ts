@@ -56,6 +56,7 @@ import {
   vdbFrameEnvironmentGridSpec,
   vdbFrameGatherSpec,
   vdbFrameGridDensitySpec,
+  vdbFrameGridMipSpec,
   vdbFrameResolveSpec,
   vdbFrameTransmittanceSpec,
   vdbFrameVolumeShadowSpec,
@@ -66,7 +67,13 @@ import { VDBFrameShadowMaps } from "./shadows.js";
 import { VDBFrameEmissionColors, VDBFrameEmissionProbeSet, type VDBFrameEmissionPlan, type VDBFrameEmitterInput } from "./emission.js";
 import { EMISSION_DIRECTION_BINDINGS, EMISSION_PROBE_BINDINGS, EMISSION_REDUCE_BINDINGS, VDB_FRAME_EMISSION_DIRECTIONS, VDB_FRAME_EMITTERS, VDB_FRAME_EMITTERS_STRIDE } from "./wgsl/emission.js";
 import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "./pipelines.js";
-import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
+import { BUFFER_USAGE, createFroxelTexture, TEXTURE_USAGE, VDBRetireQueue } from "./resources.js";
+import { VDBFrameScattering } from "./scattering.js";
+import type { VDBFrameScatteringKernel } from "./wgsl/lighting.js";
+import { vdbFrameMieTableSize, vdbFrameMieTexels } from "../../tools/frame/mie.js";
+import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
+import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
+import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { vdbFrameDefaultSettings, type VDBFrameSettings } from "./settings.js";
 import { vdbFrameMultipleScatteringValue, vdbFramePhaseSpectrum, vdbFramePhaseVector, type VDBFramePhaseFields } from "./phase.js";
 import {
@@ -117,6 +124,12 @@ export interface VDBFrameRendererGpu {
   readonly settings: VDBFrameSettings;
   readonly outputs: VDBFrameOutputs;
   readonly redrawStats: VDBFrameRedrawStats;
+  /**
+   * K6.3 EXPERIMENTAL: the network of `multipleScattering: 'mlp'` / `'neural'` ('frame' lighting, grey): data for a
+   * generic small-MLP evaluator (shapes as uniforms, weights in a storage buffer; a new network needs no rebuild).
+   * Default: mjurczyk's trained weights. null: those modes run as 1D diffusion.
+   */
+  mlp: VDBFrameMlp | null;
   addVolume(slot: VDBVolumeSlot, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolumeGpu;
   /** Builds every pipeline the current volumes and settings reach, with the async creators. */
   prepare(options?: { lighting?: ("volume" | "frame")[] }): Promise<void>;
@@ -260,6 +273,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #gridVoxel = Array.from({ length: VDB_FRAME_MAX_CASCADES }, () => ({ x: 0, y: 0, z: 0 }));
   /** The grid version the shadow grid texture holds (−1: none). */
   #gridDrawn = -1;
+  /** K6.3: shadow grid draws so far (the scattered-light mips follow it). */
+  #gridDraws = 0;
   #transmittanceSignature: unknown[] = [];
   // K6.2b: the GPU environment (buffer, maps, kernels) and the environment grid's signature
   readonly #env: VDBFrameEnvironmentState;
@@ -270,6 +285,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #shadows: VDBFrameShadowMaps;
   readonly #colors: VDBFrameEmissionColors;
   readonly #probes: VDBFrameEmissionProbeSet;
+  // K6.3: the Lorenz-Mie LUT and the scattered-light term's resources ('mlp', 'multi-scale')
+  readonly #mie: GPUTexture;
+  readonly #scattering: VDBFrameScattering;
+  /**
+   * K6.3 EXPERIMENTAL: the network of `multipleScattering: 'mlp'` (and `'neural'`) in 'frame' lighting, data for a
+   * generic MLP evaluator; default his trained weights (V48). null: those modes run as 1D diffusion (warned).
+   */
+  mlp: VDBFrameMlp | null = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
 
   constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
     this.device = device;
@@ -296,7 +319,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#shadows = new VDBFrameShadowMaps(device, this.#label, this.#retire);
     this.#colors = new VDBFrameEmissionColors(device, this.#label, this.#retire);
     this.#probes = new VDBFrameEmissionProbeSet(device, this.#label, this.#retire);
-    this.outputs = { version: 0, froxels: null, uniforms: this.#frameBuffer, volumeShadows: this.#shadows.maps, emissionProbes: null };
+    // K6.3: the Lorenz-Mie phase tables as one LUT (V47: rgb 'lorenz-mie-rgb', a 'lorenz-mie'), group 0 binding 4
+    this.#mie = device.createTexture({ label: `${this.#label} Lorenz-Mie LUT`, size: [vdbFrameMieTableSize, 1, 1], format: "rgba32float", usage: TEXTURE_USAGE.TEXTURE_BINDING | TEXTURE_USAGE.COPY_DST });
+    const mie = vdbFrameMieTexels();
+    device.queue.writeTexture({ texture: this.#mie }, mie.buffer as ArrayBuffer, { bytesPerRow: vdbFrameMieTableSize * 16 }, [vdbFrameMieTableSize, 1, 1]);
+    this.#scattering = new VDBFrameScattering(device, this.#label, this.#retire, (key, message) => this.#warnOnce(key, message));
+    this.outputs ={ version: 0, froxels: null, uniforms: this.#frameBuffer, volumeShadows: this.#shadows.maps, emissionProbes: null };
   }
 
   // ---------------------------------------------------------------- volumes
@@ -346,7 +374,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
       }
       if (shadows) for (const multi of [false, true]) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes })));
     }
-    if (modes.includes("frame")) jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec()), prepareCompute(this.device, vdbFrameEnvironmentGridSpec()));
+    if (modes.includes("frame")) {
+      // K6.3: the transmittance variant of the scattered-light term ('mlp' also its feature mips)
+      const scattering = this.#scattering.kind(this.settings, this.mlp);
+      jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec({ scattering })), prepareCompute(this.device, vdbFrameEnvironmentGridSpec()));
+      if (scattering === "mlp") jobs.push(prepareCompute(this.device, vdbFrameGridMipSpec({ first: true })), prepareCompute(this.device, vdbFrameGridMipSpec({ first: false })));
+    }
     for (const spec of this.#env.specs(["equirect", "cube"])) jobs.push(prepareCompute(this.device, spec));
     if (this.settings.castShadows) jobs.push(prepareCompute(this.device, vdbFrameVolumeShadowSpec()));
     if ([...sources].some((s) => s.channels.emission)) jobs.push(prepareCompute(this.device, vdbFrameEmissionReduceSpec()), prepareCompute(this.device, vdbFrameEmissionProbeSpec()));
@@ -365,9 +398,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const frameLighting = s.lighting === "frame";
     if (frame.occluders && frame.occluders.length > 0) this.#warnOnce("occluders", "occluder maps (mesh → volume shadows) are K6.5b; they are ignored.");
     if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; the core renders grey.");
-    if (s.multipleScattering === "two-sided") this.#warnOnce("two-sided", "multipleScattering 'two-sided' is K6.3; it runs as true (1D diffusion).");
-    if (s.multipleScattering === "octaves") this.#warnOnce("octaves", "multipleScattering 'octaves' is K6.3; it runs as false.");
-    if (frameLighting && s.multipleScattering === "neural") this.#warnOnce("neural", "multipleScattering 'neural' (the MLP) is K6.3; 'frame' lighting runs it as true (1D diffusion).");
 
     if (options.froxels === false && this.#textures) return { outputs: this.outputs, recorded: this.#recorded, volumes: 0 };
     const versions = [this.#shadows.version, this.#probes.version];
@@ -542,6 +572,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "jitterFade", [jitter, fade, Math.min(1, Math.max(0.01, s.temporalBlend)), useHistory ? 1 : 0]);
     fw.set(U, 0, "flags", [Math.max(1, Math.round(s.subSteps)), s.temporal ? 1 : 0, (cam.reversedDepth ? 1 : 0) | (cam.orthographic ? 2 : 0), 0]);
     fw.set(U, 0, "camera", [cam.near, cam.far, 0, 0]);
+    // K6.3: octaves (count 0: off) and 'two-sided' for both lightings ('frame' rewrites lighting.xzw in #frameGrid)
+    fw.set(U, 0, "octaves", vdbFrameScatteringOctaves(s));
+    fw.set(U, 0, "lighting", [0, s.multipleScattering === "two-sided" ? 1 : 0, 0, 0]);
     // K6.2b: the environment kernels this update runs (reduced on the GPU; no readback)
     this.#env.prepare(frame.environment, s);
     const lightInfo = this.#packLights(frame.lights);
@@ -588,7 +621,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
     // Record: [shadow grid per caster group, volume shadow maps, transmittance], [emission], gather per source group,
     // then resolve
-    const pass = encoder.beginComputePass({ label: `${this.#label} froxels` });
+    let pass = encoder.beginComputePass({ label: `${this.#label} froxels` });
     this.#env.record(pass);
     const group0 = this.#group0Bind();
     if (grid?.drawGrid) {
@@ -604,13 +637,27 @@ class FrameRenderer implements VDBFrameRendererGpu {
       });
     }
     if (this.#grid && grid && grid.count > 0) this.#shadows.record(pass, computePipeline(this.device, vdbFrameVolumeShadowSpec()), group0, this.#grid.shadow);
+    // K6.3: the scattered-light term's grid mips ('mlp': box mips in this pass; 'multi-scale': K7.3's own pass), redrawn
+    // with the shadow grid
+    if (grid?.drawTransmittance && grid.count > 0) {
+      const kind = grid.scattering;
+      const version = this.#gridDraws;
+      if (kind === "mlp" && this.#scattering.mipsStale(kind, version)) this.#scattering.recordMips(pass, group0, this.#grid!.shadow, version);
+      if (kind === "multi-scale" && this.#scattering.mipsStale(kind, version)) {
+        pass.end();
+        this.#scattering.recordMultiScale(encoder, this.#grid!.shadow, this.#grid!.shadowLayout.origins[grid.count - 1]!, version);
+        pass = encoder.beginComputePass({ label: `${this.#label} froxels (after the multi-scale mips)` });
+      }
+    }
     if (grid?.drawTransmittance) {
       const gt = this.#grid!;
       const r = gt.resolution;
-      const built = computePipeline(this.device, vdbFrameTransmittanceSpec());
+      const built = computePipeline(this.device, vdbFrameTransmittanceSpec({ scattering: grid.scattering }));
       pass.setPipeline(built.pipeline);
       pass.setBindGroup(0, group0);
       pass.setBindGroup(1, this.#transmittanceBind(built.layouts[1]!, gt));
+      const group2 = this.#scattering.group2(grid.scattering, built.layouts[2]);
+      if (group2) pass.setBindGroup(2, group2);
       pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
     }
     if (grid?.drawEnvironmentGrid) {
@@ -751,7 +798,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     lights: { sorted: readonly number[][]; sky: readonly number[] },
     jitter: number,
     transmittance = true,
-  ): { count: number; drawGrid: boolean; drawTransmittance: boolean; drawEnvironmentGrid: boolean } {
+  ): { count: number; drawGrid: boolean; drawTransmittance: boolean; drawEnvironmentGrid: boolean; scattering: VDBFrameScatteringKernel } {
     const s = this.settings;
     const fw = this.#frameWriter;
     const U = VDB_FRAME_UNIFORMS;
@@ -776,11 +823,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const diffusion = !!s.multipleScattering && s.multipleScattering !== "octaves";
     const phaseFields = this.#phaseOf(null);
     const phase = vdbFramePhaseVector(phaseFields);
-    if (phase[3] > 0) {
-      this.#warnOnce("mie-frame", "the Lorenz-Mie phases are K6.3; 'frame' lighting lights them with the phase's lobes off (isotropic).");
-      phase[3] = 0;
-    }
-    const v = (a: { x: number; y: number; z: number }) => [a.x, a.y, a.z, 0];
+    const twoSided = s.multipleScattering === "two-sided";
+    const octaves = vdbFrameScatteringOctaves(s);
+    const v =(a: { x: number; y: number; z: number }) => [a.x, a.y, a.z, 0];
     for (let c = 0; c < VDB_FRAME_MAX_CASCADES; c++) {
       const live = c < count;
       if (!live) continue;
@@ -803,7 +848,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       }
     }
     fw.set(U, 0, "gridLayout", [count, resolution, vdbFrameAtlasLayout(resolution, resolution, resolution * cascades).columns, shadowSlots]);
-    fw.set(U, 0, "lighting", [ms, 0, count > 0 ? 1 : 0, diffusion ? 1 : 0]);
+    fw.set(U, 0, "lighting", [ms, twoSided ? 1 : 0, count > 0 ? 1 : 0, diffusion ? 1 : 0]);
     fw.set(U, 0, "framePhase", phase);
     fw.set(U, 0, "framePhaseSpectrum", [...vdbFramePhaseSpectrum(phaseFields), 0]);
     // K6.2b: his light result. The dominant 'directional' environment light takes the next free slot (not with
@@ -818,13 +863,34 @@ class FrameRenderer implements VDBFrameRendererGpu {
     // jittered grid is drawn every frame)
     const drawGrid = count > 0 && (this.#gridDrawn !== this.#gridState.gridVersion);
     if (count > 0) {
-      if (drawGrid) this.redrawStats.shadowDensity.drawn++;
+      if (drawGrid) {
+        this.redrawStats.shadowDensity.drawn++;
+        this.#gridDraws++;
+      }
       else this.redrawStats.shadowDensity.skipped++;
       this.#gridDrawn = this.#gridState.gridVersion;
     }
     // K6.5: the volume shadow maps alone ('volume' lighting, or no volume in view) need only the grid
-    if (!transmittance) return { count, drawGrid, drawTransmittance: false, drawEnvironmentGrid: false };
-    const signature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky, envSlot, envSlot ? env.version : -1];
+    if (!transmittance) return { count, drawGrid, drawTransmittance: false, drawEnvironmentGrid: false, scattering: "none" };
+    // K6.3: the scattered-light term of the slots ('mlp', 'multi-scale' as a pipeline key; two-sided, octaves uniforms)
+    const scattering = count > 0 ? this.#scattering.kind(s, this.mlp) : "none";
+    const last = Math.max(0, count - 1);
+    const plan =
+      count > 0
+        ? this.#scattering.plan(
+            scattering,
+            s,
+            {
+              resolution,
+              min: v(this.#gridMin[last]!),
+              size: v(this.#gridSize[last]!),
+              voxel: v(this.#gridVoxel[last]!),
+              origin: gt.shadowLayout.origins[last]!,
+            },
+            ms,
+          )
+        : { kind: scattering, signature: [] };
+    const signature: unknown[] = [this.#gridDraws, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky, envSlot, envSlot ? env.version : -1, twoSided, ...octaves, ...plan.signature];
     for (let i = 0; i < shadowSlots; i++) signature.push(...lights.sorted[i]!.slice(0, 4));
     const drawTransmittance = count > 0 && (jitter >= 0 || !vdbSameValues(signature, this.#transmittanceSignature));
     this.#transmittanceSignature = jitter >= 0 ? [] : signature;
@@ -833,14 +899,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
       else this.redrawStats.transmittance.skipped++;
     }
     // his renderEnvironmentGrid signature: the grid (its version covers the cascades and casters), ms, the lights
-    const envSignature: unknown[] = [this.#gridState.gridVersion, gt.shadow, gt.environment, count, ms, envSlot, env.version];
+    const envSignature: unknown[] = [this.#gridDraws, gt.shadow, gt.environment, count, ms, envSlot, env.version, ...octaves];
     const drawEnvironmentGrid = envGrid && !vdbSameValues(envSignature, this.#envGridSignature);
     if (envGrid) {
       if (drawEnvironmentGrid) this.redrawStats.environmentGrid.drawn++;
       else this.redrawStats.environmentGrid.skipped++;
       this.#envGridSignature = envSignature;
     }
-    return { count, drawGrid, drawTransmittance, drawEnvironmentGrid };
+    return { count, drawGrid, drawTransmittance, drawEnvironmentGrid, scattering: plan.kind };
   }
 
   /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */
@@ -929,6 +995,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: 1, resource: { buffer: this.#lightsBuffer } },
           { binding: 2, resource: this.#linear },
           { binding: 3, resource: { buffer: this.#env.buffer } },
+          { binding: 4, resource: this.#mie.createView() },
         ],
       });
     }
@@ -1150,10 +1217,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
       const slot = r.volume.slot;
       const phaseFields = this.#phaseOf(p);
       const phase = vdbFramePhaseVector(phaseFields);
-      if (phase[3] > 0) {
-        this.#warnOnce("mie", "the Lorenz-Mie phases are K6.3; 'volume' lighting lights them with the phase's lobes off (isotropic).");
-        phase[3] = 0;
-      }
       const ms = vdbFrameMultipleScatteringValue(this.settings.multipleScattering === "octaves" ? false : this.settings.multipleScattering, phaseFields);
       const levels = slot.lodLevels;
       w.clear(base, VDB_FRAME_VOLUME_BYTES);
@@ -1278,6 +1341,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#colors.dispose();
     this.outputs.emissionProbes = null;
     this.#env.dispose();
+    this.#scattering.dispose();
+    this.#mie.destroy();
     this.#retire.drain();
     this.#frameBuffer.destroy();
     this.#lightsBuffer.destroy();
@@ -1299,6 +1364,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
   }
 
   /** @internal The environment state (harness probes and tests): the buffer, the maps and the kernel counts. */
+  /** @internal K6.3 (harness probes): the 'mlp' feature mips, the multi-scale chain and the network in use. */
+  get debugScattering(): VDBFrameScattering["debug"] {
+    return this.#scattering.debug;
+  }
+
+  /** @internal The environment state (harness probes and tests). */
   get debugEnvironment(): VDBFrameEnvironmentState {
     return this.#env;
   }
@@ -1357,4 +1428,9 @@ export function vdbFrameRendererEnvironment(r: VDBFrameRendererGpu): {
   present: boolean;
 } {
   return (r as unknown as { debugEnvironment: VDBFrameEnvironmentState }).debugEnvironment;
+}
+
+/** @internal K6.3 (harness probes): the 'mlp' feature mips, the 'multi-scale' chain and the network in use. */
+export function vdbFrameRendererScattering(r: VDBFrameRendererGpu): VDBFrameScattering["debug"] {
+  return (r as unknown as { debugScattering: VDBFrameScattering["debug"] }).debugScattering;
 }

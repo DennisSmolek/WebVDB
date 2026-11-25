@@ -34,6 +34,7 @@ interface Result {
   mapStats?: Stats;
   bufferStats?: Stats;
   environmentGridStats?: Stats;
+  mipStats?: Stats;
   environment?: { runs: { prefilter: number; blur: number; reduce: number }[]; count: number; mode: number; valid: number; directions: number[][]; colors: number[][] };
   frame?: { cascades: number; redraw: unknown };
   builds?: { first: number; second: number };
@@ -141,6 +142,63 @@ for (const p of FRAME_PROBES) {
       expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "stats" ? 200 : 250);
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
       console.log(`[k6-core] frame ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.3 (design §3.6): phase functions (the Lorenz-Mie LUT, per-channel g) and every multiple scattering mode in both
+// lightings, each kernel against its twin from the read-back input before it ('mlp' / 'multi-scale': grid → mips →
+// transmittance). `mutations` maps a twin term to the stats it must break.
+type K63Key = "stats" | "gridStats" | "transmittanceStats" | "environmentGridStats" | "mipStats";
+const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Record<string, K63Key> }[] = [
+  { name: "gather, 'lorenz-mie'", query: "?probe=gather&phase=lorenz-mie", keys: ["stats"], mutations: { mie: "stats" } },
+  { name: "gather, 'lorenz-mie-rgb'", query: "?probe=gather&phase=lorenz-mie-rgb&source=sparse&lod=none", keys: ["stats"], mutations: { mie: "stats" } },
+  { name: "gather, 'octaves'", query: "?probe=gather&ms=octaves", keys: ["stats"], mutations: { octaves: "stats" } },
+  { name: "gather, 'octaves' with the environment ('directional')", query: "?probe=gather&ms=octaves&env=directional", keys: ["stats"], mutations: { octaves: "stats" } },
+  { name: "gather, 'two-sided'", query: "?probe=gather&ms=two-sided", keys: ["stats"], mutations: { "two-sided": "stats" } },
+  { name: "frame, 'lorenz-mie'", query: "?probe=frame&phase=lorenz-mie", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { mie: "stats" } },
+  { name: "frame, 'lorenz-mie-rgb'", query: "?probe=frame&phase=lorenz-mie-rgb", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { mie: "stats" } },
+  { name: "frame, henyey-greenstein, phaseGExponent 1.5", query: "?probe=frame&phase=henyey-greenstein&exponent=1.5", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { slots: "stats" } },
+  { name: "frame, 'octaves'", query: "?probe=frame&ms=octaves", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { octaves: "transmittanceStats" } },
+  {
+    name: "frame, 'octaves', environment 'directional' (slot + grid)",
+    query: "?probe=frame&ms=octaves&env=directional",
+    keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"],
+    mutations: { octaves: "environmentGridStats" },
+  },
+  { name: "frame, 'two-sided'", query: "?probe=frame&ms=two-sided", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "two-sided": "transmittanceStats" } },
+  { name: "frame, 'two-sided', sparse, environment 'spherical-harmonics'", query: "?probe=frame&ms=two-sided&source=sparse&env=spherical-harmonics", keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"], mutations: {} },
+  {
+    name: "frame, 'mlp' (his network)",
+    query: "?probe=frame&ms=mlp",
+    keys: ["gridStats", "mipStats", "transmittanceStats", "stats"],
+    mutations: { "mlp-mip": "mipStats", "mlp-weights": "transmittanceStats", "mlp-depth": "transmittanceStats" },
+  },
+  { name: "frame, 'neural' (= 'mlp'), sparse, two groups", query: "?probe=frame&ms=neural&source=sparse&groups=2", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "mlp-weights": "transmittanceStats" } },
+  { name: "frame, 'multi-scale' (edge zero)", query: "?probe=frame&ms=multi-scale", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats", "ms-levels": "transmittanceStats" } },
+  { name: "frame, 'multi-scale' (edge clamp, 4 levels)", query: "?probe=frame&ms=multi-scale&edge=clamp&levels=4", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats" } },
+];
+
+for (const p of K63_PROBES) {
+  test(`K6.3 probe: ${p.name} matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.warnings, detail(r)).toEqual([]);
+    for (const key of p.keys) {
+      const s = r[key]!;
+      expect(s, `${key} missing: ${detail(r)}`).toBeDefined();
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "mipStats" ? 64 : 512);
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] K6.3 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
     }
     for (const [m, key] of Object.entries(p.mutations)) {
       const bad = await run(page, `${p.query}&mutate=${m}`);

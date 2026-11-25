@@ -19,6 +19,8 @@ import {
   vdbFrameScanColumn,
   vdbFrameShadowMarch,
   vdbFrameShadowedLightColor,
+  vdbFrameShadowTotal,
+  vdbFrameTwoSidedDiffusion,
   vdbFrameSliceCoord,
   vdbFrameTemporalFroxel,
   vdbFrameViewPosition,
@@ -75,7 +77,16 @@ export type TwinMutation =
   | "env-slot"
   | "env-grid"
   | "env-outward"
-  | "env-lights";
+  | "env-lights"
+  // K6.3 phase and multiple scattering
+  | "mie"
+  | "octaves"
+  | "two-sided"
+  | "mlp-mip"
+  | "mlp-weights"
+  | "mlp-depth"
+  | "ms-edge"
+  | "ms-levels";
 
 /** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
 export interface TwinSampler {
@@ -151,6 +162,9 @@ export interface TwinFrame {
   lights: { position: V4; color: V4; spot: V4 }[];
   /** K6.2b: the environment buffer (read back): its lights, or the 'outward' SH. */
   environment?: VDBFrameEnvironmentGpuResult;
+  /** K6.3: octaves (count, a, b, c; count 0 off) and 'two-sided' (scene lights also march away from the light). */
+  octaves?: V4;
+  twoSided?: boolean;
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -227,7 +241,7 @@ export function emissionAt(r: TwinVolume, local: V3, lod: number, color: ((t: nu
   return [c[0] * power * r.emissiveIntensity, c[1] * power * r.emissiveIntensity, c[2] * power * r.emissiveIntensity];
 }
 
-function march(r: TwinVolume, origin: V3, localDirection: V3, maxDistance: number, lod: number, maxTexels: number, albedo: V3, noise: number, mutate: TwinMutation): V4 {
+function march(r: TwinVolume, origin: V3, localDirection: V3, maxDistance: number, lod: number, maxTexels: number, albedo: V3, noise: number, mutate: TwinMutation, octaves: V4 = vdbFrameOctavesOff): V4 {
   if (r.absorbance <= 0 || r.shadowSteps === 0) return [1, 1, 0, 0];
   const d = norm(localDirection);
   const distance = Math.min(boxExit(origin, d), maxDistance);
@@ -237,7 +251,7 @@ function march(r: TwinVolume, origin: V3, localDirection: V3, maxDistance: numbe
   const stepScale = step * len(mat3(r.localToView, d)) * r.absorbance;
   const samples: number[] = [];
   for (let k = 0; k < r.shadowSteps; k++) samples.push(extinctionAt(r, add(origin, scale(d, step * noise + step * k)), stepLod, mutate) * stepScale);
-  return vdbFrameShadowMarch(samples, albedo, r.multipleScattering, vdbFrameOctavesOff);
+  return vdbFrameShadowMarch(samples, albedo, r.multipleScattering, octaves);
 }
 
 /** One volume in one froxel (the WGSL `vdbFrameVolumeFroxel`), or null when it adds nothing. */
@@ -277,17 +291,19 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
   const shadowNoise = vdbFrameNoise(frame.jitter, [fragCoord[0] + 17, fragCoord[1] + 31]);
   const albedo = albedoAt(r, local, readLod);
   const diffusion = r.multipleScattering > 0;
-  const phase: V4 = mutate === "phase" ? [0, 0, 0, 0] : r.phase;
+  const phase: V4 = mutate === "phase" ? [0, 0, 0, 0] : mutate === "mie" ? [r.phase[0], r.phase[1], r.phase[2], 0] : r.phase;
+  // K6.3: octaves (count 0: off)
+  const octaves: V4 = mutate === "octaves" ? vdbFrameOctavesOff : (frame.octaves ?? vdbFrameOctavesOff);
   const outward = len(local) > 1e-4 ? norm(mat3(frame.cameraWorld, mat3(r.localToView, local))) : ([0, 1, 0] as V3);
   let irradiance: V3 = [0, 0, 0];
   if (r.lights & 32) irradiance = add(add(irradiance, frame.ambient), vdbShIrradianceAt(outward, frame.probe));
   if (r.lights & 2) {
     for (const h of frame.hemi) {
       const up = mat3(r.worldToLocal, h.up);
-      const front = march(r, local, up, 1e6, lod, maxTexels, albedo, shadowNoise, mutate);
-      const back = march(r, local, scale(up, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate);
-      const sky = diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : front[1];
-      const ground = diffusion ? vdbFrameIsotropicDiffusion(back[2], front[2], back[3]) : back[1];
+      const front = march(r, local, up, 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves);
+      const back = march(r, local, scale(up, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves);
+      const sky = diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : vdbFrameShadowTotal(front[1], octaves);
+      const ground = diffusion ? vdbFrameIsotropicDiffusion(back[2], front[2], back[3]) : vdbFrameShadowTotal(back[1], octaves);
       irradiance = add(irradiance, add(scale(h.sky, 0.5 * sky), scale(h.ground, 0.5 * ground)));
     }
   }
@@ -296,15 +312,15 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
   const env = frame.environment;
   if (env && env.valid && r.lights & 1) {
     const pair = (direction: V3) => {
-      const front = march(r, local, direction, 1e6, lod, maxTexels, albedo, shadowNoise, mutate);
-      const back = diffusion ? march(r, local, scale(direction, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate) : front;
+      const front = march(r, local, direction, 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves);
+      const back = diffusion ? march(r, local, scale(direction, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves) : front;
       return { front, back };
     };
     if (env.count > 0 && mutate !== "env-outward") {
       let sum: V3 = [0, 0, 0];
       for (let i = 0; i < (mutate === "env-lights" ? env.count - 1 : env.count); i++) {
         const { front, back } = pair(mat3(r.worldToLocal, env.directions[i]!));
-        sum = add(sum, scale(env.colors[i]!, diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : front[1]));
+        sum = add(sum, scale(env.colors[i]!, diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : vdbFrameShadowTotal(front[1], octaves)));
       }
       irradiance = add(irradiance, [Math.max(sum[0], 0), Math.max(sum[1], 0), Math.max(sum[2], 0)]);
     } else {
@@ -312,7 +328,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
       if (diffusion) {
         irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) * 0.5));
         irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, scale(outward, -1)), vdbFrameIsotropicDiffusion(back[2], front[2], back[3]) * 0.5));
-      } else irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), front[1]));
+      } else irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), vdbFrameShadowTotal(front[1], octaves)));
     }
   }
   for (const l of frame.lights) {
@@ -326,8 +342,10 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
     const direction = isDirectional ? mat3(r.worldToLocal, l.position) : toLight;
     const maxDistance = isDirectional ? 1e6 : len(toLight);
     const lightDirection = isDirectional ? ([l.position[0], l.position[1], l.position[2]] as V3) : norm(toLightWorld);
-    const s = march(r, local, direction, maxDistance, lod, maxTexels, albedo, shadowNoise, mutate);
-    const light = vdbFrameShadowedLightColor(phase, r.phaseSpectrum, vdbFrameOctavesOff, rayDirection, lightDirection, [s[0], s[1]]);
+    const s = march(r, local, direction, maxDistance, lod, maxTexels, albedo, shadowNoise, mutate, octaves);
+    // K6.3 two-sided: the slab between the light side and the far side (a march away from the light)
+    if (frame.twoSided && mutate !== "two-sided") s[1] = vdbFrameTwoSidedDiffusion(s[0], s[2], s[3], march(r, local, scale(direction, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves)[2]);
+    const light = vdbFrameShadowedLightColor(phase, r.phaseSpectrum, octaves, rayDirection, lightDirection, [s[0], s[1]]);
     irradiance = add(irradiance, scale(mul3([l.color[0], l.color[1], l.color[2]], light), spot));
   }
   const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);

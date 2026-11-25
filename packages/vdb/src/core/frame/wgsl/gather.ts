@@ -9,8 +9,8 @@
 // (two density call sites per kernel); the light terms are loops over uniform counts (V55's compiled-in
 // sets go away); overlapping volumes mix order-independently by default ('mixture'); multi-group frames
 // accumulate in packed partials; the environment (K6.2b) reads the GPU environment buffer (its lights, or the
-// 'outward' SH irradiance instead of three's PMREM). Octaves, two-sided, Lorenz-Mie: K6.3;
-// spectral: K6.4. Divergences: DIVERGES.md (K6.1 rows).
+// 'outward' SH irradiance instead of three's PMREM); K6.3: octaves, two-sided (L270–277, L488–512) and the Lorenz-Mie
+// phases (a LUT in group 0); spectral: K6.4. Divergences: DIVERGES.md (K6.1 rows).
 
 /**
  * `vdbFrameGatherCs`: the 'volume'-lighting gather kernel (design §3.3, §3.4). One thread per froxel of
@@ -228,7 +228,7 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
   }`
     : `  textureStore(vdbFrameScatter, cell, vdbFrameFinish(sum, count, single));`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "sh", "envSh"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh"])}
 ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
@@ -281,12 +281,13 @@ fn vdbFrameShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDi
     let extinction = vdbFrameExtinction(vi, origin + direction * t, stepLod) * stepScale;
     lastZero = extinction <= 0.0;
     depths += vdbFrameShadowStep(extinction, vdbFrameShadowAbsorption(extinction, albedo), multipleScattering);
-    if (vdbFrameShadowDepth(depths, multipleScattering) > 8.0) {
+    if (vdbFrameShadowMarchDepth(depths, multipleScattering, vdbFrame.octaves) > 8.0) {
       break;
     }
     k++;
   }
-  let shadow = vdbFrameShadowTransmittance(depths, multipleScattering);
+  // K6.3: octaves march to the last octave's depth and keep 1 / (1 + depth) as the total
+  let shadow = vdbFrameShadowTransmittance(depths, multipleScattering, vdbFrame.octaves);
   return vec4f(shadow.x, shadow.y, depths.z, depths.y);
 }
 
@@ -313,6 +314,9 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
   let phase = vdbFrameVolumes.v[vi].phase;
   let phaseSpectrumMs = vdbFrameVolumes.v[vi].phaseSpectrumMs;
   let diffusion = phaseSpectrumMs.w > 0.0;
+  // K6.3: octaves (count 0: off) and 'two-sided' (scene lights also march away from the light)
+  let octaves = vdbFrame.octaves;
+  let twoSided = vdbFrame.lighting.y > 0.5;
   let lightMask = slices.w;
 
   var outwardNormal = vec3f(0.0, 1.0, 0.0);
@@ -366,7 +370,7 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
       maxDistance = select(length(toLight), 1e6, isDirectional);
       lightDirection = select(normalize(position.xyz - worldPosition), position.xyz, isDirectional);
       lightColor = color.rgb;
-      marches = 1u;
+      marches = select(1u, 2u, twoSided);
     }
     var front = vec4f(1.0, 1.0, 0.0, 0.0);
     var back = vec4f(1.0, 1.0, 0.0, 0.0);
@@ -380,8 +384,8 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
     }
     if (item < hemiCount) {
       // Diffusion: sky and ground are an opposite pair, two-sided totals
-      var sky = front.y;
-      var ground = back.y;
+      var sky = vdbFrameShadowTotal(front.y, octaves);
+      var ground = vdbFrameShadowTotal(back.y, octaves);
       if (diffusion) {
         sky = vdbFrameIsotropicDiffusion(front.z, back.z, front.w);
         ground = vdbFrameIsotropicDiffusion(back.z, front.z, back.w);
@@ -389,17 +393,22 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
       irradiance += vdbFrameLights.hemiSky[item].xyz * 0.5 * sky;
       irradiance += vdbFrameLights.hemiGround[item].xyz * 0.5 * ground;
     } else if (li < sceneCount) {
-      let light = vdbFramePhaseColor(phase, phaseSpectrumMs.xyz, dot(rayDirection, lightDirection)) * front.x + vec3f(front.y - front.x);
+      // two-sided: diffusion of the slab between the light side and the far side
+      var shadow = front.xy;
+      if (twoSided) {
+        shadow.y = vdbFrameTwoSidedDiffusion(front.x, front.z, front.w, back.z);
+      }
+      let light = vdbFrameShadowedLight(phase, phaseSpectrumMs.xyz, octaves, dot(rayDirection, lightDirection), shadow);
       irradiance += lightColor * light * spotAttenuation;
     } else if (envLights > 0u) {
       // an environment light: isotropic, no phase (diffusion: the two-sided total)
-      environment += vdbFrameEnv.color[min(li - sceneCount, 11u)].xyz * select(front.y, vdbFrameIsotropicDiffusion(front.z, back.z, front.w), diffusion);
+      environment += vdbFrameEnv.color[min(li - sceneCount, 11u)].xyz * select(vdbFrameShadowTotal(front.y, octaves), vdbFrameIsotropicDiffusion(front.z, back.z, front.w), diffusion);
     } else if (diffusion) {
       // 'outward': the outward and the inward irradiance, each with its two-sided total (uniform light gives E)
       irradiance += vdbFrameEnvIrradiance(outwardNormal) * (vdbFrameIsotropicDiffusion(front.z, back.z, front.w) * 0.5);
       irradiance += vdbFrameEnvIrradiance(-outwardNormal) * (vdbFrameIsotropicDiffusion(back.z, front.z, back.w) * 0.5);
     } else {
-      irradiance += vdbFrameEnvIrradiance(outwardNormal) * front.y;
+      irradiance += vdbFrameEnvIrradiance(outwardNormal) * vdbFrameShadowTotal(front.y, octaves);
     }
   }
   // SH lights can be negative: the environment sum is clamped (his max(environment, 0))
