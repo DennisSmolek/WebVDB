@@ -96,6 +96,8 @@ import {
   vdbFrameEnvironmentIrradianceSh,
   vdbFrameEnvironmentReduce,
   vdbFrameEnvironmentDensityTerm,
+  vdbFrameGridUvw,
+  vdbFrameInsideGrid,
   vdbFrameEnvironmentMapWidth,
   vdbFrameEnvironmentMapHeight,
   VDB_FRAME_ENV_WORK_WIDTH,
@@ -172,6 +174,8 @@ declare global {
 const params = new URLSearchParams(location.search);
 const PROBE = params.get("probe") ?? "view";
 const MUTATE = (params.get("mutate") ?? "none") as TwinMutation;
+/** K6.2b `?env=directional|spherical-harmonics|outward`: a synthetic environment for the frame and gather probes. */
+const ENV_MODE = params.get("env");
 const root = document.getElementById("demo-root")!;
 const result: Result = { done: false, warnings: [], uncaptured: [], probe: PROBE, mutate: MUTATE };
 window.__VDB_K6_CORE__ = result;
@@ -581,7 +585,7 @@ function patchShaders(device: GPUDevice): () => void {
 }
 
 /** The renderer's per-volume record twin of a volume (its params, slot and clip). */
-function twinRecord(handle: VDBFrameVolumeGpu, sampler: TwinSampler, c: { localToView: ArrayLike<number>; viewToLocal: ArrayLike<number>; worldToLocal: ArrayLike<number> }, rect: [number, number, number, number], slices: { first: number; count: number }, g: number): TwinVolume {
+function twinRecord(handle: VDBFrameVolumeGpu, sampler: TwinSampler, c: { localToView: ArrayLike<number>; viewToLocal: ArrayLike<number>; worldToLocal: ArrayLike<number> }, rect: [number, number, number, number], slices: { first: number; count: number }, g: number, ms = true): TwinVolume {
   const p = handle.params;
   const slot = handle.slot;
   const mean = p.densityMean ?? slot.stats.meanNonZero;
@@ -606,7 +610,7 @@ function twinRecord(handle: VDBFrameVolumeGpu, sampler: TwinSampler, c: { localT
     phase: [g, -0.3, 0.2, 0],
     phaseSpectrum: [1, 1, 0],
     // diffusion: 1 − the dual-lobe asymmetry (back g −0.3, weight 0.2)
-    multipleScattering: 1 - (g * 0.8 + -0.3 * 0.2),
+    multipleScattering: ms ? 1 - (g * 0.8 + -0.3 * 0.2) : 0,
     lights: p.lights,
     shadowSteps: p.shadowSteps,
     mipmaps: p.mipmaps && slot.lodLevels > 0,
@@ -634,8 +638,28 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const [GW, GH, GD] = [24, 16, 12];
   const restore = patchShaders(device);
   const scene = await probeScene(device, { kind, groups, mips });
-  const settings = { lighting: "volume" as const, width: GW, height: GH, depth: GD, subSteps: 16, temporal: false, jitter: false, multipleScattering: true, froxelMix: mix, phase: "dual-lobe" as const, fadeRadius: 9, srgbBlending: false };
+  const ms = params.get("ms") !== "0";
+  const settings = {
+    lighting: "volume" as const,
+    width: GW,
+    height: GH,
+    depth: GD,
+    subSteps: 16,
+    temporal: false,
+    jitter: false,
+    multipleScattering: ms,
+    froxelMix: mix,
+    phase: "dual-lobe" as const,
+    fadeRadius: 9,
+    srgbBlending: false,
+    environmentLighting: (ENV_MODE ?? "directional") as "directional" | "spherical-harmonics" | "outward",
+    environmentSamples: 6,
+    environmentShOrder: 1,
+  };
   const renderer = vdbCreateFrameRenderer(device, { settings, composite: { colorFormat: "rgba16float", depthFormat: "depth32float" } });
+  // K6.2b `?env=`: the synthetic sky (rotated and reflected); every environment light is marched in each volume
+  const envSource = ENV_MODE ? synthEnvironment(device, "equirect", "rgba16float") : null;
+  const environment = envSource ? { id: 1, revision: 0, texture: envSource.texture, projection: "equirect" as const, rotation: Float32Array.from(probeEnvRotation()), intensity: 0.6 } : null;
   // A skips empty space (hdda; the dense source never skips); B wraps with an offset, so it never skips
   const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, shadowSteps: 12, mipmaps: mips, phaseG: 0.6, hdda: true };
   const pB: Partial<VDBFrameVolumeParams> = {
@@ -658,7 +682,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
   const lights = PROBE_LIGHTS;
-  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights });
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment });
   const counter = countBuilds(device);
   let enc = device.createCommandEncoder();
   const u = renderer.update(enc, frame(0));
@@ -675,6 +699,8 @@ async function probeGather(device: GPUDevice): Promise<void> {
   if (!u.recorded) throw new Error("update recorded nothing");
   const tex = vdbFrameRendererTextures(renderer)!;
   const scatter = halves(await readTexture(device, tex.scatter, [GW, GH, GD], 8));
+  const env = environment ? parseEnvironment(await readBuffer(device, vdbFrameRendererEnvironment(renderer).buffer, VDB_FRAME_ENVIRONMENT.size)) : null;
+  if (env) result.environment = { runs: [], count: env.count, mode: env.mode, valid: env.valid ? 1 : 0, directions: env.directions, colors: env.colors };
 
   // The twin: the renderer's CPU work redone with the same tools functions
   const clip = vdbFrameClipCamera(view, projection, { coordinateSystem: "webgpu" });
@@ -687,7 +713,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const far = Math.min(Math.max(...clipped.map((v) => v.c.viewFar)), 100);
   const range: [number, number] = [near, Math.max(far, near * 1.0001)];
   const records: TwinVolume[] = clipped.map(({ h, sampler, p, c }) =>
-    twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8),
+    twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8, ms),
   );
   // record order = source-group order: A's source first (one group: add order)
   const ordered = records;
@@ -704,6 +730,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     probe: PROBE_SH,
     hemi: [{ sky: [0.3, 0.4, 0.6], ground: [0.2, 0.15, 0.1], up: [0, 1, 0] }],
     lights: lightRecords(lights),
+    ...(env ? { environment: env } : {}),
   };
   const stats = newStats(`2 f16 ulp (rgba16float scatter vs the f64 twin; ${kind} source)`);
   for (let z = 0; z < GD; z++)
@@ -740,6 +767,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
   result.renderStats = rstats;
   renderer.dispose();
   scene.dispose();
+  envSource?.texture.destroy();
 }
 
 /**
@@ -780,8 +808,14 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     shadowResolution: R,
     shadowCascades: cascades,
     shadowDistance: 2.5,
+    // K6.2b `?env=`: the environment lighting mode of a synthetic equirect sky (rotated and reflected)
+    environmentLighting: (ENV_MODE ?? "directional") as "directional" | "spherical-harmonics" | "outward",
+    environmentSamples: 8,
+    environmentShOrder: 2,
   };
   const renderer = vdbCreateFrameRenderer(device, { settings });
+  const envSource = ENV_MODE ? synthEnvironment(device, "equirect", "rgba16float") : null;
+  const environment = envSource ? { id: 1, revision: 0, texture: envSource.texture, projection: "equirect" as const, rotation: Float32Array.from(probeEnvRotation()), intensity: 0.6 } : null;
   const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, absorbance: 0.7, mipmaps: true, hdda: true };
   const pB: Partial<VDBFrameVolumeParams> = {
     matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]),
@@ -806,7 +840,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
   const lights = PROBE_LIGHTS;
-  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights });
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment });
   let enc = device.createCommandEncoder();
   const u = renderer.update(enc, frame(0));
   device.queue.submit([enc.finish()]);
@@ -817,6 +851,9 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const shadowStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.shadow, gt.shadowLayout.size, 8)), size: gt.shadowLayout.size, channels: 4 };
   const transStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.transmittance, gt.transmittanceLayout.size, 8)), size: gt.transmittanceLayout.size, channels: 4 };
   const scatter = halves(await readTexture(device, tex.scatter, [GW, GH, GD], 8));
+  // K6.2b: the environment buffer and grid the kernels read (the buffer is checked by ?probe=environment)
+  const env = parseEnvironment(await readBuffer(device, vdbFrameRendererEnvironment(renderer).buffer, VDB_FRAME_ENVIRONMENT.size));
+  const envGridTex: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.environment, [R, R, R], 8)), size: [R, R, R], channels: 4 };
   enc = device.createCommandEncoder();
   renderer.update(enc, frame(1));
   device.queue.submit([enc.finish()]);
@@ -876,6 +913,16 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   // (b) the transmittance from the read-back grid
   const msValue = ms ? 1 - (g * (1 - backWeight) + backG * backWeight) : 0;
   const slotLights = lightRecords(lights).slice(0, 6).map((l) => l.position);
+  // K6.2b: his light result: the dominant 'directional' environment light in the next free slot (not with diffusion)
+  const sceneSlotCount = slotLights.length;
+  const envFlags = {
+    useShadows: grid.count > 0,
+    slot: !!environment && settings.environmentLighting === "directional" && sceneSlotCount < 6 && !ms && env.valid,
+    grid: !!environment && settings.environmentLighting !== "outward" && grid.count > 0,
+    diffusion: ms,
+  };
+  const envSlotUsed = envFlags.slot && env.count > 0;
+  if (envSlotUsed && MUTATE !== "env-slot") slotLights.push([...env.directions[0]!, 1]);
   const tstats = newStats("2 f16 ulp (rgba16float transmittance vs vdbFrameTransmittanceVoxel3d on the read-back grid)");
   const gridAt = (cc: number, uvw: VDBFrameVec3): [number, number] => {
     const s = vdbFrameStackSample(shadowStack, gt.shadowLayout.origins[cc]!, R, uvw);
@@ -892,6 +939,20 @@ async function probeFrame(device: GPUDevice): Promise<void> {
           }
         }
   result.transmittanceStats = tstats;
+
+  // (b') K6.2b: the environment grid from the read-back grid and buffer
+  if (envFlags.grid && env.valid) {
+    const first = envFlags.slot ? 1 : 0;
+    const gridLights = env.directions.map((direction, i) => ({ direction, color: env.colors[i]! })).slice(MUTATE === "env-grid" ? first + 1 : first);
+    const es = newStats("2 f16 ulp (rgba16float environment grid vs vdbFrameEnvironmentGridVoxel3d on the read-back grid)");
+    for (let z = 0; z < R; z++)
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const cpu = vdbFrameEnvironmentGridVoxel3d(gridAt, layout, [x, y, z], gridLights, msValue);
+          compare(es, [x, y, z], at(envGridTex, [x, y, z]), cpu, 2, 2 ** -20);
+        }
+    result.environmentGridStats = es;
+  }
 
   // (c) the fused gather from the read-back transmittance
   const shadowsAt =
@@ -943,6 +1004,18 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             lightPositions: sorted.map((l) => l.position),
             phase,
             phaseSpectrum,
+            environmentAt: environment
+              ? (world, local, skyTotals) => {
+                  const outward = MUTATE !== "env-outward" && local && Math.hypot(...local) > 1e-4 ? normalizeV(mat3Of(eyeWorld, mat3Of(r.localToView, local))) : ([0, 1, 0] as VDBFrameVec3);
+                  const last = layout.count - 1;
+                  const gridAt = () => {
+                    if (last < 0) return null;
+                    const uvw = vdbFrameGridUvw(layout, last, world);
+                    return vdbFrameInsideGrid(R, uvw) ? (vdbFrameStackSample(envGridTex, [0, 0, 0], R, uvw).slice(0, 3) as VDBFrameVec3) : null;
+                  };
+                  return vdbFrameEnvironmentDensityTerm(env, envFlags, outward, [0, 1, 0], skyTotals, gridAt);
+                }
+              : null,
           });
           if (!d) continue;
           for (let k = 0; k < 4; k++) for (let ch = 0; ch < 4; ch++) sums[k]![ch]! += d[k]![ch]!;
@@ -960,7 +1033,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             const s = shadowsAt(world);
             return [s[2]![0]!, s[2]![1]!, s[2]![2]!, s[2]![3]!, s[3]![0]!, s[3]![1]!];
           } : () => [1, 1, 1, 1, 1, 1],
-          environmentColors: [],
+          environmentColors: envFlags.useShadows && envSlotUsed && MUTATE !== "env-slot" ? [env.colors[0]!] : [],
           environmentShadowSlot: sceneSlots,
           ...(MUTATE === "sky" ? {} : { probe: PROBE_SH, sky: [0, 1, 0] as VDBFrameVec3 }),
         });
@@ -968,9 +1041,18 @@ async function probeFrame(device: GPUDevice): Promise<void> {
         compare(stats, [x, y, z], [scatter[i]!, scatter[i + 1]!, scatter[i + 2]!, scatter[i + 3]!], cpu, 2, 2 ** -20);
       }
   result.stats = stats;
+  result.environment = { runs: [{ ...vdbFrameRendererEnvironment(renderer).runs }], count: env.count, mode: env.mode, valid: env.valid ? 1 : 0, directions: env.directions, colors: env.colors };
   renderer.dispose();
   scene.dispose();
+  envSource?.texture.destroy();
 }
+
+const normalizeV = (v: readonly number[]): VDBFrameVec3 => {
+  const l = Math.hypot(v[0]!, v[1]!, v[2]!);
+  return [v[0]! / l, v[1]! / l, v[2]! / l];
+};
+/** The upper 3x3 of a column-major 4x4 times v. */
+const mat3Of = (m: ArrayLike<number>, v: readonly number[]): VDBFrameVec3 => [0, 1, 2].map((r) => m[r]! * v[0]! + m[4 + r]! * v[1]! + m[8 + r]! * v[2]!) as VDBFrameVec3;
 
 /** The lights as the renderer packs them (directional, point, spot; position w kind). */
 function lightRecords(lights: readonly VDBFrameLight[]): (TwinFrame["lights"][number] & { falloff: [number, number] })[] {

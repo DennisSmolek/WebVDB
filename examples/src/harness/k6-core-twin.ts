@@ -24,6 +24,8 @@ import {
   vdbFrameViewPosition,
   vdbMat4Point,
   vdbShIrradianceAt,
+  vdbFrameEnvironmentIrradiance,
+  type VDBFrameEnvironmentGpuResult,
   type VDBFrameFroxelMix,
   type VDBFrameVec2,
   type VDBFrameVec3,
@@ -137,6 +139,8 @@ export interface TwinFrame {
   hemi: { sky: V3; ground: V3; up: V3 }[];
   /** Packed like the uniforms: position (w kind), colour (w penumbra cos), spot (xyz target → light, w cone cos). */
   lights: { position: V4; color: V4; spot: V4 }[];
+  /** K6.2b: the environment buffer (read back): its lights, or the 'outward' SH. */
+  environment?: VDBFrameEnvironmentGpuResult;
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -274,6 +278,30 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
       const sky = diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : front[1];
       const ground = diffusion ? vdbFrameIsotropicDiffusion(back[2], front[2], back[3]) : back[1];
       irradiance = add(irradiance, add(scale(h.sky, 0.5 * sky), scale(h.ground, 0.5 * ground)));
+    }
+  }
+  // K6.2b: the environment (light bit 1): each light marched (with diffusion the opposite march too, two-sided total),
+  // their sum clamped at 0; without lights the 'outward' SH irradiance along the outward normal
+  const env = frame.environment;
+  if (env && env.valid && r.lights & 1) {
+    const pair = (direction: V3) => {
+      const front = march(r, local, direction, 1e6, lod, maxTexels, albedo, shadowNoise, mutate);
+      const back = diffusion ? march(r, local, scale(direction, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate) : front;
+      return { front, back };
+    };
+    if (env.count > 0 && mutate !== "env-outward") {
+      let sum: V3 = [0, 0, 0];
+      for (let i = 0; i < (mutate === "env-lights" ? env.count - 1 : env.count); i++) {
+        const { front, back } = pair(mat3(r.worldToLocal, env.directions[i]!));
+        sum = add(sum, scale(env.colors[i]!, diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : front[1]));
+      }
+      irradiance = add(irradiance, [Math.max(sum[0], 0), Math.max(sum[1], 0), Math.max(sum[2], 0)]);
+    } else {
+      const { front, back } = pair(mat3(r.worldToLocal, outward));
+      if (diffusion) {
+        irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) * 0.5));
+        irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, scale(outward, -1)), vdbFrameIsotropicDiffusion(back[2], front[2], back[3]) * 0.5));
+      } else irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), front[1]));
     }
   }
   for (const l of frame.lights) {

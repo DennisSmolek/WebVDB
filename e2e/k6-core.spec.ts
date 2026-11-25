@@ -353,3 +353,66 @@ for (const p of ENV_PROBES) {
     expect(errors).toEqual([]);
   });
 }
+
+// K6.2b: 'frame' lighting with an environment (a synthetic sky, rotated and reflected): the dominant 'directional' light in
+// the next free slot (single scattering), the environment grid (vdbFrameEnvironmentGridVoxel3d on the read-back grid and
+// buffer) and the 'outward' SH term of the fused gather; 'volume' lighting marches every environment light.
+type FrameEnvKey = "stats" | "transmittanceStats" | "environmentGridStats";
+const FRAME_ENV_PROBES: { name: string; query: string; grid: boolean; mutations: Record<string, FrameEnvKey> }[] = [
+  { name: "'directional', single scattering (slot + grid)", query: "?probe=frame&env=directional&ms=0", grid: true, mutations: { "env-slot": "transmittanceStats", "env-grid": "environmentGridStats" } },
+  { name: "'directional', diffusion (grid only), sparse", query: "?probe=frame&env=directional&source=sparse", grid: true, mutations: { "env-grid": "environmentGridStats" } },
+  { name: "SH lights, single scattering, two groups", query: "?probe=frame&env=spherical-harmonics&ms=0&groups=2", grid: true, mutations: { "env-grid": "environmentGridStats" } },
+  { name: "'outward' SH irradiance", query: "?probe=frame&env=outward", grid: false, mutations: { "env-outward": "stats" } },
+];
+
+for (const p of FRAME_ENV_PROBES) {
+  test(`K6.2b probe: 'frame' lighting with an environment (${p.name}) matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.environment!.valid, detail(r)).toBe(1);
+    const redraw = r.frame!.redraw as { environmentGrid: { drawn: number; skipped: number } };
+    expect(redraw.environmentGrid, detail(r)).toEqual(p.grid ? { drawn: 1, skipped: 1 } : { drawn: 0, skipped: 0 });
+    for (const key of ["transmittanceStats", "stats", ...(p.grid ? (["environmentGridStats"] as const) : [])] as const) {
+      const s = r[key]!;
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(200);
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] frame env ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+const GATHER_ENV_PROBES: { name: string; query: string; mutations: string[] }[] = [
+  { name: "'directional' lights, diffusion", query: "?probe=gather&env=directional", mutations: ["env-lights", "env-outward"] },
+  { name: "SH lights, single scattering, sparse", query: "?probe=gather&env=spherical-harmonics&ms=0&source=sparse&lod=none", mutations: ["env-lights"] },
+  { name: "'outward' SH irradiance", query: "?probe=gather&env=outward", mutations: [] },
+];
+
+for (const p of GATHER_ENV_PROBES) {
+  test(`K6.2b probe: 'volume' gather with an environment (${p.name}) matches its CPU twin; mutations fail`, async ({ page }) => {
+    test.setTimeout(600_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.environment!.valid, detail(r)).toBe(1);
+    expect(r.stats!.covered, detail(r)).toBeGreaterThanOrEqual(200);
+    expect(r.stats!.over, detail(r)).toBeLessThanOrEqual(Math.floor(r.stats!.compared * 0.001));
+    console.log(`[k6-core] gather env ${p.name} on ${r.adapter}: ${r.stats!.compared} texels, ${r.stats!.covered} non-zero, max ${r.stats!.maxUlp.toFixed(2)} f16 ulp, ${r.stats!.over} over`);
+    for (const m of p.mutations) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad.stats!.over, `mutation ${m} must fail: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad.stats!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
