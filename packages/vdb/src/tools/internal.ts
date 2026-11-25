@@ -147,10 +147,19 @@ export {
   vdbBoxPyramid,
   vdbFrameNodeAverageSample,
   vdbFrameSkipEmpty,
+  vdbSparseDensityStats,
+  vdbPyramidHalfBits,
+  vdbPyramidToHalf,
+  vdbSparseLodLevelsCpu,
+  vdbSparseDensityCpu,
+  vdbSparseMaskCpu,
+  vdbSparseAlbedoCpu,
+  vdbSparseEmissionCpu,
+  vdbSparseSkipSpanCpu,
 } from "./frame/sparse.js";
-export type { VDBFloatMipAtlas, VDBBoxPyramidOptions, VDBBoxPyramid } from "./frame/sparse.js";
-export { vdbBoxPyramidLayout, vdbPyramidLevelSize } from "./frame/pyramid-layout.js";
-export type { VDBBoxPyramidLayout, VDBPyramidAtlasLevel } from "./frame/pyramid-layout.js";
+export type { VDBFloatMipAtlas, VDBBoxPyramidOptions, VDBBoxPyramid, VDBSparseChannelCpu, VDBSparseVolumeCpu, VDBSparseSampleCpu } from "./frame/sparse.js";
+export { vdbBoxPyramidLayout, vdbPyramidLevelSize, vdbPackPyramidBlocks } from "./frame/pyramid-layout.js";
+export type { VDBBoxPyramidLayout, VDBPyramidAtlasLevel, VDBPyramidPacking } from "./frame/pyramid-layout.js";
 export {
   vdbFrameGridCascades,
   vdbFrameGridRange,

@@ -47,3 +47,26 @@ export type {
   VDBMultiScaleRecordOptions,
   VDBMultiScaleResizeOptions,
 } from "./compute/multi-scale.js";
+// K6.7: the core sparse source (public in K6.8).
+export { vdbSparseSourceGpu } from "./source/sparse.js";
+export type {
+  VDBSparseIndexBox,
+  VDBSparseLodGpu,
+  VDBSparseSourceGpu,
+  VDBSparseSourceGpuOptions,
+  VDBSparseSourceUpdate,
+  VDBSparseVolumeGpu,
+  VDBSparseVolumeGpuOptions,
+  VDBSparseVolumeGrids,
+} from "./source/sparse.js";
+export type { VDBVolumeSlot } from "./source/types.js";
+export {
+  VDB_SPARSE_RECORD_BYTES,
+  VDB_SPARSE_RECORD_FIELDS,
+  SPARSE_FLAG,
+  packSparseRecord,
+  sparseBindings,
+  sparseRecordOffset,
+  sparseRecordStructWgsl,
+  sparseSourceWgsl,
+} from "./source/sparse-wgsl.js";

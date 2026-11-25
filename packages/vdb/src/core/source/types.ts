@@ -77,3 +77,18 @@ export interface VDBVolumeSource extends VDBVolumeSourceInfo {
   /** Frees what the source allocated. */
   dispose(): void;
 }
+
+/**
+ * One volume of a source (K6 group-2 contract, design K6-core-renderer.md §2.1): what `renderer.addVolume` takes.
+ * `source` is the object whose `wgsl` / `layoutEntries` / `bindEntries` serve it (volumes that share one source
+ * object form one source group: one bind group, one dispatch); `v` is the volume's source-local slot, which the
+ * renderer copies into the volume's uniform record and passes as the `v` argument of every `vdbSrc*` call. The
+ * {@link VDBVolumeSourceInfo} fields describe this volume (a sparse source serves many volumes, each with its own
+ * texels, LOD range, stats and box). A dense source is its own slot (`v` = 0).
+ */
+export interface VDBVolumeSlot extends VDBVolumeSourceInfo {
+  /** The source whose bindings and WGSL serve this volume. */
+  readonly source: VDBVolumeSource;
+  /** The source-local slot: the `v` of every `vdbSrc*` call for this volume. */
+  readonly v: number;
+}
