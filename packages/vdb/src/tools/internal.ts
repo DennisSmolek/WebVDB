@@ -233,6 +233,26 @@ export {
 } from "./frame/neural.js";
 export type { VDBFrameNeuralNetwork, VDBFrameNeuralMip } from "./frame/neural.js";
 export { vdbFrameNeuralWeights } from "./frame/neural-weights.js";
+export {
+  VDB_FRAME_MULTI_SCALE_MAX_LEVELS,
+  VDB_FRAME_MULTI_SCALE_DEFAULT_LEVELS,
+  vdbFrameMultiScaleLayout,
+  vdbFrameMultiScaleMips,
+  vdbFrameMultiScaleToHalf,
+  vdbFrameTexture3DLinear,
+  vdbFrameMultiScaleSample,
+  vdbFrameMultiScaleLight,
+} from "./frame/multi-scale.js";
+export type {
+  VDBFrameMultiScaleEdge,
+  VDBFrameMultiScaleMipLevel,
+  VDBFrameMultiScaleLayout,
+  VDBFrameTexture3D,
+  VDBFrameMultiScaleMipOptions,
+  VDBFrameMultiScaleMips,
+  VDBFrameMultiScaleGrid,
+  VDBFrameMultiScaleTextures,
+} from "./frame/multi-scale.js";
 export { vdbFrameMediumMeasurements, vdbFrameFitPhaseGExponent } from "./frame/medium.js";
 export {
   vdbFrameSpectrumWavelengths,

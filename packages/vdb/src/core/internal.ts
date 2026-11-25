@@ -30,3 +30,20 @@ export {
 export type { VDBGridRecord, VDBPoolHeader } from "./pool/layout.js";
 export { VDB_MODULE_BANNER } from "./wgsl/generate.js";
 export { boxPyramidWgsl } from "./compute/index.js";
+export {
+  VDB_FRAME_MULTI_SCALE_PARAMS_BYTES,
+  VDB_FRAME_MULTI_SCALE_SAMPLER,
+  multiScaleMipsWgsl,
+  vdbCreateMultiScaleMips,
+  vdbFrameMultiScaleParams,
+  vdbFrameMultiScaleWgsl,
+} from "./compute/multi-scale.js";
+export type {
+  VDBFrameMultiScaleParams,
+  VDBFrameMultiScaleWgslOptions,
+  VDBMultiScaleFormat,
+  VDBMultiScaleMips,
+  VDBMultiScaleMipsOptions,
+  VDBMultiScaleRecordOptions,
+  VDBMultiScaleResizeOptions,
+} from "./compute/multi-scale.js";
