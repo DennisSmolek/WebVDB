@@ -8,3 +8,4 @@ export * from "./scene.js";
 export * from "./trace.js";
 export * from "./media.js";
 export * from "./analytic.js";
+export * from "./tables.js";

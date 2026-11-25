@@ -9,7 +9,9 @@
  * the source is read at one call site per channel.
  *
  * Group 0: `vdbRefU` (VdbRefUniforms), `vdbRefBatch` (dynamic offset, 256 B stride). Group 1: accumulation in
- * (sum, sum of squares; sampled, unfilterable), out (storage, write), the equirect environment map.
+ * (sum, sum of squares; sampled, unfilterable), out (storage, write), the equirect environment map, and (K6.R1) the
+ * table texture (one row per phase table: RGB + CDF; per emission colour table: RGB) and the majorant atlas (r32float
+ * 3D: each volume's grid stacked along z).
  */
 
 /** Uniform layout (bytes) of `VdbRefUniforms`; the packer is `core/reference/renderer.ts` `vdbReferencePackUniforms`. */
@@ -28,18 +30,21 @@ export const VDB_REF_UNIFORM_OFFSETS = Object.freeze({
   envSize: 168,
   uniformEnv: 176,
   envRotation: 192,
-  hemis: 240,
-  volumes: 432,
-  lights: 1712,
-  size_: 2736,
+  sh: 240,
+  hemis: 384,
+  volumes: 576,
+  lights: 2112,
+  size_: 3136,
 });
 export const VDB_REF_HEMI_BYTES = 48;
-export const VDB_REF_VOLUME_BYTES = 160;
+export const VDB_REF_VOLUME_BYTES = 192;
 export const VDB_REF_LIGHT_BYTES = 64;
 /** `flags` bits. */
 export const VDB_REF_FLAG_BOX_FILTER = 1;
 export const VDB_REF_FLAG_ORTHOGRAPHIC = 2;
 export const VDB_REF_FLAG_EQUIRECT = 4;
+/** K6.R1: the environment has a light probe (`sh`). */
+export const VDB_REF_FLAG_SH = 8;
 /** Stride of the per-dispatch batch records (dynamic uniform offsets: 256-byte aligned). */
 export const VDB_REF_BATCH_STRIDE = 256;
 
@@ -54,6 +59,10 @@ export const VDB_REFERENCE_MUTATIONS: Readonly<Record<string, readonly [string, 
   "nee-transmittance": ["rad = rad + beta * neeLi * hit.trans;", "rad = rad + beta * neeLi;"],
   "emission-albedo": ["rad = rad + beta * le;", "rad = rad + beta * le * albedo;"],
   "escape-depth": ["if (depth > 0u) {", "if (depth == 1u) {"],
+  // K6.R1
+  "majorant-cell": ["let cellIndex = cell;", "let cellIndex = vec3u(cell.x, cell.y, 0u);"],
+  "phase-table-weight": ["return VdbRefPhaseSample(cos(theta), vdbRefTableAt(row, size, u).xyz * s);", "return VdbRefPhaseSample(cos(theta), vdbRefTableAt(row, size, u).yyy * s);"],
+  falloff: ["let mode = u32(l.extra.x + 0.5);", "let mode = select(u32(l.extra.x + 0.5), 0u, l.extra.x > 1.5);"],
 });
 
 /** The kernel's WGSL after the source's (`vdbSrc*`) and module text. */
@@ -79,6 +88,8 @@ struct VdbRefVolume {
   emission: vec4f,
   temperature: vec4f,
   ids: vec4u,
+  grid: vec4u,
+  tables: vec4u,
 }
 
 struct VdbRefLight {
@@ -105,6 +116,7 @@ struct VdbRefUniforms {
   envRotation0: vec4f,
   envRotation1: vec4f,
   envRotation2: vec4f,
+  sh: array<vec4f, 9>,
   hemis: array<VdbRefHemi, ${o.maxHemispheres}>,
   volumes: array<VdbRefVolume, ${o.maxVolumes}>,
   lights: array<VdbRefLight, ${o.maxLights}>,
@@ -124,6 +136,8 @@ struct VdbRefBatch {
 @group(1) @binding(2) var vdbRefAccumOut0: texture_storage_2d<rgba32float, write>;
 @group(1) @binding(3) var vdbRefAccumOut1: texture_storage_2d<rgba32float, write>;
 @group(1) @binding(4) var vdbRefEnvMap: texture_2d<f32>;
+@group(1) @binding(5) var vdbRefTables: texture_2d<f32>;
+@group(1) @binding(6) var vdbRefMajorants: texture_3d<f32>;
 
 // ---- random stream (tools/reference/rng.ts) ----
 var<private> vdbRefState: u32;
@@ -151,12 +165,59 @@ fn vdbRefHg(c: f32, g: f32) -> f32 {
   return (1.0 - g * g) / (4.0 * VDB_REF_PI * d * sqrt(d));
 }
 
-fn vdbRefPhaseEval(c: f32, ph: vec4f) -> f32 {
+// ---- tables (tools/reference/tables.ts): row r, linear blend at texel u·(size − 1) ----
+fn vdbRefTableAt(row: u32, size: u32, u: f32) -> vec4f {
+  let texel = clamp(u, 0.0, 1.0) * f32(size - 1u);
+  let i = min(u32(texel), size - 2u);
+  let f = texel - f32(i);
+  let a = textureLoad(vdbRefTables, vec2u(i, row), 0);
+  let b = textureLoad(vdbRefTables, vec2u(i + 1u, row), 0);
+  return a + (b - a) * f;
+}
+
+// The phase per steradian per channel: HG / dual-lobe, or the volume's table (vdbRefPhaseTableEval).
+fn vdbRefPhaseEval(c: f32, i: u32) -> vec3f {
+  let rec = vdbRefU.volumes[i];
+  if (rec.tables.x > 0u) {
+    let u = sqrt(acos(clamp(c, -1.0, 1.0)) / VDB_REF_PI);
+    return vdbRefTableAt(rec.tables.x - 1u, rec.tables.y, u).xyz / (4.0 * VDB_REF_PI);
+  }
+  let ph = rec.phase;
   let a = vdbRefHg(c, ph.x);
   if (ph.z > 0.0) {
-    return a + (vdbRefHg(c, ph.y) - a) * ph.z;
+    return vec3f(a + (vdbRefHg(c, ph.y) - a) * ph.z);
   }
-  return a;
+  return vec3f(a);
+}
+
+// Inverse-CDF sample of a phase table (vdbRefPhaseTableSample): cos theta and the per-channel weight.
+struct VdbRefPhaseSample {
+  cosTheta: f32,
+  weight: vec3f,
+}
+
+fn vdbRefPhaseTableSample(row: u32, size: u32, xi: f32) -> VdbRefPhaseSample {
+  var lo = 0u;
+  var hi = size - 1u;
+  loop {
+    if (hi - lo <= 1u) {
+      break;
+    }
+    let mid = (lo + hi) >> 1u;
+    if (textureLoad(vdbRefTables, vec2u(mid, row), 0).w <= xi) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  let c0 = textureLoad(vdbRefTables, vec2u(lo, row), 0).w;
+  let c1 = textureLoad(vdbRefTables, vec2u(lo + 1u, row), 0).w;
+  let f = (xi - c0) / (c1 - c0);
+  let u = (f32(lo) + f) / f32(size - 1u);
+  let pdfU = (c1 - c0) * f32(size - 1u);
+  let theta = VDB_REF_PI * u * u;
+  let s = VDB_REF_PI * u * sin(theta) / pdfU;
+  return VdbRefPhaseSample(cos(theta), vdbRefTableAt(row, size, u).xyz * s);
 }
 
 fn vdbRefSampleHgCos(g: f32, u: f32) -> f32 {
@@ -248,6 +309,32 @@ fn vdbRefSigma(i: u32, x: vec3f) -> f32 {
   return select(0.0, value, value > p.z) * p.x;
 }
 
+// ---- majorant grids (vdbRefMajorantCell): the cell at t of the ray lo + t*ld (unit box), its majorant and exit ----
+fn vdbRefMajorantAt(i: u32, lo: vec3f, ld: vec3f, t: f32, t1: f32) -> vec2f {
+  let rec = vdbRefU.volumes[i];
+  let dims = rec.ids.yzw;
+  if (dims.x == 0u) {
+    return vec2f(rec.params.y, t1);
+  }
+  let n = vec3f(dims);
+  let q = (lo + ld * t + vec3f(0.5)) * n;
+  let nudge = select(select(vec3f(0.0), vec3f(-1e-4), ld < vec3f(0.0)), vec3f(1e-4), ld > vec3f(0.0));
+  let cell = vec3u(clamp(floor(q + nudge), vec3f(0.0), n - vec3f(1.0)));
+  var exit = VDB_REF_FAR;
+  for (var k = 0u; k < 3u; k = k + 1u) {
+    if (abs(ld[k]) > 1e-12) {
+      let face = (f32(cell[k]) + select(0.0, 1.0, ld[k] > 0.0)) / n[k] - 0.5;
+      exit = min(exit, (face - lo[k]) / ld[k]);
+    }
+  }
+  if (!(exit > t)) {
+    exit = t + 1e-6 * max(1.0, abs(t));
+  }
+  let cellIndex = cell;
+  let bound = textureLoad(vdbRefMajorants, vec3u(cellIndex.x, cellIndex.y, cellIndex.z + rec.grid.x), 0).x;
+  return vec2f(rec.params.x * bound, min(t1, exit));
+}
+
 // ---- tracking: delta (ratio false: the collision) or ratio (ratio true: T), piecewise majorants ----
 struct VdbRefHit {
   escaped: bool,
@@ -258,9 +345,14 @@ struct VdbRefHit {
 
 fn vdbRefTrack(o: vec3f, d: vec3f, tMax: f32, ratio: bool) -> VdbRefHit {
   var iv: array<vec2f, ${o.maxVolumes}>;
+  var lo: array<vec3f, ${o.maxVolumes}>;
+  var ld: array<vec3f, ${o.maxVolumes}>;
   let n = vdbRefU.volumeCount;
   for (var i = 0u; i < n; i = i + 1u) {
     iv[i] = vdbRefInterval(i, o, d, tMax);
+    let m = vdbRefU.volumes[i].worldToLocal;
+    lo[i] = (m * vec4f(o, 1.0)).xyz;
+    ld[i] = (m * vec4f(d, 0.0)).xyz;
   }
   var t = 0.0;
   var trans = 1.0;
@@ -270,8 +362,9 @@ fn vdbRefTrack(o: vec3f, d: vec3f, tMax: f32, ratio: bool) -> VdbRefHit {
     for (var i = 0u; i < n; i = i + 1u) {
       let w = iv[i];
       if (w.x <= t && t < w.y) {
-        sbar = sbar + vdbRefU.volumes[i].params.y;
-        tb = min(tb, w.y);
+        let piece = vdbRefMajorantAt(i, lo[i], ld[i], t, w.y);
+        sbar = sbar + piece.x;
+        tb = min(tb, piece.y);
       } else if (w.x > t && w.x <= w.y) {
         tb = min(tb, w.x);
       }
@@ -350,7 +443,18 @@ fn vdbRefLightAt(k: u32, x: vec3f) -> VdbRefNee {
     return VdbRefNee(false, vec3f(0.0, 1.0, 0.0), 0.0, vec3f(0.0));
   }
   let dir = to / dist;
-  var s = select(1.0, 1.0 / (dist * dist), l.extra.x > 0.5);
+  // falloff (extra): mode 0 none ('volume' lighting), 1 inverse square, 2 three's getDistanceAttenuation (cutoff, decay)
+  let mode = u32(l.extra.x + 0.5);
+  var s = 1.0;
+  if (mode == 1u) {
+    s = 1.0 / (dist * dist);
+  } else if (mode == 2u) {
+    s = 1.0 / max(pow(dist, l.extra.z), 0.01);
+    if (l.extra.y > 0.0) {
+      let w = clamp(1.0 - pow(dist / l.extra.y, 4.0), 0.0, 1.0);
+      s = s * w * w;
+    }
+  }
   if (kind == 2u) {
     s = s * vdbRefSmoothstep(l.direction.w, l.color.w, -dot(dir, l.direction.xyz));
   }
@@ -360,6 +464,12 @@ fn vdbRefLightAt(k: u32, x: vec3f) -> VdbRefNee {
 
 fn vdbRefEnvironment(d: vec3f) -> vec3f {
   var e = vdbRefU.uniformEnv.xyz;
+  if ((vdbRefU.flags & ${VDB_REF_FLAG_SH}u) != 0u) {
+    let sh = vdbRefU.sh;
+    e = e + sh[0].xyz * 0.282095 + sh[1].xyz * (0.488603 * d.y) + sh[2].xyz * (0.488603 * d.z) + sh[3].xyz * (0.488603 * d.x);
+    e = e + sh[4].xyz * (1.092548 * d.x * d.y) + sh[5].xyz * (1.092548 * d.y * d.z) + sh[6].xyz * (0.315392 * (3.0 * d.z * d.z - 1.0));
+    e = e + sh[7].xyz * (1.092548 * d.x * d.z) + sh[8].xyz * (0.546274 * (d.x * d.x - d.y * d.y));
+  }
   for (var i = 0u; i < vdbRefU.hemiCount; i = i + 1u) {
     let h = vdbRefU.hemis[i];
     e = e + select(h.ground.xyz, h.sky.xyz, dot(d, h.up.xyz) >= 0.0);
@@ -432,6 +542,10 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
         }
         break;
       }
+      // a collision past the cap ends the path (the last bounce's escape still gathered the environment above)
+      if (depth >= vdbRefU.maxBounces) {
+        break;
+      }
       depth = depth + 1u;
       vol = hit.vol;
       x = o + hit.t * d;
@@ -444,6 +558,11 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
         let temperature = mix(rec.temperature.x, rec.temperature.y, vdbSrcEmission(v, uvw, 0.0));
         if (temperature > 0.0) {
           le = rec.emission.xyz * pow(temperature / max(rec.temperature.y, 1.0), 4.0);
+          if (rec.tables.z > 0u) {
+            // the blackbody colour table over log temperature (vdbRefColorTableAt): log range in temperature.zw
+            let lx = (log(max(temperature, 1e-3)) - rec.temperature.z) / (rec.temperature.w - rec.temperature.z);
+            le = le * vdbRefTableAt(rec.tables.z - 1u, rec.tables.w, lx).xyz;
+          }
         }
       }
       rad = rad + beta * le;
@@ -463,7 +582,7 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
       if (nee.ok) {
         neeDir = nee.dir;
         neeDist = nee.dist;
-        neeLi = nee.li * vdbRefPhaseEval(dot(d, nee.dir), vdbRefU.volumes[vol].phase);
+        neeLi = nee.li * vdbRefPhaseEval(dot(d, nee.dir), vol);
         found = true;
         break;
       }
@@ -472,9 +591,6 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
     if (found) {
       mode = 2u;
       continue;
-    }
-    if (depth >= vdbRefU.maxBounces) {
-      break;
     }
     if (depth >= vdbRefU.rrStart) {
       let q = min(vdbRefMax3(beta), 1.0);
@@ -485,12 +601,21 @@ fn vdbRefSample(pixel: vec2u, sampleIndex: u32) -> vec4f {
         beta = beta / q;
       }
     }
-    let ph = vdbRefU.volumes[vol].phase;
+    let rec = vdbRefU.volumes[vol];
+    let ph = rec.phase;
     let lobe = vdbRefRand();
     let u1 = vdbRefRand();
     let u2 = vdbRefRand();
-    let g = select(ph.x, ph.y, ph.z > 0.0 && lobe < ph.z);
-    d = normalize(vdbRefDirectionAround(d, vdbRefSampleHgCos(g, u1), u2));
+    var cosTheta = 0.0;
+    if (rec.tables.x > 0u) {
+      let ts = vdbRefPhaseTableSample(rec.tables.x - 1u, rec.tables.y, u1);
+      cosTheta = ts.cosTheta;
+      beta = beta * ts.weight;
+    } else {
+      let g = select(ph.x, ph.y, ph.z > 0.0 && lobe < ph.z);
+      cosTheta = vdbRefSampleHgCos(g, u1);
+    }
+    d = normalize(vdbRefDirectionAround(d, cosTheta, u2));
     o = x;
     mode = 1u;
   }
