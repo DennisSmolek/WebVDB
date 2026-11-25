@@ -145,7 +145,10 @@ Plan: [docs/dev/research/notes/R1-renderer-port.md](research/notes/R1-renderer-p
 | ID | Task | Owner | Status | Notes |
 |---|---|---|---|---|
 | K6.0 | Design: core renderer API (device, host encoder, host targets; camera/lights/shadow maps as plain data), pass graph, resource ownership, renderer WGSL + `vdb` module composition, core-side shadow-map interface, MRT/post-processing seam, parity plan | T3 | ✅ | 2026-11-25: owner answered Q1–Q10 (compute on 3D textures, D34); design [K6-core-renderer.md](design/K6-core-renderer.md), brief [K6.1-brief.md](design/K6.1-brief.md). |
-| K6.1 | Froxel grid, density inject, integrate and 'volume' lighting as core WGSL | T3 | ⬜ | [Brief](design/K6.1-brief.md). Compute: gather + z-scan resolve + composite + `vdbFrameIntegrate`; dense source; `k6-core` harness; internal `backend` A/B. Gate: kernels vs CPU twins, frames vs the TSL path within tolerance. |
+| K6.1 | Froxel grid, density inject, integrate and 'volume' lighting as core WGSL | T3 | ✅ | 2026-11-25: `core/frame/**` (internal), twins `tools/frame/{view,froxel}.ts`, `./three` internal `backend: 'core'`; handoff [K6-1](../archive/handoffs/K6-1.md). Gates: twins ≤ 2.18 f16 ulp, 0 over; core vs TSL 57–61 dB on 7 Step 1 scenes (only silhouettes > 4/255); vs his captures 1 of 2 isolated scenes passes his strict bar, the other is V80 silhouettes (accepted, K6.R judges). V77–V83. |
+| K6.1b | Optional per-slice composite (his slice loop on the resolved froxels) behind a setting, to A/B V80 against K6.R | T3 | ⬜ | Only if K6.R prefers his silhouettes. |
+| K6.1c | Raw `?scene=` mode in the `k6-core` harness (Step 1 scenes, no three); seed of demo 17 | T2 | ⬜ | |
+| K6.1d | Gate the core renderer on sparse slots: gather probe on `vdbSparseSourceGpu`, `vdbSrcSkipSpan` in the march (no skip under wrap/offset), `./three` `backend: 'core'` sparse path; dense `vdbSrcSkipSpan` | T3 | ⬜ | Before or with K6.2. |
 | K6.2 | 'frame' lighting: shadow grid and cascades, transmittance, environment lights | T3 | ⬜ | A/B on Step 3 scenes. |
 | K6.3 | Scattering: phase functions, multiple scattering (diffusion, neural, multi-scale from K7.3) | T3 | ⬜ | After K7.3. Step 4 scenes. |
 | K6.4 | Spectral media | T2 | ⬜ | Step 5 scenes. |
