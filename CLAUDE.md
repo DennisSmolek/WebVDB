@@ -269,6 +269,13 @@ From v1; details in docs/archive/handoffs/.
   by `v`: call `source.update(encoder)` after `pool.update(encoder)` in the same encoder, then (re)build bind group 2
   when `source.version` moved. Its `wgsl()` has no VDB module (compose `source.module`'s helpers into the shader's one
   module), and per-volume info (`texels`, `stats`, `lodLevels`, `bbox`) is on the slot, not the source.
+- TSL `.toVar(name)` declares a module-scope `var<private> name`: a name equal to a function in an included code node
+  (K6.6: `.toVar("vdbLevelSetSurface")`) fails with "redeclaration". three's `wgslFn` returns built-in types only:
+  pack a WGSL struct into a `mat4x4f` and read columns with `.element(i)` (`VDBLevelSetMaterial.surfaceNode`).
+- A three camera that three never rendered keeps `coordinateSystem` WebGL (z in [-1, 1]): a raw WebGPU pass that takes
+  `camera.projectionMatrix` must set `WebGPUCoordinateSystem` and `updateProjectionMatrix()` first, or `frag_depth` is off.
+- SwiftShader snaps vertices: an analytic disc's edge lands up to ~0.03 px off the f64 disc (K6.6 raw point pass); give
+  coverage checks a 0.05 px margin.
 - `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
   and other explicit-type modules are byte-identical).
 - A volume-shadow test that moves a light must make the map wait, or it can't see a lookup that follows the wrong light
