@@ -43,18 +43,19 @@ interface Result {
   uncaptured: string[];
 }
 
-async function run(page: Page, query: string): Promise<Result> {
+async function run(page: Page, query: string, timeout = 300_000): Promise<Result> {
   await page.goto(`${PAGE_URL}${query}`);
-  await page.waitForFunction(() => (window as { __VDB_K6_CORE__?: { done: boolean } }).__VDB_K6_CORE__?.done === true, undefined, { timeout: 300_000 });
+  await page.waitForFunction(() => (window as { __VDB_K6_CORE__?: { done: boolean } }).__VDB_K6_CORE__?.done === true, undefined, { timeout });
   return (await page.evaluate(() => (window as { __VDB_K6_CORE__?: unknown }).__VDB_K6_CORE__)) as Result;
 }
 
 const detail = (r: Result) => JSON.stringify(r, null, 2);
 
 test("K6.1 every frame pipeline variant compiles", async ({ page }) => {
-  test.setTimeout(300_000);
+  // K6.5 added the shadow and emission kernels (with hooks): ~43 variants, minutes on SwiftShader under load
+  test.setTimeout(900_000);
   const errors = collectErrors(page);
-  const r = await run(page, "?probe=compile");
+  const r = await run(page, "?probe=compile", 900_000);
   expect(r.error, detail(r)).toBeUndefined();
   expect(r.compile!.errors, detail(r)).toEqual([]);
   expect(r.compile!.variants).toBeGreaterThanOrEqual(15);
