@@ -194,6 +194,16 @@ export function vdbFrameShadowCascadeIndex(viewDepth: number, breaks: readonly n
 }
 
 /**
+ * The spot map uv of a receiver (FrameVolumeShadowNode, his 62a6e3e): `clip` is its clip position in the camera that
+ * drew the map (the drawn view-projection, not three's current shadow matrix), with three's ShadowNode y flip.
+ * Outside when behind that camera (w ≤ 0) or off the map.
+ */
+export function vdbFrameShadowSpotUv(clip: Vec4): { uv: Vec2; inside: boolean } {
+  const uv: Vec2 = [(clip[0] / clip[3]) * 0.5 + 0.5, 0.5 - (clip[1] / clip[3]) * 0.5];
+  return { uv, inside: clip[3] > 0 && uv[0] >= 0 && uv[0] <= 1 && uv[1] >= 0 && uv[1] <= 1 };
+}
+
+/**
  * The atlas uv of a receiver in cascade `index` (getCascadeLookup L266–282): `clip` is its clip position in the
  * cascade camera (x, y after the divide; orthographic, so w = 1). Half a texel in from each tile side. `inside`
  * also needs the view depth within the last break (checked by the caller).

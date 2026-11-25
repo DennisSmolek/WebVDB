@@ -162,6 +162,97 @@ describe("K3.6 volume shadows: filters on lights", () => {
   });
 });
 
+describe("K7.1 volume shadow update budget (his c13f2d5)", () => {
+  // updateMaps without a GPU: the shadow grid is "ready" and the map draws are recorded, not drawn
+  const budgetRig = () => {
+    const fr = new VDBFrameRenderer();
+    fr.settings.castShadows = true;
+    fr.settings.castShadowUpdatesPerFrame = 1;
+    const shadows = fr.volumeShadows;
+    const drawnLights: string[] = [];
+    Object.assign(fr, { prepareShadowGrid: () => true, shadowDensityTarget: { textures: [null], dispose() {} } });
+    shadows.drawPass = (_r, entry) => void drawnLights.push(entry.light.name);
+    const spot = (name: string, x: number) => {
+      const light = new THREE.SpotLight();
+      light.name = name;
+      light.castShadow = true;
+      light.position.set(x, 10, 0);
+      return light;
+    };
+    return { fr, shadows, drawnLights, spot, renderer: fakeRenderer(), camera: new THREE.PerspectiveCamera() };
+  };
+
+  it("fail-before: a shadow light of another scene takes no part of the budget (nor a light removed after update)", () => {
+    const { fr, shadows, drawnLights, spot, renderer, camera } = budgetRig();
+    const sceneA = new THREE.Scene();
+    const sceneB = new THREE.Scene();
+    const lightA = spot("A", 0);
+    const lightB = spot("B", 5);
+    sceneA.add(lightA);
+    sceneB.add(lightB);
+    sceneA.updateMatrixWorld(true);
+    sceneB.updateMatrixWorld(true);
+    // One frame renderer in two scenes: B's light gets its entry first (the oldest-first order then puts it first)
+    shadows.update(renderer, sceneB);
+    shadows.update(renderer, sceneA);
+    expect([...shadows.entries.keys()].map((l) => l.name)).toEqual(["B", "A"]);
+
+    // Rendering scene A: only A's light is in the rendered scene, so it is drawn and nothing waits
+    shadows.updateMaps(renderer, sceneA, camera, 1);
+    expect(drawnLights).toEqual(["A"]);
+    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
+    expect(shadows.entries.get(lightA)!.enabled.value).toBe(1);
+    expect(shadows.entries.get(lightB)!.enabled.value).toBe(0);
+
+    // Rendering scene B: B's light is drawn
+    drawnLights.length = 0;
+    shadows.updateMaps(renderer, sceneB, camera, 2);
+    expect(drawnLights).toEqual(["B"]);
+    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
+
+    // A light removed between update() (which would free it) and the maps: no draw, no budget
+    const lightC = spot("C", -5);
+    sceneA.add(lightC);
+    sceneA.updateMatrixWorld(true);
+    shadows.update(renderer, sceneA);
+    lightA.position.x = 1;
+    sceneA.updateMatrixWorld(true);
+    sceneA.remove(lightC);
+    drawnLights.length = 0;
+    shadows.updateMaps(renderer, sceneA, camera, 3);
+    expect(drawnLights).toEqual(["A"]);
+    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
+    fr.dispose();
+  });
+
+  it("lights of the rendered scene still share the budget (oldest first; the rest wait)", () => {
+    const { fr, shadows, drawnLights, spot, renderer, camera } = budgetRig();
+    const scene = new THREE.Scene();
+    const a = spot("A", 0);
+    const b = spot("B", 5);
+    scene.add(a, b);
+    scene.updateMatrixWorld(true);
+    shadows.update(renderer, scene);
+    shadows.updateMaps(renderer, scene, camera, 1);
+    expect(drawnLights).toEqual(["A"]);
+    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 1 });
+    shadows.updateMaps(renderer, scene, camera, 2);
+    expect(drawnLights).toEqual(["A", "B"]);
+    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
+    // a hidden parent still takes the light out
+    const group = new THREE.Group();
+    scene.add(group);
+    group.add(b);
+    group.visible = false;
+    b.position.x = 6;
+    scene.updateMatrixWorld(true);
+    shadows.updateMaps(renderer, scene, camera, 3);
+    expect(shadows.entries.get(b)!.enabled.value).toBe(0);
+    expect(shadows.lastUpdate).toEqual({ drawn: 0, waiting: 0 });
+    fr.dispose();
+  });
+});
+
 describe("K3.6 emission light host side", () => {
   it("registers its light node with three (Light.registerNode) and keeps his props", () => {
     const light = new VDBFrameEmissionLight({ intensity: 25, resolution: 32 });

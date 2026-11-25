@@ -287,6 +287,7 @@ export {
   vdbFrameShadowCascadeFar,
   vdbFrameShadowCascadeIndex,
   vdbFrameShadowCascadeUv,
+  vdbFrameShadowSpotUv,
 } from "./frame/shadows.js";
 export type { VDBFrameShadowRay } from "./frame/shadows.js";
 export {
