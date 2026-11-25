@@ -44,13 +44,106 @@ export interface VDBFrameCamera {
   readonly id?: number | string;
 }
 
-/** A volume shadow map request (K6.5; typed, ignored in K6.1). */
+/**
+ * A volume shadow map request on a directional, spot or point light (K6.5, design §2.6): the core draws a Beer map of
+ * every shadow caster for it (`settings.castShadows`), and returns it in `outputs.volumeShadows` with the view it was
+ * drawn with. `size`: texels per side (`settings.castShadowCoarse`: 64). `view`:
+ * - spot: the camera the host's own depth map uses (`viewProjection` column-major, WebGPU depth), so both maps share
+ *   one texel grid; default a perspective camera over the cone (near 0.5, far = distance or 500).
+ * - point: `near` / `far` of the cube (far divides the stored depths; default distance or 500).
+ * - directional: `'fit'` (default; his cascades of the view around the casters, `castShadowCascades`,
+ *   `castShadowDistance`) or explicit orthographic cascades with their view-depth `breaks`.
+ */
 export interface VDBVolumeShadowRequest {
   size: number;
   view?:
-    | { viewProjection: Float32Array; near: number; far: number; orthographic: boolean }
-    | { cascades: { viewProjection: Float32Array; near: number; far: number }[]; breaks: number[] }
+    | { viewProjection?: ArrayLike<number>; near: number; far: number; orthographic?: boolean }
+    | { cascades: { viewProjection: ArrayLike<number>; near: number; far: number }[]; breaks: number[] }
     | "fit";
+}
+
+/** The state a volume shadow map was drawn with (what receivers project with; his 62a6e3e by construction). */
+export interface VDBVolumeShadowDrawn {
+  /** Per layer (cascades; spot: one), column-major, WebGPU depth. Point maps: empty. */
+  readonly viewProjection: readonly Float32Array[];
+  /** Ray origin per layer (cascades) or the light's position / camera position. */
+  readonly origin: readonly VDBFrameVec3[];
+  /** Far plane per layer: the map stores depths ÷ far. */
+  readonly far: readonly number[];
+  readonly forward: VDBFrameVec3;
+  readonly perspective: boolean;
+  /** Directional: the cascade far distances (view depth) and count the layers were drawn for. */
+  readonly breaks: readonly number[];
+  readonly cascadeCount: number;
+}
+
+/**
+ * One light's volume shadow map (`outputs.volumeShadows`, by light id). Bind `texture` (a `'2d-array'` view; point
+ * maps a `'cube'` view of its 6 layers), a linear clamp sampler and `view` (`var<uniform> VdbVolumeShadowView`), and
+ * call `vdbVolumeShadow` / `vdbVolumeShadowCube` (`vdbVolumeShadowWgsl()`).
+ */
+export interface VDBVolumeShadowMap {
+  readonly light: number | string;
+  readonly kind: "directional" | "spot" | "point";
+  /** rgba16float 2d with `layers` layers: (τ·first, τ·last, 0, τ), depths ÷ far. */
+  readonly texture: GPUTexture;
+  readonly layers: number;
+  readonly size: number;
+  /** The drawn view as a uniform buffer (`VdbVolumeShadowView`, rewritten each update). */
+  readonly view: GPUBuffer;
+  readonly drawn: VDBVolumeShadowDrawn;
+  /** False when the light is not in this frame or no caster exists: receivers read 1. */
+  readonly enabled: boolean;
+  /** +1 per drawn piece; a new `texture` bumps `outputs.version`. */
+  readonly revision: number;
+  /** The update count of the last draw of each piece (the map, or each cascade), for budget checks. */
+  readonly lastDraw: readonly number[];
+}
+
+/**
+ * Emission colour of a volume (K6.5, design §3.8): `'white'` (default); his `'planck'` / `'soot'` spectra (the
+ * blackbody table of the analytic CMF fit, D33, at the soot exponent); a 256-texel LUT (`lut`: 256 × rgb over log
+ * temperature 500–40,000 K, linear between texels); or a user WGSL hook defining
+ * `fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f` (t = the normalized temperature, `temperature` in
+ * kelvin; every top-level name starts with `vdbUser`), validated once (`VDB_BAD_WGSL`).
+ */
+export type VDBEmissionColor = "white" | { readonly spectrum: "planck" | "soot"; readonly exponent?: number } | { readonly lut: ArrayLike<number> } | { readonly wgsl: string };
+
+/** The emission light's probe settings (his `FrameEmissionLight` props; `VDBFrameInput.emissionLight`). */
+export interface VDBFrameEmissionLightSettings {
+  /** Probes per axis of each cascade, 2–32 (default 16). */
+  readonly resolution?: number;
+  /** The last cascade's size as a multiple of the box of all emitters (default 3). */
+  readonly range?: number;
+  /** Probe cascades 1–4 (default 1). */
+  readonly cascades?: number;
+  /** The finer cascades cover this distance from the camera (default 512). */
+  readonly distance?: number;
+  /** Steps of each ray in a volume (default 24). */
+  readonly steps?: number;
+}
+
+/** The emission light's outputs (`outputs.emissionProbes`). */
+export interface VDBFrameEmissionProbes {
+  /** rgba16float 3D stack: per cascade c and channel k (red, green, blue) the L1 probes at `layout.origins[3c + k]`. */
+  readonly texture: GPUTexture;
+  /** `VdbEmissionGrid` uniform (the receivers' `grid`). */
+  readonly grid: GPUBuffer;
+  /** The stack's sub-volume layout (side = the probe resolution). */
+  readonly layout: { readonly size: readonly [number, number, number]; readonly origins: readonly (readonly [number, number, number])[] };
+  /** The probe cascades, their centre and the emitters (the CPU copy of `grid`). */
+  readonly state: {
+    readonly count: number;
+    readonly resolution: number;
+    readonly min: readonly VDBFrameVec3[];
+    readonly size: readonly VDBFrameVec3[];
+    readonly center: VDBFrameVec3;
+    readonly emitters: number;
+  };
+  /** +1 when the probes were drawn again. */
+  readonly revision: number;
+  /** The last update: direction passes run and whether the probes were drawn. */
+  readonly lastUpdate: { readonly directions: number; readonly probes: boolean };
 }
 
 /**
@@ -128,6 +221,8 @@ export interface VDBFrameInput {
   readonly lights: readonly VDBFrameLight[];
   readonly environment?: VDBFrameEnvironment | null;
   readonly occluders?: readonly VDBFrameOccluder[];
+  /** K6.5: the scene has an emission light: draw the emission probes with these settings (null: none). */
+  readonly emissionLight?: VDBFrameEmissionLightSettings | null;
 }
 
 /** Texture wrapping of a volume's lookup (his `wrap3D`). */
@@ -167,6 +262,8 @@ export interface VDBFrameVolumeParams {
   phaseBackG: number | null;
   phaseBackWeight: number | null;
   phaseGExponent: number | null;
+  /** K6.5: the emission colour (default `'white'`). */
+  emissionColor: VDBEmissionColor;
 }
 
 /** His FrameVolume defaults. */
@@ -197,6 +294,7 @@ export function vdbFrameDefaultVolumeParams(): VDBFrameVolumeParams {
     phaseBackG: null,
     phaseBackWeight: null,
     phaseGExponent: null,
+    emissionColor: "white",
   };
 }
 
@@ -239,6 +337,10 @@ export interface VDBFrameOutputs {
   readonly froxels: { readonly integrated: GPUTexture; readonly integratedAlpha: GPUTexture | null; readonly layout: VDBFroxelLayout } | null;
   /** Frame uniforms (`VdbFrameUniforms`) for host shaders. */
   readonly uniforms: GPUBuffer;
+  /** K6.5: the volume shadow maps by light id (lights with a `shadow` request; `settings.castShadows`). */
+  readonly volumeShadows: ReadonlyMap<number | string, VDBVolumeShadowMap>;
+  /** K6.5: the emission probes (with `VDBFrameInput.emissionLight` and an emitting volume), else null. */
+  readonly emissionProbes: VDBFrameEmissionProbes | null;
 }
 
 /** The result of `update()`. */
@@ -255,6 +357,8 @@ export interface VDBFrameRedrawStats {
   shadowDensity: { drawn: number; skipped: number };
   transmittance: { drawn: number; skipped: number };
   environmentGrid: { drawn: number; skipped: number };
+  /** K6.5: volume shadow map pieces drawn and waiting for the budget in the last update (his `lastUpdate`). */
+  volumeShadows: { drawn: number; waiting: number };
 }
 
 /** Handle of one volume in the renderer. */

@@ -357,3 +357,23 @@ From v1; details in docs/archive/handoffs/.
   sun between samples (256 × 128: 5× less sun energy); the `./three` core fallback draws 1024 × 512 (≈ PMREM mip 0).
 - k3-frame `?backend=core` reads the environment lights from the core's buffer after one frame (no readback wait); the
   TSL path still waits for its readback, so core-vs-TSL env A/Bs compare settled frames.
+- Another worktree's Vite server may already listen on your `WEBVDB_E2E_PORT` (5307 was taken during K6.5): Playwright
+  reuses it and serves that worktree's sources (an "unknown ?probe=", or a `?backend=core` that silently runs TSL).
+  Check `lsof -iTCP:<port> -sTCP:LISTEN` first, pick an unusual port, and assert in the harness which backend drew
+  (`k3-frame-shadows` `result.backend`).
+- The frame chunk `lod` (`vdbFrameFroxelLod`) uses `VdbFrameFroxel` but does not list the `froxel` chunk as a
+  dependency: list `"froxel"` in the roots of any kernel that takes `"lod"` ("unresolved type 'VdbFrameFroxel'").
+- Core volume shadow maps in `./three` (`backend: 'core'`): run the core update before the first receiver draws (the
+  shadow node's `updateBefore` calls `frameRenderer.coreFrame`), not only in the proxy's `onBeforeRender`. three uploads a
+  receiver's uniforms (the drawn view) when it draws, but the core's map draws are submitted before three's frame, so an
+  update after the receivers gives that frame new maps read with old views (the K7.1 class).
+- three r187 negates x in every cube lookup on WebGPU (`CubeTextureNode.setupUV`), ExternalTexture stand-ins included: read
+  a core cube map (native WebGPU face order) with `vec3(-d.x, d.y, d.z)`.
+- Core-texture stand-ins pick three's view from flags: `isArrayTexture` → 2d-array (sample with `.depth(layer)`),
+  `isCubeTexture` + a `cubeTexture()` node → cube, `is3DTexture` → 3d (`vdbCoreTextureStandIn(gpu, kind)`).
+- Emission colour hooks validate asynchronously (`getCompilationInfo`); until a hook is valid its volumes draw white (an
+  invalid pipeline would invalidate the host's command buffer). `await renderer.prepare()` when the first frame must
+  have the hook's colour; an invalid hook throws `VDB_BAD_WGSL` at the next `update()`.
+- Core vs TSL A/Bs of a term on meshes (volume shadows, the emission light): compare on − off per backend outside the
+  volume's dilated coverage; inside it the term is seen through the froxel composite, whose silhouette differs by V80
+  (30/255 on the explosion's edge otherwise).

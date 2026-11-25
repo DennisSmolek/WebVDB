@@ -33,7 +33,7 @@ export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 
 /** Group-1 bindings of the transmittance kernel. */
 export const TRANSMITTANCE_BINDINGS = { grid: 0, transmittance: 1 } as const;
 /** Group-1 bindings of the 'frame' gather kernel. */
-export const FRAME_GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, transmittance: 4, environmentGrid: 5 } as const;
+export const FRAME_GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, transmittance: 4, environmentGrid: 5, emissionLut: 6 } as const;
 
 /** Values per froxel the 'frame' gather sums (4 × vec4f), packed as 8 `pack2x16float` words in the partials. */
 export const VDB_FRAME_SUM_WORDS = 8;
@@ -212,7 +212,7 @@ ${GRID_CELL}
 }
 
 /** The 'frame' gather kernel (after the source module, the source WGSL and `vdbFrameUniformsWgsl()`). */
-export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels }): string {
+export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null }): string {
   const b = FRAME_GATHER_BINDINGS;
   const store = o.multi
     ? `  let role = vdbFrameGroup.range.z;
@@ -258,7 +258,7 @@ export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVol
 ${o.multi ? `@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;\n` : ""}@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceStack: texture_3d<f32>;
 @group(1) @binding(${b.environmentGrid}) var vdbFrameEnvGrid: texture_3d<f32>;
 
-${vdbFrameSourceFunctionsWgsl(o.channels)}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
 ${VDB_FRAME_SLICE_WGSL}
 // His density targets as sums: (albedo·σ, σ), (emission·σ, visible t·σ), (sky up, sky down, slot 0, 1)·σ, (slots 2–5)·σ
 struct VdbFrameSums {

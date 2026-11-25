@@ -361,8 +361,14 @@ export {
   vdbFrameShadowCascadeIndex,
   vdbFrameShadowCascadeUv,
   vdbFrameShadowSpotUv,
+  vdbFrameShadowMapRay,
+  vdbFrameCubeFaceDirection,
+  vdbFrameCubeFaceUv,
+  vdbFrameShadowViewCamera,
+  vdbFrameShadowFitCascades,
+  vdbFrameVolumeShadowLookup,
 } from "./frame/shadows.js";
-export type { VDBFrameShadowRay } from "./frame/shadows.js";
+export type { VDBFrameShadowRay, VDBFrameShadowFitInputs, VDBFrameShadowCascadeCamera, VDBFrameVolumeShadowViewCpu } from "./frame/shadows.js";
 export {
   frameEmissionDirections as vdbFrameEmissionDirections,
   frameEmissionRays as vdbFrameEmissionRays,
@@ -379,6 +385,7 @@ export {
   vdbFrameEmissionProbeGrid,
   vdbFrameEmissionFalloff,
   vdbFrameEmissionLookup,
+  vdbFrameEmissionLookupWith,
 } from "./frame/emission.js";
 export type {
   VDBFrameEmitter,
@@ -390,6 +397,8 @@ export {
   vdbFrameBlackbodyRgb,
   vdbFrameBlackbodyTable,
   vdbFrameEmissionSpectrum,
+  vdbFrameEmissionLutRow,
+  vdbFrameEmissionLutColor,
   frameBlackbodyWavelengthStart as vdbFrameBlackbodyWavelengthStart,
   frameBlackbodyWavelengthStep as vdbFrameBlackbodyWavelengthStep,
   frameBlackbodyWavelengthCount as vdbFrameBlackbodyWavelengthCount,

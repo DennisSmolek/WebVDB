@@ -39,6 +39,14 @@ import {
   vdbFrameResolveSpec,
   vdbFrameGridDensitySpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameVolumeShadowSpec,
+  vdbFrameEmissionDirectionSpec,
+  vdbFrameEmissionReduceSpec,
+  vdbFrameEmissionProbeSpec,
+  vdbFrameRendererEmission,
+  vdbVolumeShadowProbeWgsl,
+  vdbEmissionIrradianceProbeWgsl,
+  vdbValidateEmissionHook,
   vdbFrameEnvPrefilterSpec,
   vdbFrameEnvBlurSpec,
   vdbFrameEnvReduceSpec,
@@ -93,6 +101,20 @@ import {
   vdbFrameStackSample,
   vdbFrameStackShadows,
   vdbFrameTransmittanceVoxel3d,
+  vdbFrameShadowMapTexel,
+  vdbFrameShadowMapRay,
+  vdbFrameCubeFaceDirection,
+  vdbFrameCubeFaceUv,
+  vdbFrameVolumeShadowLookup,
+  vdbMat4Vec4,
+  vdbFrameEmissionLutRow,
+  vdbFrameEmissionLutColor,
+  vdbFrameEmitterBounds,
+  vdbFrameEmissionDirectionTexel,
+  vdbFrameEmissionReduce,
+  vdbFrameEmissionProbe,
+  vdbFrameEmissionIrradiance,
+  vdbFrameEmissionLookupWith,
   vdbFrameEnvironmentGridVoxel3d,
   vdbFrameEnvironmentAreaTexel,
   vdbFrameEnvironmentCubeTexel,
@@ -165,6 +187,14 @@ interface Result {
   /** `?probe=frame`: live cascades, redraw counters after a second identical update. */
   frame?: { cascades: number; redraw: unknown };
   compile?: { variants: number; errors: string[] };
+  /** K6.5 `?probe=shadow`: the receivers vs their twin (`stats` is the map); redraw counts. */
+  receiverStats?: Stats;
+  shadow?: Record<string, unknown>;
+  /** K6.5 `?probe=emission`: the reduce, probes and receiver vs their twins (`stats` is the direction pass). */
+  reduceStats?: Stats;
+  probeStats?: Stats;
+  irradianceStats?: Stats;
+  emission?: Record<string, unknown>;
   warnings: string[];
   uncaptured: string[];
 }
@@ -1490,6 +1520,401 @@ async function probeEnvironment(device: GPUDevice): Promise<void> {
   src.texture.destroy();
 }
 
+// ------------------------------------------------------------------ K6.5: volume shadow maps, emission
+
+/** |gpu − cpu| ≤ rel · max(|cpu|, scale) per value (f32 outputs: the direction and emitter textures, receivers). */
+function compareScaled(stats: Stats, at: number[], gpu: readonly number[], cpu: readonly number[], rel: number, scale: number): void {
+  stats.compared++;
+  if (cpu.some((v) => v !== 0) || gpu.some((v) => v !== 0)) stats.covered++;
+  let bad = false;
+  for (let i = 0; i < cpu.length; i++) {
+    const d = Math.abs(gpu[i]! - cpu[i]!);
+    stats.maxAbs = Math.max(stats.maxAbs, d);
+    const r = d / Math.max(Math.abs(cpu[i]!), scale, 1e-30);
+    stats.maxUlp = Math.max(stats.maxUlp, r);
+    if (!(r <= rel)) bad = true;
+  }
+  if (bad) {
+    stats.over++;
+    stats.firstBad ??= { at, gpu: [...gpu], cpu: [...cpu] };
+  }
+}
+
+/** rgba32float texels as numbers. */
+const floats = (bytes: Uint8Array): Float64Array => Float64Array.from(new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4));
+
+/** A clamp-to-edge bilinear read of one layer of a read-back rgba texture (s, t in [0, 1], t down the rows). */
+function bilinearLayer(data: ArrayLike<number>, size: number, layer: number, s: number, t: number): [number, number, number, number] {
+  const x = s * size - 0.5;
+  const y = t * size - 0.5;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const fx = x - x0;
+  const fy = y - y0;
+  const at = (xi: number, yi: number, c: number) => data[((layer * size + Math.min(size - 1, Math.max(0, yi))) * size + Math.min(size - 1, Math.max(0, xi))) * 4 + c]!;
+  return [0, 1, 2, 3].map((c) => (at(x0, y0, c) * (1 - fx) + at(x0 + 1, y0, c) * fx) * (1 - fy) + (at(x0, y0 + 1, c) * (1 - fx) + at(x0 + 1, y0 + 1, c) * fx) * fy) as [number, number, number, number];
+}
+
+/** Runs a receiver probe kernel (`code`, entry `entry`) over `rows` (vec4f each) with its four group-0 bindings. */
+async function runRowProbe(device: GPUDevice, code: string, entry: string, uniform: GPUBuffer, view: GPUTextureView, rows: Float32Array<ArrayBuffer>, viewDimension: GPUTextureViewDimension): Promise<Float32Array> {
+  device.pushErrorScope("validation");
+  const layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: "filtering" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const pipeline = device.createComputePipeline({ layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), compute: { module: device.createShaderModule({ code }), entryPoint: entry } });
+  const buffer = device.createBuffer({ size: rows.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(buffer, 0, rows);
+  const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge", addressModeW: "clamp-to-edge" });
+  const group = device.createBindGroup({
+    layout,
+    entries: [
+      { binding: 0, resource: { buffer: uniform } },
+      { binding: 1, resource: view },
+      { binding: 2, resource: sampler },
+      { binding: 3, resource: { buffer } },
+    ],
+  });
+  const read = device.createBuffer({ size: rows.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, group);
+  pass.dispatchWorkgroups(Math.ceil(rows.length / 4 / 64));
+  pass.end();
+  enc.copyBufferToBuffer(buffer, 0, read, 0, rows.byteLength);
+  device.queue.submit([enc.finish()]);
+  const error = await device.popErrorScope();
+  if (error) throw new Error(`receiver probe: ${error.message}`);
+  await read.mapAsync(GPUMapMode.READ);
+  const out = new Float32Array(read.getMappedRange().slice(0));
+  read.unmap();
+  read.destroy();
+  buffer.destroy();
+  return out;
+}
+
+/**
+ * `?probe=shadow` (K6.5; `&light=dir|spot|point`, `&cascades=`, `&source=`): 'volume' lighting with castShadows over
+ * two volumes and a caster that is not drawn. (a) Every texel of the light's Beer map vs `vdbFrameShadowMapTexel` on
+ * the read-back shadow grid with the ray from the drawn view (`vdbFrameShadowMapRay` / the cube face table); (b) the
+ * receiver functions (`vdbVolumeShadow` / `vdbVolumeShadowCube` in a compute kernel) at points on a ground plane and in
+ * the volumes vs `vdbFrameVolumeShadowLookup` on the read-back map; (c) a second identical update draws nothing, a
+ * moved light draws one piece.
+ */
+async function probeShadow(device: GPUDevice): Promise<void> {
+  const light = (params.get("light") ?? "dir") as "dir" | "spot" | "point";
+  const cascades = Number(params.get("cascades") ?? (light === "dir" ? 2 : 1));
+  const kind = params.get("source") === "sparse" ? "sparse" : "dense";
+  const [GW, GH, GD] = [24, 16, 12];
+  const R = 16;
+  const SIZE = 32;
+  const STEPS = 24;
+  const scene = await probeScene(device, { kind, groups: 1, mips: true, extra: true });
+  const settings = {
+    lighting: "volume" as const,
+    width: GW,
+    height: GH,
+    depth: GD,
+    subSteps: 8,
+    temporal: false,
+    jitter: false,
+    multipleScattering: true,
+    srgbBlending: false,
+    shadowResolution: R,
+    shadowCascades: 1,
+    shadowDistance: 50,
+    castShadows: true,
+    castShadowCascades: cascades,
+    castShadowSteps: STEPS,
+    castShadowUpdatesPerFrame: 16,
+    castShadowDistance: 40,
+  };
+  const renderer = vdbCreateFrameRenderer(device, { settings });
+  renderer.addVolume(scene.slots[0]!, { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, mipmaps: true });
+  renderer.addVolume(scene.slots[1]!, { matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]), extinction: 3, mipmaps: true });
+  const c = renderer.addVolume(scene.slots[2]!, { matrixWorld: compose([0.6, 1.6, 0.4], 0.2, [1.4, 0.5, 1.2]), extinction: 5, mipmaps: true });
+  c.visible = false;
+  const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
+  const view = vdbMat4Invert(eyeWorld);
+  const projection = perspective(0.75, GW / GH, 0.1, 100);
+  const spotPos: VDBFrameVec3 = [-2.5, 3, 2];
+  const spotVP = vdbMat4Multiply(perspective(1.3, 1, 0.5, 12), vdbMat4Invert(lookAt(spotPos, [0.3, -0.2, -0.1])));
+  const id = light === "dir" ? "sun" : light === "spot" ? "spot" : "lamp";
+  const lightOf = (dx: number): VDBFrameLight =>
+    light === "dir"
+      ? { id, kind: "directional", direction: [-0.4 + dx, -0.8, -0.45], color: [1, 1, 1], shadow: { size: SIZE } }
+      : light === "spot"
+        ? { id, kind: "spot", position: spotPos, direction: [0.55, -0.65, -0.5], color: [1, 1, 1], distance: 0, decay: 2, cosAngle: Math.cos(0.65), cosPenumbra: Math.cos(0.4), shadow: { size: SIZE, view: { viewProjection: dx ? vdbMat4Multiply(perspective(1.3, 1, 0.5, 12), vdbMat4Invert(lookAt([spotPos[0] + dx, spotPos[1], spotPos[2]], [0.3, -0.2, -0.1]))) : spotVP, near: 0.5, far: 12 } } }
+        : { id, kind: "point", position: [0.4 + dx, 2.9, 0.6], color: [1, 1, 1], distance: 0, decay: 2, shadow: { size: SIZE, view: { near: 0.1, far: 10 } } };
+  const frame = (frameId: number, dx = 0) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights: [lightOf(dx)] });
+  let enc = device.createCommandEncoder();
+  renderer.update(enc, frame(0));
+  device.queue.submit([enc.finish()]);
+  const map = renderer.outputs.volumeShadows.get(id);
+  if (!map) throw new Error("no volume shadow map");
+  const grid = vdbFrameRendererGrid(renderer)!;
+  const gt = grid.textures;
+  const shadowStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.shadow, gt.shadowLayout.size, 8)), size: gt.shadowLayout.size, channels: 4 };
+  const mapData = halves(await readTexture(device, map.texture, [SIZE, SIZE, map.layers], 8));
+  const layout: VDBFrameGridLayout = {
+    count: grid.count,
+    resolution: R,
+    columns: vdbFrameAtlasLayout(R, R, R).columns,
+    atlasSize: [1, 1],
+    gridMin: grid.gridMin as VDBFrameVec3[],
+    gridSize: grid.gridSize as VDBFrameVec3[],
+    gridVoxel: grid.gridVoxel as VDBFrameVec3[],
+  };
+  const last = grid.count - 1;
+  const box = { min: layout.gridMin[last]!, max: layout.gridMin[last]!.map((v, k) => v + layout.gridSize[last]![k]!) as VDBFrameVec3 };
+  const extinction = (world: VDBFrameVec3) => vdbFrameStackSample(shadowStack, gt.shadowLayout.origins[last]!, R, vdbFrameGridUvw(layout, last, world))[0]!;
+  const drawn = { ...map.drawn, origin: map.drawn.origin.map((o) => [...o] as VDBFrameVec3), forward: [...map.drawn.forward] as VDBFrameVec3 };
+  const layers = light === "dir" ? drawn.cascadeCount : light === "spot" ? 1 : 6;
+  const steps = MUTATE === "map-steps" ? STEPS + 1 : STEPS;
+  const stats = newStats(`2 f16 ulp (rgba16float Beer map vs vdbFrameShadowMapTexel on the read-back grid; ${light}, ${kind})`);
+  let shadowed = 0;
+  for (let layer = 0; layer < layers; layer++)
+    for (let y = 0; y < SIZE; y++)
+      for (let x = 0; x < SIZE; x++) {
+        const s = (x + 0.5) / SIZE;
+        const t = (y + 0.5) / SIZE;
+        let origin: VDBFrameVec3;
+        let direction: VDBFrameVec3;
+        let ray: { origin: VDBFrameVec3; forward: VDBFrameVec3; perspective: number; far: number };
+        if (light === "point") {
+          const d = vdbFrameCubeFaceDirection(layer, s * 2 - 1, t * 2 - 1);
+          const l = Math.hypot(...d);
+          origin = drawn.origin[0]!;
+          direction = [d[0] / l, d[1] / l, d[2] / l];
+          ray = { origin, forward: drawn.forward, perspective: 1, far: drawn.far[0]! };
+        } else {
+          const r = vdbFrameShadowMapRay(vdbMat4Invert(drawn.viewProjection[layer]!), drawn.origin[layer]!, drawn.perspective, [s * 2 - 1, 1 - t * 2]);
+          origin = r.origin;
+          direction = r.direction;
+          ray = { origin: drawn.origin[layer]!, forward: drawn.forward, perspective: drawn.perspective ? 1 : 0, far: drawn.far[layer]! };
+        }
+        if (MUTATE === "map-far") ray = { ...ray, far: ray.far * 1.01 };
+        const cpu = vdbFrameShadowMapTexel(extinction, origin, direction, box, steps, ray).map;
+        const i = ((layer * SIZE + y) * SIZE + x) * 4;
+        const gpu = [mapData[i]!, mapData[i + 1]!, mapData[i + 2]!, mapData[i + 3]!];
+        if (cpu[3] > 1e-3) shadowed++;
+        compare(stats, [layer, x, y], gpu, cpu, 2, 2 ** -20);
+      }
+  result.stats = stats;
+
+  // (b) the receivers through the drawn view, at points on a ground plane below the volumes and inside them
+  const rand = rng(11);
+  const rows: number[] = [];
+  const points: { world: VDBFrameVec3; depth: number }[] = [];
+  const viewCpu = {
+    kind: light === "dir" ? 0 : light === "spot" ? 1 : 2,
+    viewProjection: drawn.viewProjection,
+    origin: drawn.origin as VDBFrameVec3[],
+    far: drawn.far,
+    forward: drawn.forward as VDBFrameVec3,
+    perspective: drawn.perspective,
+    breaks: drawn.breaks,
+    cascadeCount: drawn.cascadeCount,
+    size: SIZE,
+    enabled: map.enabled,
+  };
+  while (points.length < 1024) {
+    const world: VDBFrameVec3 = points.length % 2 ? [rand() * 5 - 2.5, -1.4, rand() * 5 - 2.5] : [rand() * 3 - 1.5, rand() * 2 - 1, rand() * 3 - 1.5];
+    if (light === "point") {
+      const f = vdbFrameCubeFaceUv([world[0] - drawn.origin[0]![0], world[1] - drawn.origin[0]![1], world[2] - drawn.origin[0]![2]]);
+      const m = 1.5 / SIZE;
+      if (f.s < m || f.s > 1 - m || f.t < m || f.t > 1 - m) continue;
+    }
+    const v = vdbMat4Vec4(view, [...world, 1]);
+    points.push({ world, depth: -v[2]! });
+    rows.push(...world, -v[2]!);
+  }
+  const gpuRows = await runRowProbe(
+    device,
+    vdbVolumeShadowProbeWgsl(light === "point"),
+    "vdbVolumeShadowProbeCs",
+    map.view,
+    map.texture.createView({ dimension: light === "point" ? "cube" : "2d-array" }),
+    new Float32Array(rows),
+    light === "point" ? "cube" : "2d-array",
+  );
+  const rstats = newStats("|d| ≤ 1e-3 (receiver transmittance vs vdbFrameVolumeShadowLookup on the read-back map; SwiftShader filters f16 texels in f32)");
+  let receiverShadowed = 0;
+  const viewForCpu = MUTATE === "receiver-far" ? { ...viewCpu, far: viewCpu.far.map((f) => f * 1.01) } : viewCpu;
+  points.forEach((p, i) => {
+    const depth = MUTATE === "receiver-layer" ? p.depth * 3 : p.depth;
+    const cpu = vdbFrameVolumeShadowLookup(viewForCpu, p.world, depth, (layer, s, t) => bilinearLayer(mapData, SIZE, layer, s, t));
+    if (cpu < 0.999) receiverShadowed++;
+    compareScaled(rstats, [i], [gpuRows[i * 4]!], [cpu], 1e-3, 1);
+  });
+  result.receiverStats = rstats;
+
+  // (c) the redraw: nothing changed → no piece; the light moved → one piece (the drawn view moves with it)
+  enc = device.createCommandEncoder();
+  renderer.update(enc, frame(1));
+  device.queue.submit([enc.finish()]);
+  const same = { ...renderer.redrawStats.volumeShadows };
+  enc = device.createCommandEncoder();
+  renderer.update(enc, frame(2, 0.05));
+  device.queue.submit([enc.finish()]);
+  const moved = { ...renderer.redrawStats.volumeShadows };
+  result.shadow = { light, layers, shadowed, receiverShadowed, same, moved, cascades: drawn.cascadeCount, enabled: map.enabled };
+  renderer.dispose();
+  scene.dispose();
+}
+
+/**
+ * `?probe=emission` (K6.5; `&source=`, `&cascades=`, `&hook=1`): the emission light's kernels on volume B (emission
+ * channel; 'planck' colour, or a user WGSL hook) and their twins: (a) the 16 direction texels vs
+ * `vdbFrameEmissionDirectionTexel` with the CPU samplers and the LUT colour; (b) the reduce vs `vdbFrameEmissionReduce`
+ * on the read-back directions; (c) every probe vs `vdbFrameEmissionProbe` on the read-back emitter; (d) the receiver
+ * `vdbEmissionIrradiance` vs `vdbFrameEmissionLookupWith` + `vdbFrameEmissionIrradiance` on the read-back stack; (e) a
+ * second identical update draws nothing. `&hook=1` also checks that bad hooks throw VDB_BAD_WGSL naming the line.
+ */
+async function probeEmission(device: GPUDevice): Promise<void> {
+  const kind = params.get("source") === "sparse" ? "sparse" : "dense";
+  const cascades = Number(params.get("cascades") ?? 1);
+  const hooked = params.get("hook") === "1";
+  const [GW, GH, GD] = [24, 16, 12];
+  const RES = 8;
+  const STEPS = 12;
+  const scene = await probeScene(device, { kind, groups: 2, mips: true });
+  const settings = { lighting: "volume" as const, width: GW, height: GH, depth: GD, subSteps: 8, temporal: false, jitter: false, multipleScattering: true, srgbBlending: false };
+  const renderer = vdbCreateFrameRenderer(device, { settings });
+  const HOOK = "// a user colour\nfn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(t, 1.0 - 0.5 * t, temperature / 3000.0);\n}\n";
+  const exponent = 1.39;
+  const color = hooked ? { wgsl: HOOK } : ({ spectrum: "soot", exponent } as const);
+  const pB: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]), extinction: 3, absorbance: 0.8, mipmaps: true, emissiveIntensity: 2, temperatureRange: [500, 3000], emissionColor: color };
+  renderer.addVolume(scene.slots[0]!, { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, mipmaps: true });
+  const b = renderer.addVolume(scene.slots[1]!, pB);
+  const hookErrors: string[] = [];
+  if (hooked) {
+    await renderer.prepare();
+    for (const bad of [
+      "fn emissionColour(t: f32, temperature: f32) -> vec3f { return vec3f(t); }",
+      "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  let k = t;\n  return k;\n}\n",
+      "fn vdbUserEmissionColor(t: f32) -> vec3f {\n  return vec3f(t);\n}\n",
+    ]) {
+      try {
+        await vdbValidateEmissionHook(device, bad);
+        hookErrors.push("no error");
+      } catch (e) {
+        hookErrors.push(`${(e as { code?: string }).code}: ${(e as Error).message}`);
+      }
+    }
+  }
+  const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
+  const view = vdbMat4Invert(eyeWorld);
+  const projection = perspective(0.75, GW / GH, 0.1, 100);
+  const emissionLight = { resolution: RES, cascades, steps: STEPS, range: 3, distance: 3 };
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights: PROBE_LIGHTS, emissionLight });
+  let enc = device.createCommandEncoder();
+  renderer.update(enc, frame(0));
+  device.queue.submit([enc.finish()]);
+  const probes = renderer.outputs.emissionProbes;
+  if (!probes || probes.state.emitters !== 1) throw new Error(`emission probes: ${JSON.stringify(probes?.state)}`);
+  const E = vdbFrameRendererEmission(renderer);
+  const directions = floats(await readTexture(device, E.directions!, [32, E.slots, 1], 16));
+  const emitterTex = floats(await readTexture(device, E.emitters!, [2, E.slots, 1], 16));
+  const stack: VDBFrameTexture3d = { data: halves(await readTexture(device, probes.texture, probes.layout.size, 8)), size: probes.layout.size as [number, number, number], channels: 4 };
+
+  // (a) the direction pass
+  const r = twinRecord(b, scene.samplers[1]!, { localToView: vdbMat4Multiply(view, b.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, b.params.matrixWorld)), worldToLocal: vdbMat4Invert(b.params.matrixWorld) }, [0, 0, 0, 0], { first: 0, count: 0 }, 0.8);
+  const row = vdbFrameEmissionLutRow(exponent);
+  const colorOf = MUTATE === "emission-color" ? null : hooked ? (t: number, temperature: number): VDBFrameVec3 => [t, 1 - 0.5 * t, temperature / 3000] : (_t: number, temperature: number) => vdbFrameEmissionLutColor(row, temperature);
+  const bounds = vdbFrameEmitterBounds(b.params.matrixWorld);
+  const maxTexels = Math.max(...r.volume.texels);
+  const emitter = {
+    sampleExtinction: (local: VDBFrameVec3, lod: number) => extinctionAt(r, local, lod),
+    sampleEmission: (local: VDBFrameVec3, lod: number) => emissionAt(r, local, lod, colorOf),
+    getLod: (size: number) => (r.mipmaps ? Math.max(0, Math.log2(size * maxTexels)) : 0),
+    worldToLocal: r.worldToLocal,
+    center: bounds.center,
+    radius: bounds.radius,
+    worldScale: r.worldScale,
+    absorbance: r.absorbance,
+    steps: MUTATE === "emission-direction" ? STEPS + 1 : STEPS,
+  };
+  const cpuTexels = Array.from({ length: 16 }, (_, i) => vdbFrameEmissionDirectionTexel(emitter, i));
+  const scale = Math.max(...cpuTexels.flatMap((t) => [...t.intensity.slice(0, 3), ...t.center.slice(0, 3).map(Math.abs), t.center[3]]));
+  const dstats = newStats("rel 1e-3 of the texel set's largest value (rgba32float direction texels vs vdbFrameEmissionDirectionTexel; SwiftShader's ~12-bit division moves the box segments by ~2.4e-4)");
+  const gpuTexels = Array.from({ length: 16 }, (_, i) => ({ intensity: [0, 1, 2, 3].map((k) => directions[i * 4 + k]!) as VDBFrameVec4, center: [0, 1, 2, 3].map((k) => directions[(16 + i) * 4 + k]!) as VDBFrameVec4 }));
+  cpuTexels.forEach((t, i) => {
+    compareScaled(dstats, [i, 0], gpuTexels[i]!.intensity, t.intensity, 1e-3, scale);
+    compareScaled(dstats, [i, 1], gpuTexels[i]!.center, t.center, 1e-3, scale);
+  });
+  result.stats = dstats;
+
+  // (b) the reduce on the read-back directions
+  const reduced = vdbFrameEmissionReduce(gpuTexels);
+  if (MUTATE === "emission-reduce") reduced.intensity[0] *= 1.001;
+  const restats = newStats("rel 1e-5 (rgba32float emitter vs vdbFrameEmissionReduce on the read-back directions)");
+  compareScaled(restats, [0], [0, 1, 2, 3].map((k) => emitterTex[k]!), reduced.intensity, 1e-5, 1e-12);
+  compareScaled(restats, [1], [0, 1, 2, 3].map((k) => emitterTex[4 + k]!), reduced.center, 1e-5, 1);
+  result.reduceStats = restats;
+
+  // (c) every probe from the read-back emitter
+  const light = { intensity: [0, 1, 2, 3].map((k) => emitterTex[k]!) as VDBFrameVec4, center: [0, 1, 2, 3].map((k) => emitterTex[4 + k]!) as VDBFrameVec4 };
+  if (MUTATE === "emission-probe") light.intensity[3] *= 1.2;
+  const state = probes.state;
+  const pstats = newStats("2 f16 ulp (rgba16float probe stack vs vdbFrameEmissionProbe on the read-back emitter)");
+  const at = (t: VDBFrameTexture3d, p: readonly number[]) => {
+    const i = (p[0]! + (p[1]! + p[2]! * t.size[1]) * t.size[0]) * 4;
+    return [t.data[i]!, t.data[i + 1]!, t.data[i + 2]!, t.data[i + 3]!];
+  };
+  for (let cc = 0; cc < state.count; cc++)
+    for (let z = 0; z < RES; z++)
+      for (let y = 0; y < RES; y++)
+        for (let x = 0; x < RES; x++) {
+          const world = [0, 1, 2].map((k) => state.min[cc]![k]! + (([x, y, z][k]! + 0.5) / RES) * state.size[cc]![k]!) as VDBFrameVec3;
+          const cpu = vdbFrameEmissionProbe(world, [light]);
+          for (let k = 0; k < 3; k++) {
+            const o = probes.layout.origins[3 * cc + k]!;
+            compare(pstats, [cc, k, x, y, z], at(stack, [o[0] + x, o[1] + y, o[2] + z]), cpu[k]!, 2, 2 ** -20);
+          }
+        }
+  result.probeStats = pstats;
+
+  // (d) the receiver on the read-back stack, at points around the volumes and past the grid
+  const gridLayout: VDBFrameGridLayout = { count: state.count, resolution: state.resolution, columns: 1, atlasSize: [1, 1], gridMin: state.min as VDBFrameVec3[], gridSize: state.size as VDBFrameVec3[], gridVoxel: state.size.map((s) => s.map((v) => v / state.resolution) as VDBFrameVec3) };
+  const rand = rng(5);
+  const rows: number[] = [];
+  const pts: { world: VDBFrameVec3; normal: VDBFrameVec3 }[] = [];
+  for (let i = 0; i < 512; i++) {
+    const spread = i % 4 === 0 ? 30 : 6;
+    const world: VDBFrameVec3 = [(rand() - 0.5) * spread, (rand() - 0.5) * spread, (rand() - 0.5) * spread];
+    const n0: VDBFrameVec3 = [rand() - 0.5, rand() - 0.5, rand() - 0.5];
+    const l = Math.hypot(...n0);
+    const normal: VDBFrameVec3 = [n0[0] / l, n0[1] / l, n0[2] / l];
+    pts.push({ world, normal });
+    rows.push(...world, 0, ...normal, 0);
+  }
+  const gpuRows = await runRowProbe(device, vdbEmissionIrradianceProbeWgsl(), "vdbEmissionIrradianceProbeCs", probes.grid, probes.texture.createView({ dimension: "3d" }), new Float32Array(rows), "3d");
+  const cpuE = pts.map((p) => {
+    const look = vdbFrameEmissionLookupWith((cc, k, uvw) => vdbFrameStackSample(stack, probes.layout.origins[3 * cc + k]!, state.resolution, uvw), gridLayout, state.center as VDBFrameVec3, p.world);
+    return vdbFrameEmissionIrradiance(look.probe, p.normal, MUTATE === "emission-irradiance" ? look.falloff * look.falloff : look.falloff);
+  });
+  const escale = Math.max(...cpuE.flat());
+  const istats = newStats("rel 1e-4 of the largest irradiance (vdbEmissionIrradiance vs vdbFrameEmissionLookupWith on the read-back stack)");
+  cpuE.forEach((e, i) => compareScaled(istats, [i], [gpuRows[i * 8]!, gpuRows[i * 8 + 1]!, gpuRows[i * 8 + 2]!], e, 1e-4, escale * 1e-2));
+  result.irradianceStats = istats;
+
+  // (e) nothing changed: no direction pass, no probes
+  enc = device.createCommandEncoder();
+  renderer.update(enc, frame(1));
+  device.queue.submit([enc.finish()]);
+  result.emission = { state: JSON.parse(JSON.stringify(state)), first: probes.lastUpdate, second: { ...renderer.outputs.emissionProbes!.lastUpdate }, hookErrors, outside: pts.filter((p) => p.world.some((v) => Math.abs(v) > 12)).length };
+  renderer.dispose();
+  scene.dispose();
+}
+
+const COMPILE_HOOK = "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(t, 0.5, temperature * 1e-4);\n}\n";
+
 async function probeCompile(device: GPUDevice): Promise<void> {
   const vol = synthDense([8, 8, 8], 3, { albedo: true, mask: true, emission: true, mips: true });
   const plain = synthDense([8, 8, 8], 4, { mips: false });
@@ -1513,6 +1938,16 @@ async function probeCompile(device: GPUDevice): Promise<void> {
     vdbFrameEnvBlurSpec(),
     vdbFrameEnvReduceSpec(),
     vdbFrameEnvironmentGridSpec(),
+    // K6.5: the shadow map kernel, the emission kernels (dense and sparse sources with emission, with a user hook)
+    vdbFrameVolumeShadowSpec(),
+    vdbFrameEmissionReduceSpec(),
+    vdbFrameEmissionProbeSpec(),
+    ...[vdbDenseSource(device, vol), sparse].flatMap((s) => [
+      vdbFrameEmissionDirectionSpec(s, {}),
+      vdbFrameEmissionDirectionSpec(s, { hook: COMPILE_HOOK }),
+      vdbFrameGatherSpec(s, { mix: "mixture", multi: true, hook: COMPILE_HOOK }),
+      vdbFrameGatherSpec(s, { mix: "mixture", multi: true, lighting: "frame", hook: COMPILE_HOOK }),
+    ]),
   ];
   const errors: string[] = [];
   for (const spec of specs) {
@@ -1575,6 +2010,8 @@ async function main(): Promise<void> {
   else if (PROBE === "compile") await probeCompile(device);
   else if (PROBE === "frame") await probeFrame(device);
   else if (PROBE === "environment") await probeEnvironment(device);
+  else if (PROBE === "shadow") await probeShadow(device);
+  else if (PROBE === "emission") await probeEmission(device);
   else throw new Error(`unknown ?probe=${PROBE}`);
   await device.queue.onSubmittedWorkDone();
   const s = result.stats;

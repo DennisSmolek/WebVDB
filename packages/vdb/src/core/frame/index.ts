@@ -3,7 +3,39 @@
  * export through `core/internal.ts` only; the public surface lands in K6.8 (design §2.1).
  */
 
-export { vdbCreateFrameRenderer, vdbFrameRendererEnvironment, vdbFrameRendererGrid, vdbFrameRendererTextures } from "./renderer.js";
+export { vdbCreateFrameRenderer, vdbFrameRendererEmission, vdbFrameRendererEnvironment, vdbFrameRendererGrid, vdbFrameRendererTextures } from "./renderer.js";
+// K6.5: volume shadow maps, emission colour data + hooks, the emission probes and their host WGSL
+export { VDBFrameShadowMaps } from "./shadows.js";
+export type { VDBFrameShadowInputs } from "./shadows.js";
+export { VDBFrameEmissionColors, VDBFrameEmissionProbeSet, vdbEmissionHookProblems, vdbValidateEmissionHook } from "./emission.js";
+export type { VDBEmissionColorCode, VDBFrameEmissionPlan, VDBFrameEmitterInput } from "./emission.js";
+export {
+  VDB_FRAME_SHADOW_PIECE,
+  VDB_FRAME_SHADOW_PIECE_STRIDE,
+  VDB_VOLUME_SHADOW_MAX_CASCADES,
+  VDB_VOLUME_SHADOW_VIEW,
+  VOLUME_SHADOW_BINDINGS,
+  vdbFrameVolumeShadowWgsl,
+  vdbVolumeShadowProbeWgsl,
+  vdbVolumeShadowWgsl,
+} from "./wgsl/shadows.js";
+export {
+  EMISSION_DIRECTION_BINDINGS,
+  EMISSION_PROBE_BINDINGS,
+  EMISSION_REDUCE_BINDINGS,
+  VDB_EMISSION_GRID,
+  VDB_FRAME_EMISSION_DIRECTIONS,
+  VDB_FRAME_EMISSION_LUT_KELVIN,
+  VDB_FRAME_EMISSION_LUT_SIZE,
+  VDB_FRAME_EMISSION_MAX_CASCADES,
+  VDB_FRAME_EMISSION_RAYS,
+  VDB_FRAME_EMITTERS,
+  VDB_FRAME_EMITTERS_STRIDE,
+  VDB_FRAME_MAX_EMITTERS,
+  vdbEmissionIrradianceProbeWgsl,
+  vdbEmissionProbeWgsl,
+  vdbFrameEmissionColorWgsl,
+} from "./wgsl/emission.js";
 export { VDBFrameEnvironmentState, vdbFrameEnvironmentProjection } from "./environment.js";
 export type { VDBFrameEnvironmentInfo } from "./environment.js";
 export {
@@ -38,6 +70,11 @@ export type {
   VDBFrameWrap,
   VDBFroxelLayout,
   VDBVolumeShadowRequest,
+  VDBVolumeShadowMap,
+  VDBVolumeShadowDrawn,
+  VDBEmissionColor,
+  VDBFrameEmissionLightSettings,
+  VDBFrameEmissionProbes,
 } from "./types.js";
 export {
   VDB_FRAME_COMPOSITE_COLOR_FN_WGSL,
@@ -73,6 +110,10 @@ export {
   vdbFrameResolveKernelWgsl,
   vdbFrameResolveSpec,
   vdbFrameTransmittanceSpec,
+  vdbFrameVolumeShadowSpec,
+  vdbFrameEmissionDirectionSpec,
+  vdbFrameEmissionReduceSpec,
+  vdbFrameEmissionProbeSpec,
 } from "./kernels.js";
 export type { VDBFrameCompositeKey, VDBFrameGatherKey, VDBFrameGridDensityKey } from "./kernels.js";
 export { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";

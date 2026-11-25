@@ -28,6 +28,8 @@ interface Result {
   warnings: string[];
   uncaptured: string[];
   stale?: Stale;
+  /** K6.5: the backend that drew (the core renderer and its maps). */
+  backend?: { requested: string; core: boolean; maps: number };
 }
 
 async function run(page: Page, query: string): Promise<Result> {
@@ -36,16 +38,20 @@ async function run(page: Page, query: string): Promise<Result> {
   return (await page.evaluate(() => (window as { __VDB_K3_SHADOWS__?: unknown }).__VDB_K3_SHADOWS__)) as Result;
 }
 
+// K6.5: the same repro through the core renderer's volume shadow maps (backend 'core'): the drawn view is the core's.
+for (const backend of ["tsl", "core"] as const)
 for (const light of ["spot", "point"] as const) {
-  test(`K7.1 ${light} light: a map that waits for the budget keeps its shadow in place`, async ({ page }) => {
+  test(`K7.1 ${light} light${backend === "core" ? " (core maps, K6.5)" : ""}: a map that waits for the budget keeps its shadow in place`, async ({ page }) => {
     test.setTimeout(600_000);
-    const r = await run(page, `?case=stale&light=${light}`);
+    const r = await run(page, `?case=stale&light=${light}&backend=${backend}`);
     const detail = JSON.stringify({ ...r, rgba: undefined, rgbaOff: undefined }, null, 2);
     expect(r.error, detail).toBeUndefined();
     expect(r.uncaptured, detail).toEqual([]);
     expect(r.warnings, detail).toEqual([]);
     const s = r.stale!;
-    console.log(`[k7-stale ${light}] ${r.adapter}: ${JSON.stringify(s)}`);
+    // the backend that drew: the core's two maps (main light and decoy), or the TSL path
+    expect(r.backend, detail).toMatchObject(backend === "core" ? { requested: "core", core: true, maps: 2 } : { requested: "tsl", core: false });
+    console.log(`[k7-stale ${light} ${backend}] ${r.adapter}: ${JSON.stringify(s)}`);
     // The setup: the main light's map is the newer one, so the decoy goes first and the main map waits one render
     expect(s.order.main, detail).toBeGreaterThan(s.order.decoy);
     expect(s.staleUpdate, detail).toEqual({ drawn: 1, waiting: 1 });

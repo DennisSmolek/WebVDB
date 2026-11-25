@@ -57,6 +57,16 @@ export type TwinMutation =
   | "slots"
   | "sky"
   | "partials"
+  // K6.5 volume shadow maps and receivers; emission kernels and colour
+  | "map-steps"
+  | "map-far"
+  | "receiver-far"
+  | "receiver-layer"
+  | "emission-direction"
+  | "emission-color"
+  | "emission-reduce"
+  | "emission-probe"
+  | "emission-irradiance"
   // K6.2b environment
   | "env-area"
   | "env-blur"
@@ -204,7 +214,7 @@ export function albedoAt(r: TwinVolume, local: V3, lod: number): V3 {
 }
 
 /** sampleEmission (white). */
-export function emissionAt(r: TwinVolume, local: V3, lod: number): V3 {
+export function emissionAt(r: TwinVolume, local: V3, lod: number, color: ((t: number, temperature: number) => V3) | null = null): V3 {
   const vol = r.volume;
   // the source's compiled channel (a sparse source compiles the union of its volumes' channels)
   if (!vol.hasEmission) return [0, 0, 0];
@@ -212,8 +222,9 @@ export function emissionAt(r: TwinVolume, local: V3, lod: number): V3 {
   const [t0, t1] = r.temperatureRange;
   const temperature = t0 + (t1 - t0) * value;
   const power = Math.pow(temperature / Math.max(t1, 1), 4);
-  const c = temperature > 0 ? 1 : 0;
-  return [c * power * r.emissiveIntensity, c * power * r.emissiveIntensity, c * power * r.emissiveIntensity];
+  // K6.5: the volume's emission colour (white without one)
+  const c: V3 = temperature > 0 ? (color ? color(value, temperature) : [1, 1, 1]) : [0, 0, 0];
+  return [c[0] * power * r.emissiveIntensity, c[1] * power * r.emissiveIntensity, c[2] * power * r.emissiveIntensity];
 }
 
 function march(r: TwinVolume, origin: V3, localDirection: V3, maxDistance: number, lod: number, maxTexels: number, albedo: V3, noise: number, mutate: TwinMutation): V4 {
