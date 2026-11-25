@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebVDB · K6.R reference renderer harness</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 84rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+      #demo-root p { margin: 0.35rem 0; white-space: pre-wrap; }
+      p.ok { color: #16a34a; font-weight: 600; }
+      p.warn { color: #b45309; }
+      p.fail { color: #dc2626; font-weight: 600; }
+      canvas { image-rendering: pixelated; width: 384px; border: 1px solid #8884; }
+    </style>
+  </head>
+  <body>
+    <div id="demo-root" data-testid="demo-root">Booting…</div>
+    <script type="module" src="./k6-reference.ts"></script>
+  </body>
+</html>

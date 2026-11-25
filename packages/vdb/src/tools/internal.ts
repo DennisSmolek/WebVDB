@@ -384,3 +384,5 @@ export {
   vdbFrameSliceCoord,
 } from "./frame/froxel.js";
 export type { VDBFrameVolumeFroxel, VDBFrameFroxelMix, VDBFrameIntegrated } from "./frame/froxel.js";
+// K6.R: the reference renderer's scene, random stream, CPU twin and analytic cases (internal only).
+export * from "./reference/index.js";

@@ -72,3 +72,5 @@ export {
 } from "./source/sparse-wgsl.js";
 // K6.1: the core frame renderer (public in K6.8).
 export * from "./frame/index.js";
+// K6.R: the reference renderer (brute-force path tracer over a volume source; internal only).
+export * from "./reference/index.js";
