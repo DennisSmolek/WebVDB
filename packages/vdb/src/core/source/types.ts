@@ -47,25 +47,6 @@ export interface VDBVolumeSourceWgslOptions {
 }
 
 /**
- * One volume of a source (K6 design §2.1, the group-2 source contract frozen in K6.1).
- *
- * Every `vdbSrc*` function takes `v: u32` first: the source-local slot of the volume. The core
- * frame renderer copies `v` from the slot into the volume's uniform record and passes it to every
- * `vdbSrc*` call for that volume. Volumes whose slots share one `source` object form one **source
- * group**: one bind group (group 2, `source.layoutEntries({ group: 2, firstBinding: 0 })` /
- * `source.bindEntries(...)`, rebuilt when `source.version` moves) and one dispatch per update.
- *
- * A dense source is its own slot (`source` is itself, `v` = 0). A sparse source (K6.7) serves every
- * volume of one pool and returns a slot per volume from `source.volume({ density, mask?, albedo?, emission? })`.
- */
-export interface VDBVolumeSlot {
-  /** The source whose `wgsl`, `layoutEntries` and `bindEntries` serve this volume (group 2). */
-  readonly source: VDBVolumeSource;
-  /** The source-local slot of the volume, passed as `v: u32` to every `vdbSrc*` function. */
-  readonly v: number;
-}
-
-/**
  * A volume source for raw WebGPU kernels. Generated WGSL (all names `vdbSrc*`):
  *
  *   fn vdbSrcDensity (v: u32, uvw: vec3f, lod: f32) -> f32;   // dense: [0, 1]
@@ -97,4 +78,19 @@ export interface VDBVolumeSource extends VDBVolumeSourceInfo {
   bindEntries(slot: VDBSlot): GPUBindGroupEntry[];
   /** Frees what the source allocated. */
   dispose(): void;
+}
+
+/**
+ * One volume of a source (K6 group-2 contract, design K6-core-renderer.md §2.1): what `renderer.addVolume` takes.
+ * `source` is the object whose `wgsl` / `layoutEntries` / `bindEntries` serve it (volumes that share one source
+ * object form one source group: one bind group, one dispatch); `v` is the volume's source-local slot, which the
+ * renderer copies into the volume's uniform record and passes as the `v` argument of every `vdbSrc*` call. The
+ * {@link VDBVolumeSourceInfo} fields describe this volume (a sparse source serves many volumes, each with its own
+ * texels, LOD range, stats and box). A dense source is its own slot (`v` = 0).
+ */
+export interface VDBVolumeSlot extends VDBVolumeSourceInfo {
+  /** The source whose bindings and WGSL serve this volume. */
+  readonly source: VDBVolumeSource;
+  /** The source-local slot: the `v` of every `vdbSrc*` call for this volume. */
+  readonly v: number;
 }

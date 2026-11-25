@@ -30,7 +30,45 @@ export {
 export type { VDBGridRecord, VDBPoolHeader } from "./pool/layout.js";
 export { VDB_MODULE_BANNER } from "./wgsl/generate.js";
 export { boxPyramidWgsl } from "./compute/index.js";
-// K6.1: the group-2 source contract (design §2.1); public in K6.8.
+export {
+  VDB_FRAME_MULTI_SCALE_PARAMS_BYTES,
+  VDB_FRAME_MULTI_SCALE_SAMPLER,
+  multiScaleMipsWgsl,
+  vdbCreateMultiScaleMips,
+  vdbFrameMultiScaleParams,
+  vdbFrameMultiScaleWgsl,
+} from "./compute/multi-scale.js";
+export type {
+  VDBFrameMultiScaleParams,
+  VDBFrameMultiScaleWgslOptions,
+  VDBMultiScaleFormat,
+  VDBMultiScaleMips,
+  VDBMultiScaleMipsOptions,
+  VDBMultiScaleRecordOptions,
+  VDBMultiScaleResizeOptions,
+} from "./compute/multi-scale.js";
+// K6.7: the core sparse source (public in K6.8).
+export { vdbSparseSourceGpu } from "./source/sparse.js";
+export type {
+  VDBSparseIndexBox,
+  VDBSparseLodGpu,
+  VDBSparseSourceGpu,
+  VDBSparseSourceGpuOptions,
+  VDBSparseSourceUpdate,
+  VDBSparseVolumeGpu,
+  VDBSparseVolumeGpuOptions,
+  VDBSparseVolumeGrids,
+} from "./source/sparse.js";
 export type { VDBVolumeSlot } from "./source/types.js";
+export {
+  VDB_SPARSE_RECORD_BYTES,
+  VDB_SPARSE_RECORD_FIELDS,
+  SPARSE_FLAG,
+  packSparseRecord,
+  sparseBindings,
+  sparseRecordOffset,
+  sparseRecordStructWgsl,
+  sparseSourceWgsl,
+} from "./source/sparse-wgsl.js";
 // K6.1: the core frame renderer (public in K6.8).
 export * from "./frame/index.js";

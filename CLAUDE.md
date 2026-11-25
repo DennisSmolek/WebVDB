@@ -263,8 +263,23 @@ From v1; details in docs/archive/handoffs/.
   C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).
 - NanoVDB v14 stores root tiles in another order than the a532de55 bake: `treeNodes` order differs between a native
   v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
+- The fake device's `queue.writeBuffer` (`test/core/fake-gpu.ts`) reads `data.buffer`: pass an `ArrayBufferView`
+  (`new Uint8Array(bytes)`), never a bare `ArrayBuffer`, or it writes zeros silently (real WebGPU accepts both).
+- The core sparse source (K6.7, `vdbSparseSourceGpu`) serves every volume of a pool through one uniform table indexed
+  by `v`: call `source.update(encoder)` after `pool.update(encoder)` in the same encoder, then (re)build bind group 2
+  when `source.version` moved. Its `wgsl()` has no VDB module (compose `source.module`'s helpers into the shader's one
+  module), and per-volume info (`texels`, `stats`, `lodLevels`, `bbox`) is on the slot, not the source.
 - `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
   and other explicit-type modules are byte-identical).
 - A volume-shadow test that moves a light must make the map wait, or it can't see a lookup that follows the wrong light
   state. The budget always draws the oldest piece: add a second shadow light (older piece) to the scene first
   (entries go in install order). See `k3-frame-shadows ?case=stale` (K7.1).
+- rg16float and r16float are not storage-texture formats in core WebGPU (only with `texture-formats-tier1`). Write f16
+  words into a storage buffer and `copyBufferToTexture` (rows padded to 256 bytes): core-valid and still filterable
+  (K7.3 `core/compute/multi-scale.ts`).
+- `textureSampleLevel` normalises coordinates by each mip's own size: address level k at base texel / 2^k over that
+  mip's dimensions and pad the chain so it halves exactly, or odd sizes drift up to half a texel per level.
+- A ≤ 1-ulp f16 parity gate misses a truncating pack: also bound the share of texels at 1 ulp when the pack rounds to
+  nearest.
+- Agent worktrees can start at an old commit (seen at `c3732d0`, not main): compare `git log -1` with main and
+  `git merge --ff-only main` first. They also lack the git-ignored fixtures: `cp -n` them from the main checkout.
