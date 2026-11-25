@@ -254,6 +254,16 @@ The host passes the camera its own depth map uses, so both maps share one texel 
 per-update budget (`castShadowUpdatesPerFrame`, oldest piece first) counts only lights in this frame's `lights`
 (his c13f2d5).
 
+*K6.5 as built (handoff K6-5.md):* the receivers are functions of the map, not of a light index (a host binds a dynamic
+number of maps, so no fixed bindings): `vdbVolumeShadowWgsl()` gives `vdbVolumeShadow(map: texture_2d_array<f32>, smp,
+view: VdbVolumeShadowView, world, viewDepth) -> f32` (directional cascades as layers, spot one layer) and
+`vdbVolumeShadowCube(map: texture_cube<f32>, smp, view, world) -> f32` (a point map's 6 layers through a cube view); grey
+(spectral K6.4). Each `VDBVolumeShadowMap` has `view`, a uniform buffer of the drawn state the core rewrites each update,
+and `drawn` keeps per-layer `origin` / `far` arrays (cascades have their own). Spot requests carry the host camera
+(`viewProjection`, near, far); point requests near / far; directional `'fit'` (default; `vdbFrameShadowFitCascades`, his
+`fitCascades`) or explicit cascades. A light absent from `frame.lights` has its map freed. The maps need the shadow grid,
+so with `castShadows` the grid is drawn in 'volume' lighting and with no volume in view too (casters out of view shadow).
+
 ### 2.7 Sequences and coarse-first
 
 `VDBSequence` moves to core (Q7) and calls `pool.replace` (sparse) or `source.replace` (dense). `update()` polls: a
@@ -436,6 +446,19 @@ hook `{ wgsl: string }` defines `fn vdbUserEmissionColor(t: f32, emission: f32) 
 every top-level name must start with `vdbUser`. The renderer validates it once (names, reserved words, back-ticks,
 then `createShaderModule` + `getCompilationInfo` under `pushErrorScope('validation')`) and throws
 `VDBError('VDB_BAD_WGSL')` naming the line. A hook is a pipeline key (hash of its text).
+
+*K6.5 as built:* `params.emissionColor: VDBEmissionColor` (`'white'`, `{ spectrum, exponent }`, `{ lut }` = 256 × rgb over
+log temperature 500–40,000 K, or `{ wgsl }`). Every LUT is a row of one rgba32float texture bound in **group 1** of the
+kernels with an emission source (gather 'volume' binding 4, 'frame' 5, emission direction 3), not group 0 (K6.2b's
+environment buffer goes there); the record's `march.w` holds the colour code (mode, row). `{ spectrum }` rows are his
+blackbody table pre-blended to the soot exponent (bilinear is separable; twin `vdbFrameEmissionLutRow` /
+`vdbFrameEmissionLutColor`). The hook is `fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f` (t normalized,
+temperature in kelvin; the design's `emission` argument is t). One hook per source group. A hook still validating draws
+white (an invalid pipeline would invalidate the host's command buffer); `prepare()` awaits validation; a failed hook
+throws at the next `update()`. Emission light: `VDBFrameInput.emissionLight` (his `FrameEmissionLight` props) →
+`outputs.emissionProbes` (`texture` stack, `grid` uniform buffer, `layout`, `state`); receivers
+`vdbEmissionProbeWgsl()` → `vdbEmissionIrradiance(probes, smp, grid, world, normal)`. The group record gains `emitters`
+(first item of the emitter list, count).
 
 ### 3.9 Level sets and points (K6.6)
 
