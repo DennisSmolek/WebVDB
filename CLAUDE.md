@@ -269,6 +269,13 @@ From v1; details in docs/archive/handoffs/.
   by `v`: call `source.update(encoder)` after `pool.update(encoder)` in the same encoder, then (re)build bind group 2
   when `source.version` moved. Its `wgsl()` has no VDB module (compose `source.module`'s helpers into the shader's one
   module), and per-volume info (`texels`, `stats`, `lodLevels`, `bbox`) is on the slot, not the source.
+- TSL `.toVar(name)` declares a module-scope `var<private> name`: a name equal to a function in an included code node
+  (K6.6: `.toVar("vdbLevelSetSurface")`) fails with "redeclaration". three's `wgslFn` returns built-in types only:
+  pack a WGSL struct into a `mat4x4f` and read columns with `.element(i)` (`VDBLevelSetMaterial.surfaceNode`).
+- A three camera that three never rendered keeps `coordinateSystem` WebGL (z in [-1, 1]): a raw WebGPU pass that takes
+  `camera.projectionMatrix` must set `WebGPUCoordinateSystem` and `updateProjectionMatrix()` first, or `frag_depth` is off.
+- SwiftShader snaps vertices: an analytic disc's edge lands up to ~0.03 px off the f64 disc (K6.6 raw point pass); give
+  coverage checks a 0.05 px margin.
 - `VDB_ALL_SCALAR_TYPES` includes `'half'` since K7.H, so a module made with it is larger than in 0.1.0 (single-type
   and other explicit-type modules are byte-identical).
 - A volume-shadow test that moves a light must make the map wait, or it can't see a lookup that follows the wrong light
@@ -303,3 +310,21 @@ From v1; details in docs/archive/handoffs/.
   band alone exceeds the 0.2 % > 4/255 bar (WDAS at 640 × 360 / 160² froxels: 0.3 %, all on the outline).
 - The core's 'frame' casters are `castsShadow` volumes, drawn or not (`visible = false` still casts); a host that
   hides a volume for good must clear both flags (`./three` does for volumes that left the scene).
+- WGSL lets an implementation assume no ±∞ or NaN: never rely on `1.0 / 0.0` (a slab test of an axis-parallel ray).
+  Guard the divisor and use finite sentinels (the K6.R kernel: `abs(d) < 1e-12` → inside or miss, ±1e30 bounds); the
+  CPU twin must make the same branch or the shared random stream diverges.
+- The froxel renderer's punctual lights are 4× three's Lambert convention: 'volume' lighting adds `color · phasê · T`
+  (phasê = phase / (1/4π)) and divides by π, so a directional light of colour C is irradiance 4C to a physical
+  renderer; point and spot lights have no distance falloff in 'volume' lighting ('frame' lighting applies three's getDistanceAttenuation, as his lighting pass, K6.2). Ambient C is a uniform radiance C/π (unshadowed in the
+  renderer). Map lights with `vdbReferenceLightsFromFrame` (K6.R) or a comparison shows a 4× "error".
+- A GPU path tracer and its CPU twin agree path for path only if they draw random numbers in the same order (K6.R:
+  > 99 % of values equal). When they drift, diff the draw order before the maths; f32 vs f64 flips a few branches.
+- Statistical gates on batch means: σ from a few batches has few degrees of freedom and grazing pixels are rare-event
+  Bernoulli, so a fixed k·σ per value fails by chance. Allow a small share over k·σ and gate the image's mean error
+  (Σ e / √Σ σ² < 4); a real bug moves many values or the mean (every K6.R mutation does).
+- Installed Chrome headless (`channel: 'chrome'`, `headless: true`) reported the Metal adapter ("apple metal-3") on the
+  owner's Mac (2026-11-25), so non-timing hardware scripts can run without a window; check the `adapter` they record.
+- His Step 1 bunny is optically very thick (extinction 100 over the box side at the mean density, albedo 1): multiple
+  scattering carries most of its light, a path tracer needs hundreds of bounces (512: no path reached the cap), and
+  its noise per pixel stays at several % after thousands of 1-spp batches. Compare aggregates (luminance bias,
+  median relative error), not single pixels.

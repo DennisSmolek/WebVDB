@@ -48,10 +48,16 @@ export {
   levelSetGradient,
   levelSetHit,
   levelSetHitReference,
+  levelSetNdcDepth,
   levelSetNormal,
+  levelSetPixelUv,
+  levelSetSurface,
+  levelSetViewRay,
   sampleTrilinearF32,
 } from "./cpu/level-set.js";
-export type { LevelSetHit, LevelSetHitOptions } from "./cpu/level-set.js";
+export type { LevelSetHit, LevelSetHitOptions, LevelSetRay, LevelSetSurface, LevelSetSurfaceOptions } from "./cpu/level-set.js";
+// K6.6: twins of the point-sprite WGSL.
+export { pointSpriteClip, pointSpriteSize, pointSpriteVertex } from "./cpu/points.js";
 export {
   atlasDims,
   atlasFromRaw,
@@ -395,3 +401,5 @@ export {
   vdbFrameSliceCoord,
 } from "./frame/froxel.js";
 export type { VDBFrameVolumeFroxel, VDBFrameFroxelMix, VDBFrameIntegrated } from "./frame/froxel.js";
+// K6.R: the reference renderer's scene, random stream, CPU twin and analytic cases (internal only).
+export * from "./reference/index.js";

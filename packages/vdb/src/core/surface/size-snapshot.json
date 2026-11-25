@@ -1,0 +1,30 @@
+{
+  "unit": "bytes of minified WGSL (scripts/lib/wgsl-variants.mjs wgslSizes)",
+  "passes": {
+    "level-set pass gbuffer (float)": {
+      "raw": 42523,
+      "min": 33588,
+      "gz": 6896
+    },
+    "level-set pass shade (float)": {
+      "raw": 42647,
+      "min": 33704,
+      "gz": 6931
+    },
+    "level-set pass shade (all scalar types)": {
+      "raw": 48608,
+      "min": 38760,
+      "gz": 7634
+    },
+    "point pass": {
+      "raw": 1450,
+      "min": 1224,
+      "gz": 542
+    },
+    "point pass (colors)": {
+      "raw": 1481,
+      "min": 1250,
+      "gz": 550
+    }
+  }
+}

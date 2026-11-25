@@ -16,6 +16,10 @@
  * instead of decoding the grid itself; the pixel scale reads the render
  * target's height when one is set (DIVERGES.md).
  *
+ * The sprite size and its clip-space offset are the core's WGSL (`vdbPointSpriteSize`,
+ * `vdbPointSpriteVertex`, `core/surface/points.ts`, K6.6), the functions the raw pass
+ * `vdbCreatePointPassGpu` calls; the vertex node calls them through `wgslFn`. The disc map stays here.
+ *
  * Positions are world space of the grid (the point list's own transform);
  * place them with the object's transform as any three object. The sprite sits
  * at the origin with the points in local space, so frustum culling is off.
@@ -25,9 +29,20 @@ import * as THREE from "three";
 import { InstancedBufferAttribute, PointsNodeMaterial, Sprite } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { VDBError } from "../core/errors.js";
+import { vdbPointSpriteWgsl } from "../core/surface/points.js";
 import type { VDBTslNode } from "./grid-node.js";
 
-const { instancedBufferAttribute, materialColor, max, modelViewMatrix, uniform, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { cameraProjectionMatrix, code, instancedBufferAttribute, materialColor, modelViewMatrix, positionGeometry, screenDPR, uniform, vec4, viewportSize, wgslFn } =
+  TSL as unknown as Record<string, VDBTslNode>;
+
+/**
+ * The vertex entry: the core's sprite size (1-pixel minimum) times the device pixel ratio, then the
+ * corner's clip position (three's `PointsNodeMaterial` sprite offset, same operation order).
+ */
+const SPRITE_WGSL = /* wgsl */ `fn vdbThreePointSprite(clip_centre: vec4f, corner: vec2f, pixel_scale: f32, view_depth: f32, dpr: f32, viewport_size: vec2f) -> vec4f {
+    return vdbPointSpriteVertex(clip_centre, corner, vdbPointSpriteSize(pixel_scale, view_depth, 1.0) * dpr, viewport_size);
+}`;
+let spriteFn: VDBTslNode | null = null;
 
 /** What `VDBPoints` draws (tools `vdbPointRenderData` returns one). */
 export interface VDBPointsData {
@@ -148,10 +163,19 @@ export class VDBPoints extends Sprite {
     this.positionAttribute = new InstancedBufferAttribute(data.positions, 3);
     this.colorAttribute = data.colors ? new InstancedBufferAttribute(data.colors, 3) : null;
     const position = instancedBufferAttribute(this.positionAttribute);
-    const viewDepth = modelViewMatrix.mul(vec4(position, 1.0)).z.negate();
+    const view = modelViewMatrix.mul(vec4(position, 1.0));
     const m = this.material as PointsNodeMaterial & Record<string, VDBTslNode>;
     m.positionNode = position;
-    m.sizeNode = max((this.pixelScale as VDBTslNode).div(viewDepth), 1.0);
+    spriteFn ??= wgslFn(SPRITE_WGSL, [code(vdbPointSpriteWgsl())] as never);
+    // The clip position comes from the core sprite WGSL; sizeNode is unused (vertexNode replaces three's sprite offset).
+    m.vertexNode = spriteFn({
+      clip_centre: cameraProjectionMatrix.mul(view),
+      corner: positionGeometry.xy,
+      pixel_scale: this.pixelScale,
+      view_depth: view.z.negate(),
+      dpr: screenDPR,
+      viewport_size: viewportSize,
+    });
     m.colorNode = this.colorAttribute ? vec4(instancedBufferAttribute(this.colorAttribute), 1.0).mul(materialColor) : null;
     m.needsUpdate = true;
     (this as unknown as { count: number }).count = count;

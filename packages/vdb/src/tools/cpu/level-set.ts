@@ -293,3 +293,89 @@ export function levelSetNormal(gridWords: Uint32Array, xyz: readonly number[], w
   if (!(l > 0)) return [0, 1, 0];
   return [n[0] / l, n[1] / l, n[2] / l];
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// K6.6: twins of the surface functions (`core/surface/level-set-wgsl.ts`), f64 arithmetic around the f32
+// trace twin. Matrices: `projectionInverse`, `cameraWorld`, `viewProjection` column-major 4x4;
+// `worldToIndex` the grid's 3x4 row-major affine (`pool.info(id).worldToIndex`).
+
+/** A world-space view ray: `origin + dir · t`, `t` in `span`. */
+export interface LevelSetRay {
+  origin: Vec3;
+  dir: Vec3;
+  span: [number, number];
+}
+
+/** Result of {@link levelSetSurface}. */
+export interface LevelSetSurface {
+  hit: boolean;
+  /** World units along the ray (0 on a miss). */
+  t: number;
+  /** World hit (zeros on a miss). */
+  world: Vec3;
+  /** Outward world unit normal (zeros on a miss). */
+  normal: Vec3;
+  /** `clip.z / clip.w` of the hit (0 on a miss). */
+  ndcDepth: number;
+  /** Trilinear samples of the trace. */
+  samples: number;
+}
+
+/** Options of {@link levelSetSurface}. */
+export interface LevelSetSurfaceOptions extends LevelSetHitOptions {
+  /** Central-difference step of the normal in index voxels. Default 1. */
+  normalStep?: number;
+}
+
+const mat4Vec4 = (m: ArrayLike<number>, v: readonly number[]): [number, number, number, number] =>
+  [0, 1, 2, 3].map((r) => m[r]! * v[0]! + m[4 + r]! * v[1]! + m[8 + r]! * v[2]! + m[12 + r]! * v[3]!) as [number, number, number, number];
+const normalize3 = (v: readonly number[]): Vec3 => {
+  const l = Math.hypot(v[0]!, v[1]!, v[2]!);
+  return [v[0]! / l, v[1]! / l, v[2]! / l];
+};
+const affine34 = (m: ArrayLike<number>, p: readonly number[], w: number): Vec3 => [
+  m[0]! * p[0]! + m[1]! * p[1]! + m[2]! * p[2]! + m[3]! * w,
+  m[4]! * p[0]! + m[5]! * p[1]! + m[6]! * p[2]! + m[7]! * w,
+  m[8]! * p[0]! + m[9]! * p[1]! + m[10]! * p[2]! + m[11]! * w,
+];
+
+/** Twin of `vdbLevelSetPixelUv(fragCoord, viewport)`: a fragment position (pixel centre `x + 0.5`) as a viewport uv (y down). */
+export function levelSetPixelUv(fragCoord: readonly [number, number], viewport: readonly [number, number, number, number]): [number, number] {
+  return [(fragCoord[0] - viewport[0]) / viewport[2], (fragCoord[1] - viewport[1]) / viewport[3]];
+}
+
+/** Twin of `vdbLevelSetViewRay(uv, projectionInverse, cameraWorld, orthographic)`. */
+export function levelSetViewRay(uv: readonly [number, number], projectionInverse: ArrayLike<number>, cameraWorld: ArrayLike<number>, orthographic: boolean): LevelSetRay {
+  const clip = mat4Vec4(projectionInverse, [uv[0] * 2 - 1, 1 - uv[1] * 2, 0.5, 1]);
+  const view = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];
+  if (orthographic) {
+    const o = mat4Vec4(cameraWorld, [view[0]!, view[1]!, 0, 1]);
+    return { origin: [o[0], o[1], o[2]], dir: normalize3(mat4Vec4(cameraWorld, [0, 0, -1, 0])), span: [-1e5, 1e5] };
+  }
+  return { origin: [cameraWorld[12]!, cameraWorld[13]!, cameraWorld[14]!], dir: normalize3(mat4Vec4(cameraWorld, [...normalize3(view), 0])), span: [0, 1e30] };
+}
+
+/** The NDC depth `clip.z / clip.w` of a world point (the surface's `ndcDepth`). */
+export function levelSetNdcDepth(world: readonly number[], viewProjection: ArrayLike<number>): number {
+  const c = mat4Vec4(viewProjection, [world[0]!, world[1]!, world[2]!, 1]);
+  return c[2] / c[3];
+}
+
+/**
+ * Twin of `vdbLevelSetSurface(g, ray, viewProjection, sdfToIndex, maxSamples, normalStep)`: the trace
+ * ({@link levelSetHit}) in the grid's index space, then the world hit, the world normal
+ * ({@link levelSetNormal}) and the NDC depth ({@link levelSetNdcDepth}).
+ */
+export function levelSetSurface(
+  gridWords: Uint32Array,
+  ray: LevelSetRay,
+  worldToIndex: ArrayLike<number>,
+  viewProjection: ArrayLike<number>,
+  options: LevelSetSurfaceOptions = {},
+): LevelSetSurface {
+  const h = levelSetHit(gridWords, affine34(worldToIndex, ray.origin, 1), affine34(worldToIndex, ray.dir, 0), ray.span, options);
+  if (!h.hit) return { hit: false, t: 0, world: [0, 0, 0], normal: [0, 0, 0], ndcDepth: 0, samples: h.samples };
+  const world: Vec3 = [ray.origin[0] + ray.dir[0] * h.t, ray.origin[1] + ray.dir[1] * h.t, ray.origin[2] + ray.dir[2] * h.t];
+  const normal = levelSetNormal(gridWords, affine34(worldToIndex, world, 1), worldToIndex, options.normalStep ?? 1);
+  return { hit: true, t: h.t, world, normal, ndcDepth: levelSetNdcDepth(world, viewProjection), samples: h.samples };
+}
