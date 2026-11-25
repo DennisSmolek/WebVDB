@@ -12,6 +12,14 @@ import type { VDBSlot } from "../types.js";
 import type { VDBVolumeSource } from "../source/types.js";
 import { frameChunksWgsl } from "./wgsl/chunks.js";
 import { GATHER_BINDINGS, vdbFrameGatherWgsl } from "./wgsl/gather.js";
+import {
+  FRAME_GATHER_BINDINGS,
+  GRID_DENSITY_BINDINGS,
+  TRANSMITTANCE_BINDINGS,
+  vdbFrameGridDensityWgsl,
+  vdbFrameLightingGatherWgsl,
+  vdbFrameTransmittanceWgsl,
+} from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS, vdbFrameResolveWgsl } from "./wgsl/resolve.js";
 import { VDB_FRAME_COMPOSITE_COLOR_WGSL, VDB_FRAME_INTEGRATE_TAPS_WGSL, VDB_FRAME_SLICE_COORD_WGSL, vdbFrameCompositeWgsl } from "./wgsl/integrate.js";
 import { VDB_FRAME_MAX_VOLUMES, vdbFrameUniformsWgsl } from "./uniforms.js";
@@ -37,10 +45,12 @@ export interface VDBFrameGatherKey {
   readonly mix: "mixture" | "over";
   readonly multi: boolean;
   readonly maxVolumes?: number;
+  /** K6.2: `'frame'` lighting fuses his density and lighting passes (the mix does not apply: his sums are additive). */
+  readonly lighting?: "volume" | "frame";
 }
 
-/** The gather kernel's WGSL for `source` (its `vdbSrc*` at group 2). */
-export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameGatherKey): string {
+/** The source's VDB module (sparse, K6.7) and its `vdbSrc*` WGSL at group 2, then the frame uniforms. */
+function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined): string {
   // One VDB module per shader (design §5.1): a sparse source (K6.7) gives it; a dense source has none.
   const withModule = source as VDBVolumeSource & { moduleWgsl?: (slot: VDBSlot) => string };
   if (source.kind !== "dense" && typeof withModule.moduleWgsl !== "function") {
@@ -49,29 +59,82 @@ export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameG
   return [
     ...(typeof withModule.moduleWgsl === "function" ? [withModule.moduleWgsl(SOURCE_SLOT)] : []),
     source.wgsl({ slot: SOURCE_SLOT, profile: "march" }),
-    vdbFrameUniformsWgsl(key.maxVolumes ?? VDB_FRAME_MAX_VOLUMES),
-    vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels }),
+    vdbFrameUniformsWgsl(maxVolumes ?? VDB_FRAME_MAX_VOLUMES),
   ].join("\n");
 }
 
-/** The source layout part of a label: its channels and LOD levels. */
+/** The gather kernel's WGSL for `source` (its `vdbSrc*` at group 2). */
+export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameGatherKey): string {
+  const body =
+    key.lighting === "frame"
+      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels })
+      : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels });
+  return `${sourcePrelude(source, key.maxVolumes)}\n${body}`;
+}
+
+/** The source layout part of a label: its kind, channels and LOD levels. */
 const sourceChannels = (s: VDBVolumeSource) =>
-  ["density", ...(["mask", "albedo", "emission"] as const).filter((c) => s.channels[c])].join("+") + (s.lodLevels > 0 ? "+mips" : "");
+  `${s.kind} ${["density", ...(["mask", "albedo", "emission"] as const).filter((c) => s.channels[c])].join("+")}${s.lodLevels > 0 ? "+mips" : ""}`;
 
 /** The gather kernel's spec. */
 export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherKey): VDBComputeSpec {
-  const b = GATHER_BINDINGS;
+  const frame = key.lighting === "frame";
+  const b = frame ? FRAME_GATHER_BINDINGS : GATHER_BINDINGS;
   const group1: GPUBindGroupLayoutEntry[] = [
     { binding: b.volumes, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
     { binding: b.group, visibility: STAGE.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
     { binding: b.scatter, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
   ];
   if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
+  if (frame) group1.push({ binding: FRAME_GATHER_BINDINGS.transmittance, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
   return {
-    label: `vdb frame gather (${key.mix}${key.multi ? ", multi-group" : ""}; ${source.kind} ${sourceChannels(source)})`,
+    label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}; ${sourceChannels(source)})`,
     code: vdbFrameGatherKernelWgsl(source, key),
     entryPoint: "vdbFrameGatherCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
+  };
+}
+
+/** Pipeline-key options of the shadow grid density kernel. */
+export interface VDBFrameGridDensityKey {
+  /** More than one caster source group: accumulate in the packed r32uint partials. */
+  readonly multi: boolean;
+  readonly maxVolumes?: number;
+}
+
+/** The shadow grid density kernel's spec (K6.2; one dispatch per caster source group). */
+export function vdbFrameGridDensitySpec(source: VDBVolumeSource, key: VDBFrameGridDensityKey): VDBComputeSpec {
+  const b = GRID_DENSITY_BINDINGS;
+  const group1: GPUBindGroupLayoutEntry[] = [
+    { binding: b.volumes, visibility: STAGE.COMPUTE, buffer: { type: "uniform" } },
+    { binding: b.group, visibility: STAGE.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
+    { binding: b.grid, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+  ];
+  if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
+  return {
+    label: `vdb frame grid density${key.multi ? " (multi-group)" : ""}; ${sourceChannels(source)}`,
+    code: `${sourcePrelude(source, key.maxVolumes)}\n${vdbFrameGridDensityWgsl({ multi: key.multi, channels: source.channels })}`,
+    entryPoint: "vdbFrameGridDensityCs",
+    groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
+  };
+}
+
+/** The transmittance kernel's spec (K6.2; source-free). */
+export function vdbFrameTransmittanceSpec(): VDBComputeSpec {
+  const b = TRANSMITTANCE_BINDINGS;
+  return {
+    label: "vdb frame transmittance",
+    code: `${vdbFrameUniformsWgsl()}\n${vdbFrameTransmittanceWgsl()}`,
+    entryPoint: "vdbFrameTransmittanceCs",
+    groups: [
+      GROUP0_LAYOUT,
+      {
+        entries: [
+          { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+          { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+        ],
+      },
+    ],
   };
 }
 

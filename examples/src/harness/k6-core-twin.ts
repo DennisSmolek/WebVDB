@@ -36,11 +36,56 @@ type V3 = VDBFrameVec3;
 type V4 = VDBFrameVec4;
 
 /** The terms `?mutate=` can break (each probe's spec checks one fails). */
-export type TwinMutation = "none" | "mix" | "phase" | "extinction" | "fade" | "scan-stop" | "temporal-clamp" | "coverage" | "taps";
+export type TwinMutation =
+  | "none"
+  | "mix"
+  | "phase"
+  | "extinction"
+  | "fade"
+  | "scan-stop"
+  | "temporal-clamp"
+  | "coverage"
+  | "taps"
+  // K6.1d: the shadow march skips samples past the HDDA cell end (WGSL patch, not a twin term)
+  | "skip"
+  // K6.2 'frame' lighting
+  | "grid-absorbance"
+  | "grid-lod"
+  | "diffusion"
+  | "slots"
+  | "sky"
+  | "partials";
+
+/** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
+export interface TwinSampler {
+  /** `vdbSrcTexels`: voxels across the source box. */
+  texels: V3;
+  /** `vdbSrcLodLevels`. */
+  levels: number;
+  /** The source compiles the emission channel (else `vdbFrameEmission` is 0). */
+  hasEmission: boolean;
+  density(uvw: V3, lod: number): number;
+  mask(uvw: V3, lod: number): number;
+  albedo(uvw: V3, lod: number): V3;
+  emission(uvw: V3, lod: number): number;
+}
+
+/** A dense `.wvdb` volume's sampler (`vdbDenseSource`). */
+export function denseSampler(vol: WvdbDenseVolume): TwinSampler {
+  return {
+    texels: [...vol.dimensions] as V3,
+    levels: vol.density.mip?.levels ?? 0,
+    hasEmission: !!vol.emission,
+    density: (uvw, lod) => sampleWvdbDenseTexture(vol.density, uvw, lod),
+    mask: (uvw, lod) => (vol.mask ? sampleWvdbDenseTexture(vol.mask, uvw, lod) : 1),
+    albedo: (uvw, lod) => (vol.albedo ? ([0, 1, 2].map((c) => sampleWvdbDenseTexture(vol.albedo!, uvw, lod, c)) as V3) : [1, 1, 1]),
+    emission: (uvw, lod) => (vol.emission ? sampleWvdbDenseTexture(vol.emission, uvw, lod) : 0),
+  };
+}
 
 /** One volume as the gather kernel sees it (the renderer's packed record, in f64). */
 export interface TwinVolume {
-  volume: WvdbDenseVolume;
+  volume: TwinSampler;
   rect: [number, number, number, number];
   first: number;
   count: number;
@@ -130,25 +175,27 @@ function gridUv(r: TwinVolume, local: V3): V3 {
   return uvw;
 }
 
-function extinctionAt(r: TwinVolume, local: V3, lod: number, mutate: TwinMutation): number {
+/** sampleExtinction: extinction per world unit at a local position (the WGSL `vdbFrameExtinction`). */
+export function extinctionAt(r: TwinVolume, local: V3, lod: number, mutate: TwinMutation = "none"): number {
   const vol = r.volume;
-  const mask = vol.mask ? sampleWvdbDenseTexture(vol.mask, add(local, [0.5, 0.5, 0.5]), lod) : 1;
-  const value = sampleWvdbDenseTexture(vol.density, gridUv(r, local), lod) * mask;
+  const mask = vol.mask(add(local, [0.5, 0.5, 0.5]), lod);
+  const value = vol.density(gridUv(r, local), lod) * mask;
   const e = ((value > r.densityCutoff ? value : 0) * r.densityScale * r.extinction) / r.worldScale;
   return mutate === "extinction" ? e * 1.02 : e;
 }
 
-function albedoAt(r: TwinVolume, local: V3, lod: number): V3 {
-  const vol = r.volume;
-  if (!vol.albedo) return [...r.baseColor] as V3;
-  const uvw = gridUv(r, local);
-  return [0, 1, 2].map((c) => r.baseColor[c]! * sampleWvdbDenseTexture(vol.albedo!, uvw, lod, c)) as V3;
+/** sampleAlbedo: base colour × the albedo channel. */
+export function albedoAt(r: TwinVolume, local: V3, lod: number): V3 {
+  const a = r.volume.albedo(gridUv(r, local), lod);
+  return [0, 1, 2].map((c) => r.baseColor[c]! * a[c]!) as V3;
 }
 
-function emissionAt(r: TwinVolume, local: V3, lod: number): V3 {
+/** sampleEmission (white). */
+export function emissionAt(r: TwinVolume, local: V3, lod: number): V3 {
   const vol = r.volume;
-  if (!vol.emission) return [0, 0, 0];
-  const value = sampleWvdbDenseTexture(vol.emission, gridUv(r, local), lod);
+  // the source's compiled channel (a sparse source compiles the union of its volumes' channels)
+  if (!vol.hasEmission) return [0, 0, 0];
+  const value = vol.emission(gridUv(r, local), lod);
   const [t0, t1] = r.temperatureRange;
   const temperature = t0 + (t1 - t0) * value;
   const power = Math.pow(temperature / Math.max(t1, 1), 4);
@@ -180,7 +227,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
   const seg = boxSegment(localNear, localFar);
   if (seg[0] >= seg[1]) return null;
   const segment = seg[1] - seg[0];
-  const dims = r.volume.dimensions;
+  const dims = r.volume.texels;
   const maxTexels = Math.max(dims[0], dims[1], dims[2]);
   const middle = (f.sliceNear + f.sliceFar) * 0.5;
   const width = len(sub(vdbFrameViewPosition(frame.projectionInverse, [f.uv[0] + 1 / frame.grid[0], f.uv[1]], middle), vdbFrameViewPosition(frame.projectionInverse, f.uv, middle)));

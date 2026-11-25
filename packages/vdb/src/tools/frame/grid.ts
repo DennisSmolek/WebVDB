@@ -598,6 +598,11 @@ export interface VDBFrameDensityInputs {
   extinctionAt: (local: Vec3, lod: number) => number;
   /** The 4 transmittance atlases and their layout, or null without shadows. */
   shadows: { atlases: readonly VDBFrameAtlas[]; grid: VDBFrameGridLayout } | null;
+  /** K6.2: the 4 transmittance targets at a world position (a stacked 3D texture, `vdbFrameStackShadows`); replaces `shadows`' atlases. */
+  shadowsAt?: ((world: Vec3) => number[][]) | null;
+  /** K6.2: the source's albedo (base colour × channel) and emission at the visible local position (default: base colour, none). */
+  albedoAt?: ((local: Vec3, lod: number) => Vec3) | null;
+  emissionAt?: ((local: Vec3, lod: number) => Vec3) | null;
   /** Scene lights with a shadow slot, their positions (slot order) and the renderer phase. */
   sceneLightCount: number;
   lightPositions: readonly Vec4[];
@@ -634,7 +639,7 @@ export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs)
     extinctionSum += e;
     transmittance *= stepT;
   }
-  return densityFroxelTail(p, viewNear, viewFar, mul, extinctionSum, steps, segment, visibleWeight, visibleTSum);
+  return densityFroxelTail(p, viewNear, viewFar, mul, extinctionSum, steps, segment, visibleWeight, visibleTSum, { localNear, localFar, lod });
 }
 
 /** The froxel geometry of the density pass (and the inject pre-integration): box segment, sub-steps, lods. null: discarded. */
@@ -687,13 +692,16 @@ function densityFroxelTail(
   segment: number,
   visibleWeight: number,
   visibleTSum: number,
+  at?: { localNear: Vec3; localFar: Vec3; lod: number },
 ): [Vec4, Vec4, Vec4, Vec4] | null {
   const lerp3 = (x: Vec3, y: Vec3, t: number): Vec3 => [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
   const extinction = (extinctionSum / steps) * segment;
   if (!(extinction > 0)) return null;
   const visibleT = visibleWeight > 0 ? visibleTSum / visibleWeight : 0.5;
   const visibleWorld = mul(p.cameraWorld, lerp3(viewNear, viewFar, visibleT));
-  const sh = p.shadows ? vdbFrameSampleShadows(p.shadows.atlases, p.shadows.grid, visibleWorld) : [1, 2, 3, 4].map(() => [1, 1, 1, 1]);
+  const visibleLocal = at ? lerp3(at.localNear, at.localFar, visibleT) : null;
+  const albedo: Vec3 = p.albedoAt && visibleLocal ? p.albedoAt(visibleLocal, at!.lod) : [...p.baseColor];
+  const sh = p.shadowsAt ? p.shadowsAt(visibleWorld) : p.shadows ? vdbFrameSampleShadows(p.shadows.atlases, p.shadows.grid, visibleWorld) : [1, 2, 3, 4].map(() => [1, 1, 1, 1]);
   const shadow0 = [...sh[0]!];
   const shadow1 = [...sh[1]!];
   const directs = [sh[2]![0]!, sh[2]![1]!, sh[2]![2]!, sh[2]![3]!, sh[3]![0]!, sh[3]![1]!];
@@ -722,17 +730,18 @@ function densityFroxelTail(
   shadow0[0] = vdbFrameShadowTotal(shadow0[0]!, octaves);
   shadow0[1] = vdbFrameShadowTotal(shadow0[1]!, octaves);
   const ext = (v: number[]) => v.map((x) => Math.min(x * extinction, 6.0e4)) as Vec4;
-  const emission: Vec3 = [...p.scatterColor];
+  const own = p.emissionAt && visibleLocal ? p.emissionAt(visibleLocal, at!.lod) : ([0, 0, 0] as Vec3);
+  const emission: Vec3 = [p.scatterColor[0] + own[0], p.scatterColor[1] + own[1], p.scatterColor[2] + own[2]];
   if (p.environmentGrid && p.shadows) {
     // sampleEnvironmentGrid: the last cascade, its own atlas; the unshadowed light (× the octave total) outside it
     const g = p.shadows.grid;
     const uvw = vdbFrameGridUvw(g, g.count - 1, visibleWorld);
     const outside = vdbFrameShadowTotal(1, octaves);
     const env = vdbFrameInsideGrid(g.resolution, uvw) ? vdbFrameSampleTiles(p.environmentGrid.atlas, g.resolution, 0, p.environmentGrid.columns, uvw) : p.environmentGrid.unshadowed.map((v) => v * outside);
-    for (let c = 0; c < 3; c++) emission[c] = emission[c]! + (p.baseColor[c]! * env[c]!) / Math.PI;
+    for (let c = 0; c < 3; c++) emission[c] = emission[c]! + (albedo[c]! * env[c]!) / Math.PI;
   }
   return [
-    [p.baseColor[0] * extinction, p.baseColor[1] * extinction, p.baseColor[2] * extinction, extinction],
+    [albedo[0] * extinction, albedo[1] * extinction, albedo[2] * extinction, extinction],
     [emission[0] * extinction, emission[1] * extinction, emission[2] * extinction, visibleT * extinction],
     ext(shadow0),
     ext(shadow1),
@@ -855,6 +864,16 @@ export interface VDBFrameLightingInputs {
   /** Environment lights with a shadow slot (colours), from `environmentShadowSlot`. */
   environmentColors: Vec3[];
   environmentShadowSlot: number;
+  /** K6.2: the light probe SH9 (rgb each; three's convention) and the sky direction (default +y) it is read along. */
+  probe?: readonly Vec3[];
+  sky?: Vec3;
+}
+
+/** three's `getShIrradianceAt` (the probe's L2 irradiance at a unit normal). */
+function shIrradiance(normal: Vec3, sh: readonly Vec3[]): Vec3 {
+  const [x, y, z] = normal;
+  const k = [0.886227, 2 * 0.511664 * y, 2 * 0.511664 * z, 2 * 0.511664 * x, 2 * 0.429043 * x * y, 2 * 0.429043 * y * z, z * z * 0.743125 - 0.247708, 2 * 0.429043 * x * z, 0.429043 * (x * x - y * y)];
+  return [0, 1, 2].map((c) => k.reduce((sum, w, i) => sum + (sh[i]?.[c] ?? 0) * w, 0)) as Vec3;
 }
 
 const smoothstep = (e0: number, e1: number, x: number) => {
@@ -900,6 +919,12 @@ export function vdbFrameLightingFroxel(
   const colorPhase = spectrum[2] > 0.5;
   const directs = colorPhase && inputs.directAt ? inputs.directAt(world) : [1, 1, 1, 1, 1, 1];
   const irradiance: Vec3 = [0, 1, 2].map((c) => inputs.ambient[c]! + inputs.hemiSky[c]! * skyUp + inputs.hemiGround[c]! * skyDown) as Vec3;
+  if (inputs.probe) {
+    const sky = normalize3(inputs.sky ?? [0, 1, 0]);
+    const up = shIrradiance(sky, inputs.probe);
+    const down = shIrradiance([-sky[0], -sky[1], -sky[2]], inputs.probe);
+    for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + up[c]! * skyUp + down[c]! * skyDown;
+  }
   inputs.lights.forEach((light, i) => {
     const p = light.position;
     const toLight: Vec3 = [p[0] - world[0], p[1] - world[1], p[2] - world[2]];

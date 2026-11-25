@@ -15,6 +15,8 @@ import {
   vdbFrameCompositeSpec,
   vdbFrameDefaultSettings,
   vdbFrameGatherSpec,
+  vdbFrameGridDensitySpec,
+  vdbFrameTransmittanceSpec,
   vdbFrameIntegrateWgsl,
   vdbFrameResolveSpec,
   vdbUniformStruct,
@@ -77,8 +79,12 @@ const sources = () => [vdbDenseSource(fakeDevice(), denseVolume({ albedo: true, 
 /** Every K6.1 pipeline (the key matrix): gather × mix × multi × source layout, resolve × temporal, composite × depth × sRGB. */
 function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
   const compute: VDBComputeSpec[] = [];
-  for (const s of sources()) for (const mix of ["mixture", "over"] as const) for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix, multi }));
-  compute.push(vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
+  for (const s of sources()) {
+    for (const mix of ["mixture", "over"] as const) for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix, multi }));
+    // K6.2 'frame' lighting: the fused gather and the shadow grid density per source layout
+    for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" }), vdbFrameGridDensitySpec(s, { multi }));
+  }
+  compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
   const render: VDBRenderSpec[] = [];
   for (const depth of ["depth", "r32float"] as const) for (const srgb of [false, true]) render.push(vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb }));
   return { compute, render };
@@ -273,7 +279,7 @@ describe("K6.1 WGSL sizes (D21; design §5.3)", () => {
     expect(Object.keys(snap.kernels).sort()).toEqual(Object.keys(sizes).sort());
     for (const [label, s] of Object.entries(sizes)) {
       expect(s.min, `${label}: WGSL size changed; if intended run K6_WRITE_SIZES=1 pnpm vitest run packages/vdb/test/core/frame and commit`).toBe(snap.kernels[label]!.min);
-      expect(s.min).toBeLessThanOrEqual(label.includes("gather") ? CAP_SOURCE : CAP_FREE);
+      expect(s.min).toBeLessThanOrEqual(label.includes("gather") || label.includes("grid density") ? CAP_SOURCE : CAP_FREE);
     }
   });
 });

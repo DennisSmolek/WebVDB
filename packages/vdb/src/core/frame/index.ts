@@ -3,7 +3,7 @@
  * export through `core/internal.ts` only; the public surface lands in K6.8 (design §2.1).
  */
 
-export { vdbCreateFrameRenderer, vdbFrameRendererTextures } from "./renderer.js";
+export { vdbCreateFrameRenderer, vdbFrameRendererGrid, vdbFrameRendererTextures } from "./renderer.js";
 export type { VDBFrameRendererGpu, VDBFrameRendererGpuOptions } from "./renderer.js";
 export { vdbFrameDefaultSettings } from "./settings.js";
 export type { VDBFrameSettings, VDBFramePhaseName, VDBFrameMultipleScatteringMode } from "./settings.js";
@@ -51,10 +51,13 @@ export {
   vdbFrameCompositeSpec,
   vdbFrameGatherKernelWgsl,
   vdbFrameGatherSpec,
+  vdbFrameGridDensitySpec,
   vdbFrameResolveKernelWgsl,
   vdbFrameResolveSpec,
+  vdbFrameTransmittanceSpec,
 } from "./kernels.js";
-export type { VDBFrameCompositeKey, VDBFrameGatherKey } from "./kernels.js";
+export type { VDBFrameCompositeKey, VDBFrameGatherKey, VDBFrameGridDensityKey } from "./kernels.js";
+export { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
 export { computePipeline, renderPipeline, prepareCompute, prepareRender, vdbHashText } from "./pipelines.js";
 export type { VDBCachedPipeline, VDBComputeSpec, VDBRenderSpec } from "./pipelines.js";
 export { VDBRetireQueue, createFroxelTexture } from "./resources.js";
@@ -62,7 +65,9 @@ export {
   VDB_FRAME_GROUP,
   VDB_FRAME_GROUP_STRIDE,
   VDB_FRAME_LIGHTS,
+  VDB_FRAME_MAX_CASCADES,
   VDB_FRAME_MAX_HEMISPHERE_LIGHTS,
+  VDB_FRAME_SHADOW_SLOTS,
   VDB_FRAME_MAX_LIGHTS,
   VDB_FRAME_MAX_VOLUMES,
   VDB_FRAME_UNIFORMS,

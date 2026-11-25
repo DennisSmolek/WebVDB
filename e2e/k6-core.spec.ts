@@ -28,6 +28,9 @@ interface Result {
   adapter?: string;
   stats?: Stats;
   renderStats?: Stats;
+  gridStats?: Stats;
+  transmittanceStats?: Stats;
+  frame?: { cascades: number; redraw: unknown };
   builds?: { first: number; second: number };
   compile?: { variants: number; errors: string[] };
   warnings: string[];
@@ -62,6 +65,10 @@ const PROBES: { name: string; query: string; minCovered: number; mutations: stri
   { name: "resolve", query: "?probe=resolve&temporal=0", minCovered: 512, mutations: ["scan-stop"] },
   { name: "resolve (temporal)", query: "?probe=resolve&temporal=1", minCovered: 512, mutations: ["temporal-clamp", "scan-stop"] },
   { name: "integrate", query: "?probe=integrate", minCovered: 512, mutations: ["coverage", "taps"] },
+  // K6.1d: the gather on the core sparse source (K6.7), volume A skipping empty space (hdda), B wrapped (no skip)
+  { name: "gather sparse (lod none, one group, hdda)", query: "?probe=gather&source=sparse&lod=none&groups=1", minCovered: 300, mutations: ["skip", "extinction", "phase"] },
+  { name: "gather sparse (node-average, two groups)", query: "?probe=gather&source=sparse&lod=node-average&groups=2", minCovered: 300, mutations: ["mix"] },
+  { name: "gather sparse (coarse-pyramid, one group)", query: "?probe=gather&source=sparse&lod=coarse-pyramid&groups=1", minCovered: 300, mutations: ["extinction"] },
 ];
 
 for (const p of PROBES) {
@@ -83,6 +90,50 @@ for (const p of PROBES) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
       expect(bad.error, detail(bad)).toBeUndefined();
       expect(bad.stats!.over, `mutation ${m} must fail: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad.stats!.compared * 0.001));
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.2 (design §7.1): 'frame' lighting, each kernel against its twin from the read-back input of the kernel before it:
+// the shadow grid (vdbFrameGridDensityVoxel), the transmittance (vdbFrameTransmittanceVoxel3d on the read-back grid) and
+// the fused gather (his density + lighting twins on the read-back transmittance). `mutations` maps a twin term to the
+// stats it must break. A second identical update skips the grid and the transmittance (his redraw signatures).
+type StatsKey = "stats" | "gridStats" | "transmittanceStats";
+const FRAME_PROBES: { name: string; query: string; cascades: number; mutations: Record<string, StatsKey> }[] = [
+  {
+    name: "dense, one group, one cascade",
+    query: "?probe=frame",
+    cascades: 1,
+    mutations: { "grid-absorbance": "gridStats", "grid-lod": "gridStats", diffusion: "transmittanceStats", slots: "stats", sky: "stats", extinction: "stats" },
+  },
+  { name: "dense, two groups (partials), two cascades", query: "?probe=frame&groups=2&cascades=2", cascades: 2, mutations: { slots: "stats" } },
+  { name: "sparse, one group", query: "?probe=frame&source=sparse", cascades: 1, mutations: { "grid-absorbance": "gridStats", diffusion: "transmittanceStats" } },
+  { name: "sparse, two groups, single scattering", query: "?probe=frame&source=sparse&groups=2&ms=0", cascades: 1, mutations: { slots: "stats" } },
+];
+
+for (const p of FRAME_PROBES) {
+  test(`K6.2 probe: 'frame' lighting (${p.name}) matches its CPU twins; mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.frame!.cascades, detail(r)).toBe(p.cascades);
+    const redraw = r.frame!.redraw as { shadowDensity: { drawn: number; skipped: number }; transmittance: { drawn: number; skipped: number } };
+    expect(redraw.shadowDensity, detail(r)).toEqual({ drawn: 1, skipped: 1 });
+    expect(redraw.transmittance, detail(r)).toEqual({ drawn: 1, skipped: 1 });
+    for (const key of ["gridStats", "transmittanceStats", "stats"] as const) {
+      const s = r[key]!;
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "stats" ? 200 : 300);
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] frame ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
     }
     expect(errors).toEqual([]);
   });
